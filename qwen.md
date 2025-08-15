@@ -8,3 +8,13 @@
 
 ## Design Principles
 - Consult `design.md` for project design principles before implementing new features.
+
+## Testing
+- Aim for 100% test coverage for all core functionality.
+- Use `make cov` to check test coverage.
+- Use `make test` to run tests.
+
+## Commands
+- Run tests with `pytest` or `make test`
+- Check coverage with `make cov`
+- Format code with `make fmt`
