@@ -13,12 +13,11 @@ class TestEnvironment:
     """Tests for the Environment class."""
 
     def test_init(self):
-        # Test default initialization
+        # Test default and parent initialization
         env = Environment()
         assert env.vars == {}
         assert env.parent is None
 
-        # Test with parent environment
         parent_env = Environment()
         child_env = Environment(parent=parent_env)
         assert child_env.parent is parent_env
@@ -51,11 +50,10 @@ class TestSiluInterpreter:
     """Tests for the SiluInterpreter class."""
 
     def test_init(self):
-        # Test default initialization
+        # Test default and custom environment initialization
         interpreter = SiluInterpreter()
         assert isinstance(interpreter.env, Environment)
 
-        # Test with custom environment
         custom_env = Environment()
         interpreter_with_env = SiluInterpreter(env=custom_env)
         assert interpreter_with_env.env is custom_env
@@ -63,14 +61,13 @@ class TestSiluInterpreter:
     def test_visit_module(self):
         interpreter = SiluInterpreter()
         
-        # Test visiting an empty module
+        # Test visiting an empty module and a module with a pass statement
         empty_module = ast.Module(body=[], type_ignores=[])
-        interpreter.visit(empty_module)  # Should not raise any exceptions
+        interpreter.visit(empty_module)
 
-        # Test visiting a module with a pass statement
         code = "pass"
         tree = ast.parse(code)
-        interpreter.visit(tree)  # Should not raise any exceptions
+        interpreter.visit(tree)
 
 
 def test_main_function(capsys):
@@ -80,18 +77,16 @@ def test_main_function(capsys):
     assert captured.out == "Hello from Silu!\n"
 
 
-# This test is designed to cover the `if __name__ == "__main__"` block
+# Test that the module can be executed directly
 def test_module_execution():
     """Test that the module can be executed directly."""
-    # Execute the interpreter.py module as a script
     result = subprocess.run(
         [sys.executable, "-m", "silu.interpreter"],
-        cwd="/Users/askender/aix1/silu",  # Make sure we're in the project root
+        cwd="/Users/askender/aix1/silu",
         capture_output=True,
         text=True,
-        timeout=5  # Timeout after 5 seconds
+        timeout=5
     )
     
-    # Check that it ran successfully and produced the expected output
     assert result.returncode == 0
     assert result.stdout == "Hello from Silu!\n"
