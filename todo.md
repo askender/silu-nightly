@@ -1,9 +1,9 @@
 # TODO List
 
 - [x] 创建基础的 SiluInterpreter 类，继承自 ast.NodeVisitor
-- [ ] 实现执行环境 (Environment) 来管理变量和函数
-- [ ] 实现核心 AST 节点的 visit_* 方法 (Module, Expr, Assign, Name, Constant)
-- [ ] 实现数学运算和比较运算的 visit_* 方法 (BinOp, UnaryOp, BoolOp, Compare)
+- [x] 实现执行环境 (Environment) 来管理变量和函数
+- [x] 实现核心 AST 节点的 visit_* 方法 (Module, Expr, Assign, Name, Constant)
+- [~] 实现数学运算和比较运算的 visit_* 方法 (BinOp, UnaryOp, BoolOp, Compare)
 - [ ] 实现控制流的 visit_* 方法 (If, While)
 - [ ] 实现函数定义和调用的 visit_* 方法 (FunctionDef, Return, Call)
 - [ ] 添加对基础数据类型 (int, float, str, bool) 的支持

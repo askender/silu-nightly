@@ -3,6 +3,7 @@
 ## 0. 当前细节原则
 - 暂时不实现Lexer Parser AST解析，当前的版本silu语法是python语法的子集
 - 执行silu代码有两种方式：1 使用python执行 2 编译为llvm ir，然后使用llvm工具链执行
+- 每次执行新任务前，运行make cov 将覆盖率提升到100%
 
 ## 1. 简洁性 (Simplicity)
 - 优先考虑简单、易于理解的解决方案。
