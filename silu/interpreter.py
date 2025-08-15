@@ -3,8 +3,7 @@ Silu Interpreter Module
 """
 
 import ast
-import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 class Environment:
@@ -13,7 +12,8 @@ class Environment:
     For simplicity, starts with a single global environment.
     Can be extended to support nested scopes later.
     """
-    def __init__(self, parent: Optional['Environment'] = None):
+
+    def __init__(self, parent: Optional["Environment"] = None):
         self.vars: Dict[str, Any] = {}
         self.parent = parent
 
@@ -38,6 +38,7 @@ class SiluInterpreter(ast.NodeVisitor):
     """
     A simple interpreter for a subset of Python syntax.
     """
+
     def __init__(self, env: Optional[Environment] = None):
         self.env = env if env is not None else Environment()
 
@@ -47,13 +48,13 @@ class SiluInterpreter(ast.NodeVisitor):
         """
         for stmt in node.body:
             self.visit(stmt)
-            
+
     def visit_Expr(self, node: ast.Expr) -> Any:
         """
         Visit an expression node.
         """
         return self.visit(node.value)
-        
+
     def visit_Assign(self, node: ast.Assign) -> None:
         """
         Visit an assignment node.
@@ -62,14 +63,14 @@ class SiluInterpreter(ast.NodeVisitor):
         # and not multiple targets (e.g., x = y = 10) or complex targets (e.g., a[0] = 10)
         if len(node.targets) != 1:
             raise NotImplementedError("Only single target assignments are supported")
-            
+
         target = node.targets[0]
         if not isinstance(target, ast.Name):
             raise NotImplementedError("Only simple variable assignments are supported")
-            
+
         value = self.visit(node.value)
         self.env.set(target.id, value)
-        
+
     def visit_Name(self, node: ast.Name) -> Any:
         """
         Visit a name node.
@@ -81,20 +82,20 @@ class SiluInterpreter(ast.NodeVisitor):
             pass
         else:
             raise NotImplementedError(f"Unsupported context for name: {type(node.ctx)}")
-            
+
     def visit_Constant(self, node: ast.Constant) -> Any:
         """
         Visit a constant node.
         """
         return node.value
-        
+
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         """
         Visit a binary operation node.
         """
         left = self.visit(node.left)
         right = self.visit(node.right)
-        
+
         if isinstance(node.op, ast.Add):
             return left + right
         elif isinstance(node.op, ast.Sub):
@@ -114,16 +115,16 @@ class SiluInterpreter(ast.NodeVisitor):
                 raise ZeroDivisionError("Modulo by zero")
             return left % right
         elif isinstance(node.op, ast.Pow):
-            return left ** right
+            return left**right
         else:
             raise NotImplementedError(f"Unsupported binary operator: {type(node.op)}")
-            
+
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         """
         Visit a unary operation node.
         """
         operand = self.visit(node.operand)
-        
+
         if isinstance(node.op, ast.UAdd):
             return +operand
         elif isinstance(node.op, ast.USub):
@@ -132,13 +133,13 @@ class SiluInterpreter(ast.NodeVisitor):
             return not operand
         else:
             raise NotImplementedError(f"Unsupported unary operator: {type(node.op)}")
-            
+
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         """
         Visit a boolean operation node.
         """
         values = [self.visit(value) for value in node.values]
-        
+
         if isinstance(node.op, ast.And):
             result = True
             for value in values:
@@ -155,7 +156,7 @@ class SiluInterpreter(ast.NodeVisitor):
             return result
         else:
             raise NotImplementedError(f"Unsupported boolean operator: {type(node.op)}")
-            
+
     def visit_Compare(self, node: ast.Compare) -> Any:
         """
         Visit a comparison node.
@@ -163,17 +164,17 @@ class SiluInterpreter(ast.NodeVisitor):
         left = self.visit(node.left)
         comparators = [self.visit(comparator) for comparator in node.comparators]
         ops = node.ops
-        
+
         if len(comparators) != len(ops):
             raise ValueError("Mismatch between comparators and operators")
-            
+
         result = True
         for i, (comparator, op) in enumerate(zip(comparators, ops)):
             if i == 0:
                 left_val = left
             else:
                 left_val = comparators[i - 1]
-                
+
             if isinstance(op, ast.Eq):
                 comparison_result = left_val == comparator
             elif isinstance(op, ast.NotEq):
@@ -187,12 +188,14 @@ class SiluInterpreter(ast.NodeVisitor):
             elif isinstance(op, ast.GtE):
                 comparison_result = left_val >= comparator
             else:
-                raise NotImplementedError(f"Unsupported comparison operator: {type(op)}")
-                
+                raise NotImplementedError(
+                    f"Unsupported comparison operator: {type(op)}"
+                )
+
             result = result and comparison_result
             if not result:  # Short-circuit evaluation
                 break
-                
+
         return result
 
 

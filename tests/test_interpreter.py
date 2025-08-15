@@ -22,16 +22,16 @@ class TestEnvironment:
         parent_env.set("y", 20)
         child_env = Environment(parent=parent_env)
         assert child_env.parent is parent_env
-        
+
         # Test set, get, and parent variable access
         env.set("x", 10)
         assert env.get("x") == 10
         assert child_env.get("y") == 20
-        
+
         # Test undefined variable
         with pytest.raises(NameError, match="Name 'undefined_var' is not defined"):
             env.get("undefined_var")
-        
+
         # Test variable shadowing
         child_env.set("y", 30)
         assert child_env.get("y") == 30
@@ -60,36 +60,36 @@ class TestSiluInterpreter:
 
     def test_visit_constant_and_name(self):
         interpreter = SiluInterpreter()
-        
+
         # Test constants
         test_cases = [
             (42, int),
             ("hello", str),
             (3.14, float),
             (True, bool),
-            (False, bool)
+            (False, bool),
         ]
-        
+
         for value, expected_type in test_cases:
             node = ast.Constant(value=value)
             result = interpreter.visit_Constant(node)
             assert result == value
             assert isinstance(result, expected_type)
-        
+
         # Test name operations
         interpreter.env.set("x", 10)
         load_node = ast.Name(id="x", ctx=ast.Load())
         assert interpreter.visit_Name(load_node) == 10
-        
+
         # Test undefined variable
         undefined_node = ast.Name(id="y", ctx=ast.Load())
         with pytest.raises(NameError, match="Name 'y' is not defined"):
             interpreter.visit_Name(undefined_node)
-            
+
         # Test store context (should not raise error)
         store_node = ast.Name(id="z", ctx=ast.Store())
         interpreter.visit_Name(store_node)  # Should not raise error
-        
+
         # Test unsupported context
         unsupported_node = ast.Name(id="w", ctx=ast.Del())
         with pytest.raises(NotImplementedError, match="Unsupported context for name"):
@@ -97,14 +97,14 @@ class TestSiluInterpreter:
 
     def test_visit_assign(self):
         interpreter = SiluInterpreter()
-        
+
         # Test simple assignment
         target = ast.Name(id="x", ctx=ast.Store())
         value = ast.Constant(value=42)
         assign_node = ast.Assign(targets=[target], value=value)
         interpreter.visit_Assign(assign_node)
         assert interpreter.env.get("x") == 42
-        
+
         # Test assignment with expression
         interpreter.env.set("y", 10)
         target = ast.Name(id="z", ctx=ast.Store())
@@ -114,60 +114,64 @@ class TestSiluInterpreter:
         assign_node = ast.Assign(targets=[target], value=value)
         interpreter.visit_Assign(assign_node)
         assert interpreter.env.get("z") == 15
-        
+
         # Test error cases
         target1 = ast.Name(id="a", ctx=ast.Store())
         target2 = ast.Name(id="b", ctx=ast.Store())
         value = ast.Constant(value=42)
         assign_node = ast.Assign(targets=[target1, target2], value=value)
-        with pytest.raises(NotImplementedError, match="Only single target assignments are supported"):
+        with pytest.raises(
+            NotImplementedError, match="Only single target assignments are supported"
+        ):
             interpreter.visit_Assign(assign_node)
-            
+
         target = ast.Subscript(
             value=ast.Name(id="lst", ctx=ast.Load()),
             slice=ast.Constant(value=0),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value=42)
         assign_node = ast.Assign(targets=[target], value=value)
-        with pytest.raises(NotImplementedError, match="Only simple variable assignments are supported"):
+        with pytest.raises(
+            NotImplementedError, match="Only simple variable assignments are supported"
+        ):
             interpreter.visit_Assign(assign_node)
 
     def test_visit_binop(self):
         interpreter = SiluInterpreter()
-        
+
         # Test all binary operations
         left = ast.Constant(value=5)
         right = ast.Constant(value=3)
-        
+
         # Test normal operations
         test_cases = [
             (ast.Add(), 8),
             (ast.Sub(), 2),
             (ast.Mult(), 15),
-            (ast.Div(), 5/3),
+            (ast.Div(), 5 / 3),
             (ast.FloorDiv(), 1),
             (ast.Mod(), 2),
-            (ast.Pow(), 125)
+            (ast.Pow(), 125),
         ]
-        
+
         for op, expected in test_cases:
             node = ast.BinOp(left=left, op=op, right=right)
             assert interpreter.visit_BinOp(node) == expected
-        
+
         # Test division by zero errors
         right = ast.Constant(value=0)
         error_cases = [
             (ast.Div(), "Division by zero"),
             (ast.Mod(), "Modulo by zero"),
-            (ast.FloorDiv(), "Division by zero")
+            (ast.FloorDiv(), "Division by zero"),
         ]
-        
+
         for op, error_msg in error_cases:
             node = ast.BinOp(left=left, op=op, right=right)
             with pytest.raises(ZeroDivisionError, match=error_msg):
                 interpreter.visit_BinOp(node)
-            
+
         # Test unsupported operator
         node = ast.BinOp(left=left, op=ast.LShift(), right=right)
         with pytest.raises(NotImplementedError, match="Unsupported binary operator"):
@@ -175,53 +179,53 @@ class TestSiluInterpreter:
 
     def test_visit_unaryop_and_boolop(self):
         interpreter = SiluInterpreter()
-        
+
         # Test unary operations
         operand = ast.Constant(value=5)
         node = ast.UnaryOp(op=ast.UAdd(), operand=operand)
         assert interpreter.visit_UnaryOp(node) == 5
-        
+
         node = ast.UnaryOp(op=ast.USub(), operand=operand)
         assert interpreter.visit_UnaryOp(node) == -5
-        
+
         operand = ast.Constant(value=True)
         node = ast.UnaryOp(op=ast.Not(), operand=operand)
-        assert interpreter.visit_UnaryOp(node) == False
-        
+        assert not interpreter.visit_UnaryOp(node)
+
         operand = ast.Constant(value=False)
         node = ast.UnaryOp(op=ast.Not(), operand=operand)
-        assert interpreter.visit_UnaryOp(node) == True
-        
+        assert interpreter.visit_UnaryOp(node)
+
         # Test unsupported unary operator
         operand = ast.Constant(value=5)
         node = ast.UnaryOp(op=ast.Invert(), operand=operand)
         with pytest.raises(NotImplementedError, match="Unsupported unary operator"):
             interpreter.visit_UnaryOp(node)
-        
+
         # Test boolean operations
         values = [ast.Constant(value=True), ast.Constant(value=False)]
         node = ast.BoolOp(op=ast.And(), values=values)
-        assert interpreter.visit_BoolOp(node) == False
-        
+        assert not interpreter.visit_BoolOp(node)
+
         values = [ast.Constant(value=True), ast.Constant(value=True)]
         node = ast.BoolOp(op=ast.And(), values=values)
-        assert interpreter.visit_BoolOp(node) == True
-        
+        assert interpreter.visit_BoolOp(node)
+
         values = [ast.Constant(value=False), ast.Constant(value=True)]
         node = ast.BoolOp(op=ast.Or(), values=values)
-        assert interpreter.visit_BoolOp(node) == True
-        
+        assert interpreter.visit_BoolOp(node)
+
         values = [ast.Constant(value=False), ast.Constant(value=False)]
         node = ast.BoolOp(op=ast.Or(), values=values)
-        assert interpreter.visit_BoolOp(node) == False
-        
+        assert not interpreter.visit_BoolOp(node)
+
         # Test with variables
         interpreter.env.set("a", True)
         interpreter.env.set("b", False)
         values = [ast.Name(id="a", ctx=ast.Load()), ast.Name(id="b", ctx=ast.Load())]
         node = ast.BoolOp(op=ast.And(), values=values)
-        assert interpreter.visit_BoolOp(node) == False
-        
+        assert not interpreter.visit_BoolOp(node)
+
         # Test unsupported boolean operator
         values = [ast.Constant(value=True), ast.Constant(value=False)]
         node = ast.BoolOp(op=ast.MatMult(), values=values)
@@ -230,57 +234,61 @@ class TestSiluInterpreter:
 
     def test_visit_compare(self):
         interpreter = SiluInterpreter()
-        
+
         # Test all comparison operations
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3)]
-        
+
         test_cases = [
             (ast.Eq(), False),
             (ast.NotEq(), True),
             (ast.Lt(), False),
             (ast.LtE(), False),
             (ast.Gt(), True),
-            (ast.GtE(), True)
+            (ast.GtE(), True),
         ]
-        
+
         for op, expected in test_cases:
             node = ast.Compare(left=left, ops=[op], comparators=comparators)
             assert interpreter.visit_Compare(node) == expected
-        
+
         # Test chained comparisons
         left = ast.Constant(value=3)
         comparators = [ast.Constant(value=5), ast.Constant(value=7)]
         ops = [ast.Lt(), ast.Lt()]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
-        assert interpreter.visit_Compare(node) == True
-        
+        assert interpreter.visit_Compare(node)
+
         # Test short-circuit evaluation
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3), ast.Constant(value=7)]
         ops = [ast.Lt(), ast.Lt()]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
-        assert interpreter.visit_Compare(node) == False
-        
+        assert not interpreter.visit_Compare(node)
+
         # Test unsupported operator
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3)]
         ops = [ast.In()]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
-        with pytest.raises(NotImplementedError, match="Unsupported comparison operator"):
+        with pytest.raises(
+            NotImplementedError, match="Unsupported comparison operator"
+        ):
             interpreter.visit_Compare(node)
-            
+
         # Test mismatch between comparators and operators
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3), ast.Constant(value=7)]
         ops = [ast.Lt()]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
-        with pytest.raises(ValueError, match="Mismatch between comparators and operators"):
+        with pytest.raises(
+            ValueError, match="Mismatch between comparators and operators"
+        ):
             interpreter.visit_Compare(node)
 
     def test_visit_expr_and_e2e_programs(self):
         interpreter = SiluInterpreter()
-        
+
         # Test visiting an expression
         value = ast.Constant(value=42)
         node = ast.Expr(value=value)
@@ -291,14 +299,14 @@ class TestSiluInterpreter:
             ("x = 5 + 3", "x", 8),
             ("y = (10 - 4) * 2", "y", 12),
             ("z = True and False", "z", False),
-            ("w = 5 > 3", "w", True)
+            ("w = 5 > 3", "w", True),
         ]
-        
+
         for code, var, expected in test_programs:
             tree = ast.parse(code)
             interpreter.visit(tree)
             assert interpreter.env.get(var) == expected
-        
+
         # Test multi-line program
         tree = ast.parse("""
 a = 10
