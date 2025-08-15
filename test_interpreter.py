@@ -77,7 +77,7 @@ def test_main_function(capsys):
     """Test the main function."""
     main()
     captured = capsys.readouterr()
-    assert captured.out == "Hello from Silu!\\n"
+    assert captured.out == "Hello from Silu!\n"
 
 
 # This test is designed to cover the `if __name__ == "__main__"` block
@@ -94,4 +94,4 @@ def test_module_execution():
     
     # Check that it ran successfully and produced the expected output
     assert result.returncode == 0
-    assert result.stdout == "Hello from Silu!\\n"
+    assert result.stdout == "Hello from Silu!\n"
