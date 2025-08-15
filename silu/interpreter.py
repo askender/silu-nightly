@@ -56,13 +56,13 @@ class Environment:
             self.vars["print"] = self._print
             self.vars["type"] = self._type
             self.vars["isinstance"] = self._isinstance
-            
+
             # Type conversion functions
             self.vars["int"] = self._int
             self.vars["float"] = self._float
             self.vars["str"] = self._str
             self.vars["bool"] = self._bool
-            
+
             # Type objects
             self.vars["int_type"] = int
             self.vars["float_type"] = float
@@ -80,27 +80,27 @@ class Environment:
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance function."""
         # For simplicity, we'll only support basic types
-        if cls is int or cls == int:
+        if cls is int or cls is int:
             return isinstance(obj, int)
-        elif cls is float or cls == float:
+        elif cls is float or cls is float:
             return isinstance(obj, float)
-        elif cls is str or cls == str:
+        elif cls is str or cls is str:
             return isinstance(obj, str)
-        elif cls is bool or cls == bool:
+        elif cls is bool or cls is bool:
             return isinstance(obj, bool)
         else:
             # Handle the case where cls is a reference to a type object in vars
-            if hasattr(cls, '__name__'):
+            if hasattr(cls, "__name__"):
                 cls_name = cls.__name__
-                if cls_name == 'int':
+                if cls_name == "int":
                     return isinstance(obj, int)
-                elif cls_name == 'float':
+                elif cls_name == "float":
                     return isinstance(obj, float)
-                elif cls_name == 'str':
+                elif cls_name == "str":
                     return isinstance(obj, str)
-                elif cls_name == 'bool':
+                elif cls_name == "bool":
                     return isinstance(obj, bool)
-            
+
             raise NotImplementedError(f"isinstance not implemented for {cls}")
 
     def _int(self, value=None) -> int:
