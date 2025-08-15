@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+[project]
+name = "silu"
+version = "0.1.0"
+description = "A simple AI programming language"
+readme = "README.md"
+authors = [{name = "askender", email = "askender43@gmail.com"}]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.6"
+dependencies = [
+    # Add any dependencies here
+]
+
+[project.scripts]
+silu = "silu.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["silu*"]
