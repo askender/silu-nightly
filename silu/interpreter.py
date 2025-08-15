@@ -212,6 +212,31 @@ class SiluInterpreter(ast.NodeVisitor):
         else:
             raise TypeError(f"'{type(func).__name__}' object is not callable")
 
+    def visit_If(self, node: ast.If) -> None:
+        """
+        Visit an if statement node.
+        """
+        # Evaluate the condition
+        condition = self.visit(node.test)
+
+        # If the condition is true, execute the body
+        if condition:
+            for stmt in node.body:
+                self.visit(stmt)
+        else:
+            # If the condition is false and there's an orelse block, execute it
+            for stmt in node.orelse:
+                self.visit(stmt)
+
+    def visit_While(self, node: ast.While) -> None:
+        """
+        Visit a while loop node.
+        """
+        # While the condition is true, execute the body
+        while self.visit(node.test):
+            for stmt in node.body:
+                self.visit(stmt)
+
 
 def main() -> None:
     """

@@ -1,0 +1,21 @@
+# Test for If statement
+x = 10
+if x > 5:
+    print("x is greater than 5")
+else:
+    print("x is not greater than 5")
+
+# Test for While loop
+y = 0
+while y < 3:
+    print("y is", y)
+    y = y + 1
+
+# Test for nested control flow
+z = 5
+if z > 0:
+    while z > 0:
+        print("z is", z)
+        z = z - 1
+else:
+    print("z is not positive")

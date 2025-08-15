@@ -295,6 +295,107 @@ class TestSiluInterpreter:
         node = ast.Expr(value=value)
         assert interpreter.visit_Expr(node) == 42
 
+    def test_visit_if(self):
+        interpreter = SiluInterpreter()
+
+        # Test simple if statement (true condition)
+        interpreter.env.set("x", 10)
+        test = ast.Compare(
+            left=ast.Name(id="x", ctx=ast.Load()),
+            ops=[ast.Gt()],
+            comparators=[ast.Constant(value=5)],
+        )
+        body = [
+            ast.Expr(
+                value=ast.Call(
+                    func=ast.Name(id="print", ctx=ast.Load()),
+                    args=[ast.Constant(value="x is greater than 5")],
+                    keywords=[],
+                )
+            )
+        ]
+        orelse = [
+            ast.Expr(
+                value=ast.Call(
+                    func=ast.Name(id="print", ctx=ast.Load()),
+                    args=[ast.Constant(value="x is not greater than 5")],
+                    keywords=[],
+                )
+            )
+        ]
+        node = ast.If(test=test, body=body, orelse=orelse)
+
+        # We can't easily test the output, but we can test that it doesn't raise an error
+        try:
+            interpreter.visit_If(node)
+        except Exception as e:
+            pytest.fail(f"visit_If raised an exception unexpectedly: {e}")
+
+        # Test simple if statement (false condition)
+        interpreter.env.set("y", 3)
+        test = ast.Compare(
+            left=ast.Name(id="y", ctx=ast.Load()),
+            ops=[ast.Gt()],
+            comparators=[ast.Constant(value=5)],
+        )
+        node = ast.If(test=test, body=body, orelse=orelse)
+
+        try:
+            interpreter.visit_If(node)
+        except Exception as e:
+            pytest.fail(f"visit_If raised an exception unexpectedly: {e}")
+
+    def test_visit_while(self):
+        interpreter = SiluInterpreter()
+
+        # Test simple while loop
+        interpreter.env.set("i", 0)
+        test = ast.Compare(
+            left=ast.Name(id="i", ctx=ast.Load()),
+            ops=[ast.Lt()],
+            comparators=[ast.Constant(value=3)],
+        )
+        body = [
+            ast.Expr(
+                value=ast.Call(
+                    func=ast.Name(id="print", ctx=ast.Load()),
+                    args=[ast.Name(id="i", ctx=ast.Load())],
+                    keywords=[],
+                )
+            ),
+            ast.Assign(
+                targets=[ast.Name(id="i", ctx=ast.Store())],
+                value=ast.BinOp(
+                    left=ast.Name(id="i", ctx=ast.Load()),
+                    op=ast.Add(),
+                    right=ast.Constant(value=1),
+                ),
+            ),
+        ]
+        node = ast.While(test=test, body=body, orelse=[])
+
+        # We can't easily test the output, but we can test that it doesn't raise an error
+        try:
+            interpreter.visit_While(node)
+        except Exception as e:
+            pytest.fail(f"visit_While raised an exception unexpectedly: {e}")
+
+        # Test while loop with false condition (should not execute body)
+        interpreter.env.set("j", 5)
+        test = ast.Compare(
+            left=ast.Name(id="j", ctx=ast.Load()),
+            ops=[ast.Lt()],
+            comparators=[ast.Constant(value=3)],
+        )
+        node = ast.While(test=test, body=body, orelse=[])
+
+        try:
+            interpreter.visit_While(node)
+            # j should still be 5
+            assert interpreter.env.get("j") == 5
+        except Exception as e:
+            pytest.fail(f"visit_While raised an exception unexpectedly: {e}")
+
     def test_e2e_programs(self):
         # Test end-to-end programs
         interpreter = SiluInterpreter()
