@@ -14,10 +14,17 @@ class Environment:
     def __init__(self, parent: Optional["Environment"] = None):
         self.vars: Dict[str, Any] = {}
         self.parent = parent
+        # Add built-in functions
+        if parent is None:  # Only add built-ins to the global environment
+            self.vars["print"] = self._print
+
+    def _print(self, *args) -> None:
+        """Built-in print function."""
+        print(*args)
 
     def get(self, name: str) -> Any:
         """
-        Get the value of a variable.
+        Get the value of a variable or function.
         """
         if name in self.vars:
             return self.vars[name]
@@ -188,6 +195,22 @@ class SiluInterpreter(ast.NodeVisitor):
                 return False
 
         return True
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        """
+        Visit a function call node.
+        """
+        # Get the function object
+        func = self.visit(node.func)
+
+        # Evaluate all arguments
+        args = [self.visit(arg) for arg in node.args]
+
+        # Call the function
+        if callable(func):
+            return func(*args)
+        else:
+            raise TypeError(f"'{type(func).__name__}' object is not callable")
 
 
 def main() -> None:

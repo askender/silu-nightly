@@ -15,7 +15,8 @@ class TestEnvironment:
     def test_environment_basic_operations(self):
         # Test default and parent initialization
         env = Environment()
-        assert env.vars == {}
+        # Check that env.vars contains at least the print function
+        assert "print" in env.vars
         assert env.parent is None
 
         parent_env = Environment()
@@ -286,7 +287,7 @@ class TestSiluInterpreter:
         ):
             interpreter.visit_Compare(node)
 
-    def test_visit_expr_and_e2e_programs(self):
+    def test_visit_expr(self):
         interpreter = SiluInterpreter()
 
         # Test visiting an expression
@@ -294,20 +295,31 @@ class TestSiluInterpreter:
         node = ast.Expr(value=value)
         assert interpreter.visit_Expr(node) == 42
 
+    def test_e2e_programs(self):
         # Test end-to-end programs
-        test_programs = [
-            ("x = 5 + 3", "x", 8),
-            ("y = (10 - 4) * 2", "y", 12),
-            ("z = True and False", "z", False),
-            ("w = 5 > 3", "w", True),
-        ]
+        interpreter = SiluInterpreter()
 
-        for code, var, expected in test_programs:
-            tree = ast.parse(code)
-            interpreter.visit(tree)
-            assert interpreter.env.get(var) == expected
+        # Test simple arithmetic
+        tree = ast.parse("x = 5 + 3")
+        interpreter.visit(tree)
+        assert interpreter.env.get("x") == 8
 
-        # Test multi-line program
+        # Test complex expression
+        tree = ast.parse("y = (10 - 4) * 2")
+        interpreter.visit(tree)
+        assert interpreter.env.get("y") == 12
+
+        # Test boolean operations
+        tree = ast.parse("z = True and False")
+        interpreter.visit(tree)
+        assert not interpreter.env.get("z")
+
+        # Test comparison
+        tree = ast.parse("w = 5 > 3")
+        interpreter.visit(tree)
+        assert interpreter.env.get("w")
+
+        # Test variable usage
         tree = ast.parse("""
 a = 10
 b = 5
@@ -315,6 +327,41 @@ c = a + b
 """)
         interpreter.visit(tree)
         assert interpreter.env.get("c") == 15
+
+    def test_visit_call_and_builtins(self):
+        """Test function calls and built-in functions."""
+        interpreter = SiluInterpreter()
+
+        # Test that 'print' is available as a built-in
+        assert "print" in interpreter.env.vars
+        assert callable(interpreter.env.vars["print"])
+
+        # Test calling print with different arguments
+        # We can't easily test the output, but we can test that it doesn't raise an error
+        try:
+            interpreter.env.vars["print"]("Hello, World!")
+            interpreter.env.vars["print"](1, 2, 3)
+            interpreter.env.vars["print"](True, False)
+        except Exception as e:
+            pytest.fail(f"Calling print raised an exception unexpectedly: {e}")
+
+        # Test visit_Call method
+        # Create a call node for print("test")
+        func_node = ast.Name(id="print", ctx=ast.Load())
+        arg_node = ast.Constant(value="test")
+        call_node = ast.Call(func=func_node, args=[arg_node], keywords=[])
+
+        # This should not raise an error
+        try:
+            interpreter.visit_Call(call_node)
+        except Exception as e:
+            pytest.fail(f"visit_Call raised an exception unexpectedly: {e}")
+
+        # Test calling a non-callable
+        func_node = ast.Constant(value=42)
+        call_node = ast.Call(func=func_node, args=[], keywords=[])
+        with pytest.raises(TypeError, match="'int' object is not callable"):
+            interpreter.visit_Call(call_node)
 
 
 def test_main_function(capsys):
