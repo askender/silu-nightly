@@ -87,9 +87,8 @@ class Environment:
         type_map = {"int": int, "float": float, "str": str, "bool": bool}
 
         # Direct type object comparison
-        for type_name, type_obj in type_map.items():
-            if cls is type_obj:
-                return isinstance(obj, type_obj)
+        if cls in type_map.values():
+            return isinstance(obj, cls)
 
         # Handle type objects referenced by name from vars
         if hasattr(cls, "__name__") and cls.__name__ in type_map:
@@ -109,11 +108,7 @@ class Environment:
             return 0
         elif isinstance(value, bool):
             return int(value)
-        elif isinstance(value, int):
-            return value
-        elif isinstance(value, float):
-            return int(value)
-        elif isinstance(value, str):
+        elif isinstance(value, (int, float, str)):
             return int(value)
         else:
             raise NotImplementedError(f"int() not implemented for {type(value)}")
@@ -124,11 +119,7 @@ class Environment:
             return 0.0
         elif isinstance(value, bool):
             return float(value)
-        elif isinstance(value, float):
-            return value
-        elif isinstance(value, int):
-            return float(value)
-        elif isinstance(value, str):
+        elif isinstance(value, (int, float, str)):
             return float(value)
         else:
             raise NotImplementedError(f"float() not implemented for {type(value)}")
@@ -160,6 +151,34 @@ class Environment:
 
 class SiluInterpreter(ast.NodeVisitor):
     """A simple interpreter for a subset of Python syntax."""
+
+    # Binary operators mapping
+    BINARY_OPERATORS = {
+        ast.Add: lambda x, y: x + y,
+        ast.Sub: lambda x, y: x - y,
+        ast.Mult: lambda x, y: x * y,
+        ast.Div: lambda x, y: x / y,
+        ast.FloorDiv: lambda x, y: x // y,
+        ast.Mod: lambda x, y: x % y,
+        ast.Pow: lambda x, y: x**y,
+    }
+
+    # Unary operators mapping
+    UNARY_OPERATORS = {
+        ast.UAdd: lambda x: +x,
+        ast.USub: lambda x: -x,
+        ast.Not: lambda x: not x,
+    }
+
+    # Comparison operators mapping
+    COMPARISON_OPERATORS = {
+        ast.Eq: lambda x, y: x == y,
+        ast.NotEq: lambda x, y: x != y,
+        ast.Lt: lambda x, y: x < y,
+        ast.LtE: lambda x, y: x <= y,
+        ast.Gt: lambda x, y: x > y,
+        ast.GtE: lambda x, y: x >= y,
+    }
 
     def __init__(self, env: Optional[Environment] = None):
         self.env = env if env is not None else Environment()
@@ -215,19 +234,8 @@ class SiluInterpreter(ast.NodeVisitor):
                 raise ZeroDivisionError("Modulo by zero")
             raise ZeroDivisionError("Division by zero")
 
-        # Map operators to their corresponding operations
-        operators = {
-            ast.Add: lambda x, y: x + y,
-            ast.Sub: lambda x, y: x - y,
-            ast.Mult: lambda x, y: x * y,
-            ast.Div: lambda x, y: x / y,
-            ast.FloorDiv: lambda x, y: x // y,
-            ast.Mod: lambda x, y: x % y,
-            ast.Pow: lambda x, y: x**y,
-        }
-
-        if type(node.op) in operators:
-            return operators[type(node.op)](left, right)
+        if type(node.op) in self.BINARY_OPERATORS:
+            return self.BINARY_OPERATORS[type(node.op)](left, right)
 
         raise NotImplementedError(f"Unsupported binary operator: {type(node.op)}")
 
@@ -237,15 +245,8 @@ class SiluInterpreter(ast.NodeVisitor):
         """
         operand = self.visit(node.operand)
 
-        # Map operators to their corresponding operations
-        operators = {
-            ast.UAdd: lambda x: +x,
-            ast.USub: lambda x: -x,
-            ast.Not: lambda x: not x,
-        }
-
-        if type(node.op) in operators:
-            return operators[type(node.op)](operand)
+        if type(node.op) in self.UNARY_OPERATORS:
+            return self.UNARY_OPERATORS[type(node.op)](operand)
 
         raise NotImplementedError(f"Unsupported unary operator: {type(node.op)}")
 
@@ -281,16 +282,6 @@ class SiluInterpreter(ast.NodeVisitor):
         if len(comparators) != len(ops):
             raise ValueError("Mismatch between comparators and operators")
 
-        # Map operators to their corresponding operations
-        operator_map = {
-            ast.Eq: lambda x, y: x == y,
-            ast.NotEq: lambda x, y: x != y,
-            ast.Lt: lambda x, y: x < y,
-            ast.LtE: lambda x, y: x <= y,
-            ast.Gt: lambda x, y: x > y,
-            ast.GtE: lambda x, y: x >= y,
-        }
-
         # For chained comparisons, we need to evaluate each pair
         for i, (comparator, op) in enumerate(zip(comparators, ops)):
             # For chained comparisons, the right side of one comparison
@@ -298,12 +289,12 @@ class SiluInterpreter(ast.NodeVisitor):
             left_val = left if i == 0 else comparators[i - 1]
 
             # Apply the comparison operation
-            if type(op) not in operator_map:
+            if type(op) not in self.COMPARISON_OPERATORS:
                 raise NotImplementedError(
                     f"Unsupported comparison operator: {type(op)}"
                 )
 
-            result = operator_map[type(op)](left_val, comparator)
+            result = self.COMPARISON_OPERATORS[type(op)](left_val, comparator)
 
             if not result:  # Short-circuit evaluation
                 return False
@@ -372,13 +363,10 @@ class SiluInterpreter(ast.NodeVisitor):
             # Execute the if block
             for stmt in node.body:
                 self.visit(stmt)
-        else:
-            # Check if there's an elif or else block
-            if node.orelse:
-                # The orelse might contain elif statements or else block
-                # In AST, elif is represented as nested If statements in orelse
-                for stmt in node.orelse:
-                    self.visit(stmt)
+        elif node.orelse:
+            # Execute the elif/else block
+            for stmt in node.orelse:
+                self.visit(stmt)
 
     def visit_While(self, node: ast.While) -> None:
         """

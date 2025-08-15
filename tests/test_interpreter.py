@@ -438,6 +438,10 @@ c = a + b
         for type_obj in type_objects:
             assert type_obj in interpreter.env.vars
 
+        # Test _list function with None argument (line 73)
+        assert interpreter.env._list() == []
+        assert interpreter.env._list(None) == []
+
         # Test calling print with different arguments
         # We can't easily test the output, but we can test that it doesn't raise an error
         try:
@@ -869,6 +873,37 @@ items = list([])
         ):
             items.append()
 
+        # Test append with too many arguments (covers line 325)
+        with pytest.raises(
+            TypeError, match="append\\(\\) takes exactly one argument \\(2 given\\)"
+        ):
+            items.append(1, 2)
+
+    def test_visit_call_append_error(self):
+        """Test visit_Call method with append method error (covers line 325)."""
+        interpreter = SiluInterpreter()
+
+        # Create a list in the environment
+        interpreter.env.set("items", [])
+
+        # Create AST for items.append(1, 2) - too many arguments
+        func_node = ast.Attribute(
+            value=ast.Name(id="items", ctx=ast.Load()),
+            attr="append",
+            ctx=ast.Load(),
+        )
+        call_node = ast.Call(
+            func=func_node,
+            args=[ast.Constant(value=1), ast.Constant(value=2)],
+            keywords=[],
+        )
+
+        # This should raise TypeError for too many arguments
+        with pytest.raises(
+            TypeError, match="append\\(\\) takes exactly one argument \\(2 given\\)"
+        ):
+            interpreter.visit_Call(call_node)
+
     def test_for_else_clause(self):
         """Test for loop with else clause."""
         interpreter = SiluInterpreter()
@@ -887,3 +922,29 @@ else:
 
         # Check that the else clause executed
         assert interpreter.env.get("executed") == ["else"]
+
+    def test_for_loop_unsupported_target(self):
+        """Test for loop with unsupported target type (covers line 401)."""
+        interpreter = SiluInterpreter()
+
+        # Create a for loop with an unsupported target type (not ast.Name)
+        # This will test the NotImplementedError for non-simple targets
+        target = ast.Subscript(
+            value=ast.Name(id="lst", ctx=ast.Load()),
+            slice=ast.Constant(value=0),
+            ctx=ast.Store(),
+        )
+        iter_node = ast.Call(
+            func=ast.Name(id="range", ctx=ast.Load()),
+            args=[ast.Constant(value=1)],
+            keywords=[],
+        )
+        body = []
+        for_node = ast.For(target=target, iter=iter_node, body=body, orelse=[])
+
+        # This should raise NotImplementedError
+        with pytest.raises(
+            NotImplementedError,
+            match="Only simple variable targets are supported in for loops",
+        ):
+            interpreter.visit_For(for_node)
