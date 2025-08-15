@@ -467,9 +467,9 @@ c = a + b
     def test_visit_functiondef_and_call(self):
         """Test function definition and call."""
         interpreter = SiluInterpreter()
-        
+
         # Test simple function definition
-        # Create AST nodes for: 
+        # Create AST nodes for:
         # def greet(name):
         #     print("Hello, " + name)
         func_name = "greet"
@@ -480,7 +480,7 @@ c = a + b
             kwonlyargs=[],
             kw_defaults=[],
             kwarg=None,
-            defaults=[]
+            defaults=[],
         )
         print_call = ast.Call(
             func=ast.Name(id="print", ctx=ast.Load()),
@@ -488,44 +488,42 @@ c = a + b
                 ast.BinOp(
                     left=ast.Constant(value="Hello, "),
                     op=ast.Add(),
-                    right=ast.Name(id=arg_name, ctx=ast.Load())
+                    right=ast.Name(id=arg_name, ctx=ast.Load()),
                 )
             ],
-            keywords=[]
+            keywords=[],
         )
-        func_body = [
-            ast.Expr(value=print_call)
-        ]
+        func_body = [ast.Expr(value=print_call)]
         func_def_node = ast.FunctionDef(
             name=func_name,
             args=func_args,
             body=func_body,
             decorator_list=[],
-            returns=None
+            returns=None,
         )
-        
+
         # Visit the function definition
         interpreter.visit_FunctionDef(func_def_node)
-        
+
         # Check that the function is in the environment
         assert func_name in interpreter.env.vars
         func_obj = interpreter.env.vars[func_name]
         assert isinstance(func_obj, Function)
-        
+
         # Test calling the function
         # Create AST nodes for: greet("World")
         call_node = ast.Call(
             func=ast.Name(id=func_name, ctx=ast.Load()),
             args=[ast.Constant(value="World")],
-            keywords=[]
+            keywords=[],
         )
-        
+
         # This should not raise an error
         try:
             interpreter.visit_Call(call_node)
         except Exception as e:
             pytest.fail(f"visit_Call raised an exception unexpectedly: {e}")
-            
+
         # Test function with return statement
         # Create AST nodes for:
         # def add(a, b):
@@ -534,18 +532,21 @@ c = a + b
         arg_a = "a"
         arg_b = "b"
         func_args = ast.arguments(
-            args=[ast.arg(arg=arg_a, annotation=None), ast.arg(arg=arg_b, annotation=None)],
+            args=[
+                ast.arg(arg=arg_a, annotation=None),
+                ast.arg(arg=arg_b, annotation=None),
+            ],
             vararg=None,
             kwonlyargs=[],
             kw_defaults=[],
             kwarg=None,
-            defaults=[]
+            defaults=[],
         )
         return_stmt = ast.Return(
             value=ast.BinOp(
                 left=ast.Name(id=arg_a, ctx=ast.Load()),
                 op=ast.Add(),
-                right=ast.Name(id=arg_b, ctx=ast.Load())
+                right=ast.Name(id=arg_b, ctx=ast.Load()),
             )
         )
         func_body = [return_stmt]
@@ -554,38 +555,38 @@ c = a + b
             args=func_args,
             body=func_body,
             decorator_list=[],
-            returns=None
+            returns=None,
         )
-        
+
         # Visit the function definition
         interpreter.visit_FunctionDef(func_def_node)
-        
+
         # Check that the function is in the environment
         assert func_name in interpreter.env.vars
         func_obj = interpreter.env.vars[func_name]
         assert isinstance(func_obj, Function)
-        
+
         # Test calling the function
         # Create AST nodes for: add(3, 5)
         call_node = ast.Call(
             func=ast.Name(id=func_name, ctx=ast.Load()),
             args=[ast.Constant(value=3), ast.Constant(value=5)],
-            keywords=[]
+            keywords=[],
         )
-        
+
         result = interpreter.visit_Call(call_node)
         assert result == 8
 
     def test_visit_return(self):
         """Test return statement."""
         interpreter = SiluInterpreter()
-        
+
         # Test return with value
         return_value = ast.Constant(value=42)
         return_node = ast.Return(value=return_value)
         result = interpreter.visit_Return(return_node)
         assert result == 42
-        
+
         # Test return without value
         return_node = ast.Return(value=None)
         result = interpreter.visit_Return(return_node)

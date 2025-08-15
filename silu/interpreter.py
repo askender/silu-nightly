@@ -11,7 +11,9 @@ class Function:
     Represents a user-defined function.
     """
 
-    def __init__(self, name: str, args: List[ast.arg], body: List[ast.stmt], env: "Environment"):
+    def __init__(
+        self, name: str, args: List[ast.arg], body: List[ast.stmt], env: "Environment"
+    ):
         self.name = name
         self.args = args
         self.body = body
@@ -21,14 +23,14 @@ class Function:
         # Create a new environment for the function execution
         # with the function's environment as parent
         func_env = Environment(parent=self.env)
-        
+
         # Bind arguments to their values
         for arg, value in zip(self.args, args):
             func_env.set(arg.arg, value)
-        
+
         # Create a new interpreter instance for the function execution
         interpreter = SiluInterpreter(env=func_env)
-        
+
         # Execute the function body
         result = None
         for stmt in self.body:
@@ -37,7 +39,7 @@ class Function:
                 break
             else:
                 interpreter.visit(stmt)
-        
+
         return result
 
 
@@ -255,7 +257,7 @@ class SiluInterpreter(ast.NodeVisitor):
         """
         # Create a Function object
         func = Function(node.name, node.args.args, node.body, self.env)
-        
+
         # Store the function in the environment
         self.env.set(node.name, func)
 
