@@ -3,7 +3,42 @@ Silu Interpreter Module
 """
 
 import ast
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+
+class Function:
+    """
+    Represents a user-defined function.
+    """
+
+    def __init__(self, name: str, args: List[ast.arg], body: List[ast.stmt], env: "Environment"):
+        self.name = name
+        self.args = args
+        self.body = body
+        self.env = env
+
+    def __call__(self, *args):
+        # Create a new environment for the function execution
+        # with the function's environment as parent
+        func_env = Environment(parent=self.env)
+        
+        # Bind arguments to their values
+        for arg, value in zip(self.args, args):
+            func_env.set(arg.arg, value)
+        
+        # Create a new interpreter instance for the function execution
+        interpreter = SiluInterpreter(env=func_env)
+        
+        # Execute the function body
+        result = None
+        for stmt in self.body:
+            if isinstance(stmt, ast.Return):
+                result = interpreter.visit(stmt)
+                break
+            else:
+                interpreter.visit(stmt)
+        
+        return result
 
 
 class Environment:
@@ -207,10 +242,30 @@ class SiluInterpreter(ast.NodeVisitor):
         args = [self.visit(arg) for arg in node.args]
 
         # Call the function
-        if callable(func):
+        if isinstance(func, Function):
+            return func(*args)
+        elif callable(func):
             return func(*args)
         else:
             raise TypeError(f"'{type(func).__name__}' object is not callable")
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """
+        Visit a function definition node.
+        """
+        # Create a Function object
+        func = Function(node.name, node.args.args, node.body, self.env)
+        
+        # Store the function in the environment
+        self.env.set(node.name, func)
+
+    def visit_Return(self, node: ast.Return) -> Any:
+        """
+        Visit a return statement node.
+        """
+        if node.value:
+            return self.visit(node.value)
+        return None
 
     def visit_If(self, node: ast.If) -> None:
         """
