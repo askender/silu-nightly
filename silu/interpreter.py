@@ -73,29 +73,25 @@ class Environment:
 
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance function."""
-        # Handle direct type objects
-        if cls is int:
-            return isinstance(obj, int)
-        elif cls is float:
-            return isinstance(obj, float)
-        elif cls is str:
-            return isinstance(obj, str)
-        elif cls is bool:
-            return isinstance(obj, bool)
+        # Handle direct type objects and type objects referenced by name
+        type_map = {"int": int, "float": float, "str": str, "bool": bool}
+        
+        # Direct type object comparison
+        for type_name, type_obj in type_map.items():
+            if cls is type_obj:
+                return isinstance(obj, type_obj)
         
         # Handle type objects referenced by name from vars
-        if hasattr(cls, "__name__"):
-            cls_name = cls.__name__
-            if cls_name == "int":
-                return isinstance(obj, int)
-            elif cls_name == "float":
-                return isinstance(obj, float)
-            elif cls_name == "str":
-                return isinstance(obj, str)
-            elif cls_name == "bool":
-                return isinstance(obj, bool)
+        if hasattr(cls, "__name__") and cls.__name__ in type_map:
+            return isinstance(obj, type_map[cls.__name__])
         
         raise NotImplementedError(f"isinstance not implemented for {cls}")
+
+    def _convert_type(self, value, type_func, default_value):
+        """Helper method for type conversion functions."""
+        if value is None:
+            return default_value
+        return type_func(value)
 
     def _int(self, value=None) -> int:
         """Built-in int function."""
@@ -129,15 +125,11 @@ class Environment:
 
     def _str(self, value=None) -> str:
         """Built-in str function."""
-        if value is None:
-            return ""
-        return str(value)
+        return self._convert_type(value, str, "")
 
     def _bool(self, value=None) -> bool:
         """Built-in bool function."""
-        if value is None:
-            return False
-        return bool(value)
+        return self._convert_type(value, bool, False)
 
     def get(self, name: str) -> Any:
         """
@@ -187,9 +179,7 @@ class SiluInterpreter(ast.NodeVisitor):
         self.env.set(target.id, value)
 
     def visit_Name(self, node: ast.Name) -> Any:
-        """
-        Visit a name node.
-        """
+        """Visit a name node."""
         if isinstance(node.ctx, ast.Load):
             return self.env.get(node.id)
         elif isinstance(node.ctx, ast.Store):
@@ -199,9 +189,7 @@ class SiluInterpreter(ast.NodeVisitor):
             raise NotImplementedError(f"Unsupported context for name: {type(node.ctx)}")
 
     def visit_Constant(self, node: ast.Constant) -> Any:
-        """
-        Visit a constant node.
-        """
+        """Visit a constant node."""
         return node.value
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
