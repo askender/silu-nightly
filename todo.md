@@ -8,5 +8,7 @@
 - [x] 实现控制流的 visit_* 方法 (If, While)
 - [x] 实现函数定义和调用的 visit_* 方法 (FunctionDef, Return, Call)
 - [x] 添加对基础数据类型 (int, float, str, bool) 的支持
+- [ ] 实现 Simple IR 转换器，将 AST 转换为中间表示
+- [ ] 实现 Simple IR 解释器，可以直接执行 IR
 - [ ] 集成 LLVM 工具链以执行生成的 IR
 - [ ] (低优先级) 实现 for 循环的 visit_For 方法
