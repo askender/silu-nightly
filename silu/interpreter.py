@@ -7,9 +7,7 @@ from typing import Any, Dict, List, Optional
 
 
 class Function:
-    """
-    Represents a user-defined function.
-    """
+    """Represents a user-defined function."""
 
     def __init__(
         self, name: str, args: List[ast.arg], body: List[ast.stmt], env: "Environment"
@@ -32,21 +30,17 @@ class Function:
         interpreter = SiluInterpreter(env=func_env)
 
         # Execute the function body
-        result = None
         for stmt in self.body:
             if isinstance(stmt, ast.Return):
-                result = interpreter.visit(stmt)
-                break
-            else:
-                interpreter.visit(stmt)
-
-        return result
+                return interpreter.visit(stmt)
+            interpreter.visit(stmt)
+        
+        # Implicit return None if no explicit return statement
+        return None
 
 
 class Environment:
-    """
-    Manages variable and function storage.
-    """
+    """Manages variable and function storage."""
 
     def __init__(self, parent: Optional["Environment"] = None):
         self.vars: Dict[str, Any] = {}
@@ -79,29 +73,29 @@ class Environment:
 
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance function."""
-        # For simplicity, we'll only support basic types
-        if cls is int or cls is int:
+        # Handle direct type objects
+        if cls is int:
             return isinstance(obj, int)
-        elif cls is float or cls is float:
+        elif cls is float:
             return isinstance(obj, float)
-        elif cls is str or cls is str:
+        elif cls is str:
             return isinstance(obj, str)
-        elif cls is bool or cls is bool:
+        elif cls is bool:
             return isinstance(obj, bool)
-        else:
-            # Handle the case where cls is a reference to a type object in vars
-            if hasattr(cls, "__name__"):
-                cls_name = cls.__name__
-                if cls_name == "int":
-                    return isinstance(obj, int)
-                elif cls_name == "float":
-                    return isinstance(obj, float)
-                elif cls_name == "str":
-                    return isinstance(obj, str)
-                elif cls_name == "bool":
-                    return isinstance(obj, bool)
-
-            raise NotImplementedError(f"isinstance not implemented for {cls}")
+        
+        # Handle type objects referenced by name from vars
+        if hasattr(cls, "__name__"):
+            cls_name = cls.__name__
+            if cls_name == "int":
+                return isinstance(obj, int)
+            elif cls_name == "float":
+                return isinstance(obj, float)
+            elif cls_name == "str":
+                return isinstance(obj, str)
+            elif cls_name == "bool":
+                return isinstance(obj, bool)
+        
+        raise NotImplementedError(f"isinstance not implemented for {cls}")
 
     def _int(self, value=None) -> int:
         """Built-in int function."""
@@ -137,15 +131,13 @@ class Environment:
         """Built-in str function."""
         if value is None:
             return ""
-        else:
-            return str(value)
+        return str(value)
 
     def _bool(self, value=None) -> bool:
         """Built-in bool function."""
         if value is None:
             return False
-        else:
-            return bool(value)
+        return bool(value)
 
     def get(self, name: str) -> Any:
         """
@@ -165,24 +157,18 @@ class Environment:
 
 
 class SiluInterpreter(ast.NodeVisitor):
-    """
-    A simple interpreter for a subset of Python syntax.
-    """
+    """A simple interpreter for a subset of Python syntax."""
 
     def __init__(self, env: Optional[Environment] = None):
         self.env = env if env is not None else Environment()
 
     def visit_Module(self, node: ast.Module) -> None:
-        """
-        Visit the root module node and execute its statements.
-        """
+        """Visit the root module node and execute its statements."""
         for stmt in node.body:
             self.visit(stmt)
 
     def visit_Expr(self, node: ast.Expr) -> Any:
-        """
-        Visit an expression node.
-        """
+        """Visit an expression node."""
         return self.visit(node.value)
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -231,20 +217,19 @@ class SiluInterpreter(ast.NodeVisitor):
                 raise ZeroDivisionError("Modulo by zero")
             raise ZeroDivisionError("Division by zero")
 
-        if isinstance(node.op, ast.Add):
-            return left + right
-        if isinstance(node.op, ast.Sub):
-            return left - right
-        if isinstance(node.op, ast.Mult):
-            return left * right
-        if isinstance(node.op, ast.Div):
-            return left / right
-        if isinstance(node.op, ast.FloorDiv):
-            return left // right
-        if isinstance(node.op, ast.Mod):
-            return left % right
-        if isinstance(node.op, ast.Pow):
-            return left**right
+        # Map operators to their corresponding operations
+        operators = {
+            ast.Add: lambda x, y: x + y,
+            ast.Sub: lambda x, y: x - y,
+            ast.Mult: lambda x, y: x * y,
+            ast.Div: lambda x, y: x / y,
+            ast.FloorDiv: lambda x, y: x // y,
+            ast.Mod: lambda x, y: x % y,
+            ast.Pow: lambda x, y: x ** y,
+        }
+
+        if type(node.op) in operators:
+            return operators[type(node.op)](left, right)
 
         raise NotImplementedError(f"Unsupported binary operator: {type(node.op)}")
 
@@ -254,12 +239,15 @@ class SiluInterpreter(ast.NodeVisitor):
         """
         operand = self.visit(node.operand)
 
-        if isinstance(node.op, ast.UAdd):
-            return +operand
-        if isinstance(node.op, ast.USub):
-            return -operand
-        if isinstance(node.op, ast.Not):
-            return not operand
+        # Map operators to their corresponding operations
+        operators = {
+            ast.UAdd: lambda x: +x,
+            ast.USub: lambda x: -x,
+            ast.Not: lambda x: not x,
+        }
+
+        if type(node.op) in operators:
+            return operators[type(node.op)](operand)
 
         raise NotImplementedError(f"Unsupported unary operator: {type(node.op)}")
 
@@ -269,14 +257,16 @@ class SiluInterpreter(ast.NodeVisitor):
         """
         values = [self.visit(value) for value in node.values]
 
+        # Handle short-circuit evaluation
         if isinstance(node.op, ast.And):
             for value in values:
-                if not value:  # Short-circuit evaluation
+                if not value:
                     return False
             return True
+            
         if isinstance(node.op, ast.Or):
             for value in values:
-                if value:  # Short-circuit evaluation
+                if value:
                     return True
             return False
 
@@ -293,29 +283,28 @@ class SiluInterpreter(ast.NodeVisitor):
         if len(comparators) != len(ops):
             raise ValueError("Mismatch between comparators and operators")
 
+        # Map operators to their corresponding operations
+        operator_map = {
+            ast.Eq: lambda x, y: x == y,
+            ast.NotEq: lambda x, y: x != y,
+            ast.Lt: lambda x, y: x < y,
+            ast.LtE: lambda x, y: x <= y,
+            ast.Gt: lambda x, y: x > y,
+            ast.GtE: lambda x, y: x >= y,
+        }
+
         # For chained comparisons, we need to evaluate each pair
         for i, (comparator, op) in enumerate(zip(comparators, ops)):
             # For chained comparisons, the right side of one comparison
             # becomes the left side of the next
             left_val = left if i == 0 else comparators[i - 1]
 
-            if isinstance(op, ast.Eq):
-                result = left_val == comparator
-            elif isinstance(op, ast.NotEq):
-                result = left_val != comparator
-            elif isinstance(op, ast.Lt):
-                result = left_val < comparator
-            elif isinstance(op, ast.LtE):
-                result = left_val <= comparator
-            elif isinstance(op, ast.Gt):
-                result = left_val > comparator
-            elif isinstance(op, ast.GtE):
-                result = left_val >= comparator
-            else:
-                raise NotImplementedError(
-                    f"Unsupported comparison operator: {type(op)}"
-                )
-
+            # Apply the comparison operation
+            if type(op) not in operator_map:
+                raise NotImplementedError(f"Unsupported comparison operator: {type(op)}")
+            
+            result = operator_map[type(op)](left_val, comparator)
+            
             if not result:  # Short-circuit evaluation
                 return False
 
@@ -364,14 +353,10 @@ class SiluInterpreter(ast.NodeVisitor):
         # Evaluate the condition
         condition = self.visit(node.test)
 
-        # If the condition is true, execute the body
-        if condition:
-            for stmt in node.body:
-                self.visit(stmt)
-        else:
-            # If the condition is false and there's an orelse block, execute it
-            for stmt in node.orelse:
-                self.visit(stmt)
+        # Execute the appropriate block
+        block = node.body if condition else node.orelse
+        for stmt in block:
+            self.visit(stmt)
 
     def visit_While(self, node: ast.While) -> None:
         """
