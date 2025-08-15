@@ -9,8 +9,6 @@ from typing import Any, Dict, Optional
 class Environment:
     """
     Manages variable and function storage.
-    For simplicity, starts with a single global environment.
-    Can be extended to support nested scopes later.
     """
 
     def __init__(self, parent: Optional["Environment"] = None):
@@ -60,7 +58,6 @@ class SiluInterpreter(ast.NodeVisitor):
         Visit an assignment node.
         """
         # For simplicity, we only handle single target assignments (e.g., x = 10)
-        # and not multiple targets (e.g., x = y = 10) or complex targets (e.g., a[0] = 10)
         if len(node.targets) != 1:
             raise NotImplementedError("Only single target assignments are supported")
 
@@ -96,28 +93,28 @@ class SiluInterpreter(ast.NodeVisitor):
         left = self.visit(node.left)
         right = self.visit(node.right)
 
+        # Check for division by zero operations
+        if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and right == 0:
+            if isinstance(node.op, ast.Mod):
+                raise ZeroDivisionError("Modulo by zero")
+            raise ZeroDivisionError("Division by zero")
+
         if isinstance(node.op, ast.Add):
             return left + right
-        elif isinstance(node.op, ast.Sub):
+        if isinstance(node.op, ast.Sub):
             return left - right
-        elif isinstance(node.op, ast.Mult):
+        if isinstance(node.op, ast.Mult):
             return left * right
-        elif isinstance(node.op, ast.Div):
-            if right == 0:
-                raise ZeroDivisionError("Division by zero")
+        if isinstance(node.op, ast.Div):
             return left / right
-        elif isinstance(node.op, ast.FloorDiv):
-            if right == 0:
-                raise ZeroDivisionError("Division by zero")
+        if isinstance(node.op, ast.FloorDiv):
             return left // right
-        elif isinstance(node.op, ast.Mod):
-            if right == 0:
-                raise ZeroDivisionError("Modulo by zero")
+        if isinstance(node.op, ast.Mod):
             return left % right
-        elif isinstance(node.op, ast.Pow):
+        if isinstance(node.op, ast.Pow):
             return left**right
-        else:
-            raise NotImplementedError(f"Unsupported binary operator: {type(node.op)}")
+
+        raise NotImplementedError(f"Unsupported binary operator: {type(node.op)}")
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         """
@@ -127,12 +124,12 @@ class SiluInterpreter(ast.NodeVisitor):
 
         if isinstance(node.op, ast.UAdd):
             return +operand
-        elif isinstance(node.op, ast.USub):
+        if isinstance(node.op, ast.USub):
             return -operand
-        elif isinstance(node.op, ast.Not):
+        if isinstance(node.op, ast.Not):
             return not operand
-        else:
-            raise NotImplementedError(f"Unsupported unary operator: {type(node.op)}")
+
+        raise NotImplementedError(f"Unsupported unary operator: {type(node.op)}")
 
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         """
@@ -141,21 +138,17 @@ class SiluInterpreter(ast.NodeVisitor):
         values = [self.visit(value) for value in node.values]
 
         if isinstance(node.op, ast.And):
-            result = True
             for value in values:
-                result = result and value
-                if not result:  # Short-circuit evaluation
-                    break
-            return result
-        elif isinstance(node.op, ast.Or):
-            result = False
+                if not value:  # Short-circuit evaluation
+                    return False
+            return True
+        if isinstance(node.op, ast.Or):
             for value in values:
-                result = result or value
-                if result:  # Short-circuit evaluation
-                    break
-            return result
-        else:
-            raise NotImplementedError(f"Unsupported boolean operator: {type(node.op)}")
+                if value:  # Short-circuit evaluation
+                    return True
+            return False
+
+        raise NotImplementedError(f"Unsupported boolean operator: {type(node.op)}")
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         """
@@ -168,41 +161,38 @@ class SiluInterpreter(ast.NodeVisitor):
         if len(comparators) != len(ops):
             raise ValueError("Mismatch between comparators and operators")
 
-        result = True
+        # For chained comparisons, we need to evaluate each pair
         for i, (comparator, op) in enumerate(zip(comparators, ops)):
-            if i == 0:
-                left_val = left
-            else:
-                left_val = comparators[i - 1]
+            # For chained comparisons, the right side of one comparison
+            # becomes the left side of the next
+            left_val = left if i == 0 else comparators[i - 1]
 
             if isinstance(op, ast.Eq):
-                comparison_result = left_val == comparator
+                result = left_val == comparator
             elif isinstance(op, ast.NotEq):
-                comparison_result = left_val != comparator
+                result = left_val != comparator
             elif isinstance(op, ast.Lt):
-                comparison_result = left_val < comparator
+                result = left_val < comparator
             elif isinstance(op, ast.LtE):
-                comparison_result = left_val <= comparator
+                result = left_val <= comparator
             elif isinstance(op, ast.Gt):
-                comparison_result = left_val > comparator
+                result = left_val > comparator
             elif isinstance(op, ast.GtE):
-                comparison_result = left_val >= comparator
+                result = left_val >= comparator
             else:
                 raise NotImplementedError(
                     f"Unsupported comparison operator: {type(op)}"
                 )
 
-            result = result and comparison_result
             if not result:  # Short-circuit evaluation
-                break
+                return False
 
-        return result
+        return True
 
 
 def main() -> None:
     """
     Entry point for the Silu interpreter.
-    Currently just prints a greeting.
     """
     print("Hello from Silu!")
 
