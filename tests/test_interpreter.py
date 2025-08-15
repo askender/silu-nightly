@@ -400,25 +400,19 @@ class TestSiluInterpreter:
         # Test end-to-end programs
         interpreter = SiluInterpreter()
 
-        # Test simple arithmetic
-        tree = ast.parse("x = 5 + 3")
-        interpreter.visit(tree)
-        assert interpreter.env.get("x") == 8
-
-        # Test complex expression
-        tree = ast.parse("y = (10 - 4) * 2")
-        interpreter.visit(tree)
-        assert interpreter.env.get("y") == 12
-
-        # Test boolean operations
-        tree = ast.parse("z = True and False")
-        interpreter.visit(tree)
-        assert not interpreter.env.get("z")
-
-        # Test comparison
-        tree = ast.parse("w = 5 > 3")
-        interpreter.visit(tree)
-        assert interpreter.env.get("w")
+        # Test various language features
+        test_programs = [
+            # (code, variable_to_check, expected_value)
+            ("x = 5 + 3", "x", 8),
+            ("y = (10 - 4) * 2", "y", 12),
+            ("z = True and False", "z", False),
+            ("w = 5 > 3", "w", True),
+        ]
+        
+        for code, var_name, expected in test_programs:
+            tree = ast.parse(code)
+            interpreter.visit(tree)
+            assert interpreter.env.get(var_name) == expected
 
         # Test variable usage
         tree = ast.parse("""
@@ -429,26 +423,20 @@ c = a + b
         interpreter.visit(tree)
         assert interpreter.env.get("c") == 15
 
-        # Test type conversion error handling
-        # Create an interpreter with a custom environment for testing error cases
-        test_env = Environment()
-        # Test int conversion error
-        with pytest.raises(NotImplementedError):
-            test_env.vars["int"]([])  # Passing a list should raise NotImplementedError
-
-        # Test float conversion error
-        with pytest.raises(NotImplementedError):
-            test_env.vars["float"](
-                []
-            )  # Passing a list should raise NotImplementedError
-
     def test_visit_call_and_builtins(self):
         """Test function calls and built-in functions."""
         interpreter = SiluInterpreter()
 
-        # Test that 'print' is available as a built-in
-        assert "print" in interpreter.env.vars
-        assert callable(interpreter.env.vars["print"])
+        # Test that built-in functions are available
+        builtins = ["print", "type", "isinstance", "int", "float", "str", "bool"]
+        type_objects = ["int_type", "float_type", "str_type", "bool_type"]
+        
+        for builtin in builtins:
+            assert builtin in interpreter.env.vars
+            assert callable(interpreter.env.vars[builtin])
+            
+        for type_obj in type_objects:
+            assert type_obj in interpreter.env.vars
 
         # Test calling print with different arguments
         # We can't easily test the output, but we can test that it doesn't raise an error
@@ -477,94 +465,78 @@ c = a + b
         with pytest.raises(TypeError, match="'int' object is not callable"):
             interpreter.visit_Call(call_node)
 
-        # Test type functions
-        assert "type" in interpreter.env.vars
-        assert "isinstance" in interpreter.env.vars
-        assert "int" in interpreter.env.vars
-        assert "float" in interpreter.env.vars
-        assert "str" in interpreter.env.vars
-        assert "bool" in interpreter.env.vars
-        assert "int_type" in interpreter.env.vars
-        assert "float_type" in interpreter.env.vars
-        assert "str_type" in interpreter.env.vars
-        assert "bool_type" in interpreter.env.vars
-
         # Test type function
         assert interpreter.env.vars["type"](42) is int
         assert interpreter.env.vars["type"](3.14) is float
         assert interpreter.env.vars["type"]("hello") is str
         assert interpreter.env.vars["type"](True) is bool
 
-        # Test int function
-        assert interpreter.env.vars["int"]() == 0
-        assert interpreter.env.vars["int"](42) == 42
-        assert interpreter.env.vars["int"](3.14) == 3
-        assert interpreter.env.vars["int"]("123") == 123
-        assert interpreter.env.vars["int"](True) == 1
-        assert interpreter.env.vars["int"](False) == 0
-        # Test error case for int function
-        with pytest.raises(NotImplementedError):
-            interpreter.env.vars["int"](
-                []
-            )  # Passing a list should raise NotImplementedError
-
-        # Test float function
-        assert interpreter.env.vars["float"]() == 0.0
-        assert interpreter.env.vars["float"](3.14) == 3.14
-        assert interpreter.env.vars["float"](42) == 42.0
-        assert interpreter.env.vars["float"]("3.14") == 3.14
-        assert interpreter.env.vars["float"](True) == 1.0
-        assert interpreter.env.vars["float"](False) == 0.0
-        # Test error case for float function
-        with pytest.raises(NotImplementedError):
-            interpreter.env.vars["float"](
-                []
-            )  # Passing a list should raise NotImplementedError
-
-        # Test str function
-        assert interpreter.env.vars["str"]() == ""
-        assert interpreter.env.vars["str"](42) == "42"
-        assert interpreter.env.vars["str"](3.14) == "3.14"
-        assert interpreter.env.vars["str"]("hello") == "hello"
-        assert interpreter.env.vars["str"](True) == "True"
-        assert interpreter.env.vars["str"](False) == "False"
-
-        # Test bool function
-        assert interpreter.env.vars["bool"]() is False
-        assert interpreter.env.vars["bool"](0) is False
-        assert interpreter.env.vars["bool"](1) is True
-        assert interpreter.env.vars["bool"]("") is False
-        assert interpreter.env.vars["bool"]("hello") is True
-        assert interpreter.env.vars["bool"](True) is True
-        assert interpreter.env.vars["bool"](False) is False
+        # Test conversion functions with various inputs
+        conversion_tests = [
+            # (function_name, input_value, expected_output)
+            ("int", None, 0),
+            ("int", 42, 42),
+            ("int", 3.14, 3),
+            ("int", "123", 123),
+            ("int", True, 1),
+            ("int", False, 0),
+            ("float", None, 0.0),
+            ("float", 3.14, 3.14),
+            ("float", 42, 42.0),
+            ("float", "3.14", 3.14),
+            ("float", True, 1.0),
+            ("float", False, 0.0),
+            ("str", None, ""),
+            ("str", 42, "42"),
+            ("str", 3.14, "3.14"),
+            ("str", "hello", "hello"),
+            ("str", True, "True"),
+            ("str", False, "False"),
+            ("bool", None, False),
+            ("bool", 0, False),
+            ("bool", 1, True),
+            ("bool", "", False),
+            ("bool", "hello", True),
+            ("bool", True, True),
+            ("bool", False, False),
+        ]
+        
+        for func_name, input_val, expected in conversion_tests:
+            if input_val is None:
+                assert interpreter.env.vars[func_name]() == expected
+            else:
+                assert interpreter.env.vars[func_name](input_val) == expected
 
         # Test isinstance function
-        assert interpreter.env.vars["isinstance"](42, int)
-        assert interpreter.env.vars["isinstance"](3.14, float)
-        assert interpreter.env.vars["isinstance"]("hello", str)
-        assert interpreter.env.vars["isinstance"](True, bool)
-        assert not interpreter.env.vars["isinstance"](42, float)
-        assert not interpreter.env.vars["isinstance"](3.14, int)
-        assert not interpreter.env.vars["isinstance"]("hello", bool)
-        assert not interpreter.env.vars["isinstance"](True, str)
+        isinstance_tests = [
+            # (value, type, expected_result)
+            (42, int, True),
+            (3.14, float, True),
+            ("hello", str, True),
+            (True, bool, True),
+            (42, float, False),
+            (3.14, int, False),
+            ("hello", bool, False),
+            (True, str, False),
+        ]
+        
+        for value, type_cls, expected in isinstance_tests:
+            assert interpreter.env.vars["isinstance"](value, type_cls) == expected
 
         # Test isinstance with type objects from env
-        assert interpreter.env.vars["isinstance"](42, interpreter.env.vars["int_type"])
-        assert interpreter.env.vars["isinstance"](
-            3.14, interpreter.env.vars["float_type"]
-        )
-        assert interpreter.env.vars["isinstance"](
-            "hello", interpreter.env.vars["str_type"]
-        )
-        assert interpreter.env.vars["isinstance"](
-            True, interpreter.env.vars["bool_type"]
-        )
+        isinstance_type_tests = [
+            (42, "int_type"),
+            (3.14, "float_type"),
+            ("hello", "str_type"),
+            (True, "bool_type"),
+        ]
+        
+        for value, type_name in isinstance_type_tests:
+            assert interpreter.env.vars["isinstance"](value, interpreter.env.vars[type_name])
 
-        # Test isinstance error case
+        # Test isinstance error cases
         with pytest.raises(NotImplementedError):
-            interpreter.env.vars["isinstance"](
-                42, list
-            )  # Passing list should raise NotImplementedError
+            interpreter.env.vars["isinstance"](42, list)  # Passing list should raise NotImplementedError
 
         # Test isinstance with custom object that has __name__ attribute
         class CustomType:
@@ -586,10 +558,11 @@ c = a + b
         with pytest.raises(NotImplementedError):
             interpreter.env.vars["isinstance"](42, custom_unknown_type)
 
-    def test_visit_call_type_error(self):
-        """Test TypeError in visit_Call method."""
+    def test_builtins_error_cases(self):
+        """Test error cases for built-in functions."""
         interpreter = SiluInterpreter()
 
+        # Test TypeError in visit_Call method
         # Create a call node for an integer (not callable)
         func_node = ast.Constant(value=42)
         call_node = ast.Call(func=func_node, args=[], keywords=[])
@@ -598,80 +571,44 @@ c = a + b
         with pytest.raises(TypeError, match="'int' object is not callable"):
             interpreter.visit_Call(call_node)
 
-    def test_int_float_error_cases(self):
-        """Test error cases for int() and float() functions."""
-        interpreter = SiluInterpreter()
+        # Test error cases for conversion functions
+        error_cases = [
+            # (function_name, invalid_input)
+            ("int", []),
+            ("float", []),
+            ("float", [1, 2, 3]),
+        ]
+        
+        for func_name, invalid_input in error_cases:
+            with pytest.raises(NotImplementedError):
+                interpreter.env.vars[func_name](invalid_input)
 
-        # Test int() error case directly
+        # Test isinstance with unsupported types
+        class UnsupportedType:
+            pass
+
+        unsupported_type = UnsupportedType()
+
+        # This should raise NotImplementedError
         with pytest.raises(NotImplementedError):
-            interpreter.env._int([])  # Passing a list should raise NotImplementedError
+            interpreter.env.vars["isinstance"](42, unsupported_type)
 
-        # Test float() error case directly
-        with pytest.raises(NotImplementedError):
-            interpreter.env._float(
-                []
-            )  # Passing a list should raise NotImplementedError
-
-        # Test int() error case through the env var
-        with pytest.raises(NotImplementedError):
-            interpreter.env.vars["int"](
-                []
-            )  # Passing a list should raise NotImplementedError
-
-        # Test float() error case through the env var
-        with pytest.raises(NotImplementedError):
-            interpreter.env.vars["float"](
-                []
-            )  # Passing a list should raise NotImplementedError
-
-    def test_isinstance_custom_type_error(self):
-        """Test isinstance with custom type that has __name__ but is not a basic type."""
-        interpreter = SiluInterpreter()
-
-        # Test isinstance with custom object that has __name__ attribute but is not a basic type
+        # Test isinstance with custom unknown type
         class CustomType:
             def __init__(self, name):
                 self.__name__ = name
 
         custom_unknown_type = CustomType("unknown")
 
-        # This should raise NotImplementedError (covers line 117)
+        # This should raise NotImplementedError
         with pytest.raises(NotImplementedError):
             interpreter.env.vars["isinstance"](42, custom_unknown_type)
 
-    def test_isinstance_unsupported_type(self):
-        """Test isinstance with unsupported type."""
-        interpreter = SiluInterpreter()
-
-        # Test isinstance with a type that doesn't have __name__ attribute
-        class UnsupportedType:
-            pass
-
-        unsupported_type = UnsupportedType()
-
-        # This should raise NotImplementedError (also covers line 117)
-        with pytest.raises(NotImplementedError):
-            interpreter.env.vars["isinstance"](42, unsupported_type)
-
-    def test_float_conversion_error(self):
-        """Test float conversion error case."""
-        interpreter = SiluInterpreter()
-        # Test float() with boolean (covers line 132)
-        assert interpreter.env._float(True) == 1.0
-        assert interpreter.env._float(False) == 0.0
-
-        # Test float() error case with a complex object (covers line 134)
-        with pytest.raises(NotImplementedError):
-            interpreter.env.vars["float"](
-                [1, 2, 3]
-            )  # Passing a list should raise NotImplementedError
-
-    def test_int_conversion_with_boolean(self):
-        """Test int conversion with boolean values (covers line 117)."""
-        interpreter = SiluInterpreter()
-        # Test int() with boolean (covers line 117)
+        # Test conversion with boolean values (should work, not raise errors)
         assert interpreter.env._int(True) == 1
         assert interpreter.env._int(False) == 0
+        assert interpreter.env._float(True) == 1.0
+        assert interpreter.env._float(False) == 0.0
 
     def test_visit_functiondef_and_call(self):
         """Test function definition and call."""
