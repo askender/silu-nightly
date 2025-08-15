@@ -35,8 +35,9 @@ Silu supports the following programming constructs:
 5. **Comparison Operations**: `==`, `!=`, `<`, `<=`, `>`, `>=`
 6. **Chained Comparisons**: `3 < 5 < 7`
 7. **Control Flow**: 
-   - If statements with else clauses
+   - If statements with elif and else clauses
    - While loops
+   - For loops with range() and lists
 8. **Functions**: 
    - Function definitions with parameters
    - Return statements
