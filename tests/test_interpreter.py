@@ -821,3 +821,132 @@ def test_module_execution():
 
     assert result.returncode == 0
     assert result.stdout == "Hello from Silu!\n"
+
+
+class TestElifForSupport:
+    """Tests for elif and for loop support."""
+
+    def test_elif_support(self):
+        """Test elif statement support."""
+        interpreter = SiluInterpreter()
+
+        # Test elif with multiple conditions
+        code = """
+x = 2
+if x == 1:
+    print("x is 1")
+elif x == 2:
+    print("x is 2")
+elif x == 3:
+    print("x is 3")
+else:
+    print("x is something else")
+"""
+
+        tree = ast.parse(code)
+        # This should not raise any exceptions
+        interpreter.visit(tree)
+
+    def test_for_loop_support(self):
+        """Test for loop support."""
+        interpreter = SiluInterpreter()
+
+        # Test basic for loop with list function
+        code = """
+total = 0
+items = list([1, 2, 3, 4, 5])
+for i in items:
+    total = total + i
+"""
+
+        tree = ast.parse(code)
+        # This should not raise any exceptions
+        interpreter.visit(tree)
+
+        # Check that the loop executed correctly
+        assert interpreter.env.get("total") == 15
+
+    def test_for_loop_with_range(self):
+        """Test for loop with range function."""
+        interpreter = SiluInterpreter()
+
+        # Add range function to environment for testing
+        interpreter.env.set("range", range)
+
+        # Test for loop with range
+        code = """
+total = 0
+for i in range(3):
+    total = total + i
+print(total)
+"""
+
+        tree = ast.parse(code)
+        # This should not raise any exceptions
+        interpreter.visit(tree)
+
+        # Check that the loop executed correctly (0 + 1 + 2 = 3)
+        assert interpreter.env.get("total") == 3
+
+    def test_nested_control_flow(self):
+        """Test nested control flow with if, elif, and for loops."""
+        interpreter = SiluInterpreter()
+
+        # Test nested control flow
+        code = """
+result = list([])
+for i in range(5):
+    if i == 0:
+        result.append("zero")
+    elif i == 1:
+        result.append("one")
+    elif i == 2:
+        result.append("two")
+    else:
+        result.append("other")
+"""
+
+        tree = ast.parse(code)
+        # This should not raise any exceptions
+        interpreter.visit(tree)
+
+        # Check that the nested control flow executed correctly
+        assert interpreter.env.get("result") == ["zero", "one", "two", "other", "other"]
+
+    def test_append_method_error(self):
+        """Test error handling for append method."""
+        interpreter = SiluInterpreter()
+
+        # Test append with wrong number of arguments
+        code = """
+items = list([])
+"""
+
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+
+        # Manually test the append method with wrong number of arguments
+        items = interpreter.env.get("items")
+        with pytest.raises(
+            TypeError, match="append\\(\\) takes exactly one argument \\(0 given\\)"
+        ):
+            items.append()
+
+    def test_for_else_clause(self):
+        """Test for loop with else clause."""
+        interpreter = SiluInterpreter()
+
+        # Test for loop with else clause that executes
+        code = """
+executed = list([])
+for i in range(0):  # Empty range
+    executed.append("loop")
+else:
+    executed.append("else")
+"""
+
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+
+        # Check that the else clause executed
+        assert interpreter.env.get("executed") == ["else"]

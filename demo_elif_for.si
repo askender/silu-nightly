@@ -1,0 +1,42 @@
+# Test for elif statement
+x = 2
+if x == 1:
+    print("x is 1")
+elif x == 2:
+    print("x is 2")
+elif x == 3:
+    print("x is 3")
+else:
+    print("x is something else")
+
+# Test for for loop with list
+total = 0
+items = list([1, 2, 3, 4, 5])
+for i in items:
+    total = total + i
+print("Sum of items:", total)
+
+# Test for for loop with range
+result = list([])
+for i in range(5):
+    if i == 0:
+        result.append("zero")
+    elif i == 1:
+        result.append("one")
+    elif i == 2:
+        result.append("two")
+    else:
+        result.append("other")
+
+print("Result:", result)
+
+# Test nested control flow
+value = 15
+if value < 10:
+    print("Small value")
+elif value < 20:
+    print("Medium value")
+    for j in range(3):
+        print("  Loop iteration:", j)
+else:
+    print("Large value")

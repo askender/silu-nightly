@@ -63,6 +63,16 @@ class Environment:
             self.vars["str_type"] = str
             self.vars["bool_type"] = bool
 
+            # Built-in types
+            self.vars["list"] = self._list
+            self.vars["range"] = range
+
+    def _list(self, iterable=None) -> list:
+        """Built-in list function."""
+        if iterable is None:
+            return []
+        return list(iterable)
+
     def _print(self, *args) -> None:
         """Built-in print function."""
         print(*args)
@@ -310,6 +320,21 @@ class SiluInterpreter(ast.NodeVisitor):
         # Evaluate all arguments
         args = [self.visit(arg) for arg in node.args]
 
+        # Special handling for methods on built-in types
+        if isinstance(node.func, ast.Attribute):
+            # Get the object that the method is being called on
+            obj = self.visit(node.func.value)
+
+            # Handle list methods
+            if isinstance(obj, list) and node.func.attr == "append":
+                if len(args) == 1:
+                    obj.append(args[0])
+                    return None  # append() returns None
+                else:
+                    raise TypeError(
+                        f"append() takes exactly one argument ({len(args)} given)"
+                    )
+
         # Call the function
         if isinstance(func, Function):
             return func(*args)
@@ -343,10 +368,17 @@ class SiluInterpreter(ast.NodeVisitor):
         # Evaluate the condition
         condition = self.visit(node.test)
 
-        # Execute the appropriate block
-        block = node.body if condition else node.orelse
-        for stmt in block:
-            self.visit(stmt)
+        if condition:
+            # Execute the if block
+            for stmt in node.body:
+                self.visit(stmt)
+        else:
+            # Check if there's an elif or else block
+            if node.orelse:
+                # The orelse might contain elif statements or else block
+                # In AST, elif is represented as nested If statements in orelse
+                for stmt in node.orelse:
+                    self.visit(stmt)
 
     def visit_While(self, node: ast.While) -> None:
         """
@@ -355,6 +387,40 @@ class SiluInterpreter(ast.NodeVisitor):
         # While the condition is true, execute the body
         while self.visit(node.test):
             for stmt in node.body:
+                self.visit(stmt)
+
+    def visit_List(self, node: ast.List) -> Any:
+        """
+        Visit a list literal node.
+        """
+        # Evaluate all elements in the list
+        elements = [self.visit(element) for element in node.elts]
+        return elements
+
+    def visit_For(self, node: ast.For) -> None:
+        """
+        Visit a for loop node.
+        """
+        # Get the iterable
+        iterable = self.visit(node.iter)
+
+        # Iterate over the iterable
+        for item in iterable:
+            # Set the loop variable in the current environment
+            if isinstance(node.target, ast.Name):
+                self.env.set(node.target.id, item)
+            else:
+                raise NotImplementedError(
+                    "Only simple variable targets are supported in for loops"
+                )
+
+            # Execute the body
+            for stmt in node.body:
+                self.visit(stmt)
+
+        # Execute the else block if it exists (only if loop completed normally)
+        if hasattr(node, "orelse") and node.orelse:
+            for stmt in node.orelse:
                 self.visit(stmt)
 
 
