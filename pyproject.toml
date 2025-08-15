@@ -23,3 +23,6 @@ silu = "silu.__main__:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["silu*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

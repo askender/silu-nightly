@@ -11,6 +11,8 @@
 
 ## Testing
 - Aim for 100% test coverage for all core functionality.
+- Tests are located in the `tests/` directory in a single `test_interpreter.py` file.
+- Tests are organized into logical groups to minimize redundancy while maintaining full coverage.
 - Use `make cov` to check test coverage.
 - Use `make test` to run tests.
 
