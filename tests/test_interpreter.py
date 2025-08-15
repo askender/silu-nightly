@@ -659,13 +659,13 @@ c = a + b
         # Test float() with boolean (covers line 132)
         assert interpreter.env._float(True) == 1.0
         assert interpreter.env._float(False) == 0.0
-        
+
         # Test float() error case with a complex object (covers line 134)
         with pytest.raises(NotImplementedError):
             interpreter.env.vars["float"](
                 [1, 2, 3]
             )  # Passing a list should raise NotImplementedError
-            
+
     def test_int_conversion_with_boolean(self):
         """Test int conversion with boolean values (covers line 117)."""
         interpreter = SiluInterpreter()

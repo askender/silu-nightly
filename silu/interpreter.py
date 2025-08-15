@@ -34,7 +34,7 @@ class Function:
             if isinstance(stmt, ast.Return):
                 return interpreter.visit(stmt)
             interpreter.visit(stmt)
-        
+
         # Implicit return None if no explicit return statement
         return None
 
@@ -75,16 +75,16 @@ class Environment:
         """Built-in isinstance function."""
         # Handle direct type objects and type objects referenced by name
         type_map = {"int": int, "float": float, "str": str, "bool": bool}
-        
+
         # Direct type object comparison
         for type_name, type_obj in type_map.items():
             if cls is type_obj:
                 return isinstance(obj, type_obj)
-        
+
         # Handle type objects referenced by name from vars
         if hasattr(cls, "__name__") and cls.__name__ in type_map:
             return isinstance(obj, type_map[cls.__name__])
-        
+
         raise NotImplementedError(f"isinstance not implemented for {cls}")
 
     def _convert_type(self, value, type_func, default_value):
@@ -213,7 +213,7 @@ class SiluInterpreter(ast.NodeVisitor):
             ast.Div: lambda x, y: x / y,
             ast.FloorDiv: lambda x, y: x // y,
             ast.Mod: lambda x, y: x % y,
-            ast.Pow: lambda x, y: x ** y,
+            ast.Pow: lambda x, y: x**y,
         }
 
         if type(node.op) in operators:
@@ -251,7 +251,7 @@ class SiluInterpreter(ast.NodeVisitor):
                 if not value:
                     return False
             return True
-            
+
         if isinstance(node.op, ast.Or):
             for value in values:
                 if value:
@@ -289,10 +289,12 @@ class SiluInterpreter(ast.NodeVisitor):
 
             # Apply the comparison operation
             if type(op) not in operator_map:
-                raise NotImplementedError(f"Unsupported comparison operator: {type(op)}")
-            
+                raise NotImplementedError(
+                    f"Unsupported comparison operator: {type(op)}"
+                )
+
             result = operator_map[type(op)](left_val, comparator)
-            
+
             if not result:  # Short-circuit evaluation
                 return False
 
