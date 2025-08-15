@@ -3,8 +3,7 @@ Silu Interpreter Module
 """
 
 import ast
-import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 class Environment:
@@ -13,7 +12,8 @@ class Environment:
     For simplicity, starts with a single global environment.
     Can be extended to support nested scopes later.
     """
-    def __init__(self, parent: Optional['Environment'] = None):
+
+    def __init__(self, parent: Optional["Environment"] = None):
         self.vars: Dict[str, Any] = {}
         self.parent = parent
 
@@ -38,6 +38,7 @@ class SiluInterpreter(ast.NodeVisitor):
     """
     A simple interpreter for a subset of Python syntax.
     """
+
     def __init__(self, env: Optional[Environment] = None):
         self.env = env if env is not None else Environment()
 

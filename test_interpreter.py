@@ -36,10 +36,10 @@ class TestEnvironment:
         parent_env = Environment()
         parent_env.set("y", 20)
         child_env = Environment(parent=parent_env)
-        
+
         # Should be able to get variable from parent
         assert child_env.get("y") == 20
-        
+
         # Setting in child should not affect parent
         child_env.set("y", 30)
         assert child_env.get("y") == 30
@@ -60,7 +60,7 @@ class TestSiluInterpreter:
 
     def test_visit_module(self):
         interpreter = SiluInterpreter()
-        
+
         # Test visiting an empty module and a module with a pass statement
         empty_module = ast.Module(body=[], type_ignores=[])
         interpreter.visit(empty_module)
@@ -85,8 +85,8 @@ def test_module_execution():
         cwd="/Users/askender/aix1/silu",
         capture_output=True,
         text=True,
-        timeout=5
+        timeout=5,
     )
-    
+
     assert result.returncode == 0
     assert result.stdout == "Hello from Silu!\n"
