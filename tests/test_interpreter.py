@@ -656,12 +656,22 @@ c = a + b
     def test_float_conversion_error(self):
         """Test float conversion error case."""
         interpreter = SiluInterpreter()
-
-        # Test float() error case with a complex object (covers line 132)
+        # Test float() with boolean (covers line 132)
+        assert interpreter.env._float(True) == 1.0
+        assert interpreter.env._float(False) == 0.0
+        
+        # Test float() error case with a complex object (covers line 134)
         with pytest.raises(NotImplementedError):
             interpreter.env.vars["float"](
                 [1, 2, 3]
             )  # Passing a list should raise NotImplementedError
+            
+    def test_int_conversion_with_boolean(self):
+        """Test int conversion with boolean values (covers line 117)."""
+        interpreter = SiluInterpreter()
+        # Test int() with boolean (covers line 117)
+        assert interpreter.env._int(True) == 1
+        assert interpreter.env._int(False) == 0
 
     def test_visit_functiondef_and_call(self):
         """Test function definition and call."""
@@ -803,7 +813,7 @@ def test_module_execution():
     """Test that the module can be executed directly."""
     result = subprocess.run(
         [sys.executable, "-m", "silu.interpreter"],
-        cwd="/Users/askender/aix1/silu",
+        cwd=".",
         capture_output=True,
         text=True,
         timeout=5,

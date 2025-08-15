@@ -107,13 +107,13 @@ class Environment:
         """Built-in int function."""
         if value is None:
             return 0
+        elif isinstance(value, bool):
+            return int(value)
         elif isinstance(value, int):
             return value
         elif isinstance(value, float):
             return int(value)
         elif isinstance(value, str):
-            return int(value)
-        elif isinstance(value, bool):
             return int(value)
         else:
             raise NotImplementedError(f"int() not implemented for {type(value)}")
@@ -122,13 +122,13 @@ class Environment:
         """Built-in float function."""
         if value is None:
             return 0.0
+        elif isinstance(value, bool):
+            return float(value)
         elif isinstance(value, float):
             return value
         elif isinstance(value, int):
             return float(value)
         elif isinstance(value, str):
-            return float(value)
-        elif isinstance(value, bool):
             return float(value)
         else:
             raise NotImplementedError(f"float() not implemented for {type(value)}")
