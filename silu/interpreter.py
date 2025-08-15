@@ -51,13 +51,101 @@ class Environment:
     def __init__(self, parent: Optional["Environment"] = None):
         self.vars: Dict[str, Any] = {}
         self.parent = parent
-        # Add built-in functions
+        # Add built-in functions and types
         if parent is None:  # Only add built-ins to the global environment
             self.vars["print"] = self._print
+            self.vars["type"] = self._type
+            self.vars["isinstance"] = self._isinstance
+            
+            # Type conversion functions
+            self.vars["int"] = self._int
+            self.vars["float"] = self._float
+            self.vars["str"] = self._str
+            self.vars["bool"] = self._bool
+            
+            # Type objects
+            self.vars["int_type"] = int
+            self.vars["float_type"] = float
+            self.vars["str_type"] = str
+            self.vars["bool_type"] = bool
 
     def _print(self, *args) -> None:
         """Built-in print function."""
         print(*args)
+
+    def _type(self, obj) -> type:
+        """Built-in type function."""
+        return type(obj)
+
+    def _isinstance(self, obj, cls) -> bool:
+        """Built-in isinstance function."""
+        # For simplicity, we'll only support basic types
+        if cls is int or cls == int:
+            return isinstance(obj, int)
+        elif cls is float or cls == float:
+            return isinstance(obj, float)
+        elif cls is str or cls == str:
+            return isinstance(obj, str)
+        elif cls is bool or cls == bool:
+            return isinstance(obj, bool)
+        else:
+            # Handle the case where cls is a reference to a type object in vars
+            if hasattr(cls, '__name__'):
+                cls_name = cls.__name__
+                if cls_name == 'int':
+                    return isinstance(obj, int)
+                elif cls_name == 'float':
+                    return isinstance(obj, float)
+                elif cls_name == 'str':
+                    return isinstance(obj, str)
+                elif cls_name == 'bool':
+                    return isinstance(obj, bool)
+            
+            raise NotImplementedError(f"isinstance not implemented for {cls}")
+
+    def _int(self, value=None) -> int:
+        """Built-in int function."""
+        if value is None:
+            return 0
+        elif isinstance(value, int):
+            return value
+        elif isinstance(value, float):
+            return int(value)
+        elif isinstance(value, str):
+            return int(value)
+        elif isinstance(value, bool):
+            return int(value)
+        else:
+            raise NotImplementedError(f"int() not implemented for {type(value)}")
+
+    def _float(self, value=None) -> float:
+        """Built-in float function."""
+        if value is None:
+            return 0.0
+        elif isinstance(value, float):
+            return value
+        elif isinstance(value, int):
+            return float(value)
+        elif isinstance(value, str):
+            return float(value)
+        elif isinstance(value, bool):
+            return float(value)
+        else:
+            raise NotImplementedError(f"float() not implemented for {type(value)}")
+
+    def _str(self, value=None) -> str:
+        """Built-in str function."""
+        if value is None:
+            return ""
+        else:
+            return str(value)
+
+    def _bool(self, value=None) -> bool:
+        """Built-in bool function."""
+        if value is None:
+            return False
+        else:
+            return bool(value)
 
     def get(self, name: str) -> Any:
         """

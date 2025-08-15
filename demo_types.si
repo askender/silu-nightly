@@ -1,0 +1,40 @@
+# Test for basic data types
+# Integer
+x = 42
+print("x =", x)
+
+# Float
+y = 3.14
+print("y =", y)
+
+# String
+z = "Hello, World!"
+print("z =", z)
+
+# Boolean
+a = True
+b = False
+print("a =", a)
+print("b =", b)
+
+# Type conversion
+c = int(y)
+print("c =", c)
+
+d = float(x)
+print("d =", d)
+
+e = str(y)
+print("e =", e)
+
+f = bool(0)
+print("f =", f)
+
+g = bool(1)
+print("g =", g)
+
+# Type checking
+print("x is int:", isinstance(x, int_type))
+print("y is float:", isinstance(y, float_type))
+print("z is str:", isinstance(z, str_type))
+print("a is bool:", isinstance(a, bool_type))
