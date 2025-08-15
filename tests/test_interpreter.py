@@ -13,37 +13,34 @@ class TestEnvironment:
     """Tests for the Environment class."""
 
     def test_environment_basic_operations(self):
-        # Test default and parent initialization
+        # Test default environment
         env = Environment()
-        # Check that env.vars contains at least the print function
         assert "print" in env.vars
         assert env.parent is None
 
+        # Test parent environment and variable operations
         parent_env = Environment()
         parent_env.set("y", 20)
         child_env = Environment(parent=parent_env)
+        
+        child_env.set("x", 10)
+        child_env.set("y", 30)  # Shadow parent variable
+        
         assert child_env.parent is parent_env
-
-        # Test set, get, and parent variable access
-        env.set("x", 10)
-        assert env.get("x") == 10
-        assert child_env.get("y") == 20
+        assert child_env.get("x") == 10
+        assert child_env.get("y") == 30  # Shadowed value
+        assert parent_env.get("y") == 20  # Original value
 
         # Test undefined variable
         with pytest.raises(NameError, match="Name 'undefined_var' is not defined"):
             env.get("undefined_var")
-
-        # Test variable shadowing
-        child_env.set("y", 30)
-        assert child_env.get("y") == 30
-        assert parent_env.get("y") == 20
 
 
 class TestSiluInterpreter:
     """Tests for the SiluInterpreter class."""
 
     def test_init_and_module_visiting(self):
-        # Test default and custom environment initialization
+        # Test initialization
         interpreter = SiluInterpreter()
         assert isinstance(interpreter.env, Environment)
 
@@ -55,27 +52,25 @@ class TestSiluInterpreter:
         empty_module = ast.Module(body=[], type_ignores=[])
         interpreter.visit(empty_module)
 
-        code = "pass"
-        tree = ast.parse(code)
+        tree = ast.parse("pass")
         interpreter.visit(tree)
 
-    def test_visit_constant_and_name(self):
+    @pytest.mark.parametrize("value,expected_type", [
+        (42, int),
+        ("hello", str),
+        (3.14, float),
+        (True, bool),
+        (False, bool),
+    ])
+    def test_visit_constant(self, value, expected_type):
         interpreter = SiluInterpreter()
+        node = ast.Constant(value=value)
+        result = interpreter.visit_Constant(node)
+        assert result == value
+        assert isinstance(result, expected_type)
 
-        # Test constants
-        test_cases = [
-            (42, int),
-            ("hello", str),
-            (3.14, float),
-            (True, bool),
-            (False, bool),
-        ]
-
-        for value, expected_type in test_cases:
-            node = ast.Constant(value=value)
-            result = interpreter.visit_Constant(node)
-            assert result == value
-            assert isinstance(result, expected_type)
+    def test_visit_name(self):
+        interpreter = SiluInterpreter()
 
         # Test name operations
         interpreter.env.set("x", 10)
@@ -117,6 +112,7 @@ class TestSiluInterpreter:
         assert interpreter.env.get("z") == 15
 
         # Test error cases
+        # Multiple targets
         target1 = ast.Name(id="a", ctx=ast.Store())
         target2 = ast.Name(id="b", ctx=ast.Store())
         value = ast.Constant(value=42)
@@ -126,6 +122,7 @@ class TestSiluInterpreter:
         ):
             interpreter.visit_Assign(assign_node)
 
+        # Complex target
         target = ast.Subscript(
             value=ast.Name(id="lst", ctx=ast.Load()),
             slice=ast.Constant(value=0),
@@ -138,47 +135,44 @@ class TestSiluInterpreter:
         ):
             interpreter.visit_Assign(assign_node)
 
-    def test_visit_binop(self):
+    @pytest.mark.parametrize("op,expected", [
+        (ast.Add(), 8),
+        (ast.Sub(), 2),
+        (ast.Mult(), 15),
+        (ast.Div(), 5 / 3),
+        (ast.FloorDiv(), 1),
+        (ast.Mod(), 2),
+        (ast.Pow(), 125),
+    ])
+    def test_visit_binop_normal(self, op, expected):
         interpreter = SiluInterpreter()
-
-        # Test all binary operations
         left = ast.Constant(value=5)
         right = ast.Constant(value=3)
+        node = ast.BinOp(left=left, op=op, right=right)
+        assert interpreter.visit_BinOp(node) == expected
 
-        # Test normal operations
-        test_cases = [
-            (ast.Add(), 8),
-            (ast.Sub(), 2),
-            (ast.Mult(), 15),
-            (ast.Div(), 5 / 3),
-            (ast.FloorDiv(), 1),
-            (ast.Mod(), 2),
-            (ast.Pow(), 125),
-        ]
-
-        for op, expected in test_cases:
-            node = ast.BinOp(left=left, op=op, right=right)
-            assert interpreter.visit_BinOp(node) == expected
-
-        # Test division by zero errors
+    @pytest.mark.parametrize("op,error_msg", [
+        (ast.Div(), "Division by zero"),
+        (ast.Mod(), "Modulo by zero"),
+        (ast.FloorDiv(), "Division by zero"),
+    ])
+    def test_visit_binop_division_by_zero(self, op, error_msg):
+        interpreter = SiluInterpreter()
+        left = ast.Constant(value=5)
         right = ast.Constant(value=0)
-        error_cases = [
-            (ast.Div(), "Division by zero"),
-            (ast.Mod(), "Modulo by zero"),
-            (ast.FloorDiv(), "Division by zero"),
-        ]
+        node = ast.BinOp(left=left, op=op, right=right)
+        with pytest.raises(ZeroDivisionError, match=error_msg):
+            interpreter.visit_BinOp(node)
 
-        for op, error_msg in error_cases:
-            node = ast.BinOp(left=left, op=op, right=right)
-            with pytest.raises(ZeroDivisionError, match=error_msg):
-                interpreter.visit_BinOp(node)
-
-        # Test unsupported operator
+    def test_visit_binop_unsupported(self):
+        interpreter = SiluInterpreter()
+        left = ast.Constant(value=5)
+        right = ast.Constant(value=3)
         node = ast.BinOp(left=left, op=ast.LShift(), right=right)
         with pytest.raises(NotImplementedError, match="Unsupported binary operator"):
             interpreter.visit_BinOp(node)
 
-    def test_visit_unaryop_and_boolop(self):
+    def test_visit_unaryop(self):
         interpreter = SiluInterpreter()
 
         # Test unary operations
@@ -203,70 +197,67 @@ class TestSiluInterpreter:
         with pytest.raises(NotImplementedError, match="Unsupported unary operator"):
             interpreter.visit_UnaryOp(node)
 
-        # Test boolean operations
-        values = [ast.Constant(value=True), ast.Constant(value=False)]
-        node = ast.BoolOp(op=ast.And(), values=values)
-        assert not interpreter.visit_BoolOp(node)
+    @pytest.mark.parametrize("values,op,expected", [
+        ([ast.Constant(value=True), ast.Constant(value=False)], ast.And(), False),
+        ([ast.Constant(value=True), ast.Constant(value=True)], ast.And(), True),
+        ([ast.Constant(value=False), ast.Constant(value=True)], ast.Or(), True),
+        ([ast.Constant(value=False), ast.Constant(value=False)], ast.Or(), False),
+    ])
+    def test_visit_boolop(self, values, op, expected):
+        interpreter = SiluInterpreter()
+        node = ast.BoolOp(op=op, values=values)
+        assert interpreter.visit_BoolOp(node) == expected
 
-        values = [ast.Constant(value=True), ast.Constant(value=True)]
-        node = ast.BoolOp(op=ast.And(), values=values)
-        assert interpreter.visit_BoolOp(node)
-
-        values = [ast.Constant(value=False), ast.Constant(value=True)]
-        node = ast.BoolOp(op=ast.Or(), values=values)
-        assert interpreter.visit_BoolOp(node)
-
-        values = [ast.Constant(value=False), ast.Constant(value=False)]
-        node = ast.BoolOp(op=ast.Or(), values=values)
-        assert not interpreter.visit_BoolOp(node)
-
-        # Test with variables
+    def test_visit_boolop_with_variables(self):
+        interpreter = SiluInterpreter()
         interpreter.env.set("a", True)
         interpreter.env.set("b", False)
         values = [ast.Name(id="a", ctx=ast.Load()), ast.Name(id="b", ctx=ast.Load())]
         node = ast.BoolOp(op=ast.And(), values=values)
         assert not interpreter.visit_BoolOp(node)
 
-        # Test unsupported boolean operator
+    def test_visit_boolop_unsupported(self):
+        interpreter = SiluInterpreter()
         values = [ast.Constant(value=True), ast.Constant(value=False)]
         node = ast.BoolOp(op=ast.MatMult(), values=values)
         with pytest.raises(NotImplementedError, match="Unsupported boolean operator"):
             interpreter.visit_BoolOp(node)
 
-    def test_visit_compare(self):
+    @pytest.mark.parametrize("op,expected", [
+        (ast.Eq(), False),
+        (ast.NotEq(), True),
+        (ast.Lt(), False),
+        (ast.LtE(), False),
+        (ast.Gt(), True),
+        (ast.GtE(), True),
+    ])
+    def test_visit_compare_basic(self, op, expected):
         interpreter = SiluInterpreter()
-
-        # Test all comparison operations
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3)]
+        node = ast.Compare(left=left, ops=[op], comparators=comparators)
+        assert interpreter.visit_Compare(node) == expected
 
-        test_cases = [
-            (ast.Eq(), False),
-            (ast.NotEq(), True),
-            (ast.Lt(), False),
-            (ast.LtE(), False),
-            (ast.Gt(), True),
-            (ast.GtE(), True),
-        ]
-
-        for op, expected in test_cases:
-            node = ast.Compare(left=left, ops=[op], comparators=comparators)
-            assert interpreter.visit_Compare(node) == expected
-
-        # Test chained comparisons
+    def test_visit_compare_chained(self):
+        interpreter = SiluInterpreter()
+        
+        # Test chained comparisons (true case)
         left = ast.Constant(value=3)
         comparators = [ast.Constant(value=5), ast.Constant(value=7)]
         ops = [ast.Lt(), ast.Lt()]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
         assert interpreter.visit_Compare(node)
 
-        # Test short-circuit evaluation
+        # Test short-circuit evaluation (false case)
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3), ast.Constant(value=7)]
         ops = [ast.Lt(), ast.Lt()]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
         assert not interpreter.visit_Compare(node)
 
+    def test_visit_compare_errors(self):
+        interpreter = SiluInterpreter()
+        
         # Test unsupported operator
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3)]
@@ -289,10 +280,7 @@ class TestSiluInterpreter:
 
     def test_visit_expr(self):
         interpreter = SiluInterpreter()
-
-        # Test visiting an expression
-        value = ast.Constant(value=42)
-        node = ast.Expr(value=value)
+        node = ast.Expr(value=ast.Constant(value=42))
         assert interpreter.visit_Expr(node) == 42
 
     def test_visit_if(self):
@@ -305,31 +293,18 @@ class TestSiluInterpreter:
             ops=[ast.Gt()],
             comparators=[ast.Constant(value=5)],
         )
-        body = [
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Name(id="print", ctx=ast.Load()),
-                    args=[ast.Constant(value="x is greater than 5")],
-                    keywords=[],
-                )
-            )
-        ]
-        orelse = [
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Name(id="print", ctx=ast.Load()),
-                    args=[ast.Constant(value="x is not greater than 5")],
-                    keywords=[],
-                )
-            )
-        ]
+        body = [ast.Expr(value=ast.Call(
+            func=ast.Name(id="print", ctx=ast.Load()),
+            args=[ast.Constant(value="x is greater than 5")],
+            keywords=[]))]
+        orelse = [ast.Expr(value=ast.Call(
+            func=ast.Name(id="print", ctx=ast.Load()),
+            args=[ast.Constant(value="x is not greater than 5")],
+            keywords=[]))]
         node = ast.If(test=test, body=body, orelse=orelse)
 
-        # We can't easily test the output, but we can test that it doesn't raise an error
-        try:
-            interpreter.visit_If(node)
-        except Exception as e:
-            pytest.fail(f"visit_If raised an exception unexpectedly: {e}")
+        # Test that it doesn't raise an error
+        interpreter.visit_If(node)
 
         # Test simple if statement (false condition)
         interpreter.env.set("y", 3)
@@ -339,11 +314,7 @@ class TestSiluInterpreter:
             comparators=[ast.Constant(value=5)],
         )
         node = ast.If(test=test, body=body, orelse=orelse)
-
-        try:
-            interpreter.visit_If(node)
-        except Exception as e:
-            pytest.fail(f"visit_If raised an exception unexpectedly: {e}")
+        interpreter.visit_If(node)
 
     def test_visit_while(self):
         interpreter = SiluInterpreter()
@@ -356,13 +327,10 @@ class TestSiluInterpreter:
             comparators=[ast.Constant(value=3)],
         )
         body = [
-            ast.Expr(
-                value=ast.Call(
-                    func=ast.Name(id="print", ctx=ast.Load()),
-                    args=[ast.Name(id="i", ctx=ast.Load())],
-                    keywords=[],
-                )
-            ),
+            ast.Expr(value=ast.Call(
+                func=ast.Name(id="print", ctx=ast.Load()),
+                args=[ast.Name(id="i", ctx=ast.Load())],
+                keywords=[])),
             ast.Assign(
                 targets=[ast.Name(id="i", ctx=ast.Store())],
                 value=ast.BinOp(
@@ -373,12 +341,7 @@ class TestSiluInterpreter:
             ),
         ]
         node = ast.While(test=test, body=body, orelse=[])
-
-        # We can't easily test the output, but we can test that it doesn't raise an error
-        try:
-            interpreter.visit_While(node)
-        except Exception as e:
-            pytest.fail(f"visit_While raised an exception unexpectedly: {e}")
+        interpreter.visit_While(node)
 
         # Test while loop with false condition (should not execute body)
         interpreter.env.set("j", 5)
@@ -388,45 +351,30 @@ class TestSiluInterpreter:
             comparators=[ast.Constant(value=3)],
         )
         node = ast.While(test=test, body=body, orelse=[])
+        interpreter.visit_While(node)
+        assert interpreter.env.get("j") == 5  # j should still be 5
 
-        try:
-            interpreter.visit_While(node)
-            # j should still be 5
-            assert interpreter.env.get("j") == 5
-        except Exception as e:
-            pytest.fail(f"visit_While raised an exception unexpectedly: {e}")
-
-    def test_e2e_programs(self):
-        # Test end-to-end programs
+    @pytest.mark.parametrize("code,var_name,expected", [
+        ("x = 5 + 3", "x", 8),
+        ("y = (10 - 4) * 2", "y", 12),
+        ("z = True and False", "z", False),
+        ("w = 5 > 3", "w", True),
+    ])
+    def test_e2e_programs_basic(self, code, var_name, expected):
         interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get(var_name) == expected
 
-        # Test various language features
-        test_programs = [
-            # (code, variable_to_check, expected_value)
-            ("x = 5 + 3", "x", 8),
-            ("y = (10 - 4) * 2", "y", 12),
-            ("z = True and False", "z", False),
-            ("w = 5 > 3", "w", True),
-        ]
-        
-        for code, var_name, expected in test_programs:
-            tree = ast.parse(code)
-            interpreter.visit(tree)
-            assert interpreter.env.get(var_name) == expected
-
-        # Test variable usage
-        tree = ast.parse("""
-a = 10
-b = 5
-c = a + b
-""")
+    def test_e2e_variable_usage(self):
+        interpreter = SiluInterpreter()
+        tree = ast.parse("a = 10\nb = 5\nc = a + b")
         interpreter.visit(tree)
         assert interpreter.env.get("c") == 15
 
-    def test_visit_call_and_builtins(self):
-        """Test function calls and built-in functions."""
+    def test_builtins_available(self):
         interpreter = SiluInterpreter()
-
+        
         # Test that built-in functions are available
         builtins = ["print", "type", "isinstance", "int", "float", "str", "bool"]
         type_objects = ["int_type", "float_type", "str_type", "bool_type"]
@@ -438,30 +386,26 @@ c = a + b
         for type_obj in type_objects:
             assert type_obj in interpreter.env.vars
 
+    def test_list_function(self):
+        interpreter = SiluInterpreter()
         # Test _list function with None argument (line 73)
         assert interpreter.env._list() == []
         assert interpreter.env._list(None) == []
 
+    def test_print_function(self):
+        interpreter = SiluInterpreter()
         # Test calling print with different arguments
-        # We can't easily test the output, but we can test that it doesn't raise an error
-        try:
-            interpreter.env.vars["print"]("Hello, World!")
-            interpreter.env.vars["print"](1, 2, 3)
-            interpreter.env.vars["print"](True, False)
-        except Exception as e:
-            pytest.fail(f"Calling print raised an exception unexpectedly: {e}")
+        interpreter.env.vars["print"]("Hello, World!")
+        interpreter.env.vars["print"](1, 2, 3)
+        interpreter.env.vars["print"](True, False)
 
-        # Test visit_Call method
+    def test_visit_call_method(self):
+        interpreter = SiluInterpreter()
         # Create a call node for print("test")
         func_node = ast.Name(id="print", ctx=ast.Load())
         arg_node = ast.Constant(value="test")
         call_node = ast.Call(func=func_node, args=[arg_node], keywords=[])
-
-        # This should not raise an error
-        try:
-            interpreter.visit_Call(call_node)
-        except Exception as e:
-            pytest.fail(f"visit_Call raised an exception unexpectedly: {e}")
+        interpreter.visit_Call(call_node)
 
         # Test calling a non-callable
         func_node = ast.Constant(value=42)
@@ -469,65 +413,63 @@ c = a + b
         with pytest.raises(TypeError, match="'int' object is not callable"):
             interpreter.visit_Call(call_node)
 
-        # Test type function
+    def test_type_function(self):
+        interpreter = SiluInterpreter()
         assert interpreter.env.vars["type"](42) is int
         assert interpreter.env.vars["type"](3.14) is float
         assert interpreter.env.vars["type"]("hello") is str
         assert interpreter.env.vars["type"](True) is bool
 
-        # Test conversion functions with various inputs
-        conversion_tests = [
-            # (function_name, input_value, expected_output)
-            ("int", None, 0),
-            ("int", 42, 42),
-            ("int", 3.14, 3),
-            ("int", "123", 123),
-            ("int", True, 1),
-            ("int", False, 0),
-            ("float", None, 0.0),
-            ("float", 3.14, 3.14),
-            ("float", 42, 42.0),
-            ("float", "3.14", 3.14),
-            ("float", True, 1.0),
-            ("float", False, 0.0),
-            ("str", None, ""),
-            ("str", 42, "42"),
-            ("str", 3.14, "3.14"),
-            ("str", "hello", "hello"),
-            ("str", True, "True"),
-            ("str", False, "False"),
-            ("bool", None, False),
-            ("bool", 0, False),
-            ("bool", 1, True),
-            ("bool", "", False),
-            ("bool", "hello", True),
-            ("bool", True, True),
-            ("bool", False, False),
-        ]
-        
-        for func_name, input_val, expected in conversion_tests:
-            if input_val is None:
-                assert interpreter.env.vars[func_name]() == expected
-            else:
-                assert interpreter.env.vars[func_name](input_val) == expected
+    @pytest.mark.parametrize("func_name,input_val,expected", [
+        ("int", None, 0),
+        ("int", 42, 42),
+        ("int", 3.14, 3),
+        ("int", "123", 123),
+        ("int", True, 1),
+        ("int", False, 0),
+        ("float", None, 0.0),
+        ("float", 3.14, 3.14),
+        ("float", 42, 42.0),
+        ("float", "3.14", 3.14),
+        ("float", True, 1.0),
+        ("float", False, 0.0),
+        ("str", None, ""),
+        ("str", 42, "42"),
+        ("str", 3.14, "3.14"),
+        ("str", "hello", "hello"),
+        ("str", True, "True"),
+        ("str", False, "False"),
+        ("bool", None, False),
+        ("bool", 0, False),
+        ("bool", 1, True),
+        ("bool", "", False),
+        ("bool", "hello", True),
+        ("bool", True, True),
+        ("bool", False, False),
+    ])
+    def test_conversion_functions(self, func_name, input_val, expected):
+        interpreter = SiluInterpreter()
+        if input_val is None:
+            assert interpreter.env.vars[func_name]() == expected
+        else:
+            assert interpreter.env.vars[func_name](input_val) == expected
 
-        # Test isinstance function
-        isinstance_tests = [
-            # (value, type, expected_result)
-            (42, int, True),
-            (3.14, float, True),
-            ("hello", str, True),
-            (True, bool, True),
-            (42, float, False),
-            (3.14, int, False),
-            ("hello", bool, False),
-            (True, str, False),
-        ]
-        
-        for value, type_cls, expected in isinstance_tests:
-            assert interpreter.env.vars["isinstance"](value, type_cls) == expected
+    @pytest.mark.parametrize("value,type_cls,expected", [
+        (42, int, True),
+        (3.14, float, True),
+        ("hello", str, True),
+        (True, bool, True),
+        (42, float, False),
+        (3.14, int, False),
+        ("hello", bool, False),
+        (True, str, False),
+    ])
+    def test_isinstance_function(self, value, type_cls, expected):
+        interpreter = SiluInterpreter()
+        assert interpreter.env.vars["isinstance"](value, type_cls) == expected
 
-        # Test isinstance with type objects from env
+    def test_isinstance_with_type_objects(self):
+        interpreter = SiluInterpreter()
         isinstance_type_tests = [
             (42, "int_type"),
             (3.14, "float_type"),
@@ -538,6 +480,8 @@ c = a + b
         for value, type_name in isinstance_type_tests:
             assert interpreter.env.vars["isinstance"](value, interpreter.env.vars[type_name])
 
+    def test_isinstance_error_cases(self):
+        interpreter = SiluInterpreter()
         # Test isinstance error cases
         with pytest.raises(NotImplementedError):
             interpreter.env.vars["isinstance"](42, list)  # Passing list should raise NotImplementedError
@@ -567,17 +511,13 @@ c = a + b
         interpreter = SiluInterpreter()
 
         # Test TypeError in visit_Call method
-        # Create a call node for an integer (not callable)
         func_node = ast.Constant(value=42)
         call_node = ast.Call(func=func_node, args=[], keywords=[])
-
-        # This should raise a TypeError
         with pytest.raises(TypeError, match="'int' object is not callable"):
             interpreter.visit_Call(call_node)
 
         # Test error cases for conversion functions
         error_cases = [
-            # (function_name, invalid_input)
             ("int", []),
             ("float", []),
             ("float", [1, 2, 3]),
@@ -592,8 +532,6 @@ c = a + b
             pass
 
         unsupported_type = UnsupportedType()
-
-        # This should raise NotImplementedError
         with pytest.raises(NotImplementedError):
             interpreter.env.vars["isinstance"](42, unsupported_type)
 
@@ -603,12 +541,10 @@ c = a + b
                 self.__name__ = name
 
         custom_unknown_type = CustomType("unknown")
-
-        # This should raise NotImplementedError
         with pytest.raises(NotImplementedError):
             interpreter.env.vars["isinstance"](42, custom_unknown_type)
 
-        # Test conversion with boolean values (should work, not raise errors)
+        # Test conversion with boolean values
         assert interpreter.env._int(True) == 1
         assert interpreter.env._int(False) == 0
         assert interpreter.env._float(True) == 1.0
@@ -619,9 +555,6 @@ c = a + b
         interpreter = SiluInterpreter()
 
         # Test simple function definition
-        # Create AST nodes for:
-        # def greet(name):
-        #     print("Hello, " + name)
         func_name = "greet"
         arg_name = "name"
         func_args = ast.arguments(
@@ -634,13 +567,11 @@ c = a + b
         )
         print_call = ast.Call(
             func=ast.Name(id="print", ctx=ast.Load()),
-            args=[
-                ast.BinOp(
-                    left=ast.Constant(value="Hello, "),
-                    op=ast.Add(),
-                    right=ast.Name(id=arg_name, ctx=ast.Load()),
-                )
-            ],
+            args=[ast.BinOp(
+                left=ast.Constant(value="Hello, "),
+                op=ast.Add(),
+                right=ast.Name(id=arg_name, ctx=ast.Load()),
+            )],
             keywords=[],
         )
         func_body = [ast.Expr(value=print_call)]
@@ -661,23 +592,14 @@ c = a + b
         assert isinstance(func_obj, Function)
 
         # Test calling the function
-        # Create AST nodes for: greet("World")
         call_node = ast.Call(
             func=ast.Name(id=func_name, ctx=ast.Load()),
             args=[ast.Constant(value="World")],
             keywords=[],
         )
-
-        # This should not raise an error
-        try:
-            interpreter.visit_Call(call_node)
-        except Exception as e:
-            pytest.fail(f"visit_Call raised an exception unexpectedly: {e}")
+        interpreter.visit_Call(call_node)
 
         # Test function with return statement
-        # Create AST nodes for:
-        # def add(a, b):
-        #     return a + b
         func_name = "add"
         arg_a = "a"
         arg_b = "b"
@@ -717,7 +639,6 @@ c = a + b
         assert isinstance(func_obj, Function)
 
         # Test calling the function
-        # Create AST nodes for: add(3, 5)
         call_node = ast.Call(
             func=ast.Name(id=func_name, ctx=ast.Load()),
             args=[ast.Constant(value=3), ast.Constant(value=5)],
@@ -732,8 +653,7 @@ c = a + b
         interpreter = SiluInterpreter()
 
         # Test return with value
-        return_value = ast.Constant(value=42)
-        return_node = ast.Return(value=return_value)
+        return_node = ast.Return(value=ast.Constant(value=42))
         result = interpreter.visit_Return(return_node)
         assert result == 42
 
@@ -770,8 +690,6 @@ class TestElifForSupport:
     def test_elif_support(self):
         """Test elif statement support."""
         interpreter = SiluInterpreter()
-
-        # Test elif with multiple conditions
         code = """
 x = 2
 if x == 1:
@@ -783,57 +701,39 @@ elif x == 3:
 else:
     print("x is something else")
 """
-
         tree = ast.parse(code)
-        # This should not raise any exceptions
         interpreter.visit(tree)
 
     def test_for_loop_support(self):
         """Test for loop support."""
         interpreter = SiluInterpreter()
-
-        # Test basic for loop with list function
         code = """
 total = 0
 items = list([1, 2, 3, 4, 5])
 for i in items:
     total = total + i
 """
-
         tree = ast.parse(code)
-        # This should not raise any exceptions
         interpreter.visit(tree)
-
-        # Check that the loop executed correctly
         assert interpreter.env.get("total") == 15
 
     def test_for_loop_with_range(self):
         """Test for loop with range function."""
         interpreter = SiluInterpreter()
-
-        # Add range function to environment for testing
         interpreter.env.set("range", range)
-
-        # Test for loop with range
         code = """
 total = 0
 for i in range(3):
     total = total + i
 print(total)
 """
-
         tree = ast.parse(code)
-        # This should not raise any exceptions
         interpreter.visit(tree)
-
-        # Check that the loop executed correctly (0 + 1 + 2 = 3)
         assert interpreter.env.get("total") == 3
 
     def test_nested_control_flow(self):
         """Test nested control flow with if, elif, and for loops."""
         interpreter = SiluInterpreter()
-
-        # Test nested control flow
         code = """
 result = list([])
 for i in range(5):
@@ -846,46 +746,31 @@ for i in range(5):
     else:
         result.append("other")
 """
-
         tree = ast.parse(code)
-        # This should not raise any exceptions
         interpreter.visit(tree)
-
-        # Check that the nested control flow executed correctly
-        assert interpreter.env.get("result") == ["zero", "one", "two", "other", "other"]
+        expected = ["zero", "one", "two", "other", "other"]
+        assert interpreter.env.get("result") == expected
 
     def test_append_method_error(self):
         """Test error handling for append method."""
         interpreter = SiluInterpreter()
-
-        # Test append with wrong number of arguments
-        code = """
-items = list([])
-"""
-
+        code = "items = list([])"
         tree = ast.parse(code)
         interpreter.visit(tree)
 
-        # Manually test the append method with wrong number of arguments
+        # Test append with wrong number of arguments
         items = interpreter.env.get("items")
-        with pytest.raises(
-            TypeError, match="append\\(\\) takes exactly one argument \\(0 given\\)"
-        ):
+        with pytest.raises(TypeError, match="append\\(\\) takes exactly one argument \\(0 given\\)"):
             items.append()
 
-        # Test append with too many arguments (covers line 325)
-        with pytest.raises(
-            TypeError, match="append\\(\\) takes exactly one argument \\(2 given\\)"
-        ):
+        with pytest.raises(TypeError, match="append\\(\\) takes exactly one argument \\(2 given\\)"):
             items.append(1, 2)
 
     def test_visit_call_append_error(self):
         """Test visit_Call method with append method error (covers line 325)."""
         interpreter = SiluInterpreter()
-
-        # Create a list in the environment
         interpreter.env.set("items", [])
-
+        
         # Create AST for items.append(1, 2) - too many arguments
         func_node = ast.Attribute(
             value=ast.Name(id="items", ctx=ast.Load()),
@@ -898,17 +783,12 @@ items = list([])
             keywords=[],
         )
 
-        # This should raise TypeError for too many arguments
-        with pytest.raises(
-            TypeError, match="append\\(\\) takes exactly one argument \\(2 given\\)"
-        ):
+        with pytest.raises(TypeError, match="append\\(\\) takes exactly one argument \\(2 given\\)"):
             interpreter.visit_Call(call_node)
 
     def test_for_else_clause(self):
         """Test for loop with else clause."""
         interpreter = SiluInterpreter()
-
-        # Test for loop with else clause that executes
         code = """
 executed = list([])
 for i in range(0):  # Empty range
@@ -916,19 +796,13 @@ for i in range(0):  # Empty range
 else:
     executed.append("else")
 """
-
         tree = ast.parse(code)
         interpreter.visit(tree)
-
-        # Check that the else clause executed
         assert interpreter.env.get("executed") == ["else"]
 
     def test_for_loop_unsupported_target(self):
         """Test for loop with unsupported target type (covers line 401)."""
         interpreter = SiluInterpreter()
-
-        # Create a for loop with an unsupported target type (not ast.Name)
-        # This will test the NotImplementedError for non-simple targets
         target = ast.Subscript(
             value=ast.Name(id="lst", ctx=ast.Load()),
             slice=ast.Constant(value=0),
@@ -942,7 +816,6 @@ else:
         body = []
         for_node = ast.For(target=target, iter=iter_node, body=body, orelse=[])
 
-        # This should raise NotImplementedError
         with pytest.raises(
             NotImplementedError,
             match="Only simple variable targets are supported in for loops",
