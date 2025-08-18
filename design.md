@@ -1,35 +1,40 @@
 # 项目设计原则 (Project Design Principles)
 
-## 0. 当前细节原则
+## 0. 变量命名约定 (Variable Naming Conventions)
+- 避免使用可能引起歧义的变量名，如单字母 `l`（小写L），因为它容易与数字 `1` 或大写字母 `I` 混淆。
+- 在 lambda 函数中使用描述性的参数名，如 `left` 和 `right` 而不是 `l` 和 `r`。
+- 使用有意义的变量名来提高代码可读性。
+
+## 1. 当前细节原则
 - 暂时不实现Lexer Parser AST解析，当前的版本silu语法是python语法的子集
 - 执行silu代码有两种方式：1 使用python执行 2 编译为llvm ir，然后使用llvm工具链执行
 - 每次执行新任务前，运行make cov 将覆盖率提升到100%
 
-## 1. 简洁性 (Simplicity)
+## 2. 简洁性 (Simplicity)
 - 优先考虑简单、易于理解的解决方案。
 - 避免不必要的复杂性和抽象。
 
-## 2. 可扩展性 (Extensibility)
+## 3. 可扩展性 (Extensibility)
 - 设计模块化的组件，以便于未来添加新功能。
 - 使用清晰的接口和抽象层。
 
-## 3. 可读性 (Readability)
+## 4. 可读性 (Readability)
 - 代码应易于阅读和理解。
 - 使用有意义的命名约定。
 - 添加必要的注释来解释复杂逻辑。
 
-## 4. 一致性 (Consistency)
+## 5. 一致性 (Consistency)
 - 在整个项目中保持编码风格和设计模式的一致性。
 - 遵循既定的代码规范。
 
-## 5. 测试驱动 (Test-Driven)
+## 6. 测试驱动 (Test-Driven)
 - 优先编写测试用例。
 - 确保核心功能有充分的单元测试覆盖。
 
-## 6. 错误处理 (Error Handling)
+## 7. 错误处理 (Error Handling)
 - 提供清晰、有用的错误信息。
 - 优雅地处理潜在的异常情况。
 
-## 7. 性能 (Performance)
+## 8. 性能 (Performance)
 - 在保证正确性的前提下，关注关键路径的性能。
 - 避免过早优化，但在必要时进行性能分析和优化。

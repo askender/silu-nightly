@@ -26,3 +26,9 @@ include = ["silu*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.1",
+    "pytest-cov>=4.0.0",
+]
