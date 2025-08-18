@@ -7,7 +7,7 @@ extracting shared AST traversal logic while allowing customization of processing
 
 import ast
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List
 
 
 class BaseASTProcessor(ast.NodeVisitor, ABC):
@@ -21,15 +21,27 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     # Consolidated operators mapping
     OPERATORS = {
         # Binary operators
-        ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
-        ast.FloorDiv: "//", ast.Mod: "%", ast.Pow: "**",
+        ast.Add: "+",
+        ast.Sub: "-",
+        ast.Mult: "*",
+        ast.Div: "/",
+        ast.FloorDiv: "//",
+        ast.Mod: "%",
+        ast.Pow: "**",
         # Unary operators
-        ast.UAdd: "+", ast.USub: "-", ast.Not: "not",
+        ast.UAdd: "+",
+        ast.USub: "-",
+        ast.Not: "not",
         # Comparison operators
-        ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=",
-        ast.Gt: ">", ast.GtE: ">=",
+        ast.Eq: "==",
+        ast.NotEq: "!=",
+        ast.Lt: "<",
+        ast.LtE: "<=",
+        ast.Gt: ">",
+        ast.GtE: ">=",
         # Boolean operators
-        ast.And: "and", ast.Or: "or",
+        ast.And: "and",
+        ast.Or: "or",
     }
 
     # ================== Abstract Methods ==================
@@ -88,7 +100,9 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     def visit_Assign(self, node: ast.Assign) -> Any:
         """Visit an assignment node."""
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-            raise NotImplementedError("Only single simple variable assignments supported")
+            raise NotImplementedError(
+                "Only single simple variable assignments supported"
+            )
 
         target = node.targets[0].id
         value = self.visit(node.value)
@@ -142,8 +156,10 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         """Visit a function definition node."""
         args = [arg.arg for arg in node.args.args]
-        body = [self.visit(stmt) for stmt in node.body]
-        return self.process_control_flow("function_def", name=node.name, args=args, body=body)
+        body = node.body
+        return self.process_control_flow(
+            "function_def", name=node.name, args=args, body=body
+        )
 
     def visit_Return(self, node: ast.Return) -> Any:
         """Visit a return statement node."""
@@ -153,22 +169,23 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     def visit_If(self, node: ast.If) -> Any:
         """Visit an if statement node."""
         test = self.visit(node.test)
-        body = [self.visit(stmt) for stmt in node.body]
-        orelse = [self.visit(stmt) for stmt in node.orelse] if node.orelse else []
+        body = node.body
+        orelse = node.orelse if node.orelse else []
         return self.process_control_flow("if", test=test, body=body, orelse=orelse)
 
     def visit_While(self, node: ast.While) -> Any:
         """Visit a while loop node."""
-        test = self.visit(node.test)
-        body = [self.visit(stmt) for stmt in node.body]
-        return self.process_control_flow("while", test=test, body=body)
+        test_node = node.test
+        body = node.body
+        return self.process_control_flow("while", test_node=test_node, body=body)
 
     def visit_For(self, node: ast.For) -> Any:
         """Visit a for loop node."""
         target = self.visit(node.target)
         iter_ = self.visit(node.iter)
-        body = [self.visit(stmt) for stmt in node.body]
-        return self.process_control_flow("for", target=target, iter=iter_, body=body)
+        body = node.body
+        orelse = node.orelse if node.orelse else []
+        return self.process_control_flow("for", target=target, iter=iter_, body=body, orelse=orelse)
 
     def visit_List(self, node: ast.List) -> Any:
         """Visit a list literal node."""
@@ -189,15 +206,19 @@ def create_processor(processor_type: str, **kwargs) -> BaseASTProcessor:
     """Factory function to create AST processors."""
     if processor_type == "interpreter":
         from .interpreter import SiluInterpreter
+
         return SiluInterpreter(**kwargs)
     elif processor_type == "ir_generator":
         from .ir_generator import SiluIRGenerator
+
         return SiluIRGenerator(**kwargs)
     else:
         raise ValueError(f"Unsupported processor type: {processor_type}")
 
 
-def process_code(source_code: str, processor_type: str = "interpreter", **kwargs) -> Any:
+def process_code(
+    source_code: str, processor_type: str = "interpreter", **kwargs
+) -> Any:
     """Process source code using the specified processor type."""
     tree = ast.parse(source_code)
     processor = create_processor(processor_type, **kwargs)

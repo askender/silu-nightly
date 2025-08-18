@@ -6,7 +6,7 @@ to convert Silu programs into intermediate representation.
 """
 
 import ast
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .ast_processor import BaseASTProcessor
 
@@ -52,22 +52,29 @@ class SiluIRGenerator(BaseASTProcessor):
         else:  # Boolean operation
             return tuple([op] + list(operands))
 
-    def process_call(self, func: Any, args: List[Any], keywords: Dict[str, Any]) -> Tuple:
+    def process_call(
+        self, func: Any, args: List[Any], keywords: Dict[str, Any]
+    ) -> Tuple:
         """Generate function call IR node."""
         return ("call", func, args, keywords)
 
     def process_control_flow(self, node_type: str, **kwargs) -> Tuple:
         """Generate control flow IR nodes."""
         if node_type == "function_def":
-            return ("func_def", kwargs['name'], tuple(kwargs['args']), tuple(kwargs['body']))
+            return (
+                "func_def",
+                kwargs["name"],
+                tuple(kwargs["args"]),
+                tuple(kwargs["body"]),
+            )
         elif node_type == "return":
-            return ("return", kwargs['value'])
+            return ("return", kwargs["value"])
         elif node_type == "if":
-            return ("if", kwargs['test'], kwargs['body'], kwargs['orelse'])
+            return ("if", kwargs["test"], kwargs["body"], kwargs["orelse"])
         elif node_type == "while":
-            return ("while", kwargs['test'], kwargs['body'])
+            return ("while", kwargs["test"], kwargs["body"])
         elif node_type == "for":
-            return ("for", kwargs['target'], kwargs['iter'], kwargs['body'])
+            return ("for", kwargs["target"], kwargs["iter"], kwargs["body"])
 
     def process_container(self, container_type: str, elements: List[Any]) -> Tuple:
         """Generate container IR nodes."""
@@ -222,7 +229,9 @@ class SiluIRGenerator(BaseASTProcessor):
         body = [self.visit(stmt) for stmt in node.body]
         handlers = [self.visit(h) for h in node.handlers]
         orelse = [self.visit(stmt) for stmt in node.orelse] if node.orelse else []
-        finalbody = [self.visit(stmt) for stmt in node.finalbody] if node.finalbody else []
+        finalbody = (
+            [self.visit(stmt) for stmt in node.finalbody] if node.finalbody else []
+        )
         return self._make_node("try", body, handlers, orelse, finalbody)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> Tuple:
@@ -264,7 +273,9 @@ class SiluIRGenerator(BaseASTProcessor):
         items = []
         for item in node.items:
             context_expr = self.visit(item.context_expr)
-            optional_vars = self.visit(item.optional_vars) if item.optional_vars else None
+            optional_vars = (
+                self.visit(item.optional_vars) if item.optional_vars else None
+            )
             items.append((context_expr, optional_vars))
         body = [self.visit(stmt) for stmt in node.body]
         return self._make_node("with", items, body)
@@ -273,4 +284,6 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def generic_visit(self, node: ast.AST) -> None:
         """Handle unsupported AST nodes."""
-        raise NotImplementedError(f"Unsupported syntax for IR generation: {type(node).__name__}")
+        raise NotImplementedError(
+            f"Unsupported syntax for IR generation: {type(node).__name__}"
+        )
