@@ -7,7 +7,7 @@ import sys
 import os
 
 # Add the silu package to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'silu'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "silu"))
 
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
@@ -35,6 +35,7 @@ print("Result:", result)
     except Exception as e:
         print(f"Interpretation error: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Test IR generation
@@ -45,6 +46,7 @@ print("Result:", result)
         ir_result = ir_generator.visit(tree)
 
         import pprint
+
         pprint.pprint(ir_result)
     except Exception as e:
         print(f"IR generation error: {e}")
@@ -79,6 +81,7 @@ print("Product:", mult_result)
     except Exception as e:
         print(f"Interpretation error: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -115,6 +118,7 @@ while x > 0:
     except Exception as e:
         print(f"Interpretation error: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -152,6 +156,7 @@ print("Boolean results:", result1, result2)
     except Exception as e:
         print(f"Interpretation error: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -192,6 +197,7 @@ print("Coordinates:", coordinates)
     except Exception as e:
         print(f"Interpretation error: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -243,6 +249,7 @@ print("Sum of squares:", total)
     except Exception as e:
         print(f"Interpretation error: {e}")
         import traceback
+
         traceback.print_exc()
 
 
@@ -285,6 +292,7 @@ else:
         ir_result = ir_generator.visit(tree)
 
         import pprint
+
         pprint.pprint(ir_result)
     except Exception as e:
         print(f"IR generation error: {e}")

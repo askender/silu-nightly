@@ -10,9 +10,8 @@ import ast
 import json
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from .ast_processor import ProcessorFactory, ProcessingMode, process_ast
 from .interpreter import SiluInterpreter
 from .ir_generator import SiluIRGenerator
 
@@ -20,7 +19,7 @@ from .ir_generator import SiluIRGenerator
 def read_source_file(file_path: str) -> str:
     """Read source code from a file."""
     try:
-        with open(file_path, 'r', encoding='utf-8') as file:
+        with open(file_path, "r", encoding="utf-8") as file:
             return file.read()
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.", file=sys.stderr)
@@ -32,12 +31,13 @@ def read_source_file(file_path: str) -> str:
 
 def format_ir_output(ir_result: Any, output_format: str) -> str:
     """Format IR result according to the specified output format."""
-    if output_format == 'json':
+    if output_format == "json":
         return json.dumps(ir_result, indent=2, default=str)
-    elif output_format == 'pretty':
+    elif output_format == "pretty":
         import pprint
+
         return pprint.pformat(ir_result, width=80, depth=None)
-    elif output_format == 'compact':
+    elif output_format == "compact":
         return str(ir_result)
     else:
         raise ValueError(f"Unsupported output format: {output_format}")
@@ -57,7 +57,7 @@ def run_interpreter(source_code: str, **kwargs) -> None:
         sys.exit(1)
 
 
-def generate_ir(source_code: str, output_format: str = 'pretty', **kwargs) -> None:
+def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> None:
     """Generate IR from the source code."""
     try:
         tree = ast.parse(source_code)
@@ -78,7 +78,7 @@ def save_ir_to_file(ir_result: Any, output_file: str, output_format: str) -> Non
     """Save IR result to a file."""
     try:
         formatted_output = format_ir_output(ir_result, output_format)
-        with open(output_file, 'w', encoding='utf-8') as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             f.write(formatted_output)
         print(f"IR saved to: {output_file}")
     except IOError as e:
@@ -89,7 +89,7 @@ def save_ir_to_file(ir_result: Any, output_file: str, output_format: str) -> Non
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
-        description='Silu Language Processor - Interpreter and IR Generator',
+        description="Silu Language Processor - Interpreter and IR Generator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -107,60 +107,45 @@ Examples:
 
   # Process source code directly
   %(prog)s interpret --source "x = 5; print(x)"
-        """
+        """,
     )
 
     # Add subcommands
-    subparsers = parser.add_subparsers(dest='mode', help='Processing mode')
+    subparsers = parser.add_subparsers(dest="mode", help="Processing mode")
 
     # Interpreter subcommand
     interpret_parser = subparsers.add_parser(
-        'interpret',
-        help='Interpret and execute Silu code'
+        "interpret", help="Interpret and execute Silu code"
     )
     interpret_parser.add_argument(
-        'file',
-        nargs='?',
-        help='Silu source file to interpret'
+        "file", nargs="?", help="Silu source file to interpret"
     )
     interpret_parser.add_argument(
-        '--source',
-        help='Source code string to interpret (alternative to file)'
+        "--source", help="Source code string to interpret (alternative to file)"
     )
     interpret_parser.add_argument(
-        '--debug',
-        action='store_true',
-        help='Enable debug mode with verbose output'
+        "--debug", action="store_true", help="Enable debug mode with verbose output"
     )
 
     # IR generation subcommand
-    ir_parser = subparsers.add_parser(
-        'ir',
-        help='Generate intermediate representation'
+    ir_parser = subparsers.add_parser("ir", help="Generate intermediate representation")
+    ir_parser.add_argument("file", nargs="?", help="Silu source file to process")
+    ir_parser.add_argument(
+        "--source", help="Source code string to process (alternative to file)"
     )
     ir_parser.add_argument(
-        'file',
-        nargs='?',
-        help='Silu source file to process'
+        "--format",
+        choices=["pretty", "json", "compact"],
+        default="pretty",
+        help="Output format for IR (default: pretty)",
     )
     ir_parser.add_argument(
-        '--source',
-        help='Source code string to process (alternative to file)'
+        "--output", "-o", help="Output file to save IR (default: stdout)"
     )
     ir_parser.add_argument(
-        '--format',
-        choices=['pretty', 'json', 'compact'],
-        default='pretty',
-        help='Output format for IR (default: pretty)'
-    )
-    ir_parser.add_argument(
-        '--output', '-o',
-        help='Output file to save IR (default: stdout)'
-    )
-    ir_parser.add_argument(
-        '--no-types',
-        action='store_true',
-        help='Disable type information recording in IR'
+        "--no-types",
+        action="store_true",
+        help="Disable type information recording in IR",
     )
 
     return parser
@@ -169,7 +154,9 @@ Examples:
 def validate_arguments(args) -> None:
     """Validate command line arguments."""
     if not args.file and not args.source:
-        print("Error: Either a source file or --source must be provided.", file=sys.stderr)
+        print(
+            "Error: Either a source file or --source must be provided.", file=sys.stderr
+        )
         sys.exit(1)
 
     if args.file and args.source:
@@ -214,22 +201,20 @@ def main() -> None:
 
     # Process based on mode
     try:
-        if args.mode == 'interpret':
+        if args.mode == "interpret":
             print(f"Interpreting {source_name}...")
-            if hasattr(args, 'debug') and args.debug:
+            if hasattr(args, "debug") and args.debug:
                 print("Debug mode enabled")
 
             run_interpreter(source_code)
 
-        elif args.mode == 'ir':
+        elif args.mode == "ir":
             print(f"Generating IR for {source_name}...", file=sys.stderr)
 
             # Prepare kwargs for IR generator
-            ir_kwargs = {
-                'record_types': not getattr(args, 'no_types', False)
-            }
+            ir_kwargs = {"record_types": not getattr(args, "no_types", False)}
 
-            if hasattr(args, 'output') and args.output:
+            if hasattr(args, "output") and args.output:
                 # Generate IR and save to file
                 tree = ast.parse(source_code)
                 ir_generator = SiluIRGenerator(**ir_kwargs)
@@ -244,8 +229,9 @@ def main() -> None:
         sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
-        if hasattr(args, 'debug') and args.debug:
+        if hasattr(args, "debug") and args.debug:
             import traceback
+
             traceback.print_exc()
         sys.exit(1)
 
@@ -272,10 +258,10 @@ print("Factorial of 5 is:", result)
     run_interpreter(sample_code)
 
     print("\n=== IR Generation Mode (Pretty) ===")
-    generate_ir(sample_code, 'pretty')
+    generate_ir(sample_code, "pretty")
 
     print("\n=== IR Generation Mode (JSON) ===")
-    generate_ir(sample_code, 'json')
+    generate_ir(sample_code, "json")
 
 
 if __name__ == "__main__":

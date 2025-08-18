@@ -7,7 +7,7 @@ extracting shared AST traversal logic while allowing customization of processing
 
 import ast
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List
 
 
 class BaseASTProcessor(ast.NodeVisitor, ABC):
@@ -20,36 +20,36 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     # Binary operators mapping - shared across all processors
     BINARY_OPERATORS = {
-        ast.Add: '+',
-        ast.Sub: '-',
-        ast.Mult: '*',
-        ast.Div: '/',
-        ast.FloorDiv: '//',
-        ast.Mod: '%',
-        ast.Pow: '**',
+        ast.Add: "+",
+        ast.Sub: "-",
+        ast.Mult: "*",
+        ast.Div: "/",
+        ast.FloorDiv: "//",
+        ast.Mod: "%",
+        ast.Pow: "**",
     }
 
     # Unary operators mapping
     UNARY_OPERATORS = {
-        ast.UAdd: '+',
-        ast.USub: '-',
-        ast.Not: 'not',
+        ast.UAdd: "+",
+        ast.USub: "-",
+        ast.Not: "not",
     }
 
     # Comparison operators mapping
     COMPARISON_OPERATORS = {
-        ast.Eq: '==',
-        ast.NotEq: '!=',
-        ast.Lt: '<',
-        ast.LtE: '<=',
-        ast.Gt: '>',
-        ast.GtE: '>=',
+        ast.Eq: "==",
+        ast.NotEq: "!=",
+        ast.Lt: "<",
+        ast.LtE: "<=",
+        ast.Gt: ">",
+        ast.GtE: ">=",
     }
 
     # Boolean operators mapping
     BOOLEAN_OPERATORS = {
-        ast.And: 'and',
-        ast.Or: 'or',
+        ast.And: "and",
+        ast.Or: "or",
     }
 
     def __init__(self):
@@ -212,7 +212,9 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             if type(op) in self.COMPARISON_OPERATORS:
                 ops.append(self.COMPARISON_OPERATORS[type(op)])
             else:
-                raise NotImplementedError(f"Unsupported comparison operator: {type(op)}")
+                raise NotImplementedError(
+                    f"Unsupported comparison operator: {type(op)}"
+                )
 
         return self.process_compare(left, ops, comparators)
 
@@ -270,7 +272,7 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     def is_supported_node(self, node: ast.AST) -> bool:
         """Check if a node type is supported by this processor."""
-        method_name = f'visit_{type(node).__name__}'
+        method_name = f"visit_{type(node).__name__}"
         return hasattr(self, method_name)
 
     def validate_single_target_assignment(self, node: ast.Assign) -> None:
@@ -285,6 +287,7 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
 class ProcessingMode:
     """Enumeration of different processing modes."""
+
     INTERPRET = "interpret"
     GENERATE_IR = "generate_ir"
 
@@ -297,15 +300,19 @@ class ProcessorFactory:
         """Create an AST processor based on the specified mode."""
         if mode == ProcessingMode.INTERPRET:
             from .interpreter import SiluInterpreter
+
             return SiluInterpreter(**kwargs)
         elif mode == ProcessingMode.GENERATE_IR:
             from .ir_generator import SiluIRGenerator
+
             return SiluIRGenerator(**kwargs)
         else:
             raise ValueError(f"Unsupported processing mode: {mode}")
 
 
-def process_ast(source_code: str, mode: str = ProcessingMode.INTERPRET, **kwargs) -> Any:
+def process_ast(
+    source_code: str, mode: str = ProcessingMode.INTERPRET, **kwargs
+) -> Any:
     """
     Process source code using the specified mode.
 

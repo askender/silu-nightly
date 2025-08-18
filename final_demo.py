@@ -13,11 +13,10 @@ import json
 from pprint import pprint
 
 # Add the silu package to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'silu'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "silu"))
 
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
-from silu.ast_processor import BaseASTProcessor
 
 
 def print_section(title):
@@ -132,6 +131,7 @@ print("Blast off!")
     except Exception as e:
         print(f"❌ Interpretation error: {e}")
         import traceback
+
         traceback.print_exc()
 
     # Show IR structure for control flow
@@ -144,7 +144,9 @@ print("Blast off!")
         print("IR for fibonacci function:")
         pprint(ir_result[0], width=100)  # First item should be fibonacci function
         print("\nIR for if-elif-else structure:")
-        pprint(ir_result[1], width=100)  # Second item should be classify_number function
+        pprint(
+            ir_result[1], width=100
+        )  # Second item should be classify_number function
     except Exception as e:
         print(f"❌ IR generation error: {e}")
 
@@ -206,7 +208,7 @@ print(f"First: {first}, Last: {last}")
 
         print("Sample IR representations:")
         for i, stmt in enumerate(ir_result[:5]):  # Show first 5 statements
-            print(f"Statement {i+1}: {stmt}")
+            print(f"Statement {i + 1}: {stmt}")
     except Exception as e:
         print(f"❌ IR generation error: {e}")
 

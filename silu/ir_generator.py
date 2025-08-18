@@ -26,7 +26,7 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def process_assign(self, target: Any, value: Any) -> Tuple[str, Any, Any, None]:
         """Process an assignment by creating an assign IR node."""
-        return ('assign', target, value, None)
+        return ("assign", target, value, None)
 
     def process_name(self, name: str, context: ast.AST) -> str:
         """Process a name by returning the identifier string."""
@@ -62,11 +62,17 @@ class SiluIRGenerator(BaseASTProcessor):
                 current_left = comp
             return comparisons
 
-    def process_call(self, func: Any, args: List[Any], keywords: Dict[str, Any]) -> Tuple[str, Any, List[Any], Dict[str, Any]]:
+    def process_call(
+        self, func: Any, args: List[Any], keywords: Dict[str, Any]
+    ) -> Tuple[str, Any, List[Any], Dict[str, Any]]:
         """Process a function call by creating a call IR node."""
-        return ('func_call', func, args, keywords)
+        return ("func_call", func, args, keywords)
 
-    def process_functiondef(self, name: str, args: List[str], body: List[Any]) -> Tuple[str, str, Tuple[str, ...], Tuple[Any, ...], Optional[Tuple], Optional[Any]]:
+    def process_functiondef(
+        self, name: str, args: List[str], body: List[Any]
+    ) -> Tuple[
+        str, str, Tuple[str, ...], Tuple[Any, ...], Optional[Tuple], Optional[Any]
+    ]:
         """Process a function definition by creating a func_def IR node."""
         params = tuple(args)
         body_tuple = tuple(body)
@@ -79,23 +85,27 @@ class SiluIRGenerator(BaseASTProcessor):
             param_types = None
             return_type = None
 
-        return ('func_def', name, params, body_tuple, param_types, return_type)
+        return ("func_def", name, params, body_tuple, param_types, return_type)
 
     def process_return(self, value: Any) -> Tuple[str, Any]:
         """Process a return statement by creating a return IR node."""
-        return ('return', value)
+        return ("return", value)
 
-    def process_if(self, test: Any, body: List[Any], orelse: List[Any]) -> Tuple[str, Any, List[Any], List[Any]]:
+    def process_if(
+        self, test: Any, body: List[Any], orelse: List[Any]
+    ) -> Tuple[str, Any, List[Any], List[Any]]:
         """Process an if statement by creating an if IR node."""
-        return ('if', test, body, orelse)
+        return ("if", test, body, orelse)
 
     def process_while(self, test: Any, body: List[Any]) -> Tuple[str, Any, List[Any]]:
         """Process a while loop by creating a while IR node."""
-        return ('while', test, body)
+        return ("while", test, body)
 
-    def process_for(self, target: Any, iter_: Any, body: List[Any]) -> Tuple[str, Any, Any, List[Any]]:
+    def process_for(
+        self, target: Any, iter_: Any, body: List[Any]
+    ) -> Tuple[str, Any, Any, List[Any]]:
         """Process a for loop by creating a for IR node."""
-        return ('for', target, iter_, body)
+        return ("for", target, iter_, body)
 
     def process_list(self, elements: List[Any]) -> Tuple[Any, ...]:
         """Process a list literal by creating a tuple of elements."""
@@ -112,30 +122,34 @@ class SiluIRGenerator(BaseASTProcessor):
         target = self.visit(node.target)
         value = self.visit(node.value) if node.value else None
         annotation = self.visit(node.annotation) if node.annotation else None
-        return ('assign', target, value, annotation)
+        return ("assign", target, value, annotation)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> Tuple[str, Any, str, Any]:
         """Visit an augmented assignment node."""
         target = self.visit(node.target)
         op_map = {
-            ast.Add: '+=', ast.Sub: '-=', ast.Mult: '*=',
-            ast.Div: '/=', ast.FloorDiv: '//=', ast.Mod: '%='
+            ast.Add: "+=",
+            ast.Sub: "-=",
+            ast.Mult: "*=",
+            ast.Div: "/=",
+            ast.FloorDiv: "//=",
+            ast.Mod: "%=",
         }
-        op = op_map.get(type(node.op), '?=')
+        op = op_map.get(type(node.op), "?=")
         value = self.visit(node.value)
-        return ('aug_assign', target, op, value)
+        return ("aug_assign", target, op, value)
 
     def visit_Break(self, node: ast.Break) -> Tuple[str]:
         """Visit a break statement."""
-        return ('break',)
+        return ("break",)
 
     def visit_Continue(self, node: ast.Continue) -> Tuple[str]:
         """Visit a continue statement."""
-        return ('continue',)
+        return ("continue",)
 
     def visit_Pass(self, node: ast.Pass) -> Tuple[str]:
         """Visit a pass statement."""
-        return ('pass',)
+        return ("pass",)
 
     def visit_Attribute(self, node: ast.Attribute) -> str:
         """Visit an attribute access node."""
@@ -146,14 +160,14 @@ class SiluIRGenerator(BaseASTProcessor):
         """Visit a subscript node (indexing)."""
         value = self.visit(node.value)
         slice_val = self.visit(node.slice)
-        return ('subscript', value, slice_val)
+        return ("subscript", value, slice_val)
 
     def visit_Slice(self, node: ast.Slice) -> Tuple[str, Any, Any, Any]:
         """Visit a slice node."""
         lower = self.visit(node.lower) if node.lower else None
         upper = self.visit(node.upper) if node.upper else None
         step = self.visit(node.step) if node.step else None
-        return ('slice', lower, upper, step)
+        return ("slice", lower, upper, step)
 
     def visit_Tuple(self, node: ast.Tuple) -> Tuple[Any, ...]:
         """Visit a tuple literal node."""
@@ -166,12 +180,12 @@ class SiluIRGenerator(BaseASTProcessor):
             key_ir = self.visit(key) if key else None
             value_ir = self.visit(value)
             pairs.append((key_ir, value_ir))
-        return ('dict', pairs)
+        return ("dict", pairs)
 
     def visit_Set(self, node: ast.Set) -> Tuple[str, List[Any]]:
         """Visit a set literal node."""
         elements = [self.visit(e) for e in node.elts]
-        return ('set', elements)
+        return ("set", elements)
 
     def visit_ListComp(self, node: ast.ListComp) -> Tuple[str, Any, List[Tuple]]:
         """Visit a list comprehension node."""
@@ -182,7 +196,7 @@ class SiluIRGenerator(BaseASTProcessor):
             iter_val = self.visit(gen.iter)
             ifs = [self.visit(cond) for cond in gen.ifs]
             generators.append((target, iter_val, ifs))
-        return ('list_comp', elt, generators)
+        return ("list_comp", elt, generators)
 
     def visit_SetComp(self, node: ast.SetComp) -> Tuple[str, Any, List[Tuple]]:
         """Visit a set comprehension node."""
@@ -193,7 +207,7 @@ class SiluIRGenerator(BaseASTProcessor):
             iter_val = self.visit(gen.iter)
             ifs = [self.visit(cond) for cond in gen.ifs]
             generators.append((target, iter_val, ifs))
-        return ('set_comp', elt, generators)
+        return ("set_comp", elt, generators)
 
     def visit_DictComp(self, node: ast.DictComp) -> Tuple[str, Any, Any, List[Tuple]]:
         """Visit a dictionary comprehension node."""
@@ -205,16 +219,18 @@ class SiluIRGenerator(BaseASTProcessor):
             iter_val = self.visit(gen.iter)
             ifs = [self.visit(cond) for cond in gen.ifs]
             generators.append((target, iter_val, ifs))
-        return ('dict_comp', key, value, generators)
+        return ("dict_comp", key, value, generators)
 
     def visit_IfExp(self, node: ast.IfExp) -> Tuple[str, Any, Any, Any]:
         """Visit a conditional expression (ternary operator)."""
         test = self.visit(node.test)
         body = self.visit(node.body)
         orelse = self.visit(node.orelse)
-        return ('if_expr', test, body, orelse)
+        return ("if_expr", test, body, orelse)
 
-    def visit_Lambda(self, node: ast.Lambda) -> Tuple[str, Tuple[str, ...], Any, Optional[Tuple], Optional[Any]]:
+    def visit_Lambda(
+        self, node: ast.Lambda
+    ) -> Tuple[str, Tuple[str, ...], Any, Optional[Tuple], Optional[Any]]:
         """Visit a lambda function node."""
         params = tuple(arg.arg for arg in node.args.args)
         body = self.visit(node.body)
@@ -229,76 +245,92 @@ class SiluIRGenerator(BaseASTProcessor):
             param_types = None
             return_type = None
 
-        return ('lambda', params, body, param_types, return_type)
+        return ("lambda", params, body, param_types, return_type)
 
-    def visit_Try(self, node: ast.Try) -> Tuple[str, List[Any], List[Any], List[Any], List[Any]]:
+    def visit_Try(
+        self, node: ast.Try
+    ) -> Tuple[str, List[Any], List[Any], List[Any], List[Any]]:
         """Visit a try-except block."""
         body = [self.visit(stmt) for stmt in node.body]
         handlers = [self.visit(h) for h in node.handlers]
         orelse = [self.visit(stmt) for stmt in node.orelse] if node.orelse else []
-        finalbody = [self.visit(stmt) for stmt in node.finalbody] if node.finalbody else []
-        return ('try', body, handlers, orelse, finalbody)
+        finalbody = (
+            [self.visit(stmt) for stmt in node.finalbody] if node.finalbody else []
+        )
+        return ("try", body, handlers, orelse, finalbody)
 
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> Tuple[str, Any, Optional[str], List[Any]]:
+    def visit_ExceptHandler(
+        self, node: ast.ExceptHandler
+    ) -> Tuple[str, Any, Optional[str], List[Any]]:
         """Visit an exception handler."""
         exc_type = self.visit(node.type) if node.type else None
         name = node.name if node.name else None
         body = [self.visit(stmt) for stmt in node.body]
-        return ('except', exc_type, name, body)
+        return ("except", exc_type, name, body)
 
     def visit_Raise(self, node: ast.Raise) -> Tuple[str, Any]:
         """Visit a raise statement."""
         exc = self.visit(node.exc) if node.exc else None
-        return ('raise', exc)
+        return ("raise", exc)
 
     def visit_Assert(self, node: ast.Assert) -> Tuple[str, Any, Any]:
         """Visit an assert statement."""
         test = self.visit(node.test)
         msg = self.visit(node.msg) if node.msg else None
-        return ('assert', test, msg)
+        return ("assert", test, msg)
 
-    def visit_Import(self, node: ast.Import) -> Tuple[str, List[Tuple[str, Optional[str]]]]:
+    def visit_Import(
+        self, node: ast.Import
+    ) -> Tuple[str, List[Tuple[str, Optional[str]]]]:
         """Visit an import statement."""
         names = [(alias.name, alias.asname) for alias in node.names]
-        return ('import', names)
+        return ("import", names)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> Tuple[str, Optional[str], List[Tuple[str, Optional[str]]], int]:
+    def visit_ImportFrom(
+        self, node: ast.ImportFrom
+    ) -> Tuple[str, Optional[str], List[Tuple[str, Optional[str]]], int]:
         """Visit a from-import statement."""
         module = node.module
         names = [(alias.name, alias.asname) for alias in node.names]
         level = node.level
-        return ('from_import', module, names, level)
+        return ("from_import", module, names, level)
 
-    def visit_With(self, node: ast.With) -> Tuple[str, List[Tuple[Any, Any]], List[Any]]:
+    def visit_With(
+        self, node: ast.With
+    ) -> Tuple[str, List[Tuple[Any, Any]], List[Any]]:
         """Visit a with statement."""
         items = []
         for item in node.items:
             context_expr = self.visit(item.context_expr)
-            optional_vars = self.visit(item.optional_vars) if item.optional_vars else None
+            optional_vars = (
+                self.visit(item.optional_vars) if item.optional_vars else None
+            )
             items.append((context_expr, optional_vars))
         body = [self.visit(stmt) for stmt in node.body]
-        return ('with', items, body)
+        return ("with", items, body)
 
     def visit_Starred(self, node: ast.Starred) -> Tuple[str, Any]:
         """Visit a starred expression (*args)."""
         value = self.visit(node.value)
-        return ('starred', value)
+        return ("starred", value)
 
     def visit_Yield(self, node: ast.Yield) -> Tuple[str, Any]:
         """Visit a yield expression."""
         value = self.visit(node.value) if node.value else None
-        return ('yield', value)
+        return ("yield", value)
 
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Tuple[str, Any]:
         """Visit a yield from expression."""
         value = self.visit(node.value)
-        return ('yield_from', value)
+        return ("yield_from", value)
 
     # ================== Generic Visit for Unsupported Nodes ==================
 
     def generic_visit(self, node: ast.AST) -> None:
         """Handle unsupported AST nodes."""
-        raise NotImplementedError(f"Unsupported syntax for IR generation: {type(node).__name__}")
+        raise NotImplementedError(
+            f"Unsupported syntax for IR generation: {type(node).__name__}"
+        )
 
 
 def main() -> None:

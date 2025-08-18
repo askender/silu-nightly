@@ -13,6 +13,7 @@ from .ast_processor import BaseASTProcessor
 
 class ReturnException(Exception):
     """Exception used to handle return statements in functions."""
+
     def __init__(self, value):
         self.value = value
 
@@ -20,7 +21,9 @@ class ReturnException(Exception):
 class Function:
     """Represents a user-defined function."""
 
-    def __init__(self, name: str, args: List[str], body: List[ast.stmt], env: "Environment"):
+    def __init__(
+        self, name: str, args: List[str], body: List[ast.stmt], env: "Environment"
+    ):
         self.name = name
         self.args = args
         self.body = body
@@ -111,7 +114,7 @@ class Environment:
             return ""
         try:
             return str(value)
-        except:
+        except Exception:
             return str(type(value).__name__)
 
     def _bool(self, value=None) -> bool:
@@ -169,20 +172,20 @@ class SiluInterpreter(BaseASTProcessor):
     def process_binop(self, op: str, left: Any, right: Any) -> Any:
         """Process a binary operation by applying the operator."""
         # Check for division by zero operations
-        if op in ('/', '//', '%') and right == 0:
-            if op == '%':
+        if op in ("/", "//", "%") and right == 0:
+            if op == "%":
                 raise ZeroDivisionError("Modulo by zero")
             raise ZeroDivisionError("Division by zero")
 
         # Apply the operation
         operations = {
-            '+': lambda l, r: l + r,
-            '-': lambda l, r: l - r,
-            '*': lambda l, r: l * r,
-            '/': lambda l, r: l / r,
-            '//': lambda l, r: l // r,
-            '%': lambda l, r: l % r,
-            '**': lambda l, r: l ** r,
+            "+": lambda left, right: left + right,
+            "-": lambda left, right: left - right,
+            "*": lambda left, right: left * right,
+            "/": lambda left, right: left / right,
+            "//": lambda left, right: left // right,
+            "%": lambda left, right: left % right,
+            "**": lambda left, right: left**right,
         }
 
         if op in operations:
@@ -193,9 +196,9 @@ class SiluInterpreter(BaseASTProcessor):
     def process_unaryop(self, op: str, operand: Any) -> Any:
         """Process a unary operation by applying the operator."""
         operations = {
-            '+': lambda x: +x,
-            '-': lambda x: -x,
-            'not': lambda x: not x,
+            "+": lambda x: +x,
+            "-": lambda x: -x,
+            "not": lambda x: not x,
         }
 
         if op in operations:
@@ -205,12 +208,12 @@ class SiluInterpreter(BaseASTProcessor):
 
     def process_boolop(self, op: str, values: List[Any]) -> Any:
         """Process a boolean operation with short-circuit evaluation."""
-        if op == 'and':
+        if op == "and":
             for value in values:
                 if not value:
                     return False
             return True
-        elif op == 'or':
+        elif op == "or":
             for value in values:
                 if value:
                     return True
@@ -224,12 +227,12 @@ class SiluInterpreter(BaseASTProcessor):
             raise ValueError("Mismatch between comparators and operators")
 
         operations = {
-            '==': lambda l, r: l == r,
-            '!=': lambda l, r: l != r,
-            '<': lambda l, r: l < r,
-            '<=': lambda l, r: l <= r,
-            '>': lambda l, r: l > r,
-            '>=': lambda l, r: l >= r,
+            "==": lambda left, right: left == right,
+            "!=": lambda left, right: left != right,
+            "<": lambda left, right: left < right,
+            "<=": lambda left, right: left <= right,
+            ">": lambda left, right: left > right,
+            ">=": lambda left, right: left >= right,
         }
 
         # For chained comparisons, we need to evaluate each pair
@@ -323,7 +326,9 @@ class SiluInterpreter(BaseASTProcessor):
             if isinstance(node.target, ast.Name):
                 self.env.set(node.target.id, item)
             else:
-                raise NotImplementedError("Only simple variable targets are supported in for loops")
+                raise NotImplementedError(
+                    "Only simple variable targets are supported in for loops"
+                )
 
             for stmt in node.body:
                 self.visit(stmt)
