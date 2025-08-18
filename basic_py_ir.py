@@ -9,7 +9,7 @@ class PyToSimpleIR(ast.NodeVisitor):
 
     # ---------------- Module & Statements ----------------
     def visit_Module(self, node):
-        return [self.visit(stmt) for stmt in node.body]
+        return tuple([self.visit(stmt) for stmt in node.body])
 
     def visit_Expr(self, node):
         return self.visit(node.value)
@@ -18,10 +18,12 @@ class PyToSimpleIR(ast.NodeVisitor):
     def visit_FunctionDef(self, node):
         name = node.name
         params = [arg.arg for arg in node.args.args]
+        params = tuple(params)
 
         if self.record_types:
             param_types = [self.visit(arg.annotation) if arg.annotation else None
                            for arg in node.args.args]
+            param_types = tuple(param_types)
             if node.returns is None:
                 return_type = None           # 无返回注解
             elif isinstance(node.returns, ast.Constant) and node.returns.value is None:
@@ -33,6 +35,7 @@ class PyToSimpleIR(ast.NodeVisitor):
             return_type = None
 
         body = [self.visit(stmt) for stmt in node.body]
+        body = tuple(body)
         return ('func_def', name, params, body, param_types, return_type)
 
     # ---------------- Class ----------------
@@ -120,7 +123,7 @@ class PyToSimpleIR(ast.NodeVisitor):
         op = op_map[type(node.op)]
         left = self.visit(node.left)
         right = self.visit(node.right)
-        return [op, left, right]
+        return tuple([op, left, right])
 
     def visit_Compare(self, node):
         op_map = {
@@ -149,11 +152,12 @@ class PyToSimpleIR(ast.NodeVisitor):
         op_map = {ast.And: 'and', ast.Or: 'or'}
         op = op_map[type(node.op)]
         values = [self.visit(v) for v in node.values]
-        return [op] + values
+        r = [op] + values
+        return tuple(r)
 
     def visit_UnaryOp(self, node):
         if isinstance(node.op, ast.Not):
-            return ['not', self.visit(node.operand)]
+            return tuple(['not', self.visit(node.operand)])
         else:
             raise Exception(f"Unsupported unary op: {type(node.op).__name__}")
 
@@ -172,7 +176,7 @@ class PyToSimpleIR(ast.NodeVisitor):
         return ('slice', lower, upper, step)
 
     def visit_List(self, node):
-        return [self.visit(elt) for elt in node.elts]
+        return tuple([self.visit(elt) for elt in node.elts])
 
     def visit_Tuple(self, node):
         return tuple(self.visit(elt) for elt in node.elts)
@@ -294,11 +298,14 @@ class PyToSimpleIR(ast.NodeVisitor):
 
     def visit_Lambda(self, node):
         params = [arg.arg for arg in node.args.args]
+        params = tuple(params)
         body = self.visit(node.body)
+        body = tuple(body)
         if self.record_types:
             param_types = [self.visit(arg.annotation) if arg.annotation else None
                         for arg in node.args.args]
             return_type = None  # Lambda 返回类型推断可选
+            param_types = tuple(param_types)
         else:
             param_types = None
             return_type = None
