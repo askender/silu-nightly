@@ -1,17 +1,26 @@
 """
 Silu Interpreter Module
+
+This module provides the main interpreter implementation that extends BaseASTProcessor
+for direct execution of Silu programs.
 """
 
 import ast
 from typing import Any, Dict, List, Optional
 
+from .ast_processor import BaseASTProcessor
+
+
+class ReturnException(Exception):
+    """Exception used to handle return statements in functions."""
+    def __init__(self, value):
+        self.value = value
+
 
 class Function:
     """Represents a user-defined function."""
 
-    def __init__(
-        self, name: str, args: List[ast.arg], body: List[ast.stmt], env: "Environment"
-    ):
+    def __init__(self, name: str, args: List[str], body: List[ast.stmt], env: "Environment"):
         self.name = name
         self.args = args
         self.body = body
@@ -19,21 +28,21 @@ class Function:
 
     def __call__(self, *args):
         # Create a new environment for the function execution
-        # with the function's environment as parent
         func_env = Environment(parent=self.env)
 
         # Bind arguments to their values
         for arg, value in zip(self.args, args):
-            func_env.set(arg.arg, value)
+            func_env.set(arg, value)
 
         # Create a new interpreter instance for the function execution
         interpreter = SiluInterpreter(env=func_env)
 
         # Execute the function body
-        for stmt in self.body:
-            if isinstance(stmt, ast.Return):
-                return interpreter.visit(stmt)
-            interpreter.visit(stmt)
+        try:
+            for stmt in self.body:
+                interpreter.visit(stmt)
+        except ReturnException as ret:
+            return ret.value
 
         # Implicit return None if no explicit return statement
         return None
@@ -57,12 +66,6 @@ class Environment:
             self.vars["str"] = self._str
             self.vars["bool"] = self._bool
 
-            # Type objects
-            self.vars["int_type"] = int
-            self.vars["float_type"] = float
-            self.vars["str_type"] = str
-            self.vars["bool_type"] = bool
-
             # Built-in types
             self.vars["list"] = self._list
             self.vars["range"] = range
@@ -83,59 +86,42 @@ class Environment:
 
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance function."""
-        # Handle direct type objects and type objects referenced by name
         type_map = {"int": int, "float": float, "str": str, "bool": bool}
-
-        # Direct type object comparison
         if cls in type_map.values():
             return isinstance(obj, cls)
-
-        # Handle type objects referenced by name from vars
         if hasattr(cls, "__name__") and cls.__name__ in type_map:
             return isinstance(obj, type_map[cls.__name__])
-
         raise NotImplementedError(f"isinstance not implemented for {cls}")
-
-    def _convert_type(self, value, type_func, default_value):
-        """Helper method for type conversion functions."""
-        if value is None:
-            return default_value
-        return type_func(value)
 
     def _int(self, value=None) -> int:
         """Built-in int function."""
         if value is None:
             return 0
-        elif isinstance(value, bool):
-            return int(value)
-        elif isinstance(value, (int, float, str)):
-            return int(value)
-        else:
-            raise NotImplementedError(f"int() not implemented for {type(value)}")
+        return int(value)
 
     def _float(self, value=None) -> float:
         """Built-in float function."""
         if value is None:
             return 0.0
-        elif isinstance(value, bool):
-            return float(value)
-        elif isinstance(value, (int, float, str)):
-            return float(value)
-        else:
-            raise NotImplementedError(f"float() not implemented for {type(value)}")
+        return float(value)
 
     def _str(self, value=None) -> str:
         """Built-in str function."""
-        return self._convert_type(value, str, "")
+        if value is None:
+            return ""
+        try:
+            return str(value)
+        except:
+            return str(type(value).__name__)
 
     def _bool(self, value=None) -> bool:
         """Built-in bool function."""
-        return self._convert_type(value, bool, False)
+        if value is None:
+            return False
+        return bool(value)
 
     def get(self, name: str) -> Any:
-        """
-        Get the value of a variable or function.
-        """
+        """Get the value of a variable or function."""
         if name in self.vars:
             return self.vars[name]
         if self.parent:
@@ -143,144 +129,108 @@ class Environment:
         raise NameError(f"Name '{name}' is not defined")
 
     def set(self, name: str, value: Any) -> None:
-        """
-        Set the value of a variable.
-        """
+        """Set the value of a variable."""
         self.vars[name] = value
 
 
-class SiluInterpreter(ast.NodeVisitor):
-    """A simple interpreter for a subset of Python syntax."""
-
-    # Binary operators mapping
-    BINARY_OPERATORS = {
-        ast.Add: lambda x, y: x + y,
-        ast.Sub: lambda x, y: x - y,
-        ast.Mult: lambda x, y: x * y,
-        ast.Div: lambda x, y: x / y,
-        ast.FloorDiv: lambda x, y: x // y,
-        ast.Mod: lambda x, y: x % y,
-        ast.Pow: lambda x, y: x**y,
-    }
-
-    # Unary operators mapping
-    UNARY_OPERATORS = {
-        ast.UAdd: lambda x: +x,
-        ast.USub: lambda x: -x,
-        ast.Not: lambda x: not x,
-    }
-
-    # Comparison operators mapping
-    COMPARISON_OPERATORS = {
-        ast.Eq: lambda x, y: x == y,
-        ast.NotEq: lambda x, y: x != y,
-        ast.Lt: lambda x, y: x < y,
-        ast.LtE: lambda x, y: x <= y,
-        ast.Gt: lambda x, y: x > y,
-        ast.GtE: lambda x, y: x >= y,
-    }
+class SiluInterpreter(BaseASTProcessor):
+    """A Silu interpreter that executes code directly."""
 
     def __init__(self, env: Optional[Environment] = None):
+        super().__init__()
         self.env = env if env is not None else Environment()
 
-    def visit_Module(self, node: ast.Module) -> None:
-        """Visit the root module node and execute its statements."""
-        for stmt in node.body:
-            self.visit(stmt)
+    # ================== Implementation of Abstract Methods ==================
 
-    def visit_Expr(self, node: ast.Expr) -> Any:
-        """Visit an expression node."""
-        return self.visit(node.value)
+    def process_module(self, statements: List[Any]) -> None:
+        """Process a module - statements are already executed during traversal."""
+        return None
 
-    def visit_Assign(self, node: ast.Assign) -> None:
-        """
-        Visit an assignment node.
-        """
-        # For simplicity, we only handle single target assignments (e.g., x = 10)
-        if len(node.targets) != 1:
-            raise NotImplementedError("Only single target assignments are supported")
-
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
+    def process_assign(self, target: Any, value: Any) -> None:
+        """Process an assignment by setting the variable in the environment."""
+        if isinstance(target, str):
+            self.env.set(target, value)
+        else:
             raise NotImplementedError("Only simple variable assignments are supported")
 
-        value = self.visit(node.value)
-        self.env.set(target.id, value)
-
-    def visit_Name(self, node: ast.Name) -> Any:
-        """Visit a name node."""
-        if isinstance(node.ctx, ast.Load):
-            return self.env.get(node.id)
-        elif isinstance(node.ctx, ast.Store):
-            # This case is handled by visit_Assign
-            pass
+    def process_name(self, name: str, context: ast.AST) -> Any:
+        """Process a name by looking it up in the environment or returning the name."""
+        if isinstance(context, ast.Load):
+            return self.env.get(name)
+        elif isinstance(context, ast.Store):
+            return name
         else:
-            raise NotImplementedError(f"Unsupported context for name: {type(node.ctx)}")
+            raise NotImplementedError(f"Unsupported context for name: {type(context)}")
 
-    def visit_Constant(self, node: ast.Constant) -> Any:
-        """Visit a constant node."""
-        return node.value
+    def process_constant(self, value: Any) -> Any:
+        """Process a constant by returning its value."""
+        return value
 
-    def visit_BinOp(self, node: ast.BinOp) -> Any:
-        """
-        Visit a binary operation node.
-        """
-        left = self.visit(node.left)
-        right = self.visit(node.right)
-
+    def process_binop(self, op: str, left: Any, right: Any) -> Any:
+        """Process a binary operation by applying the operator."""
         # Check for division by zero operations
-        if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and right == 0:
-            if isinstance(node.op, ast.Mod):
+        if op in ('/', '//', '%') and right == 0:
+            if op == '%':
                 raise ZeroDivisionError("Modulo by zero")
             raise ZeroDivisionError("Division by zero")
 
-        if type(node.op) in self.BINARY_OPERATORS:
-            return self.BINARY_OPERATORS[type(node.op)](left, right)
+        # Apply the operation
+        operations = {
+            '+': lambda l, r: l + r,
+            '-': lambda l, r: l - r,
+            '*': lambda l, r: l * r,
+            '/': lambda l, r: l / r,
+            '//': lambda l, r: l // r,
+            '%': lambda l, r: l % r,
+            '**': lambda l, r: l ** r,
+        }
 
-        raise NotImplementedError(f"Unsupported binary operator: {type(node.op)}")
+        if op in operations:
+            return operations[op](left, right)
+        else:
+            raise NotImplementedError(f"Unsupported binary operator: {op}")
 
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
-        """
-        Visit a unary operation node.
-        """
-        operand = self.visit(node.operand)
+    def process_unaryop(self, op: str, operand: Any) -> Any:
+        """Process a unary operation by applying the operator."""
+        operations = {
+            '+': lambda x: +x,
+            '-': lambda x: -x,
+            'not': lambda x: not x,
+        }
 
-        if type(node.op) in self.UNARY_OPERATORS:
-            return self.UNARY_OPERATORS[type(node.op)](operand)
+        if op in operations:
+            return operations[op](operand)
+        else:
+            raise NotImplementedError(f"Unsupported unary operator: {op}")
 
-        raise NotImplementedError(f"Unsupported unary operator: {type(node.op)}")
-
-    def visit_BoolOp(self, node: ast.BoolOp) -> Any:
-        """
-        Visit a boolean operation node.
-        """
-        values = [self.visit(value) for value in node.values]
-
-        # Handle short-circuit evaluation
-        if isinstance(node.op, ast.And):
+    def process_boolop(self, op: str, values: List[Any]) -> Any:
+        """Process a boolean operation with short-circuit evaluation."""
+        if op == 'and':
             for value in values:
                 if not value:
                     return False
             return True
-
-        if isinstance(node.op, ast.Or):
+        elif op == 'or':
             for value in values:
                 if value:
                     return True
             return False
+        else:
+            raise NotImplementedError(f"Unsupported boolean operator: {op}")
 
-        raise NotImplementedError(f"Unsupported boolean operator: {type(node.op)}")
-
-    def visit_Compare(self, node: ast.Compare) -> Any:
-        """
-        Visit a comparison node.
-        """
-        left = self.visit(node.left)
-        comparators = [self.visit(comparator) for comparator in node.comparators]
-        ops = node.ops
-
+    def process_compare(self, left: Any, ops: List[str], comparators: List[Any]) -> Any:
+        """Process comparison operations with support for chained comparisons."""
         if len(comparators) != len(ops):
             raise ValueError("Mismatch between comparators and operators")
+
+        operations = {
+            '==': lambda l, r: l == r,
+            '!=': lambda l, r: l != r,
+            '<': lambda l, r: l < r,
+            '<=': lambda l, r: l <= r,
+            '>': lambda l, r: l > r,
+            '>=': lambda l, r: l >= r,
+        }
 
         # For chained comparisons, we need to evaluate each pair
         for i, (comparator, op) in enumerate(zip(comparators, ops)):
@@ -289,35 +239,113 @@ class SiluInterpreter(ast.NodeVisitor):
             left_val = left if i == 0 else comparators[i - 1]
 
             # Apply the comparison operation
-            if type(op) not in self.COMPARISON_OPERATORS:
-                raise NotImplementedError(
-                    f"Unsupported comparison operator: {type(op)}"
-                )
+            if op not in operations:
+                raise NotImplementedError(f"Unsupported comparison operator: {op}")
 
-            result = self.COMPARISON_OPERATORS[type(op)](left_val, comparator)
-
+            result = operations[op](left_val, comparator)
             if not result:  # Short-circuit evaluation
                 return False
 
         return True
 
+    def process_call(self, func: Any, args: List[Any], keywords: Dict[str, Any]) -> Any:
+        """Process a function call by invoking the function."""
+        if isinstance(func, Function):
+            return func(*args)
+        elif callable(func):
+            return func(*args)
+        else:
+            raise TypeError(f"'{type(func).__name__}' object is not callable")
+
+    def process_functiondef(self, name: str, args: List[str], body: List[Any]) -> None:
+        """This is not used - we override visit_FunctionDef instead."""
+        pass
+
+    def process_return(self, value: Any) -> Any:
+        """Process a return statement by raising a ReturnException."""
+        raise ReturnException(value if value is not None else None)
+
+    def process_if(self, test: Any, body: List[Any], orelse: List[Any]) -> None:
+        """This is not used - we override visit_If instead."""
+        pass
+
+    def process_while(self, test: Any, body: List[Any]) -> None:
+        """This is not used - we override visit_While instead."""
+        pass
+
+    def process_for(self, target: Any, iter_: Any, body: List[Any]) -> None:
+        """This is not used - we override visit_For instead."""
+        pass
+
+    def process_list(self, elements: List[Any]) -> List[Any]:
+        """Process a list literal by returning the list of elements."""
+        return elements
+
+    def process_expr(self, value: Any) -> Any:
+        """Process an expression statement by returning the value."""
+        return value
+
+    # ================== Override specific visit methods for proper execution ==================
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """Visit a function definition node."""
+        name = node.name
+        args = [arg.arg for arg in node.args.args]
+        body = node.body  # Keep original AST nodes
+        func = Function(name, args, body, self.env)
+        self.env.set(name, func)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        """Visit a return statement node."""
+        value = self.visit(node.value) if node.value else None
+        raise ReturnException(value)
+
+    def visit_If(self, node: ast.If) -> None:
+        """Visit an if statement node."""
+        condition = self.visit(node.test)
+        if condition:
+            for stmt in node.body:
+                self.visit(stmt)
+        elif node.orelse:
+            for stmt in node.orelse:
+                self.visit(stmt)
+
+    def visit_While(self, node: ast.While) -> None:
+        """Visit a while loop node."""
+        while self.visit(node.test):
+            for stmt in node.body:
+                self.visit(stmt)
+
+    def visit_For(self, node: ast.For) -> None:
+        """Visit a for loop node."""
+        iterable = self.visit(node.iter)
+        for item in iterable:
+            if isinstance(node.target, ast.Name):
+                self.env.set(node.target.id, item)
+            else:
+                raise NotImplementedError("Only simple variable targets are supported in for loops")
+
+            for stmt in node.body:
+                self.visit(stmt)
+
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        """Visit an attribute access node."""
+        obj = self.visit(node.value)
+        return getattr(obj, node.attr)
+
     def visit_Call(self, node: ast.Call) -> Any:
-        """
-        Visit a function call node.
-        """
-        # Get the function object
-        func = self.visit(node.func)
-
-        # Evaluate all arguments
-        args = [self.visit(arg) for arg in node.args]
-
+        """Visit a function call node with special handling for method calls."""
         # Special handling for methods on built-in types
         if isinstance(node.func, ast.Attribute):
             # Get the object that the method is being called on
             obj = self.visit(node.func.value)
+            method_name = node.func.attr
+
+            # Evaluate all arguments
+            args = [self.visit(arg) for arg in node.args]
 
             # Handle list methods
-            if isinstance(obj, list) and node.func.attr == "append":
+            if isinstance(obj, list) and method_name == "append":
                 if len(args) == 1:
                     obj.append(args[0])
                     return None  # append() returns None
@@ -326,96 +354,36 @@ class SiluInterpreter(ast.NodeVisitor):
                         f"append() takes exactly one argument ({len(args)} given)"
                     )
 
-        # Call the function
-        if isinstance(func, Function):
-            return func(*args)
-        elif callable(func):
-            return func(*args)
+            # For other methods, get the method and call it
+            method = getattr(obj, method_name)
+            return method(*args)
         else:
-            raise TypeError(f"'{type(func).__name__}' object is not callable")
+            # Regular function call - use the base class implementation
+            return super().visit_Call(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """
-        Visit a function definition node.
-        """
-        # Create a Function object
-        func = Function(node.name, node.args.args, node.body, self.env)
+    def visit_Subscript(self, node: ast.Subscript) -> Any:
+        """Visit a subscript node for indexing."""
+        obj = self.visit(node.value)
+        index = self.visit(node.slice)
+        return obj[index]
 
-        # Store the function in the environment
-        self.env.set(node.name, func)
+    def visit_Dict(self, node: ast.Dict) -> Dict[Any, Any]:
+        """Visit a dictionary literal node."""
+        result = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            key = self.visit(key_node) if key_node else None
+            value = self.visit(value_node)
+            result[key] = value
+        return result
 
-    def visit_Return(self, node: ast.Return) -> Any:
-        """
-        Visit a return statement node.
-        """
-        if node.value:
-            return self.visit(node.value)
-        return None
-
-    def visit_If(self, node: ast.If) -> None:
-        """
-        Visit an if statement node.
-        """
-        # Evaluate the condition
-        condition = self.visit(node.test)
-
-        if condition:
-            # Execute the if block
-            for stmt in node.body:
-                self.visit(stmt)
-        elif node.orelse:
-            # Execute the elif/else block
-            for stmt in node.orelse:
-                self.visit(stmt)
-
-    def visit_While(self, node: ast.While) -> None:
-        """
-        Visit a while loop node.
-        """
-        # While the condition is true, execute the body
-        while self.visit(node.test):
-            for stmt in node.body:
-                self.visit(stmt)
-
-    def visit_List(self, node: ast.List) -> Any:
-        """
-        Visit a list literal node.
-        """
-        # Evaluate all elements in the list
+    def visit_Tuple(self, node: ast.Tuple) -> tuple:
+        """Visit a tuple literal node."""
         elements = [self.visit(element) for element in node.elts]
-        return elements
-
-    def visit_For(self, node: ast.For) -> None:
-        """
-        Visit a for loop node.
-        """
-        # Get the iterable
-        iterable = self.visit(node.iter)
-
-        # Iterate over the iterable
-        for item in iterable:
-            # Set the loop variable in the current environment
-            if isinstance(node.target, ast.Name):
-                self.env.set(node.target.id, item)
-            else:
-                raise NotImplementedError(
-                    "Only simple variable targets are supported in for loops"
-                )
-
-            # Execute the body
-            for stmt in node.body:
-                self.visit(stmt)
-
-        # Execute the else block if it exists (only if loop completed normally)
-        if hasattr(node, "orelse") and node.orelse:
-            for stmt in node.orelse:
-                self.visit(stmt)
+        return tuple(elements)
 
 
 def main() -> None:
-    """
-    Entry point for the Silu interpreter.
-    """
+    """Entry point for the Silu interpreter."""
     print("Hello from Silu!")
 
 
