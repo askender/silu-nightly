@@ -7,7 +7,7 @@ extracting shared AST traversal logic while allowing customization of processing
 
 import ast
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union
 
 
 class BaseASTProcessor(ast.NodeVisitor, ABC):
@@ -18,52 +18,24 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     that subclasses must implement to customize processing behavior.
     """
 
-    # Binary operators mapping - shared across all processors
-    BINARY_OPERATORS = {
-        ast.Add: "+",
-        ast.Sub: "-",
-        ast.Mult: "*",
-        ast.Div: "/",
-        ast.FloorDiv: "//",
-        ast.Mod: "%",
-        ast.Pow: "**",
+    # Consolidated operators mapping
+    OPERATORS = {
+        # Binary operators
+        ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
+        ast.FloorDiv: "//", ast.Mod: "%", ast.Pow: "**",
+        # Unary operators
+        ast.UAdd: "+", ast.USub: "-", ast.Not: "not",
+        # Comparison operators
+        ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=",
+        ast.Gt: ">", ast.GtE: ">=",
+        # Boolean operators
+        ast.And: "and", ast.Or: "or",
     }
-
-    # Unary operators mapping
-    UNARY_OPERATORS = {
-        ast.UAdd: "+",
-        ast.USub: "-",
-        ast.Not: "not",
-    }
-
-    # Comparison operators mapping
-    COMPARISON_OPERATORS = {
-        ast.Eq: "==",
-        ast.NotEq: "!=",
-        ast.Lt: "<",
-        ast.LtE: "<=",
-        ast.Gt: ">",
-        ast.GtE: ">=",
-    }
-
-    # Boolean operators mapping
-    BOOLEAN_OPERATORS = {
-        ast.And: "and",
-        ast.Or: "or",
-    }
-
-    def __init__(self):
-        super().__init__()
 
     # ================== Abstract Methods ==================
 
     @abstractmethod
-    def process_module(self, statements: List[Any]) -> Any:
-        """Process a module with its statements."""
-        pass
-
-    @abstractmethod
-    def process_assign(self, target: Any, value: Any) -> Any:
+    def process_assign(self, target: str, value: Any) -> Any:
         """Process an assignment operation."""
         pass
 
@@ -78,23 +50,8 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         pass
 
     @abstractmethod
-    def process_binop(self, op: str, left: Any, right: Any) -> Any:
-        """Process a binary operation."""
-        pass
-
-    @abstractmethod
-    def process_unaryop(self, op: str, operand: Any) -> Any:
-        """Process a unary operation."""
-        pass
-
-    @abstractmethod
-    def process_boolop(self, op: str, values: List[Any]) -> Any:
-        """Process a boolean operation."""
-        pass
-
-    @abstractmethod
-    def process_compare(self, left: Any, ops: List[str], comparators: List[Any]) -> Any:
-        """Process a comparison operation."""
+    def process_operation(self, op: str, *operands) -> Any:
+        """Process any operation (binary, unary, boolean, comparison)."""
         pass
 
     @abstractmethod
@@ -103,33 +60,13 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         pass
 
     @abstractmethod
-    def process_functiondef(self, name: str, args: List[str], body: List[Any]) -> Any:
-        """Process a function definition."""
+    def process_control_flow(self, node_type: str, **kwargs) -> Any:
+        """Process control flow statements (if, while, for, return, function def)."""
         pass
 
     @abstractmethod
-    def process_return(self, value: Any) -> Any:
-        """Process a return statement."""
-        pass
-
-    @abstractmethod
-    def process_if(self, test: Any, body: List[Any], orelse: List[Any]) -> Any:
-        """Process an if statement."""
-        pass
-
-    @abstractmethod
-    def process_while(self, test: Any, body: List[Any]) -> Any:
-        """Process a while loop."""
-        pass
-
-    @abstractmethod
-    def process_for(self, target: Any, iter_: Any, body: List[Any]) -> Any:
-        """Process a for loop."""
-        pass
-
-    @abstractmethod
-    def process_list(self, elements: List[Any]) -> Any:
-        """Process a list literal."""
+    def process_container(self, container_type: str, elements: List[Any]) -> Any:
+        """Process containers (list, tuple, etc.)."""
         pass
 
     @abstractmethod
@@ -137,31 +74,25 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         """Process an expression statement."""
         pass
 
-    # ================== Concrete Visit Methods ==================
+    # ================== Generic Visit Methods ==================
 
     def visit_Module(self, node: ast.Module) -> Any:
-        """Visit a module node and delegate to process_module."""
+        """Visit a module node."""
         statements = [self.visit(stmt) for stmt in node.body]
-        return self.process_module(statements)
+        return self.process_container("module", statements)
 
     def visit_Expr(self, node: ast.Expr) -> Any:
         """Visit an expression statement."""
-        value = self.visit(node.value)
-        return self.process_expr(value)
+        return self.process_expr(self.visit(node.value))
 
     def visit_Assign(self, node: ast.Assign) -> Any:
         """Visit an assignment node."""
-        # For simplicity, handle single target assignments only
-        if len(node.targets) != 1:
-            raise NotImplementedError("Only single target assignments are supported")
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            raise NotImplementedError("Only single simple variable assignments supported")
 
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            raise NotImplementedError("Only simple variable assignments are supported")
-
-        target_processed = self.visit(target)
-        value_processed = self.visit(node.value)
-        return self.process_assign(target_processed, value_processed)
+        target = node.targets[0].id
+        value = self.visit(node.value)
+        return self.process_assign(target, value)
 
     def visit_Name(self, node: ast.Name) -> Any:
         """Visit a name node."""
@@ -171,52 +102,33 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         """Visit a constant node."""
         return self.process_constant(node.value)
 
+    # ================== Operation Handlers ==================
+
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         """Visit a binary operation node."""
         left = self.visit(node.left)
         right = self.visit(node.right)
-
-        if type(node.op) in self.BINARY_OPERATORS:
-            op = self.BINARY_OPERATORS[type(node.op)]
-            return self.process_binop(op, left, right)
-
-        raise NotImplementedError(f"Unsupported binary operator: {type(node.op)}")
+        op = self._get_operator(node.op)
+        return self.process_operation(op, left, right)
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         """Visit a unary operation node."""
         operand = self.visit(node.operand)
-
-        if type(node.op) in self.UNARY_OPERATORS:
-            op = self.UNARY_OPERATORS[type(node.op)]
-            return self.process_unaryop(op, operand)
-
-        raise NotImplementedError(f"Unsupported unary operator: {type(node.op)}")
+        op = self._get_operator(node.op)
+        return self.process_operation(op, operand)
 
     def visit_BoolOp(self, node: ast.BoolOp) -> Any:
         """Visit a boolean operation node."""
         values = [self.visit(value) for value in node.values]
-
-        if type(node.op) in self.BOOLEAN_OPERATORS:
-            op = self.BOOLEAN_OPERATORS[type(node.op)]
-            return self.process_boolop(op, values)
-
-        raise NotImplementedError(f"Unsupported boolean operator: {type(node.op)}")
+        op = self._get_operator(node.op)
+        return self.process_operation(op, *values)
 
     def visit_Compare(self, node: ast.Compare) -> Any:
         """Visit a comparison node."""
         left = self.visit(node.left)
         comparators = [self.visit(comp) for comp in node.comparators]
-
-        ops = []
-        for op in node.ops:
-            if type(op) in self.COMPARISON_OPERATORS:
-                ops.append(self.COMPARISON_OPERATORS[type(op)])
-            else:
-                raise NotImplementedError(
-                    f"Unsupported comparison operator: {type(op)}"
-                )
-
-        return self.process_compare(left, ops, comparators)
+        ops = [self._get_operator(op) for op in node.ops]
+        return self.process_operation("compare", left, ops, comparators)
 
     def visit_Call(self, node: ast.Call) -> Any:
         """Visit a function call node."""
@@ -225,105 +137,68 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         keywords = {kw.arg: self.visit(kw.value) for kw in node.keywords}
         return self.process_call(func, args, keywords)
 
+    # ================== Control Flow Handlers ==================
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         """Visit a function definition node."""
-        name = node.name
         args = [arg.arg for arg in node.args.args]
         body = [self.visit(stmt) for stmt in node.body]
-        return self.process_functiondef(name, args, body)
+        return self.process_control_flow("function_def", name=node.name, args=args, body=body)
 
     def visit_Return(self, node: ast.Return) -> Any:
         """Visit a return statement node."""
         value = self.visit(node.value) if node.value else None
-        return self.process_return(value)
+        return self.process_control_flow("return", value=value)
 
     def visit_If(self, node: ast.If) -> Any:
         """Visit an if statement node."""
         test = self.visit(node.test)
         body = [self.visit(stmt) for stmt in node.body]
         orelse = [self.visit(stmt) for stmt in node.orelse] if node.orelse else []
-        return self.process_if(test, body, orelse)
+        return self.process_control_flow("if", test=test, body=body, orelse=orelse)
 
     def visit_While(self, node: ast.While) -> Any:
         """Visit a while loop node."""
         test = self.visit(node.test)
         body = [self.visit(stmt) for stmt in node.body]
-        return self.process_while(test, body)
+        return self.process_control_flow("while", test=test, body=body)
 
     def visit_For(self, node: ast.For) -> Any:
         """Visit a for loop node."""
         target = self.visit(node.target)
         iter_ = self.visit(node.iter)
         body = [self.visit(stmt) for stmt in node.body]
-        return self.process_for(target, iter_, body)
+        return self.process_control_flow("for", target=target, iter=iter_, body=body)
 
     def visit_List(self, node: ast.List) -> Any:
         """Visit a list literal node."""
         elements = [self.visit(element) for element in node.elts]
-        return self.process_list(elements)
+        return self.process_container("list", elements)
 
     # ================== Helper Methods ==================
 
-    def get_operator_symbol(self, op_type: type, operator_dict: Dict[type, str]) -> str:
+    def _get_operator(self, op: ast.AST) -> str:
         """Get the string representation of an operator."""
-        if op_type in operator_dict:
-            return operator_dict[op_type]
-        raise NotImplementedError(f"Unsupported operator: {op_type}")
-
-    def is_supported_node(self, node: ast.AST) -> bool:
-        """Check if a node type is supported by this processor."""
-        method_name = f"visit_{type(node).__name__}"
-        return hasattr(self, method_name)
-
-    def validate_single_target_assignment(self, node: ast.Assign) -> None:
-        """Validate that an assignment has a single simple target."""
-        if len(node.targets) != 1:
-            raise NotImplementedError("Only single target assignments are supported")
-
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            raise NotImplementedError("Only simple variable assignments are supported")
+        op_str = self.OPERATORS.get(type(op))
+        if op_str is None:
+            raise NotImplementedError(f"Unsupported operator: {type(op).__name__}")
+        return op_str
 
 
-class ProcessingMode:
-    """Enumeration of different processing modes."""
-
-    INTERPRET = "interpret"
-    GENERATE_IR = "generate_ir"
-
-
-class ProcessorFactory:
-    """Factory class for creating AST processors."""
-
-    @staticmethod
-    def create_processor(mode: str, **kwargs) -> BaseASTProcessor:
-        """Create an AST processor based on the specified mode."""
-        if mode == ProcessingMode.INTERPRET:
-            from .interpreter import SiluInterpreter
-
-            return SiluInterpreter(**kwargs)
-        elif mode == ProcessingMode.GENERATE_IR:
-            from .ir_generator import SiluIRGenerator
-
-            return SiluIRGenerator(**kwargs)
-        else:
-            raise ValueError(f"Unsupported processing mode: {mode}")
+def create_processor(processor_type: str, **kwargs) -> BaseASTProcessor:
+    """Factory function to create AST processors."""
+    if processor_type == "interpreter":
+        from .interpreter import SiluInterpreter
+        return SiluInterpreter(**kwargs)
+    elif processor_type == "ir_generator":
+        from .ir_generator import SiluIRGenerator
+        return SiluIRGenerator(**kwargs)
+    else:
+        raise ValueError(f"Unsupported processor type: {processor_type}")
 
 
-def process_ast(
-    source_code: str, mode: str = ProcessingMode.INTERPRET, **kwargs
-) -> Any:
-    """
-    Process source code using the specified mode.
-
-    Args:
-        source_code: The source code to process
-        mode: Processing mode ("interpret" or "generate_ir")
-        **kwargs: Additional arguments passed to the processor
-
-    Returns:
-        The result of processing (execution result or IR)
-    """
+def process_code(source_code: str, processor_type: str = "interpreter", **kwargs) -> Any:
+    """Process source code using the specified processor type."""
     tree = ast.parse(source_code)
-    processor = ProcessorFactory.create_processor(mode, **kwargs)
+    processor = create_processor(processor_type, **kwargs)
     return processor.visit(tree)
