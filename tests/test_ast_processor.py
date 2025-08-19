@@ -47,6 +47,22 @@ class TestASTProcessor(BaseASTProcessor):
         """Test implementation of process_container."""
         return f"{container_type}({elements})"
 
+    def process_break_continue(self, statement_type: str):
+        """Test implementation of process_break_continue."""
+        return f"{statement_type}_stmt"
+
+    def process_assert(self, test, msg=None):
+        """Test implementation of process_assert."""
+        return f"assert({test}, {msg})"
+
+    def process_ann_assign(self, target: str, value, annotation):
+        """Test implementation of process_ann_assign."""
+        return f"ann_assign_{target}:{annotation}={value}"
+
+    def process_lambda(self, params, body_node):
+        """Test implementation of process_lambda."""
+        return f"lambda({params}, {body_node})"
+
     def process_expr(self, value):
         """Test implementation of process_expr."""
         return f"expr({value})"

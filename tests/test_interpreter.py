@@ -422,8 +422,10 @@ class TestSiluInterpreter:
         # Test list function via public interface
         list_func = interpreter.env.get("list")
         assert list_func() == []
-        assert list_func(None) == []
         assert list_func([1, 2, 3]) == [1, 2, 3]
+        # Test with iterables
+        assert list_func("abc") == ['a', 'b', 'c']
+        assert list_func(range(3)) == [0, 1, 2]
 
     def test_print_function(self):
         interpreter = SiluInterpreter()

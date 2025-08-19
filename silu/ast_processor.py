@@ -96,6 +96,26 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         """Process subscript operation."""
         pass
 
+    @abstractmethod
+    def process_break_continue(self, statement_type: str) -> Any:
+        """Process break/continue statements."""
+        pass
+
+    @abstractmethod
+    def process_assert(self, test: Any, msg: Any = None) -> Any:
+        """Process assert statements."""
+        pass
+
+    @abstractmethod
+    def process_ann_assign(self, target: str, value: Any, annotation: Any) -> Any:
+        """Process annotated assignment."""
+        pass
+
+    @abstractmethod
+    def process_lambda(self, params: List[str], body_node: ast.AST) -> Any:
+        """Process lambda function."""
+        pass
+
     # ================== Generic Visit Methods ==================
 
     def visit_Module(self, node: ast.Module) -> Any:
@@ -250,6 +270,37 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             value = self.visit(value_node)
             pairs.append((key, value))
         return self.process_container("dict", pairs)
+
+    # ================== Extended Control Flow Handlers ==================
+
+    def visit_Break(self, node: ast.Break) -> Any:
+        """Visit a break statement node."""
+        return self.process_break_continue("break")
+
+    def visit_Continue(self, node: ast.Continue) -> Any:
+        """Visit a continue statement node."""
+        return self.process_break_continue("continue")
+
+    def visit_Assert(self, node: ast.Assert) -> Any:
+        """Visit an assert statement node."""
+        test = self.visit(node.test)
+        msg = self.visit(node.msg) if node.msg else None
+        return self.process_assert(test, msg)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
+        """Visit an annotated assignment node."""
+        if not isinstance(node.target, ast.Name):
+            raise NotImplementedError("Only simple variable annotation assignments supported")
+        target = node.target.id
+        value = self.visit(node.value) if node.value else None
+        annotation = self.visit(node.annotation) if node.annotation else None
+        return self.process_ann_assign(target, value, annotation)
+
+    def visit_Lambda(self, node: ast.Lambda) -> Any:
+        """Visit a lambda function node."""
+        params = [arg.arg for arg in node.args.args]
+        body_node = node.body
+        return self.process_lambda(params, body_node)
 
 
 def create_processor(processor_type: str, **kwargs) -> BaseASTProcessor:

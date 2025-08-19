@@ -99,14 +99,24 @@ class SiluIRGenerator(BaseASTProcessor):
         """Process subscript operation."""
         return self._make_node("subscript", obj, index)
 
-    # ================== Additional IR Generation Methods ==================
+    def process_break_continue(self, statement_type: str) -> Tuple:
+        """Process break/continue statements."""
+        return (statement_type,)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> Tuple:
-        """Generate annotated assignment IR."""
-        target = self.visit(node.target)
-        value = self.visit(node.value) if node.value else None
-        annotation = self.visit(node.annotation) if node.annotation else None
+    def process_assert(self, test: Any, msg: Any = None) -> Tuple:
+        """Process assert statements."""
+        return self._make_node("assert", test, msg)
+
+    def process_ann_assign(self, target: str, value: Any, annotation: Any) -> Tuple:
+        """Process annotated assignment."""
         return self._make_node("ann_assign", target, value, annotation)
+
+    def process_lambda(self, params: List[str], body_node: ast.AST) -> Tuple:
+        """Process lambda function."""
+        body = self.visit(body_node)
+        return self._make_node("lambda", tuple(params), body)
+
+    # ================== Additional IR Generation Methods ==================
 
     def visit_AugAssign(self, node: ast.AugAssign) -> Tuple:
         """Generate augmented assignment IR."""
@@ -128,14 +138,6 @@ class SiluIRGenerator(BaseASTProcessor):
         return self._make_node("set", elements)
 
     # ================== Control Flow Extensions ==================
-
-    def visit_Break(self, node: ast.Break) -> Tuple:
-        """Generate break statement IR."""
-        return ("break",)
-
-    def visit_Continue(self, node: ast.Continue) -> Tuple:
-        """Generate continue statement IR."""
-        return ("continue",)
 
     def visit_Pass(self, node: ast.Pass) -> Tuple:
         """Generate pass statement IR."""
@@ -184,12 +186,6 @@ class SiluIRGenerator(BaseASTProcessor):
         orelse = self.visit(node.orelse)
         return self._make_node("if_expr", test, body, orelse)
 
-    def visit_Lambda(self, node: ast.Lambda) -> Tuple:
-        """Generate lambda function IR."""
-        params = tuple(arg.arg for arg in node.args.args)
-        body = self.visit(node.body)
-        return self._make_node("lambda", params, body)
-
     def visit_Starred(self, node: ast.Starred) -> Tuple:
         """Generate starred expression IR."""
         value = self.visit(node.value)
@@ -228,12 +224,6 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate raise statement IR."""
         exc = self.visit(node.exc) if node.exc else None
         return self._make_node("raise", exc)
-
-    def visit_Assert(self, node: ast.Assert) -> Tuple:
-        """Generate assert statement IR."""
-        test = self.visit(node.test)
-        msg = self.visit(node.msg) if node.msg else None
-        return self._make_node("assert", test, msg)
 
     # ================== Import Statements ==================
 

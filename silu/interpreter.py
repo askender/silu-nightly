@@ -17,6 +17,38 @@ class ReturnException(Exception):
         self.value = value
 
 
+class BreakException(Exception):
+    """Exception used to handle break statements in loops."""
+    pass
+
+
+class ContinueException(Exception):
+    """Exception used to handle continue statements in loops."""
+    pass
+
+
+class LambdaFunction:
+    """Represents a lambda function."""
+
+    def __init__(self, params: List[str], body_node: ast.AST, env: "Environment"):
+        self.params = params
+        self.body_node = body_node
+        self.env = env
+
+    def __call__(self, *args):
+        if len(args) != len(self.params):
+            raise TypeError(f"Lambda takes {len(self.params)} arguments but {len(args)} were given")
+
+        # Create lambda environment with parameter bindings
+        lambda_env = Environment(parent=self.env)
+        for param, value in zip(self.params, args):
+            lambda_env.set(param, value)
+
+        # Evaluate lambda body
+        interpreter = SiluInterpreter(env=lambda_env)
+        return interpreter.visit(self.body_node)
+
+
 class Function:
     """Represents a user-defined function."""
 
@@ -59,11 +91,13 @@ class Environment:
             "print": lambda *args: print(*args),
             "type": type,
             "isinstance": self._isinstance,
-            "int": lambda x=0: int(x),
-            "float": lambda x=0.0: float(x),
-            "str": lambda x="": str(x),
-            "bool": lambda x=False: bool(x),
-            "list": lambda x=None: [] if x is None else list(x),
+            "int": int,
+            "float": float,
+            "str": str,
+            "bool": bool,
+            "list": list,
+            "dict": dict,
+            "len": len,
             "range": range,
             "int_type": int,
             "float_type": float,
@@ -74,9 +108,17 @@ class Environment:
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance with type name support."""
         type_map = {"int": int, "float": float, "str": str, "bool": bool}
-        if cls in type_map.values() or (hasattr(cls, "__name__") and cls.__name__ in type_map):
-            actual_type = type_map.get(cls.__name__, cls)
+
+        # If cls is already a type object, use it directly
+        if cls in type_map.values():
+            return isinstance(obj, cls)
+
+        # If cls has a name that's in our type map, use the mapped type
+        if hasattr(cls, "__name__") and cls.__name__ in type_map:
+            actual_type = type_map[cls.__name__]
             return isinstance(obj, actual_type)
+
+        # For other cases, try direct isinstance
         try:
             return isinstance(obj, cls)
         except TypeError:
@@ -180,20 +222,37 @@ class SiluInterpreter(BaseASTProcessor):
                 for stmt in kwargs["orelse"]:
                     self.visit(stmt)
         elif node_type == "while":
-            while self.visit(kwargs["test_node"]):
-                for stmt in kwargs["body"]:
-                    self.visit(stmt)
+            try:
+                while self.visit(kwargs["test_node"]):
+                    try:
+                        for stmt in kwargs["body"]:
+                            self.visit(stmt)
+                    except ContinueException:
+                        continue
+                    except BreakException:
+                        break
+            except BreakException:
+                pass
         elif node_type == "for":
             if not isinstance(kwargs["target"], str):
                 raise NotImplementedError("Only simple variable targets are supported in for loops")
-            for item in kwargs["iter"]:
-                self.env.set(kwargs["target"], item)
-                for stmt in kwargs["body"]:
-                    self.visit(stmt)
-            # Execute else clause if exists
-            if kwargs.get("orelse"):
-                for stmt in kwargs["orelse"]:
-                    self.visit(stmt)
+            try:
+                for item in kwargs["iter"]:
+                    self.env.set(kwargs["target"], item)
+                    try:
+                        for stmt in kwargs["body"]:
+                            self.visit(stmt)
+                    except ContinueException:
+                        continue
+                    except BreakException:
+                        break
+                else:
+                    # Execute else clause if loop completed normally (no break)
+                    if kwargs.get("orelse"):
+                        for stmt in kwargs["orelse"]:
+                            self.visit(stmt)
+            except BreakException:
+                pass
 
     def process_container(self, container_type: str, elements: List[Any]) -> Any:
         """Handle containers."""
@@ -216,6 +275,38 @@ class SiluInterpreter(BaseASTProcessor):
     def process_subscript(self, obj: Any, index: Any) -> Any:
         """Process subscript operation."""
         return obj[index]
+
+    def process_break_continue(self, statement_type: str) -> Any:
+        """Process break/continue statements."""
+        if statement_type == "break":
+            raise BreakException()
+        elif statement_type == "continue":
+            raise ContinueException()
+        else:
+            raise NotImplementedError(f"Unsupported statement type: {statement_type}")
+
+    def process_assert(self, test: Any, msg: Any = None) -> Any:
+        """Process assert statements."""
+        if not test:
+            if msg is not None:
+                raise AssertionError(str(msg))
+            else:
+                raise AssertionError()
+        return None
+
+    def process_ann_assign(self, target: str, value: Any, annotation: Any) -> Any:
+        """Process annotated assignment."""
+        # For now, we ignore the annotation and just do the assignment
+        # In a future version, we could use annotations for type checking
+        if value is not None:
+            self.env.set(target, value)
+        # If no value is provided, we could initialize with a default based on annotation
+        # but for simplicity, we'll just skip for now
+        return None
+
+    def process_lambda(self, params: List[str], body_node: ast.AST) -> Any:
+        """Process lambda function."""
+        return LambdaFunction(params, body_node, self.env)
 
     # ================== Special Node Handlers ==================
 
