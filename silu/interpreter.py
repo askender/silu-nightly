@@ -55,38 +55,31 @@ class Environment:
 
     def _register_builtins(self):
         """Register all built-in functions and types."""
-        builtins = {
-            # I/O functions
+        self.vars.update({
             "print": lambda *args: print(*args),
-            # Type functions
             "type": type,
             "isinstance": self._isinstance,
-            # Type constructors
             "int": lambda x=0: int(x),
             "float": lambda x=0.0: float(x),
             "str": lambda x="": str(x),
             "bool": lambda x=False: bool(x),
             "list": lambda x=None: [] if x is None else list(x),
             "range": range,
-            # Type objects
             "int_type": int,
             "float_type": float,
             "str_type": str,
             "bool_type": bool,
-        }
-        self.vars.update(builtins)
+        })
 
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance with type name support."""
         type_map = {"int": int, "float": float, "str": str, "bool": bool}
-        if cls in type_map.values():
-            return isinstance(obj, cls)
-        if hasattr(cls, "__name__") and cls.__name__ in type_map:
-            return isinstance(obj, type_map[cls.__name__])
+        if cls in type_map.values() or (hasattr(cls, "__name__") and cls.__name__ in type_map):
+            actual_type = type_map.get(cls.__name__, cls)
+            return isinstance(obj, actual_type)
         try:
             return isinstance(obj, cls)
         except TypeError:
-            # Handle invalid types gracefully
             return False
 
     def get(self, name: str) -> Any:
@@ -128,81 +121,49 @@ class SiluInterpreter(BaseASTProcessor):
 
     def process_operation(self, op: str, *operands) -> Any:
         """Handle all operations using consolidated logic."""
-        if len(operands) == 1:  # Unary operation
-            return self._process_unary(op, operands[0])
-        elif op in ("and", "or"):  # Boolean operation
-            return self._process_boolean(op, operands)
-        elif len(operands) == 2:  # Binary operation
-            return self._process_binary(op, operands[0], operands[1])
-        elif op == "compare":  # Comparison operation
-            return self._process_comparison(operands[0], operands[1], operands[2])
-        else:  # Unknown operation
-            raise NotImplementedError(f"Unsupported operation: {op}")
-
-    def _process_unary(self, op: str, operand: Any) -> Any:
-        """Process unary operations."""
-        ops = {"+": lambda x: +x, "-": lambda x: -x, "not": lambda x: not x}
-        if op in ops:
-            return ops[op](operand)
-        raise NotImplementedError(f"Unsupported unary operator: {op}")
-
-    def _process_binary(self, op: str, left: Any, right: Any) -> Any:
-        """Process binary operations with division by zero checking."""
-        self.validate_operation(op, left, right)
-
-        ops = {
-            "+": lambda left, right: left + right,
-            "-": lambda left, right: left - right,
-            "*": lambda left, right: left * right,
-            "/": lambda left, right: left / right,
-            "//": lambda left, right: left // right,
-            "%": lambda left, right: left % right,
-            "**": lambda left, right: left**right,
+        # Define all operation mappings
+        unary_ops = {"+": lambda x: +x, "-": lambda x: -x, "not": lambda x: not x}
+        binary_ops = {
+            "+": lambda l, r: l + r, "-": lambda l, r: l - r, "*": lambda l, r: l * r,
+            "/": lambda l, r: l / r, "//": lambda l, r: l // r, "%": lambda l, r: l % r,
+            "**": lambda l, r: l ** r
         }
-        if op in ops:
-            return ops[op](left, right)
-        raise NotImplementedError(f"Unsupported binary operator: {op}")
-
-    def _process_boolean(self, op: str, operands: tuple) -> Any:
-        """Process boolean operations with short-circuit evaluation."""
-        if op == "and":
-            return all(operands)
-        elif op == "or":
-            return any(operands)
-        raise NotImplementedError(f"Unsupported boolean operator: {op}")
-
-    def _process_comparison(
-        self, left: Any, ops: List[str], comparators: List[Any]
-    ) -> Any:
-        """Process comparison operations with chaining support."""
-        # Validate that operators and comparators match
-        if len(ops) != len(comparators):
-            raise ValueError("Mismatch between comparators and operators")
-
         comp_ops = {
-            "==": lambda left, right: left == right,
-            "!=": lambda left, right: left != right,
-            "<": lambda left, right: left < right,
-            "<=": lambda left, right: left <= right,
-            ">": lambda left, right: left > right,
-            ">=": lambda left, right: left >= right,
+            "==": lambda l, r: l == r, "!=": lambda l, r: l != r, "<": lambda l, r: l < r,
+            "<=": lambda l, r: l <= r, ">": lambda l, r: l > r, ">=": lambda l, r: l >= r
         }
 
-        # Handle chained comparisons
-        current = left
-        for op, comparator in zip(ops, comparators):
-            if op not in comp_ops:
-                raise NotImplementedError(f"Unsupported comparison operator: {op}")
-            if not comp_ops[op](current, comparator):
-                return False
-            current = comparator
-        return True
+        if len(operands) == 1:  # Unary
+            if op not in unary_ops:
+                raise NotImplementedError(f"Unsupported unary operator: {op}")
+            return unary_ops[op](operands[0])
+        elif op in ("and", "or"):  # Boolean
+            return all(operands) if op == "and" else any(operands)
+        elif len(operands) == 2:  # Binary
+            if op not in binary_ops:
+                raise NotImplementedError(f"Unsupported binary operator: {op}")
+            self.validate_operation(op, operands[0], operands[1])
+            return binary_ops[op](operands[0], operands[1])
+        elif op == "compare":  # Comparison
+            left, ops, comparators = operands
+            if len(ops) != len(comparators):
+                raise ValueError("Mismatch between comparators and operators")
+            current = left
+            for op_str, comparator in zip(ops, comparators):
+                if op_str not in comp_ops:
+                    raise NotImplementedError(f"Unsupported comparison operator: {op_str}")
+                if not comp_ops[op_str](current, comparator):
+                    return False
+                current = comparator
+            return True
+        else:
+            raise NotImplementedError(f"Unsupported operation: {op}")
 
     def process_call(self, func: Any, args: List[Any], keywords: Dict[str, Any]) -> Any:
         """Execute function calls."""
         if not callable(func):
             raise TypeError(f"'{type(func).__name__}' object is not callable")
-        return func(*args, **keywords) if keywords else func(*args)
+        return func(*args, **keywords)
 
     def process_control_flow(self, node_type: str, **kwargs) -> Any:
         """Handle control flow statements."""
@@ -223,36 +184,26 @@ class SiluInterpreter(BaseASTProcessor):
                 for stmt in kwargs["body"]:
                     self.visit(stmt)
         elif node_type == "for":
-            # Track if loop completed normally (not broken)
-            loop_completed = True
+            if not isinstance(kwargs["target"], str):
+                raise NotImplementedError("Only simple variable targets are supported in for loops")
             for item in kwargs["iter"]:
-                if isinstance(kwargs["target"], str):
-                    self.env.set(kwargs["target"], item)
-                else:
-                    raise NotImplementedError(
-                        "Only simple variable targets are supported in for loops"
-                    )
+                self.env.set(kwargs["target"], item)
                 for stmt in kwargs["body"]:
                     self.visit(stmt)
-
-            # Execute else clause if loop completed normally and else clause exists
-            if loop_completed and kwargs.get("orelse"):
+            # Execute else clause if exists
+            if kwargs.get("orelse"):
                 for stmt in kwargs["orelse"]:
                     self.visit(stmt)
 
     def process_container(self, container_type: str, elements: List[Any]) -> Any:
         """Handle containers."""
-        if container_type == "list":
-            return elements
-        elif container_type == "tuple":
-            return tuple(elements)
-        elif container_type == "dict":
-            result = {}
-            for key, value in elements:
-                result[key] = value
-            return result
-        elif container_type == "module":
-            return None  # Module execution is handled by statement processing
+        containers = {
+            "list": lambda e: e,
+            "tuple": lambda e: tuple(e),
+            "dict": lambda e: {k: v for k, v in e},
+            "module": lambda e: None
+        }
+        return containers[container_type](elements)
 
     def process_expr(self, value: Any) -> Any:
         """Process expression statements."""
@@ -275,11 +226,6 @@ class SiluInterpreter(BaseASTProcessor):
             obj = self.visit(node.func.value)
             method_name = node.func.attr
             args = [self.visit(arg) for arg in node.args]
-
-            # Special handling for common methods
-            if isinstance(obj, list) and method_name == "append" and len(args) == 1:
-                obj.append(args[0])
-                return None
 
             method = getattr(obj, method_name)
             return method(*args)
