@@ -263,7 +263,7 @@ class SymbolicExecutor:
             symbol = func_env.create_symbol(param)
             func_env.set_variable(param, symbol)
             self.current_path.variables[param] = symbol
-            self.current_path.add_statement(f"Parameter {param} = {symbol}")
+            # Don't record parameter initialization - it's implicit
 
         self.current_env = func_env
 
@@ -323,8 +323,14 @@ class SymbolicExecutor:
             return getattr(self, handler_name)(ir_node)
         else:
             # Unknown node type, treat as concrete
-            if self.current_path:
-                self.current_path.add_statement(f"Unknown IR node: {node_type}")
+            # Handle common IR nodes without cluttering statements
+            if node_type in ['+', '-', '*', '/', '//', '%', '**',
+                           '==', '!=', '<', '>', '<=', '>=',
+                           'and', 'or', 'not']:
+                # These are handled elsewhere, don't add confusing statements
+                pass
+            elif self.current_path:
+                self.current_path.add_statement(f"# Unhandled operation: {node_type}")
             return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
 
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
@@ -345,7 +351,9 @@ class SymbolicExecutor:
         self.current_env.set_variable(var_name, value)
 
         if self.current_path:
-            self.current_path.add_statement(f"{var_name} = {value}")
+            # Record assignments with simplified display
+            simplified_value = self._simplify_value_display(value)
+            self.current_path.add_statement(f"{var_name} = {simplified_value}")
             self.current_path.variables[var_name] = value
 
         return value
@@ -360,6 +368,7 @@ class SymbolicExecutor:
 
         condition = self._execute_ir(condition_ir)
         condition_str = str(condition)
+        readable_condition = self._make_condition_readable(condition)
 
         if len(self.paths) >= self.max_paths:
             # Path explosion prevention
@@ -381,6 +390,7 @@ class SymbolicExecutor:
 
         true_condition = PathCondition(condition_str, True)
         true_path.add_condition(true_condition)
+        true_path.add_statement(f"if {readable_condition}:")
 
         self.current_path = true_path
         self.current_env = original_env.copy()
@@ -414,6 +424,7 @@ class SymbolicExecutor:
 
             false_condition = PathCondition(condition_str, False)
             false_path.add_condition(false_condition)
+            false_path.add_statement(f"else:")
 
             self.current_path = false_path
             self.current_env = original_env.copy()
@@ -445,6 +456,7 @@ class SymbolicExecutor:
 
             false_condition = PathCondition(condition_str, False)
             false_path.add_condition(false_condition)
+            false_path.add_statement(f"# (implicit else for if {readable_condition})")
             if false_path not in self.paths:
                 self.paths.append(false_path)
 
@@ -461,10 +473,12 @@ class SymbolicExecutor:
         """Execute a while loop symbolically (simplified - may create multiple paths)"""
         _, condition_ir, body_ir = ir_node
         condition = self._execute_ir(condition_ir)
+        # Process the if condition to create path conditions
         condition_str = str(condition)
+        readable_condition = self._make_condition_readable(condition)
 
         if self.current_path:
-            self.current_path.add_statement(f"while {condition_str}:")
+            self.current_path.add_statement(f"while {readable_condition}:")
 
         # For symbolic execution, we consider both entering and not entering the loop
         # This is a simplified approach - more sophisticated analysis would unroll loops
@@ -520,8 +534,8 @@ class SymbolicExecutor:
         # Store the function IR for later symbolic analysis
         self.global_env.functions[func_name] = body_ir
 
-        if self.current_path:
-            self.current_path.add_statement(f"def {func_name}({', '.join(params)}):")
+        # Don't record function definition in statements - it's not part of execution flow
+        pass
 
         # Analyze function's internal paths
         function_paths = self.analyze_function_definition(func_name, params, body_ir)
@@ -531,8 +545,8 @@ class SymbolicExecutor:
             self.function_analyses = {}
         self.function_analyses[func_name] = function_paths
 
-        if self.current_path:
-            self.current_path.add_statement(f"Function {func_name} has {len(function_paths)} execution paths")
+        # Don't record path count analysis - not useful for understanding program flow
+        pass
 
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
@@ -559,11 +573,6 @@ class SymbolicExecutor:
                 if self.current_path:
                     args_str = ", ".join(str(arg) for arg in args)
                     self.current_path.add_statement(f"{return_symbol} = {func_name}({args_str})")
-
-                    # Add reference to function's internal paths if available
-                    if hasattr(self, 'function_analyses') and func_name in self.function_analyses:
-                        func_paths = self.function_analyses[func_name]
-                        self.current_path.add_statement(f"# Function {func_name} has {len(func_paths)} internal paths")
                 return return_symbol
         else:
             # Unknown function
@@ -583,7 +592,8 @@ class SymbolicExecutor:
 
         if self.current_path:
             self.current_path.return_value = value
-            self.current_path.add_statement(f"return {value}")
+            simplified_value = self._simplify_value_display(value)
+            self.current_path.add_statement(f"return {simplified_value}")
 
             # Add current path to paths list if not already there
             if self.current_path not in self.paths:
@@ -603,8 +613,8 @@ class SymbolicExecutor:
         expr = f"({left} {op} {right})"
         result = SymbolicValue(SymbolicValueType.EXPRESSION, expr)
 
-        if self.current_path:
-            self.current_path.add_statement(f"# Binary operation: {expr}")
+        # Don't record every binary operation - too verbose
+        pass
 
         return result
 
@@ -653,7 +663,7 @@ class SymbolicExecutor:
         """Symbolic version of print function"""
         args_str = ", ".join(str(arg) for arg in args)
         if self.current_path:
-            self.current_path.add_statement(f"print({args_str})")
+            self.current_path.add_statement(f"print({self._simplify_args_display(args)})")
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _symbolic_int(self, value: SymbolicValue) -> SymbolicValue:
@@ -1142,6 +1152,122 @@ class SymbolicExecutor:
             var_map[expr] = z3.Int(expr)
 
         return var_map[expr]
+
+    def _make_condition_readable(self, condition) -> str:
+        """Convert IR condition to readable format with recursive tuple handling"""
+        # Handle SymbolicValue objects first
+        if hasattr(condition, 'value') and hasattr(condition, 'type'):
+            return self._make_condition_readable(condition.value)
+
+        # Handle tuples directly
+        elif isinstance(condition, tuple) and len(condition) == 3:
+            op, left, right = condition
+
+            # Recursively process left and right operands
+            left_str = self._make_condition_readable(left) if isinstance(left, tuple) or hasattr(left, 'value') else str(left)
+            right_str = self._make_condition_readable(right) if isinstance(right, tuple) or hasattr(right, 'value') else str(right)
+
+            if op in ['>', '<', '>=', '<=', '==', '!=']:
+                return f"{left_str} {op} {right_str}"
+            elif op == 'and':
+                return f"({left_str}) and ({right_str})"
+            elif op == 'or':
+                return f"({left_str}) or ({right_str})"
+            elif op in ['+', '-', '*', '/', '//', '%', '**']:
+                # Handle arithmetic operations in conditions
+                return f"{left_str} {op} {right_str}"
+            else:
+                return f"{left_str} {op} {right_str}"
+
+        # Handle string representations of complex expressions
+        elif isinstance(condition, str):
+            # Handle expressions like "('+', 'a', 'b') > ('+', 'c', 'd')"
+            import re
+
+            # Pattern to match expressions with operators between tuple-like structures
+            pattern = r"(\([^)]+\))\s*([><=!]+)\s*(\([^)]+\))"
+            match = re.match(pattern, condition.strip())
+
+            if match:
+                left_expr, operator, right_expr = match.groups()
+                try:
+                    left_parsed = eval(left_expr)
+                    right_parsed = eval(right_expr)
+                    left_readable = self._make_condition_readable(left_parsed)
+                    right_readable = self._make_condition_readable(right_parsed)
+                    return f"{left_readable} {operator} {right_readable}"
+                except:
+                    pass
+
+            # Handle simple tuple-like expressions
+            elif condition.startswith("(") and condition.endswith(")") and "', '" in condition:
+                try:
+                    parsed = eval(condition)
+                    if isinstance(parsed, tuple):
+                        return self._make_condition_readable(parsed)
+                except:
+                    pass
+
+        return str(condition)
+
+
+    def _simplify_value_display(self, value) -> str:
+        """Simplify value display for better readability in statements"""
+        # Handle SymbolicValue objects first
+        if hasattr(value, 'type') and hasattr(value, 'value'):
+            if value.type == SymbolicValueType.CONCRETE:
+                return str(value.value)
+            elif value.type == SymbolicValueType.SYMBOLIC:
+                return value.name if hasattr(value, 'name') and value.name else str(value.value)
+            elif value.type == SymbolicValueType.EXPRESSION:
+                # Recursively process the expression value
+                return self._simplify_value_display(value.value)
+
+        # Handle tuples directly with recursive processing
+        elif isinstance(value, tuple) and len(value) >= 3:
+            op, left, right = value[0], value[1], value[2]
+
+            # Recursively process operands
+            left_str = self._simplify_value_display(left) if isinstance(left, tuple) or hasattr(left, 'type') else str(left)
+            right_str = self._simplify_value_display(right) if isinstance(right, tuple) or hasattr(right, 'type') else str(right)
+
+            # Handle arithmetic operations
+            if str(op) in ['+', '-', '*', '/', '//', '%', '**']:
+                return f"{left_str} {op} {right_str}"
+
+            # Handle comparison operations
+            elif str(op) in ['==', '!=', '<', '>', '<=', '>=']:
+                return f"{left_str} {op} {right_str}"
+
+            # Handle logical operations
+            elif str(op) in ['and', 'or']:
+                return f"({left_str}) {op} ({right_str})"
+
+        # Handle tuple-like expressions in string format: "('+', 'x', 1)"
+        elif isinstance(value, str) and value.startswith("(") and value.endswith(")") and "', '" in value:
+            try:
+                # Try to parse as tuple and recursively process
+                parsed = eval(value)
+                if isinstance(parsed, tuple):
+                    return self._simplify_value_display(parsed)
+            except:
+                # If parsing fails, return as is
+                pass
+
+        # Handle simple SymbolicValue objects by name
+        elif hasattr(value, 'name') and value.name:
+            return value.name
+
+        # Default string representation
+        return str(value)
+
+    def _simplify_args_display(self, args) -> str:
+        """Simplify argument display for function calls"""
+        simplified_args = []
+        for arg in args:
+            simplified_args.append(self._simplify_value_display(arg))
+        return ", ".join(simplified_args)
+
 
 
 
