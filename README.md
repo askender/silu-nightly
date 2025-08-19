@@ -1,7 +1,24 @@
 # Silu Programming Language
 # 斯路编程语言
 
-A simple AI-first interpreted programming language with Python-like syntax.
+A simple AI-first interpreted programming language with Python-like syntax, designed as a foundation for advanced AI reasoning capabilities.
+
+## Vision & AI Roadmap
+
+Silu aims to become a platform for developing AI systems that can:
+- **Combine rigorous logical reasoning with probabilistic reasoning**
+- **Achieve self-bootstrapping and self-correction capabilities** 
+- **Conduct autonomous hypothesis testing and experimentation**
+- **Discover inconsistencies and drive curiosity-based learning**
+
+### Development Stages
+- **2025-2028**: Logic mastery (CFG, data flow, SMT verification)
+- **2028-2032**: Logic + probabilistic reasoning fusion  
+- **2032-2036**: Self-bootstrapping and self-correction
+- **2036-2040**: Hypothesis-driven experimentation
+- **2040+**: Inconsistency detection and curiosity-driven knowledge creation
+
+See [AI Development Plan](docs/plan.md) for detailed roadmap and benchmarks.
 
 ## Quick Start
 
@@ -79,6 +96,7 @@ silu exec program.ir
 
 ## Documentation
 
+- **[AI Development Plan](docs/plan.md)** - Long-term AI reasoning roadmap and benchmarks
 - **[CLI Usage Guide](docs/cli_usage.md)** - Complete command-line reference
 - **[Language Features](docs/language_features.md)** - Syntax and examples  
 - **[Development Guide](docs/development.md)** - Setup, testing, and contributing

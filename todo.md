@@ -1,5 +1,53 @@
 # TODO List
 
+## 🎯 AI Roadmap Priorities
+
+### 2025-2028: Logic Mastery Phase (High Priority)
+- [ ] **CFG & Static Analysis Integration**
+  - Implement context-free grammar validation
+  - Add static analysis capabilities to IR generator
+  - Target: Pass LLVM IR test suites, SPEC Benchmarks
+  
+- [ ] **Data Flow & Control Flow Analysis**
+  - Enhance symbolic executor with advanced flow analysis
+  - Implement Code Property Graph (CPG) generation
+  - Target: Juliet Test Suite compliance for vulnerability detection
+
+- [ ] **SMT & Logic Verification**
+  - Integrate SMT solver capabilities
+  - Add formal verification support to symbolic executor
+  - Target: 20-50% improvement over SMT-LIB benchmarks
+
+### 2028-2032: Logic + Probabilistic Fusion (Medium-High Priority)
+- [ ] **Probabilistic Reasoning Integration**
+  - Combine symbolic execution with uncertainty modeling
+  - Implement Bayesian inference capabilities
+  - Target: 10x improvement in experimental design efficiency
+
+- [ ] **Causal Inference Support**
+  - Add causal reasoning to language constructs
+  - Support for causal graph modeling
+  - Target: Causal Inference Competition benchmarks
+
+### 2032-2036: Self-Bootstrapping (Medium Priority)
+- [ ] **Self-Modification Capabilities**
+  - Enable AI to symbolically execute and modify its own code
+  - Implement automated bug detection and fixing
+  - Target: >80% accuracy in self-bug-fixing
+
+- [ ] **Code Generation & Optimization**
+  - Self-improving compiler optimizations
+  - Automated refactoring capabilities
+  - Target: Maintain 100M+ LOC codebases
+
+## 🎯 Technical Benchmarks to Target
+- **Logic**: SV-COMP, SMT-LIB, TPTP theorem proving
+- **Optimization**: DIMACS, TSPLIB, SAT competitions  
+- **Probabilistic**: Kaggle datasets, Bayesian network benchmarks
+- **Graph Analysis**: LDBC benchmarks for graph databases
+
+# TODO List
+
 ## ✅ 已完成功能
 
 - [x] 创建基础的 SiluInterpreter 类，继承自 ast.NodeVisitor
