@@ -88,13 +88,29 @@ silu exec program.ir
 
 ## Examples
 
-Try the included demo programs:
+### Demo Programs
+
+The repository includes comprehensive demo programs showcasing all language features:
+
 ```bash
-# Comprehensive language demo
+# Run the main demo (variables, functions, control flow)
 silu demo.si
 
-# Symbolic execution examples
+# Complex programming patterns
+silu complex_example.si
+
+# Symbolic execution analysis
 silu symbolic symbolic_demo.si
+```
+
+### Performance Comparison
+
+Compare different execution modes:
+```bash
+# Interpretation vs IR execution
+time silu interpret demo.si
+silu ir demo.si --output demo.ir.json --format json
+time silu exec demo.ir.json
 ```
 
 ## Contributing

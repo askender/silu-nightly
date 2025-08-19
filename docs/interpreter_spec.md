@@ -17,15 +17,51 @@ The interpreter consists of three main components:
 - Provides built-in functions: `print`, `type`, `isinstance`, `int`, `float`, `str`, `bool`
 - Handles type conversion and type checking operations
 
-### Interpreter
-The `SiluInterpreter` class extends `ast.NodeVisitor` and implements handlers for:
+### BaseASTProcessor (Abstract Base Class)
+- Extends `ast.NodeVisitor` for AST traversal
+- Provides shared operator mappings and validation logic
+- Defines abstract methods for customizable behavior
+- Handles common nodes: Module, Expr, Assign, Name, Constant, BinOp, UnaryOp, BoolOp, Compare, Call, etc.
 
+### SiluInterpreter (Concrete Implementation)
+The interpreter works by:
+1. Parsing Silu source code into Python AST using `ast.parse()`
+2. Extending BaseASTProcessor with execution-specific implementations
+3. Managing variable scope through `Environment` objects
+4. Supporting function definitions and calls with `Function` objects
+
+The `SiluInterpreter` class implements handlers for:
 - **Module Operations**: `visit_Module`, `visit_Expr`
 - **Variables**: `visit_Assign`, `visit_Name`, `visit_Constant`
 - **Operations**: `visit_BinOp`, `visit_UnaryOp`, `visit_BoolOp`, `visit_Compare`
 - **Control Flow**: `visit_If`, `visit_While`, `visit_For`
 - **Data Structures**: `visit_List`
 - **Functions**: `visit_FunctionDef`, `visit_Return`, `visit_Call`
+
+## Architecture Design
+
+The system uses a unified AST processing architecture with multiple concrete implementations:
+
+### SiluIRGenerator (Concrete Implementation)
+The IR generator works by:
+1. Extending BaseASTProcessor with IR generation implementations
+2. Converting AST nodes to tuple-based intermediate representation
+3. Supporting comprehensive Python syntax including advanced features
+4. Maintaining structural information without execution
+
+### SymbolicExecutor (Concrete Implementation)
+The symbolic executor works by:
+1. Analyzing IR programs symbolically without concrete values
+2. Tracking all possible execution paths through control flow
+3. Generating path conditions and constraints for each branch
+4. Supporting symbolic values, expressions, and constraint solving
+
+### Key AST Nodes Supported
+- **Basic**: Module, Expr, Assign, Name, Constant
+- **Operations**: BinOp, UnaryOp, BoolOp, Compare
+- **Functions**: Call, FunctionDef, Return
+- **Control Flow**: If, While, For
+- **Containers**: List, Dict, Tuple, Subscript, Attribute
 
 ## Supported Language Features
 
@@ -37,7 +73,7 @@ The `SiluInterpreter` class extends `ast.NodeVisitor` and implements handlers fo
 - `list`: Ordered collections
 
 ### Variables and Assignment
-```
+```silu
 x = 10
 name = "Silu"
 is_active = True
@@ -91,6 +127,29 @@ message = greet("World")
 - `int()`, `float()`, `str()`, `bool()`: Type conversion
 - `list(iterable)`: Create list from iterable
 - `range(stop)`: Generate sequence of numbers
+
+## Error Handling
+
+The interpreter implements proper error handling for:
+- **Undefined variables** (NameError): When accessing variables that haven't been defined
+- **Division by zero** (ZeroDivisionError): Mathematical division by zero operations
+- **Unsupported operations** (NotImplementedError): Operations not yet implemented
+- **Type errors** (TypeError): Invalid operations between incompatible types
+- **Value errors** (ValueError): Invalid values for type conversion or operations
+
+## Testing Structure
+
+Tests are organized by component:
+- `test_interpreter.py`: Core interpreter functionality
+- `test_cli.py`: Command-line interface tests
+- `test_main.py`: Main module tests
+
+Test coverage includes:
+- AST node visiting and execution
+- Built-in functions and type operations
+- Control flow constructs (if/while/for)
+- Error handling and edge cases
+- End-to-end program execution
 
 ## Execution Flow
 1. Source code is parsed into AST using `ast.parse()`
