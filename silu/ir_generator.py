@@ -69,37 +69,37 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate control flow IR nodes."""
         if node_type == "function_def":
             # Process function body statements
-            body = [self.visit(stmt) for stmt in kwargs["body"]]
+            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
             return (
                 "func_def",
                 kwargs["name"],
                 tuple(kwargs["args"]),
-                tuple(body),
+                body,
             )
         elif node_type == "return":
             return ("return", kwargs["value"])
         elif node_type == "if":
             # Process if statement body and orelse
-            body = [self.visit(stmt) for stmt in kwargs["body"]]
+            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
             orelse = (
-                [self.visit(stmt) for stmt in kwargs["orelse"]]
+                tuple(self.visit(stmt) for stmt in kwargs["orelse"])
                 if kwargs["orelse"]
-                else []
+                else ()
             )
-            return ("if", kwargs["test"], tuple(body), tuple(orelse))
+            return ("if", kwargs["test"], body, orelse)
         elif node_type == "while":
             # Process test_node ourselves for IR generation
             test = self.visit(kwargs["test_node"])
-            body = [self.visit(stmt) for stmt in kwargs["body"]]
-            return ("while", test, tuple(body))
+            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
+            return ("while", test, body)
         elif node_type == "for":
-            body = [self.visit(stmt) for stmt in kwargs["body"]]
+            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
             orelse = (
-                [self.visit(stmt) for stmt in kwargs["orelse"]]
+                tuple(self.visit(stmt) for stmt in kwargs["orelse"])
                 if kwargs["orelse"]
-                else []
+                else ()
             )
-            return ("for", kwargs["target"], kwargs["iter"], tuple(body), tuple(orelse))
+            return ("for", kwargs["target"], kwargs["iter"], body, orelse)
 
     def process_container(self, container_type: str, elements: List[Any]) -> Tuple:
         """Generate container IR nodes."""
@@ -159,8 +159,8 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def visit_Set(self, node: ast.Set) -> Tuple:
         """Generate set IR."""
-        elements = [self.visit(e) for e in node.elts]
-        return self._make_node("set", tuple(elements))
+        elements = tuple(self.visit(e) for e in node.elts)
+        return self._make_node("set", elements)
 
     # ================== Control Flow Extensions ==================
 
@@ -185,8 +185,8 @@ class SiluIRGenerator(BaseASTProcessor):
         for gen in node.generators:
             target = self.visit(gen.target)
             iter_val = self.visit(gen.iter)
-            ifs = [self.visit(cond) for cond in gen.ifs]
-            generators.append((target, iter_val, tuple(ifs)))
+            ifs = tuple(self.visit(cond) for cond in gen.ifs)
+            generators.append((target, iter_val, ifs))
 
         return self._make_node(f"{comp_type}_comp", elt, tuple(generators))
 
@@ -230,22 +230,22 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def visit_Try(self, node: ast.Try) -> Tuple:
         """Generate try-except IR."""
-        body = [self.visit(stmt) for stmt in node.body]
-        handlers = [self.visit(h) for h in node.handlers]
-        orelse = [self.visit(stmt) for stmt in node.orelse] if node.orelse else []
+        body = tuple(self.visit(stmt) for stmt in node.body)
+        handlers = tuple(self.visit(h) for h in node.handlers)
+        orelse = tuple(self.visit(stmt) for stmt in node.orelse) if node.orelse else ()
         finalbody = (
-            [self.visit(stmt) for stmt in node.finalbody] if node.finalbody else []
+            tuple(self.visit(stmt) for stmt in node.finalbody) if node.finalbody else ()
         )
         return self._make_node(
-            "try", tuple(body), tuple(handlers), tuple(orelse), tuple(finalbody)
+            "try", body, handlers, orelse, finalbody
         )
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> Tuple:
         """Generate exception handler IR."""
         exc_type = self.visit(node.type) if node.type else None
         name = node.name if node.name else None
-        body = [self.visit(stmt) for stmt in node.body]
-        return self._make_node("except", exc_type, name, tuple(body))
+        body = tuple(self.visit(stmt) for stmt in node.body)
+        return self._make_node("except", exc_type, name, body)
 
     def visit_Raise(self, node: ast.Raise) -> Tuple:
         """Generate raise statement IR."""
@@ -277,8 +277,8 @@ class SiluIRGenerator(BaseASTProcessor):
                 self.visit(item.optional_vars) if item.optional_vars else None
             )
             items.append((context_expr, optional_vars))
-        body = [self.visit(stmt) for stmt in node.body]
-        return self._make_node("with", tuple(items), tuple(body))
+        body = tuple(self.visit(stmt) for stmt in node.body)
+        return self._make_node("with", tuple(items), body)
 
     # ================== Error Handling ==================
 

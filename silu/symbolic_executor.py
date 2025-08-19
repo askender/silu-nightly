@@ -247,8 +247,15 @@ class SymbolicExecutor:
         self.current_env = func_env
 
         try:
-            # Analyze function body
-            self._execute_ir(body_ir)
+            # Analyze function body - iterate through statements
+            if isinstance(body_ir, tuple):
+                for stmt in body_ir:
+                    self._execute_ir(stmt)
+                    # If current path ended (e.g., return statement), break
+                    if self.current_path is None:
+                        break
+            else:
+                self._execute_ir(body_ir)
         except Exception as e:
             if self.current_path:
                 self.current_path.add_statement(f"ERROR: {str(e)}")
@@ -270,11 +277,7 @@ class SymbolicExecutor:
 
     def _execute_ir(self, ir_node: Any) -> SymbolicValue:
         """Execute an IR node symbolically"""
-        # Handle None values
-        if ir_node is None:
-            return SymbolicValue(SymbolicValueType.CONCRETE, None)
-
-        if not isinstance(ir_node, (tuple, list)) or len(ir_node) == 0:
+        if not isinstance(ir_node, tuple) or len(ir_node) == 0:
             if isinstance(ir_node, (int, float, str, bool)):
                 return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
             elif isinstance(ir_node, str):
@@ -283,26 +286,15 @@ class SymbolicExecutor:
             else:
                 return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
 
-        # Convert list to tuple for consistent handling
-        if isinstance(ir_node, list):
-            ir_node = tuple(ir_node)
-
-        # Handle list of statements (when first element is not a string)
-        if len(ir_node) > 0 and not isinstance(ir_node[0], str):
-            # This is a list of statements, execute each one
-            result = None
-            for stmt in ir_node:
-                result = self._execute_ir(stmt)
-                # If current path ended, stop execution
-                if self.current_path is None:
-                    break
-            return result or SymbolicValue(SymbolicValueType.CONCRETE, None)
-
         node_type = ir_node[0]
 
         # Handle comparison operators directly
         if node_type in ['>', '<', '>=', '<=', '==', '!=']:
             return self._execute_comparison(ir_node)
+
+        # Handle special cases for nodes that might not have handlers
+        if node_type == "assign":
+            return self._execute_assign(ir_node)
 
         # Dispatch to appropriate handler
         handler_name = f"_execute_{node_type}"
@@ -318,26 +310,16 @@ class SymbolicExecutor:
         """Execute a module IR node"""
         _, statements = ir_node
         result = None
-
-        # Handle both tuple and list formats
-        if isinstance(statements, (list, tuple)):
-            for stmt in statements:
-                result = self._execute_ir(stmt)
-                # If we hit a return statement or the current path ended, break
-                if self.current_path is None:
-                    break
-        else:
-            result = self._execute_ir(statements)
-
+        for stmt in statements:
+            result = self._execute_ir(stmt)
+            # If we hit a return statement or the current path ended, break
+            if self.current_path is None:
+                break
         return result or SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_assign(self, ir_node: Tuple) -> SymbolicValue:
         """Execute an assignment IR node"""
-        if len(ir_node) == 4:
-            _, var_name, value_ir, _ = ir_node
-        else:
-            _, var_name, value_ir = ir_node
-
+        _, var_name, value_ir, _ = ir_node
         value = self._execute_ir(value_ir)
         self.current_env.set_variable(var_name, value)
 
@@ -383,7 +365,17 @@ class SymbolicExecutor:
         self.current_env = original_env.copy()
 
         if then_block:
-            self._execute_ir(then_block)
+            # Execute then block - check if it's a single statement or block
+            if isinstance(then_block, tuple) and len(then_block) > 0 and isinstance(then_block[0], tuple):
+                # It's a tuple of statements
+                for stmt in then_block:
+                    self._execute_ir(stmt)
+                    # If current path ended (e.g., return statement), break
+                    if self.current_path is None:
+                        break
+            else:
+                # It's a single statement
+                self._execute_ir(then_block)
 
         # Add the true path if it has content
         if self.current_path and self.current_path.is_satisfiable():
@@ -405,7 +397,17 @@ class SymbolicExecutor:
             self.current_path = false_path
             self.current_env = original_env.copy()
 
-            self._execute_ir(else_block)
+            # Execute else block - check if it's a single statement or block
+            if isinstance(else_block, tuple) and len(else_block) > 0 and isinstance(else_block[0], tuple):
+                # It's a tuple of statements
+                for stmt in else_block:
+                    self._execute_ir(stmt)
+                    # If current path ended (e.g., return statement), break
+                    if self.current_path is None:
+                        break
+            else:
+                # It's a single statement
+                self._execute_ir(else_block)
 
             # Add the false path if it has content
             if self.current_path and self.current_path.is_satisfiable():
@@ -425,8 +427,13 @@ class SymbolicExecutor:
             if false_path not in self.paths:
                 self.paths.append(false_path)
 
-        # End current path as we've split into multiple paths
-        self.current_path = None
+        # In block context, continue with one of the paths for subsequent statements
+        # Choose the first satisfiable path to continue execution
+        satisfiable_paths = [path for path in self.paths if path.is_satisfiable()]
+        if satisfiable_paths:
+            self.current_path = satisfiable_paths[0]
+        else:
+            self.current_path = None
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_while(self, ir_node: Tuple) -> SymbolicValue:
@@ -489,22 +496,14 @@ class SymbolicExecutor:
         """Execute a function definition and analyze its internal paths"""
         _, func_name, params, body_ir = ir_node
 
-        # Convert params from list to tuple if needed
-        if isinstance(params, list):
-            params = tuple(params)
-
         # Store the function IR for later symbolic analysis
         self.global_env.functions[func_name] = body_ir
 
         if self.current_path:
-            if isinstance(params, (list, tuple)):
-                param_str = ', '.join(params)
-            else:
-                param_str = str(params)
-            self.current_path.add_statement(f"def {func_name}({param_str}):")
+            self.current_path.add_statement(f"def {func_name}({', '.join(params)}):")
 
         # Analyze function's internal paths
-        function_paths = self.analyze_function_definition(func_name, list(params) if isinstance(params, tuple) else params, body_ir)
+        function_paths = self.analyze_function_definition(func_name, params, body_ir)
 
         # Store function paths for reporting
         if not hasattr(self, 'function_analyses'):
@@ -518,19 +517,11 @@ class SymbolicExecutor:
 
     def _execute_call(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function call symbolically"""
-        if len(ir_node) >= 4:
-            _, func_name, args_ir, _ = ir_node
-        elif len(ir_node) == 3:
+        if len(ir_node) == 4:
+            _, func_name, args_ir, kwargs_ir = ir_node
+        else:
             _, func_name, args_ir = ir_node
-        else:
-            _, func_name = ir_node
-            args_ir = []
-
-        # Handle both list and tuple formats for arguments
-        if isinstance(args_ir, (list, tuple)):
-            args = [self._execute_ir(arg) for arg in args_ir]
-        else:
-            args = [self._execute_ir(args_ir)] if args_ir else []
+        args = [self._execute_ir(arg) for arg in args_ir]
 
         if func_name in self.global_env.functions:
             func_handler = self.global_env.functions[func_name]
@@ -621,16 +612,14 @@ class SymbolicExecutor:
         result = None
         for stmt in statements:
             result = self._execute_ir(stmt)
+            # If current path ended, stop execution
+            if self.current_path is None:
+                break
         return result or SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_comparison(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a comparison operation"""
-        if len(ir_node) == 3:
-            op, left_ir, right_ir = ir_node
-        else:
-            # Handle other formats
-            return SymbolicValue(SymbolicValueType.EXPRESSION, str(ir_node))
-
+        op, left_ir, right_ir = ir_node
         left = self._execute_ir(left_ir)
         right = self._execute_ir(right_ir)
 
