@@ -69,6 +69,23 @@ silu ir your_program.si --output program.ir.json --format json
 silu ir --source "x = 5; print(x)"
 ```
 
+### Symbolic Execution Mode
+
+Perform symbolic analysis to discover all possible execution paths:
+
+```bash
+# Analyze a Silu program
+silu symbolic your_program.si
+
+# Analyze IR directly
+silu symbolic program.ir.json
+
+# Analyze source code directly
+silu symbolic --source "if x > 5: y = 1 else: y = 2"
+```
+
+For detailed information about symbolic execution capabilities, see [docs/symbolic_execution.md](docs/symbolic_execution.md).
+
 ### Help and Documentation
 
 ```bash
@@ -78,6 +95,7 @@ silu --help
 # Show help for specific commands
 silu interpret --help
 silu ir --help
+silu symbolic --help
 ```
 
 ## Examples
@@ -130,6 +148,14 @@ print("Result:", result)
 ## Contributing
 
 Contributions are welcome! Please read our [contributing guidelines](CONTRIBUTING.md) for more information.
+
+## Documentation
+
+For detailed information about Silu's features and implementation:
+
+- [Symbolic Execution](docs/symbolic_execution.md) - Program analysis and path exploration
+- [Simple IR Design](docs/simple_ir_design.md) - Intermediate representation format
+- [Interpreter Specification](docs/interpreter_spec.md) - Core interpreter details
 
 ## License
 
