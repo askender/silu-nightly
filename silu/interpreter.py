@@ -19,11 +19,13 @@ class ReturnException(Exception):
 
 class BreakException(Exception):
     """Exception used to handle break statements in loops."""
+
     pass
 
 
 class ContinueException(Exception):
     """Exception used to handle continue statements in loops."""
+
     pass
 
 
@@ -37,7 +39,9 @@ class LambdaFunction:
 
     def __call__(self, *args):
         if len(args) != len(self.params):
-            raise TypeError(f"Lambda takes {len(self.params)} arguments but {len(args)} were given")
+            raise TypeError(
+                f"Lambda takes {len(self.params)} arguments but {len(args)} were given"
+            )
 
         # Create lambda environment with parameter bindings
         lambda_env = Environment(parent=self.env)
@@ -87,23 +91,25 @@ class Environment:
 
     def _register_builtins(self):
         """Register all built-in functions and types."""
-        self.vars.update({
-            "print": lambda *args: print(*args),
-            "type": type,
-            "isinstance": self._isinstance,
-            "int": int,
-            "float": float,
-            "str": str,
-            "bool": bool,
-            "list": list,
-            "dict": dict,
-            "len": len,
-            "range": range,
-            "int_type": int,
-            "float_type": float,
-            "str_type": str,
-            "bool_type": bool,
-        })
+        self.vars.update(
+            {
+                "print": lambda *args: print(*args),
+                "type": type,
+                "isinstance": self._isinstance,
+                "int": int,
+                "float": float,
+                "str": str,
+                "bool": bool,
+                "list": list,
+                "dict": dict,
+                "len": len,
+                "range": range,
+                "int_type": int,
+                "float_type": float,
+                "str_type": str,
+                "bool_type": bool,
+            }
+        )
 
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance with type name support."""
@@ -162,7 +168,9 @@ class SiluInterpreter(BaseASTProcessor):
                 raise IndexError("list index out of range")
             obj[key] = value
         else:
-            raise TypeError(f"'{type(obj).__name__}' object does not support item assignment")
+            raise TypeError(
+                f"'{type(obj).__name__}' object does not support item assignment"
+            )
 
     def process_name(self, name: str, context: ast.AST) -> Any:
         """Handle variable lookup or return name for assignment."""
@@ -181,13 +189,21 @@ class SiluInterpreter(BaseASTProcessor):
         # Define all operation mappings
         unary_ops = {"+": lambda x: +x, "-": lambda x: -x, "not": lambda x: not x}
         binary_ops = {
-            "+": lambda l, r: l + r, "-": lambda l, r: l - r, "*": lambda l, r: l * r,
-            "/": lambda l, r: l / r, "//": lambda l, r: l // r, "%": lambda l, r: l % r,
-            "**": lambda l, r: l ** r
+            "+": lambda left, r: left + r,
+            "-": lambda left, r: left - r,
+            "*": lambda left, r: left * r,
+            "/": lambda left, r: left / r,
+            "//": lambda left, r: left // r,
+            "%": lambda left, r: left % r,
+            "**": lambda left, r: left**r,
         }
         comp_ops = {
-            "==": lambda l, r: l == r, "!=": lambda l, r: l != r, "<": lambda l, r: l < r,
-            "<=": lambda l, r: l <= r, ">": lambda l, r: l > r, ">=": lambda l, r: l >= r
+            "==": lambda left, r: left == r,
+            "!=": lambda left, r: left != r,
+            "<": lambda left, r: left < r,
+            "<=": lambda left, r: left <= r,
+            ">": lambda left, r: left > r,
+            ">=": lambda left, r: left >= r,
         }
 
         if len(operands) == 1:  # Unary
@@ -208,7 +224,9 @@ class SiluInterpreter(BaseASTProcessor):
             current = left
             for op_str, comparator in zip(ops, comparators):
                 if op_str not in comp_ops:
-                    raise NotImplementedError(f"Unsupported comparison operator: {op_str}")
+                    raise NotImplementedError(
+                        f"Unsupported comparison operator: {op_str}"
+                    )
                 if not comp_ops[op_str](current, comparator):
                     return False
                 current = comparator
@@ -250,7 +268,9 @@ class SiluInterpreter(BaseASTProcessor):
                 pass
         elif node_type == "for":
             if not isinstance(kwargs["target"], str):
-                raise NotImplementedError("Only simple variable targets are supported in for loops")
+                raise NotImplementedError(
+                    "Only simple variable targets are supported in for loops"
+                )
             try:
                 for item in kwargs["iter"]:
                     self.env.set(kwargs["target"], item)
@@ -275,7 +295,7 @@ class SiluInterpreter(BaseASTProcessor):
             "list": lambda e: e,
             "tuple": lambda e: tuple(e),
             "dict": lambda e: {k: v for k, v in e},
-            "module": lambda e: None
+            "module": lambda e: None,
         }
         return containers[container_type](elements)
 

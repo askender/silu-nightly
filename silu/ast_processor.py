@@ -135,9 +135,7 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     def visit_Assign(self, node: ast.Assign) -> Any:
         """Visit an assignment node."""
         if len(node.targets) != 1:
-            raise NotImplementedError(
-                "Only single target assignments supported"
-            )
+            raise NotImplementedError("Only single target assignments supported")
 
         target = node.targets[0]
         value = self.visit(node.value)
@@ -307,7 +305,9 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
         """Visit an annotated assignment node."""
         if not isinstance(node.target, ast.Name):
-            raise NotImplementedError("Only simple variable annotation assignments supported")
+            raise NotImplementedError(
+                "Only simple variable annotation assignments supported"
+            )
         target = node.target.id
         value = self.visit(node.value) if node.value else None
         annotation = self.visit(node.annotation) if node.annotation else None

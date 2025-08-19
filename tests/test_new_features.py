@@ -7,7 +7,7 @@ annotated assignments, and lambda functions.
 
 import ast
 import pytest
-from silu.interpreter import SiluInterpreter, BreakException, ContinueException
+from silu.interpreter import SiluInterpreter
 
 
 class TestBreakContinue:
@@ -324,7 +324,9 @@ result = add(1)  # Missing second argument
 """
         interpreter = SiluInterpreter()
         tree = ast.parse(code)
-        with pytest.raises(TypeError, match="Lambda takes 2 arguments but 1 were given"):
+        with pytest.raises(
+            TypeError, match="Lambda takes 2 arguments but 1 were given"
+        ):
             interpreter.visit(tree)
 
     def test_lambda_complex_body(self):

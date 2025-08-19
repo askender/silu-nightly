@@ -246,7 +246,7 @@ class TestSiluIRGenerator:
         target = ast.Subscript(
             value=ast.Name(id="d", ctx=ast.Load()),
             slice=ast.Constant(value="key"),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value="value")
         assign_node = ast.Assign(targets=[target], value=value)
@@ -259,7 +259,7 @@ class TestSiluIRGenerator:
         target = ast.Subscript(
             value=ast.Name(id="arr", ctx=ast.Load()),
             slice=ast.Constant(value=1),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value=99)
         assign_node = ast.Assign(targets=[target], value=value)

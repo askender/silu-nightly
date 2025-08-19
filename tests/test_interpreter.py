@@ -138,7 +138,7 @@ class TestSiluInterpreter:
         target = ast.Subscript(
             value=ast.Name(id="d", ctx=ast.Load()),
             slice=ast.Constant(value="key"),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value="value")
         assign_node = ast.Assign(targets=[target], value=value)
@@ -156,7 +156,7 @@ class TestSiluInterpreter:
         target = ast.Subscript(
             value=ast.Name(id="arr", ctx=ast.Load()),
             slice=ast.Constant(value=1),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value=99)
         assign_node = ast.Assign(targets=[target], value=value)
@@ -171,7 +171,7 @@ class TestSiluInterpreter:
         target = ast.Subscript(
             value=ast.Name(id="s", ctx=ast.Load()),
             slice=ast.Constant(value=0),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value="H")
         assign_node = ast.Assign(targets=[target], value=value)
@@ -184,15 +184,13 @@ class TestSiluInterpreter:
         target = ast.Subscript(
             value=ast.Name(id="small_arr", ctx=ast.Load()),
             slice=ast.Constant(value=5),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value=99)
         assign_node = ast.Assign(targets=[target], value=value)
 
         with pytest.raises(IndexError, match="list index out of range"):
             interpreter.visit_Assign(assign_node)
-
-
 
     @pytest.mark.parametrize(
         "op,expected",
@@ -478,7 +476,7 @@ class TestSiluInterpreter:
         assert list_func() == []
         assert list_func([1, 2, 3]) == [1, 2, 3]
         # Test with iterables
-        assert list_func("abc") == ['a', 'b', 'c']
+        assert list_func("abc") == ["a", "b", "c"]
         assert list_func(range(3)) == [0, 1, 2]
 
     def test_print_function(self):

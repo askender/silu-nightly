@@ -33,6 +33,7 @@ def format_ir_output(ir_result: Any, output_format: str) -> str:
         return json.dumps(ir_result, indent=2, default=str)
     elif output_format == "pretty":
         import pprint
+
         return pprint.pformat(ir_result, width=80, depth=None)
     elif output_format == "compact":
         return str(ir_result)
@@ -171,7 +172,11 @@ def validate_arguments(args) -> None:
 def handle_legacy_usage(args) -> bool:
     """Handle legacy usage: silu file.si (interpret directly)."""
     # Check if it's legacy usage: exactly 2 args, second arg is not a subcommand
-    if len(sys.argv) == 2 and not sys.argv[1].startswith('-') and sys.argv[1] not in ['interpret', 'ir']:
+    if (
+        len(sys.argv) == 2
+        and not sys.argv[1].startswith("-")
+        and sys.argv[1] not in ["interpret", "ir"]
+    ):
         filename = sys.argv[1]
         try:
             source_code = read_source_file(filename)
@@ -247,6 +252,7 @@ def main() -> None:
         print(f"Unexpected error: {e}", file=sys.stderr)
         if hasattr(args, "debug") and getattr(args, "debug", False):
             import traceback
+
             traceback.print_exc()
         sys.exit(1)
 

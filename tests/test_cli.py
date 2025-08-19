@@ -5,8 +5,6 @@ Unit tests for the Silu CLI module.
 import sys
 import ast
 import pytest
-import subprocess
-import os
 from silu.cli import main
 from unittest.mock import patch, mock_open
 
@@ -77,7 +75,9 @@ def test_ir_mode_with_valid_file(mock_read_file, capsys):
         with patch("silu.cli.Path.exists", return_value=True):
             with patch("silu.cli.generate_ir") as mock_generate:
                 main()
-                mock_generate.assert_called_once_with("x = 42\nprint(x)", "pretty", record_types=True)
+                mock_generate.assert_called_once_with(
+                    "x = 42\nprint(x)", "pretty", record_types=True
+                )
 
 
 def test_interpret_mode_with_source_string(capsys):
@@ -90,7 +90,9 @@ def test_interpret_mode_with_source_string(capsys):
 
 def test_ir_mode_with_source_string_and_format(capsys):
     """Test IR mode with source string and JSON format."""
-    with patch.object(sys, "argv", ["silu", "ir", "--source", "x = 5", "--format", "json"]):
+    with patch.object(
+        sys, "argv", ["silu", "ir", "--source", "x = 5", "--format", "json"]
+    ):
         with patch("silu.cli.generate_ir") as mock_generate:
             main()
             mock_generate.assert_called_once_with("x = 5", "json", record_types=True)
@@ -132,7 +134,9 @@ def test_main_with_missing_file_and_source(capsys):
 
 def test_main_with_both_file_and_source(capsys):
     """Test main function when both file and source are provided."""
-    with patch.object(sys, "argv", ["silu", "interpret", "test.si", "--source", "x = 5"]):
+    with patch.object(
+        sys, "argv", ["silu", "interpret", "test.si", "--source", "x = 5"]
+    ):
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 1
@@ -143,7 +147,9 @@ def test_main_with_both_file_and_source(capsys):
 
 def test_ir_mode_with_output_file():
     """Test IR mode with output file."""
-    with patch.object(sys, "argv", ["silu", "ir", "--source", "x = 5", "--output", "test.ir"]):
+    with patch.object(
+        sys, "argv", ["silu", "ir", "--source", "x = 5", "--output", "test.ir"]
+    ):
         with patch("silu.cli.ast.parse") as mock_parse:
             with patch("silu.cli.SiluIRGenerator") as mock_ir_gen:
                 with patch("silu.cli.save_ir_to_file") as mock_save:
@@ -160,7 +166,8 @@ def test_cli_as_module():
     """Test that the CLI can be called as a module."""
     # This test just ensures the module structure is correct
     import silu.cli
-    assert hasattr(silu.cli, 'main')
+
+    assert hasattr(silu.cli, "main")
     assert callable(silu.cli.main)
 
 
@@ -168,6 +175,7 @@ def test_cli_integration():
     """Integration test to verify the CLI works end-to-end."""
     # Test that we can import and the main function exists
     from silu.cli import main
+
     assert callable(main)
 
     # Test help output
@@ -180,7 +188,9 @@ def test_cli_integration():
 
 def test_debug_mode():
     """Test debug mode functionality."""
-    with patch.object(sys, "argv", ["silu", "interpret", "--source", "x = 5", "--debug"]):
+    with patch.object(
+        sys, "argv", ["silu", "interpret", "--source", "x = 5", "--debug"]
+    ):
         with patch("silu.cli.run_interpreter") as mock_run:
             main()
             mock_run.assert_called_once_with("x = 5")

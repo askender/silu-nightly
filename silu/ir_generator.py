@@ -81,7 +81,11 @@ class SiluIRGenerator(BaseASTProcessor):
         elif node_type == "if":
             # Process if statement body and orelse
             body = [self.visit(stmt) for stmt in kwargs["body"]]
-            orelse = [self.visit(stmt) for stmt in kwargs["orelse"]] if kwargs["orelse"] else []
+            orelse = (
+                [self.visit(stmt) for stmt in kwargs["orelse"]]
+                if kwargs["orelse"]
+                else []
+            )
             return ("if", kwargs["test"], tuple(body), tuple(orelse))
         elif node_type == "while":
             # Process test_node ourselves for IR generation
@@ -90,7 +94,11 @@ class SiluIRGenerator(BaseASTProcessor):
             return ("while", test, tuple(body))
         elif node_type == "for":
             body = [self.visit(stmt) for stmt in kwargs["body"]]
-            orelse = [self.visit(stmt) for stmt in kwargs["orelse"]] if kwargs["orelse"] else []
+            orelse = (
+                [self.visit(stmt) for stmt in kwargs["orelse"]]
+                if kwargs["orelse"]
+                else []
+            )
             return ("for", kwargs["target"], kwargs["iter"], tuple(body), tuple(orelse))
 
     def process_container(self, container_type: str, elements: List[Any]) -> Tuple:
@@ -228,7 +236,9 @@ class SiluIRGenerator(BaseASTProcessor):
         finalbody = (
             [self.visit(stmt) for stmt in node.finalbody] if node.finalbody else []
         )
-        return self._make_node("try", tuple(body), tuple(handlers), tuple(orelse), tuple(finalbody))
+        return self._make_node(
+            "try", tuple(body), tuple(handlers), tuple(orelse), tuple(finalbody)
+        )
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> Tuple:
         """Generate exception handler IR."""

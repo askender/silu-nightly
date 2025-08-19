@@ -160,7 +160,7 @@ class TestBaseASTProcessor:
         target = ast.Subscript(
             value=ast.Name(id="arr", ctx=ast.Load()),
             slice=ast.Constant(value=0),
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Constant(value=42)
         assign = ast.Assign(targets=[target], value=value)
