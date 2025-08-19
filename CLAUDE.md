@@ -19,7 +19,7 @@ Silu is a simple AI programming language implemented in Python. It's an interpre
 
 - `silu/`: Main package directory
   - `__main__.py`: Entry point that delegates to CLI
-  - `cli.py`: Command-line interface that parses `.si` files and executes them
+  - `cli.py`: Unified command-line interface supporting both interpretation and IR generation
   - `ast_processor.py`: Abstract base class for AST processing with shared functionality
   - `interpreter.py`: Core interpreter that extends BaseASTProcessor for direct execution
   - `ir_generator.py`: IR generator that extends BaseASTProcessor for intermediate representation
@@ -28,7 +28,7 @@ Silu is a simple AI programming language implemented in Python. It's an interpre
 
 ## Key Components
 
-1. **CLI (`silu/cli.py`)**: Handles command-line arguments and file execution
+1. **CLI (`silu/cli.py`)**: Unified interface supporting both interpretation and IR generation modes
 2. **Base AST Processor (`silu/ast_processor.py`)**:
    - `BaseASTProcessor`: Abstract base class extending `ast.NodeVisitor`
    - Shared AST traversal logic and operator mappings
@@ -86,7 +86,20 @@ make fmt          # Format code with ruff
 
 ### Running Silu Programs
 ```bash
-silu program.si   # Execute a Silu program
+# Traditional usage (interpretation)
+silu program.si
+
+# Explicit interpretation mode
+silu interpret program.si
+silu interpret --source "x = 5; print(x)"
+silu interpret program.si --debug
+
+# IR generation mode
+silu ir program.si                    # Pretty format (default)
+silu ir program.si --format json     # JSON format
+silu ir program.si --format compact  # Compact format
+silu ir program.si --output file.ir  # Save to file
+silu ir --source "x = 5"            # From source string
 ```
 
 ### Cleaning
@@ -169,3 +182,15 @@ The codebase was recently refactored to eliminate code duplication between inter
 
 The repository includes a single comprehensive demo program:
 - `demo.si`: Consolidated demo showcasing all core language features including variables, arithmetic, control flow, functions, type conversion, lambda expressions, and loop control
+
+Example usage:
+```bash
+# Run the demo
+silu demo.si
+
+# Generate IR for the demo
+silu ir demo.si --format json
+
+# Save demo IR to file
+silu ir demo.si --output demo.ir --format pretty
+```
