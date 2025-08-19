@@ -12,6 +12,7 @@ from typing import Any
 
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
+from silu.ir_interpreter import IRInterpreter, execute_ir_from_file, execute_ir_from_string
 
 
 def read_source_file(file_path: str) -> str:
@@ -56,7 +57,7 @@ def run_interpreter(source_code: str, **kwargs) -> None:
 
 
 def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> None:
-    """Generate IR from the source code."""
+    """Generate IR from source code and print it."""
     try:
         tree = ast.parse(source_code)
         ir_generator = SiluIRGenerator(**kwargs)
@@ -65,10 +66,25 @@ def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> No
         formatted_output = format_ir_output(ir_result, output_format)
         print(formatted_output)
     except SyntaxError as e:
-        print(f"Syntax Error: {e}", file=sys.stderr)
+        print(f"Syntax error: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"IR Generation Error: {e}", file=sys.stderr)
+        print(f"Error generating IR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_ir_interpreter(ir_source: str, **kwargs) -> None:
+    """Run the IR interpreter on IR code."""
+    try:
+        interpreter = IRInterpreter()
+        if ir_source.strip().startswith(('[', '(')):
+            # Direct IR string
+            result = execute_ir_from_string(ir_source)
+        else:
+            # Treat as filename
+            result = execute_ir_from_file(ir_source)
+    except Exception as e:
+        print(f"Error executing IR: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -87,7 +103,7 @@ def save_ir_to_file(ir_result: Any, output_file: str, output_format: str) -> Non
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
-        description="Silu Language Processor - Interpreter and IR Generator",
+        description="Silu Language Processor - Interpreter, IR Generator, and IR Executor",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -106,13 +122,15 @@ Examples:
   # Save IR to file
   %(prog)s ir program.si --output program.ir.json --format json
 
+  # Execute IR directly
+  %(prog)s exec program.ir.json
+
   # Process source code directly
   %(prog)s interpret --source "x = 5; print(x)"
-        """,
+""",
     )
 
-    # Add subcommands
-    subparsers = parser.add_subparsers(dest="mode", help="Processing mode")
+    subparsers = parser.add_subparsers(dest="mode", help="Processing mode", required=True)
 
     # Interpreter subcommand
     interpret_parser = subparsers.add_parser(
@@ -149,24 +167,47 @@ Examples:
         help="Disable type information recording in IR",
     )
 
+    # IR execution subcommand
+    exec_parser = subparsers.add_parser("exec", help="Execute IR directly")
+    exec_parser.add_argument("file", help="IR file to execute")
+    exec_parser.add_argument(
+        "--source", help="IR string to execute (alternative to file)"
+    )
+    exec_parser.add_argument(
+        "--debug", action="store_true", help="Enable debug mode with verbose output"
+    )
+
     return parser
 
 
 def validate_arguments(args) -> None:
     """Validate command line arguments."""
-    if not args.file and not args.source:
-        print(
-            "Error: Either a source file or --source must be provided.", file=sys.stderr
-        )
-        sys.exit(1)
-
-    if args.file and args.source:
-        print("Error: Cannot specify both file and --source.", file=sys.stderr)
-        sys.exit(1)
-
-    if args.file and not Path(args.file).exists():
-        print(f"Error: File '{args.file}' does not exist.", file=sys.stderr)
-        sys.exit(1)
+    if args.mode == "exec":
+        # For exec mode, either file or --source is required
+        if not args.file and not args.source:
+            print(
+                "Error: Either an IR file or --source must be provided.", file=sys.stderr
+            )
+            sys.exit(1)
+        if args.file and args.source:
+            print("Error: Cannot specify both file and --source.", file=sys.stderr)
+            sys.exit(1)
+        if args.file and not Path(args.file).exists():
+            print(f"Error: File '{args.file}' does not exist.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # For interpret/ir modes, either file or --source is required
+        if not args.file and not args.source:
+            print(
+                "Error: Either a source file or --source must be provided.", file=sys.stderr
+            )
+            sys.exit(1)
+        if args.file and args.source:
+            print("Error: Cannot specify both file and --source.", file=sys.stderr)
+            sys.exit(1)
+        if args.file and not Path(args.file).exists():
+            print(f"Error: File '{args.file}' does not exist.", file=sys.stderr)
+            sys.exit(1)
 
 
 def handle_legacy_usage(args) -> bool:
@@ -175,7 +216,7 @@ def handle_legacy_usage(args) -> bool:
     if (
         len(sys.argv) == 2
         and not sys.argv[1].startswith("-")
-        and sys.argv[1] not in ["interpret", "ir"]
+        and sys.argv[1] not in ["interpret", "ir", "exec"]
     ):
         filename = sys.argv[1]
         try:
@@ -244,6 +285,17 @@ def main() -> None:
             else:
                 # Generate IR and print to stdout
                 generate_ir(source_code, args.format, **ir_kwargs)
+
+        elif args.mode == "exec":
+            # Execute IR directly
+            ir_kwargs = {"debug": getattr(args, "debug", False)}
+
+            if args.source:
+                # Execute IR from command line source
+                run_ir_interpreter(args.source, **ir_kwargs)
+            else:
+                # Execute IR from file
+                run_ir_interpreter(args.file, **ir_kwargs)
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.", file=sys.stderr)
