@@ -69,13 +69,24 @@ Silu supports the following programming constructs:
 
 ### Building and Installing
 ```bash
-pip install -e .  # Install in development mode
+# Using uv (recommended)
+uv sync                # Install dependencies
+uv pip install -e .   # Install in development mode
+
+# Using pip (alternative)
+pip install -e .       # Install in development mode
 ```
 
 ### Running Tests
 ```bash
+# Using make (recommended)
 make test         # Run all tests
 make cov          # Run tests with coverage report
+
+# Using uv
+uv run pytest tests/
+
+# Using pytest directly
 pytest tests/     # Alternative way to run tests
 ```
 
@@ -100,6 +111,11 @@ silu ir program.si --format json     # JSON format
 silu ir program.si --format compact  # Compact format
 silu ir program.si --output file.ir  # Save to file
 silu ir --source "x = 5"            # From source string
+
+# IR execution mode (NEW!)
+silu exec program.ir.json            # Execute IR directly
+silu exec --source '("module", (("assign", "x", 42, null),))'
+python -m silu exec demo.ir          # Alternative execution method
 ```
 
 ### Cleaning
@@ -145,6 +161,13 @@ The IR generator works by:
 3. Supporting comprehensive Python syntax including advanced features
 4. Maintaining structural information without execution
 
+### IRInterpreter (NEW - Concrete Implementation)
+The IR interpreter works by:
+1. Directly executing IR tuples without AST traversal
+2. Providing better performance through flatter instruction execution
+3. Supporting all language features through IR instruction dispatch
+4. Enabling modular architecture for future compiler backends
+
 Key AST nodes supported by both processors:
 - Basic: Module, Expr, Assign, Name, Constant
 - Operations: BinOp, UnaryOp, BoolOp, Compare
@@ -161,22 +184,27 @@ The interpreter implements proper error handling for:
 - Type errors (TypeError)
 - Value errors (ValueError)
 
-## Recent Refactoring (Completed)
+## Recent Implementations (Completed)
 
-The codebase was recently refactored to eliminate code duplication between interpreter and IR generator:
+### IR Interpreter Implementation ✅
+Successfully implemented a complete IR interpreter with the following features:
+- **Direct IR Execution**: Can execute IR tuples without AST interpretation
+- **Complete Language Support**: All Silu features work through IR execution
+- **Performance Benefits**: Faster execution through flatter instruction dispatch
+- **Modular Architecture**: Clean separation between IR generation and execution
 
-### Benefits Achieved
+### Architecture Refactoring (Previously Completed) ✅
+The codebase was refactored to eliminate code duplication:
 - **Code Deduplication**: Removed ~60 lines of duplicate AST traversal logic
 - **Unified Architecture**: Single base class for all AST processing
 - **Improved Maintainability**: Shared logic only needs updates in one place
 - **Enhanced Extensibility**: Easy to add new processors (compiler, optimizer, etc.)
-- **Consistent Behavior**: Both modes handle syntax identically
+- **Consistent Behavior**: All modes handle syntax identically
 
-### Shared Components Now Include
-- Common visitor methods for attributes, subscripts, tuples, dictionaries
-- Unified operation validation (division by zero, etc.)
-- Consistent error handling patterns
-- Standardized container processing
+### Development Environment
+- **Package Manager**: Using `uv` for fast dependency management and virtual environment handling
+- **Testing**: Comprehensive test suite with 175+ passing tests
+- **CLI**: Unified command-line interface supporting interpret, ir, and exec modes
 
 ## Demo Programs
 
@@ -185,12 +213,17 @@ The repository includes a single comprehensive demo program:
 
 Example usage:
 ```bash
-# Run the demo
+# Run the demo (interpretation)
 silu demo.si
 
 # Generate IR for the demo
 silu ir demo.si --format json
 
-# Save demo IR to file
-silu ir demo.si --output demo.ir --format pretty
+# Save demo IR to file and execute it
+silu ir demo.si --output demo.ir --format json
+silu exec demo.ir
+
+# Compare performance (interpretation vs IR execution)
+time silu interpret demo.si
+time python -m silu exec demo.ir
 ```
