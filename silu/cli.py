@@ -13,6 +13,7 @@ from typing import Any
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
 from silu.ir_interpreter import IRInterpreter, execute_ir_from_file, execute_ir_from_string
+from silu.symbolic_executor import SymbolicExecutor, execute_symbolic_from_file, execute_symbolic_from_string
 
 
 def read_source_file(file_path: str) -> str:
@@ -100,6 +101,47 @@ def save_ir_to_file(ir_result: Any, output_file: str, output_format: str) -> Non
         sys.exit(1)
 
 
+def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
+    """Run symbolic execution on source code or IR."""
+    try:
+        executor = SymbolicExecutor()
+
+        if is_file:
+            # Execute from file
+            if source.endswith('.si'):
+                # Silu source file - need to convert to IR first
+                source_code = read_source_file(source)
+                tree = ast.parse(source_code)
+                ir_generator = SiluIRGenerator()
+                ir_result = ir_generator.visit(tree)
+                paths = executor.execute_program(ir_result)
+            else:
+                # IR file
+                paths = execute_symbolic_from_file(source)
+        else:
+            # Execute from string
+            if source.strip().startswith(('[', '(')):
+                # IR string
+                paths = execute_symbolic_from_string(source)
+            else:
+                # Silu source string - convert to IR first
+                tree = ast.parse(source)
+                ir_generator = SiluIRGenerator()
+                ir_result = ir_generator.visit(tree)
+                paths = executor.execute_program(ir_result)
+
+        # Generate and display report
+        if paths:
+            report = executor.generate_report(paths)
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            print("No execution paths found.")
+
+    except Exception as e:
+        print(f"Error in symbolic execution: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
@@ -124,6 +166,12 @@ Examples:
 
   # Execute IR directly
   %(prog)s exec program.ir.json
+
+  # Symbolic execution of a Silu program
+  %(prog)s symbolic program.si
+
+  # Symbolic execution of IR
+  %(prog)s symbolic program.ir.json
 
   # Process source code directly
   %(prog)s interpret --source "x = 5; print(x)"
@@ -177,16 +225,33 @@ Examples:
         "--debug", action="store_true", help="Enable debug mode with verbose output"
     )
 
+    # Symbolic execution subcommand
+    symbolic_parser = subparsers.add_parser("symbolic", help="Perform symbolic execution")
+    symbolic_parser.add_argument("file", nargs="?", help="Silu source file or IR file to analyze")
+    symbolic_parser.add_argument(
+        "--source", help="Source code or IR string to analyze (alternative to file)"
+    )
+    symbolic_parser.add_argument(
+        "--output", "-o", help="Output file to save symbolic execution report"
+    )
+    symbolic_parser.add_argument(
+        "--format",
+        choices=["json", "pretty"],
+        default="json",
+        help="Output format for the report (default: json)",
+    )
+
     return parser
 
 
 def validate_arguments(args) -> None:
     """Validate command line arguments."""
-    if args.mode == "exec":
-        # For exec mode, either file or --source is required
+    if args.mode in ["exec", "symbolic"]:
+        # For exec/symbolic modes, either file or --source is required
         if not args.file and not args.source:
+            mode_name = "IR file" if args.mode == "exec" else "source file or IR file"
             print(
-                "Error: Either an IR file or --source must be provided.", file=sys.stderr
+                f"Error: Either a {mode_name} or --source must be provided.", file=sys.stderr
             )
             sys.exit(1)
         if args.file and args.source:
@@ -216,7 +281,7 @@ def handle_legacy_usage(args) -> bool:
     if (
         len(sys.argv) == 2
         and not sys.argv[1].startswith("-")
-        and sys.argv[1] not in ["interpret", "ir", "exec"]
+        and sys.argv[1] not in ["interpret", "ir", "exec", "symbolic"]
     ):
         filename = sys.argv[1]
         try:
@@ -296,6 +361,20 @@ def main() -> None:
             else:
                 # Execute IR from file
                 run_ir_interpreter(args.file, **ir_kwargs)
+
+        elif args.mode == "symbolic":
+            # Symbolic execution
+            if args.source:
+                # Symbolic execution from command line source
+                run_symbolic_executor(args.source, is_file=False)
+            else:
+                # Symbolic execution from file
+                run_symbolic_executor(args.file, is_file=True)
+
+            # TODO: Handle output file and format options if needed
+            if hasattr(args, 'output') and args.output:
+                # Save symbolic execution report to file - to be implemented
+                pass
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.", file=sys.stderr)
