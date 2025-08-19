@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Symbolic Execution Engine for Silu Language
+Simplified Symbolic Execution Engine for Silu Language
 
 This module provides symbolic execution capabilities for Silu programs,
 allowing analysis of all possible execution paths and generation of
@@ -91,7 +91,6 @@ class ExecutionPath:
 
     def is_satisfiable(self) -> bool:
         """Check if the path conditions are satisfiable (basic check)"""
-        # Simple contradiction detection
         expressions = {}
         for condition in self.conditions:
             if condition.expression in expressions:
@@ -108,20 +107,13 @@ class ExecutionPath:
             'statements': self.statements,
             'return_value': str(self.return_value) if self.return_value else None,
             'variables': {k: str(v) for k, v in self.variables.items()},
-            'satisfiable': True  # Default to True for backward compatibility
+            'satisfiable': getattr(self, 'satisfiable', True)
         }
 
-        # Add test case information if available (from --solve option)
-        if hasattr(self, 'satisfiable'):
-            result['satisfiable'] = self.satisfiable
-        if hasattr(self, 'test_inputs'):
-            result['test_inputs'] = self.test_inputs
-        if hasattr(self, 'expected_outputs'):
-            result['expected_outputs'] = self.expected_outputs
-        if hasattr(self, 'z3_error'):
-            result['z3_error'] = self.z3_error
-        if hasattr(self, 'z3_errors'):
-            result['z3_errors'] = self.z3_errors
+        # Add optional attributes if present
+        for attr in ['test_inputs', 'expected_outputs', 'z3_error', 'z3_errors']:
+            if hasattr(self, attr):
+                result[attr] = getattr(self, attr)
 
         return result
 
@@ -149,7 +141,6 @@ class SymbolicEnvironment:
         elif self.parent:
             return self.parent.get_variable(name)
         else:
-            # Create a new symbolic variable for undefined variables
             symbol = self.create_symbol(name)
             self.variables[name] = symbol
             return symbol
@@ -176,24 +167,37 @@ class SymbolicExecutor:
         self.paths: List[ExecutionPath] = []
         self.current_path: Optional[ExecutionPath] = None
         self.path_counter = 0
-        self.max_paths = 100  # Limit to prevent infinite path explosion
+        self.max_paths = 100
 
         # Initialize built-in functions
         self._init_builtins()
 
     def _init_builtins(self):
-        """Initialize built-in functions"""
-        builtins = {
-            'print': self._symbolic_print,
-            'int': self._symbolic_int,
-            'float': self._symbolic_float,
-            'str': self._symbolic_str,
-            'bool': self._symbolic_bool,
-            'type': self._symbolic_type,
-            'isinstance': self._symbolic_isinstance,
-            'len': self._symbolic_len,
-        }
-        self.global_env.functions.update(builtins)
+        """Initialize built-in functions with unified handler"""
+        builtin_names = ['print', 'int', 'float', 'str', 'bool', 'type', 'isinstance', 'len']
+        for name in builtin_names:
+            self.global_env.functions[name] = lambda *args, fn=name: self._handle_builtin(fn, *args)
+
+    def _handle_builtin(self, func_name: str, *args) -> SymbolicValue:
+        """Unified handler for built-in functions"""
+        # Record function call in current path
+        if self.current_path:
+            args_str = ', '.join(str(arg) for arg in args)
+            self.current_path.add_statement(f"{func_name}({args_str})")
+
+        if func_name == 'print':
+            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+
+        if len(args) == 0:
+            return SymbolicValue(SymbolicValueType.EXPRESSION, f"{func_name}()")
+
+        arg = args[0]
+        if func_name in ['int', 'float', 'str', 'bool'] and arg.type == SymbolicValueType.CONCRETE:
+            converters = {'int': int, 'float': float, 'str': str, 'bool': bool}
+            return SymbolicValue(SymbolicValueType.CONCRETE, converters[func_name](arg.value))
+
+        args_str = ', '.join(str(arg) for arg in args)
+        return SymbolicValue(SymbolicValueType.EXPRESSION, f"{func_name}({args_str})")
 
     def execute_program(self, ir_program: Tuple) -> List[ExecutionPath]:
         """Execute an IR program symbolically and return all paths"""
@@ -201,151 +205,97 @@ class SymbolicExecutor:
             raise ValueError("Invalid IR program format")
 
         self.paths = []
-        self.current_path = ExecutionPath(f"path_0")
+        self.current_path = ExecutionPath("path_0")
         self.path_counter = 1
 
-        # Execute the module
         try:
             self._execute_ir(ir_program)
         except Exception as e:
             if self.current_path:
-                self.current_path.add_statement(f"ERROR: {str(e)}")
+                self.current_path.add_statement(f"Error: {e}")
 
-        # Add the current path if it exists and we haven't added it yet
-        if self.current_path and self.current_path.is_satisfiable():
-            # Only add if not already in paths
-            if self.current_path not in self.paths:
-                self.paths.append(self.current_path)
-
-        return self.paths
-
-    def analyze_function(self, function_name: str, parameters: List[str]) -> List[ExecutionPath]:
-        """Analyze a specific function symbolically"""
-        if function_name not in self.global_env.functions:
-            raise ValueError(f"Function '{function_name}' not found")
-
-        # Create symbolic parameters
-        self.current_path = ExecutionPath(f"path_0")
-        param_env = SymbolicEnvironment(self.global_env)
-
-        for param in parameters:
-            symbol = param_env.create_symbol(param)
-            param_env.set_variable(param, symbol)
-
-        # Execute the function symbolically
-        self.current_env = param_env
-        func_ir = self.global_env.functions[function_name]
-
-        try:
-            self._execute_ir(func_ir)
-        except Exception as e:
-            if self.current_path:
-                self.current_path.add_statement(f"ERROR: {str(e)}")
-
-        if self.current_path and self.current_path.is_satisfiable():
+        if self.current_path and self.current_path not in self.paths:
             self.paths.append(self.current_path)
 
-        return self.paths
+        # Filter out empty paths and renumber
+        self.paths = [p for p in self.paths if p.statements or p.conditions or p.variables]
+        return self.renumber_paths_sequentially(self.paths)
 
-    def analyze_function_definition(self, func_name: str, params: List[str], body_ir: Any) -> List[ExecutionPath]:
-        """Analyze all paths within a function definition"""
-        # Save current state
-        original_paths = self.paths
-        original_current_path = self.current_path
-        original_env = self.current_env
-        original_counter = self.path_counter
-
-        # Reset for function analysis
+    def analyze_function(self, func_name: str, param_names: List[str], ir_program: Tuple) -> List[ExecutionPath]:
+        """Analyze a specific function with symbolic parameters"""
         self.paths = []
-        self.current_path = ExecutionPath(f"func_{func_name}_path_0")
+        self.current_path = ExecutionPath("path_0")
         self.path_counter = 1
 
-        # Create function environment with symbolic parameters
-        func_env = SymbolicEnvironment(self.global_env)
-        for param in params:
-            symbol = func_env.create_symbol(param)
-            func_env.set_variable(param, symbol)
-            self.current_path.variables[param] = symbol
-            # Don't record parameter initialization - it's implicit
-
-        self.current_env = func_env
+        # Create symbolic parameters
+        for param in param_names:
+            symbol = self.current_env.create_symbol(param)
+            self.current_env.set_variable(param, symbol)
 
         try:
-            # Analyze function body - iterate through statements
-            if isinstance(body_ir, tuple):
-                for stmt in body_ir:
-                    self._execute_ir(stmt)
-                    # If current path ended (e.g., return statement), break
-                    if self.current_path is None:
-                        break
-            else:
-                self._execute_ir(body_ir)
+            self._execute_ir(ir_program)
         except Exception as e:
             if self.current_path:
-                self.current_path.add_statement(f"ERROR: {str(e)}")
+                self.current_path.add_statement(f"Error: {e}")
 
-        # Collect function paths
-        if self.current_path and self.current_path.is_satisfiable():
-            if self.current_path not in self.paths:
-                self.paths.append(self.current_path)
+        if self.current_path and self.current_path not in self.paths:
+            self.paths.append(self.current_path)
 
-        function_paths = self.paths.copy()
+        return self.renumber_paths_sequentially(self.paths)
 
-        # Restore original state
-        self.paths = original_paths
-        self.current_path = original_current_path
-        self.current_env = original_env
-        self.path_counter = original_counter
+    def analyze_function_definition(self, ir_node: Tuple) -> List[ExecutionPath]:
+        """Analyze a function definition IR node"""
+        if len(ir_node) < 4:
+            return []
 
-        return function_paths
+        func_name = ir_node[1]
+        params = ir_node[2] if ir_node[2] else []
+        body = ir_node[3]
 
-    def _execute_ir(self, ir_node: Any) -> SymbolicValue:
-        """Execute an IR node symbolically"""
-        if not isinstance(ir_node, tuple) or len(ir_node) == 0:
-            if isinstance(ir_node, (int, float, str, bool)):
-                return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
-            elif isinstance(ir_node, str):
-                # Variable reference
-                return self.current_env.get_variable(ir_node)
-            else:
-                return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
+        return self.analyze_function(func_name, params, body)
 
-        node_type = ir_node[0]
-
-        # Handle comparison operators directly
-        if node_type in ['>', '<', '>=', '<=', '==', '!=']:
-            return self._execute_comparison(ir_node)
-
-        # Handle special cases for nodes that might not have handlers
-        if node_type == "assign":
-            return self._execute_assign(ir_node)
-
-        # Dispatch to appropriate handler
-        handler_name = f"_execute_{node_type}"
-        if hasattr(self, handler_name):
-            return getattr(self, handler_name)(ir_node)
-        else:
-            # Unknown node type, treat as concrete
-            # Handle common IR nodes without cluttering statements
-            if node_type in ['+', '-', '*', '/', '//', '%', '**',
-                           '==', '!=', '<', '>', '<=', '>=',
-                           'and', 'or', 'not']:
-                # These are handled elsewhere, don't add confusing statements
-                pass
-            elif self.current_path:
-                self.current_path.add_statement(f"# Unhandled operation: {node_type}")
+    def _execute_ir(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute an IR node and return its symbolic value"""
+        if not isinstance(ir_node, tuple) or not ir_node:
             return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
+
+        op = ir_node[0]
+
+        # Dispatch to specific handlers
+        handlers = {
+            "module": self._execute_module,
+            "assign": self._execute_assign,
+            "if": self._execute_if,
+            "while": self._execute_while,
+            "func_def": self._execute_func_def,
+            "call": self._execute_call,
+            "return": self._execute_return,
+            "block": self._execute_block,
+            "literal": self._execute_literal,
+            "binary_op": self._execute_binary_op,
+        }
+
+        if op in handlers:
+            return handlers[op](ir_node)
+        elif op in ['+', '-', '*', '/', '//', '%', '**', '==', '!=', '<', '>', '<=', '>=', 'and', 'or', 'not']:
+            return self._execute_binary_op(ir_node)
+        elif op == "chained_compare":
+            return self._execute_chained_compare(ir_node)
+        elif op == "comparison":
+            return self._execute_comparison(ir_node)
+        elif isinstance(op, str) and op.isdigit():
+            return SymbolicValue(SymbolicValueType.CONCRETE, int(op))
+        else:
+            # Variable reference or literal
+            if isinstance(op, str):
+                return self.current_env.get_variable(op)
+            return SymbolicValue(SymbolicValueType.CONCRETE, op)
 
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a module IR node"""
-        _, statements = ir_node
-        result = None
-        for stmt in statements:
-            result = self._execute_ir(stmt)
-            # If we hit a return statement or the current path ended, break
-            if self.current_path is None:
-                break
-        return result or SymbolicValue(SymbolicValueType.CONCRETE, None)
+        for stmt in ir_node[1]:
+            self._execute_ir(stmt)
+        return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_assign(self, ir_node: Tuple) -> SymbolicValue:
         """Execute an assignment IR node"""
@@ -354,12 +304,17 @@ class SymbolicExecutor:
         self.current_env.set_variable(var_name, value)
 
         if self.current_path:
-            # Record assignments with simplified display
-            simplified_value = self._simplify_value_display(value)
+            simplified_value = self._simplify_display(value)
             self.current_path.add_statement(f"{var_name} = {simplified_value}")
             self.current_path.variables[var_name] = value
 
         return value
+
+    def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a literal IR node"""
+        if len(ir_node) > 1:
+            return SymbolicValue(SymbolicValueType.CONCRETE, ir_node[1])
+        return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_if(self, ir_node: Tuple) -> SymbolicValue:
         """Execute an if statement symbolically - creates multiple paths"""
@@ -371,15 +326,14 @@ class SymbolicExecutor:
 
         condition = self._execute_ir(condition_ir)
         condition_str = str(condition)
-        readable_condition = self._make_condition_readable(condition)
+        readable_condition = self._make_readable(condition)
 
         if len(self.paths) >= self.max_paths:
-            # Path explosion prevention
             if self.current_path:
                 self.current_path.add_statement(f"Path limit reached at if condition: {condition_str}")
             return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
-        # Store the current state
+        # Store current state
         original_path = self.current_path
         original_env = self.current_env.copy()
 
@@ -399,93 +353,58 @@ class SymbolicExecutor:
         self.current_env = original_env.copy()
 
         if then_block:
-            # Execute then block - check if it's a single statement or block
-            if isinstance(then_block, tuple) and len(then_block) > 0 and isinstance(then_block[0], tuple):
-                # It's a tuple of statements
-                for stmt in then_block:
-                    self._execute_ir(stmt)
-                    # If current path ended (e.g., return statement), break
-                    if self.current_path is None:
-                        break
-            else:
-                # It's a single statement
-                self._execute_ir(then_block)
+            self._execute_ir(then_block)
 
-        # Add the true path if it has content
-        if self.current_path and self.current_path.is_satisfiable():
-            if self.current_path not in self.paths:
-                self.paths.append(self.current_path)
+        # Store the true path result
+        true_path_result = self.current_path
+        if true_path_result and true_path_result.is_satisfiable():
+            if true_path_result not in self.paths:
+                self.paths.append(true_path_result)
 
-        # False path (if there's an else block)
+        # False path
+        false_path = ExecutionPath(f"path_{self.path_counter}")
+        self.path_counter += 1
+        if original_path:
+            false_path.conditions = original_path.conditions.copy()
+            false_path.statements = original_path.statements.copy()
+            false_path.variables = original_path.variables.copy()
+
+        false_condition = PathCondition(condition_str, False)
+        false_path.add_condition(false_condition)
+        false_path.add_statement(f"else (not {readable_condition}):")
+
+        self.current_path = false_path
+        self.current_env = original_env.copy()
+
         if else_block:
-            false_path = ExecutionPath(f"path_{self.path_counter}")
-            self.path_counter += 1
-            if original_path:
-                false_path.conditions = original_path.conditions.copy()
-                false_path.statements = original_path.statements.copy()
-                false_path.variables = original_path.variables.copy()
+            self._execute_ir(else_block)
 
-            false_condition = PathCondition(condition_str, False)
-            false_path.add_condition(false_condition)
-            false_path.add_statement(f"else:")
+        # Store the false path result
+        false_path_result = self.current_path
+        if false_path_result and false_path_result.is_satisfiable():
+            if false_path_result not in self.paths:
+                self.paths.append(false_path_result)
 
-            self.current_path = false_path
-            self.current_env = original_env.copy()
-
-            # Execute else block - check if it's a single statement or block
-            if isinstance(else_block, tuple) and len(else_block) > 0 and isinstance(else_block[0], tuple):
-                # It's a tuple of statements
-                for stmt in else_block:
-                    self._execute_ir(stmt)
-                    # If current path ended (e.g., return statement), break
-                    if self.current_path is None:
-                        break
-            else:
-                # It's a single statement
-                self._execute_ir(else_block)
-
-            # Add the false path if it has content
-            if self.current_path and self.current_path.is_satisfiable():
-                if self.current_path not in self.paths:
-                    self.paths.append(self.current_path)
-        else:
-            # No else block - create a path for the false condition
-            false_path = ExecutionPath(f"path_{self.path_counter}")
-            self.path_counter += 1
-            if original_path:
-                false_path.conditions = original_path.conditions.copy()
-                false_path.statements = original_path.statements.copy()
-                false_path.variables = original_path.variables.copy()
-
-            false_condition = PathCondition(condition_str, False)
-            false_path.add_condition(false_condition)
-            false_path.add_statement(f"# (implicit else for if {readable_condition})")
-            if false_path not in self.paths:
-                self.paths.append(false_path)
-
-        # In block context, continue with one of the paths for subsequent statements
-        # Choose the first satisfiable path to continue execution
-        satisfiable_paths = [path for path in self.paths if path.is_satisfiable()]
+        # Continue with first satisfiable path for subsequent statements in same block
+        satisfiable_paths = [p for p in [true_path_result, false_path_result] if p and p.is_satisfiable()]
         if satisfiable_paths:
             self.current_path = satisfiable_paths[0]
         else:
             self.current_path = None
+
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_while(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a while loop symbolically (simplified - may create multiple paths)"""
         _, condition_ir, body_ir = ir_node
         condition = self._execute_ir(condition_ir)
-        # Process the if condition to create path conditions
         condition_str = str(condition)
-        readable_condition = self._make_condition_readable(condition)
+        readable_condition = self._make_readable(condition)
 
         if self.current_path:
             self.current_path.add_statement(f"while {readable_condition}:")
 
         # For symbolic execution, we consider both entering and not entering the loop
-        # This is a simplified approach - more sophisticated analysis would unroll loops
-
         original_path = self.current_path
         original_env = self.current_env.copy()
         collected_paths = []
@@ -515,6 +434,8 @@ class SymbolicExecutor:
 
             self.current_path = true_path
             self.current_env = original_env.copy()
+
+            # Execute the body
             self._execute_ir(body_ir)
 
             if self.current_path and self.current_path.is_satisfiable():
@@ -528,738 +449,273 @@ class SymbolicExecutor:
 
         # End current path as we've split into multiple paths
         self.current_path = None
+
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_func_def(self, ir_node: Tuple) -> SymbolicValue:
-        """Execute a function definition and analyze its internal paths"""
-        _, func_name, params, body_ir = ir_node
+        """Execute a function definition"""
+        _, func_name, params, body = ir_node
 
-        # Store the function IR for later symbolic analysis
-        self.global_env.functions[func_name] = body_ir
+        # Store function in global environment
+        self.global_env.functions[func_name] = (params, body)
 
-        # Don't record function definition in statements - it's not part of execution flow
-        pass
-
-        # Analyze function's internal paths
-        function_paths = self.analyze_function_definition(func_name, params, body_ir)
-
-        # Store function paths for reporting
-        if not hasattr(self, 'function_analyses'):
-            self.function_analyses = {}
-        self.function_analyses[func_name] = function_paths
-
-        # Don't record path count analysis - not useful for understanding program flow
-        pass
+        if self.current_path:
+            params_str = ', '.join(params) if params else ''
+            self.current_path.add_statement(f"def {func_name}({params_str}):")
 
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_call(self, ir_node: Tuple) -> SymbolicValue:
-        """Execute a function call symbolically"""
-        if len(ir_node) == 4:
-            _, func_name, args_ir, kwargs_ir = ir_node
-        else:
-            _, func_name, args_ir = ir_node
-        args = [self._execute_ir(arg) for arg in args_ir]
+        """Execute a function call"""
+        _, func_ir, args_ir = ir_node
 
+        func_name = func_ir if isinstance(func_ir, str) else str(func_ir)
+        args = [self._execute_ir(arg) for arg in args_ir] if args_ir else []
+
+        # Handle built-in functions
         if func_name in self.global_env.functions:
-            func_handler = self.global_env.functions[func_name]
-            if callable(func_handler):
-                # Built-in function
-                result = func_handler(*args)
-                if self.current_path:
-                    args_str = ", ".join(str(arg) for arg in args)
-                    self.current_path.add_statement(f"{func_name}({args_str})")
-                return result
-            else:
-                # User-defined function - create symbolic return value
-                return_symbol = self.current_env.create_symbol(f"{func_name}_return")
-                if self.current_path:
-                    args_str = ", ".join(str(arg) for arg in args)
-                    self.current_path.add_statement(f"{return_symbol} = {func_name}({args_str})")
-                return return_symbol
-        else:
-            # Unknown function
-            result = self.current_env.create_symbol(f"unknown_{func_name}")
-            if self.current_path:
-                args_str = ", ".join(str(arg) for arg in args)
-                self.current_path.add_statement(f"{result} = {func_name}({args_str}) # unknown function")
-            return result
+            builtin_func = self.global_env.functions[func_name]
+            if callable(builtin_func):
+                return builtin_func(*args)
+
+        # For user-defined functions, create symbolic result
+        args_str = ', '.join(str(arg) for arg in args)
+        if self.current_path:
+            self.current_path.add_statement(f"{func_name}({args_str})")
+
+        return SymbolicValue(SymbolicValueType.EXPRESSION, f"{func_name}({args_str})")
 
     def _execute_return(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a return statement"""
         if len(ir_node) > 1:
-            _, value_ir = ir_node
-            value = self._execute_ir(value_ir)
+            value = self._execute_ir(ir_node[1])
         else:
             value = SymbolicValue(SymbolicValueType.CONCRETE, None)
 
         if self.current_path:
             self.current_path.return_value = value
-            simplified_value = self._simplify_value_display(value)
-            self.current_path.add_statement(f"return {simplified_value}")
+            self.current_path.add_statement(f"return {self._simplify_display(value)}")
 
-            # Add current path to paths list if not already there
-            if self.current_path not in self.paths:
-                self.paths.append(self.current_path)
-
-        # End current path on return
-        self.current_path = None
         return value
 
     def _execute_binary_op(self, ir_node: Tuple) -> SymbolicValue:
-        """Execute a binary operation symbolically"""
-        _, left_ir, op, right_ir = ir_node
-        left = self._execute_ir(left_ir)
-        right = self._execute_ir(right_ir)
+        """Execute binary operations"""
+        if len(ir_node) == 4:
+            # Format: ("binary_op", left, op, right)
+            _, left_ir, op, right_ir = ir_node
+            left = self._execute_ir(left_ir)
+            right = self._execute_ir(right_ir)
+        elif len(ir_node) == 3:
+            # Format: (op, left, right)
+            op, left_ir, right_ir = ir_node
+            left = self._execute_ir(left_ir)
+            right = self._execute_ir(right_ir)
+        elif len(ir_node) == 2:
+            # Unary operation
+            op, operand_ir = ir_node
+            operand = self._execute_ir(operand_ir)
+            return SymbolicValue(SymbolicValueType.EXPRESSION, f"{op}{operand}")
+        else:
+            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+
+        # Try concrete evaluation if both operands are concrete
+        if left.type == SymbolicValueType.CONCRETE and right.type == SymbolicValueType.CONCRETE:
+            try:
+                operators = {
+                    '+': lambda a, b: a + b, '-': lambda a, b: a - b,
+                    '*': lambda a, b: a * b, '/': lambda a, b: a / b,
+                    '//': lambda a, b: a // b, '%': lambda a, b: a % b,
+                    '**': lambda a, b: a ** b, '==': lambda a, b: a == b,
+                    '!=': lambda a, b: a != b, '<': lambda a, b: a < b,
+                    '>': lambda a, b: a > b, '<=': lambda a, b: a <= b,
+                    '>=': lambda a, b: a >= b, 'and': lambda a, b: a and b,
+                    'or': lambda a, b: a or b
+                }
+                if op in operators:
+                    result = operators[op](left.value, right.value)
+                    return SymbolicValue(SymbolicValueType.CONCRETE, result)
+            except (ZeroDivisionError, TypeError, ValueError):
+                pass
 
         # Create symbolic expression
-        expr = f"({left} {op} {right})"
-        result = SymbolicValue(SymbolicValueType.EXPRESSION, expr)
-
-        # Don't record every binary operation - too verbose
-        pass
-
-        return result
+        return SymbolicValue(SymbolicValueType.EXPRESSION, (op, left, right))
 
     def _execute_chained_compare(self, ir_node: Tuple) -> SymbolicValue:
-        """Execute a chained comparison symbolically"""
-        _, *comparisons = ir_node
+        """Execute chained comparison"""
+        if len(ir_node) >= 4:
+            # Format: ("chained_compare", left, op, right, ...)
+            _, left_ir, op, right_ir = ir_node[:4]
+            left = self._execute_ir(left_ir)
+            right = self._execute_ir(right_ir)
 
-        # Build the comparison expression
-        expr_parts = []
-        for i in range(0, len(comparisons), 2):
-            if i + 1 < len(comparisons):
-                left = self._execute_ir(comparisons[i])
-                op = comparisons[i + 1]
-                if i + 2 < len(comparisons):
-                    right = self._execute_ir(comparisons[i + 2])
-                    expr_parts.append(f"{left} {op} {right}")
+            # Create comparison expression
+            return SymbolicValue(SymbolicValueType.EXPRESSION, (op, left, right))
+        return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
-        expr = " and ".join(expr_parts)
-        result = SymbolicValue(SymbolicValueType.EXPRESSION, expr)
-
-        return result
+    def _execute_comparison(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute comparison operations"""
+        return self._execute_binary_op(ir_node)
 
     def _execute_block(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a block of statements"""
-        _, statements = ir_node
-        result = None
-        for stmt in statements:
-            result = self._execute_ir(stmt)
-            # If current path ended, stop execution
-            if self.current_path is None:
-                break
-        return result or SymbolicValue(SymbolicValueType.CONCRETE, None)
+        result = SymbolicValue(SymbolicValueType.CONCRETE, None)
+        if len(ir_node) > 1:
+            statements = ir_node[1] if isinstance(ir_node[1], (tuple, list)) else ir_node[1:]
+            for stmt in statements:
+                result = self._execute_ir(stmt)
+        return result
 
-    def _execute_comparison(self, ir_node: Tuple) -> SymbolicValue:
-        """Execute a comparison operation"""
-        op, left_ir, right_ir = ir_node
-        left = self._execute_ir(left_ir)
-        right = self._execute_ir(right_ir)
+    def _make_readable(self, condition) -> str:
+        """Convert condition to readable format"""
+        if hasattr(condition, 'value') and hasattr(condition, 'type'):
+            return self._make_readable(condition.value)
 
-        # Create comparison expression
-        expr = f"{left} {op} {right}"
-        return SymbolicValue(SymbolicValueType.EXPRESSION, expr)
+        try:
+            return make_expression_readable(condition)
+        except Exception:
+            return str(condition)
 
-    # Built-in function handlers for symbolic execution
-    def _symbolic_print(self, *args) -> SymbolicValue:
-        """Symbolic version of print function"""
-        args_str = ", ".join(str(arg) for arg in args)
-        if self.current_path:
-            self.current_path.add_statement(f"print({self._simplify_args_display(args)})")
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+    def _simplify_display(self, value) -> str:
+        """Simplify value display for better readability"""
+        if hasattr(value, 'type') and hasattr(value, 'value'):
+            if value.type == SymbolicValueType.CONCRETE:
+                return str(value.value)
+            elif value.type == SymbolicValueType.SYMBOLIC:
+                return getattr(value, 'name', str(value.value)) or str(value.value)
+            else:  # EXPRESSION
+                return self._simplify_display(value.value)
 
-    def _symbolic_int(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of int conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            try:
-                return SymbolicValue(SymbolicValueType.CONCRETE, int(value.value))
-            except (ValueError, TypeError):
-                return SymbolicValue(SymbolicValueType.EXPRESSION, f"int({value})")
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"int({value})")
-
-    def _symbolic_float(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of float conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            try:
-                return SymbolicValue(SymbolicValueType.CONCRETE, float(value.value))
-            except (ValueError, TypeError):
-                return SymbolicValue(SymbolicValueType.EXPRESSION, f"float({value})")
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"float({value})")
-
-    def _symbolic_str(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of str conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            return SymbolicValue(SymbolicValueType.CONCRETE, str(value.value))
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"str({value})")
-
-    def _symbolic_bool(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of bool conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            return SymbolicValue(SymbolicValueType.CONCRETE, bool(value.value))
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"bool({value})")
-
-    def _symbolic_type(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of type function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"type({value})")
-
-    def _symbolic_isinstance(self, value: SymbolicValue, type_obj: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of isinstance function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"isinstance({value}, {type_obj})")
-
-    def _symbolic_len(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of len function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"len({value})")
+        try:
+            return simplify_value_display(value)
+        except Exception:
+            return str(value)
 
     def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
         """Generate a comprehensive report of symbolic execution results"""
-        report = {
+        return {
             'total_paths': len(paths),
             'satisfiable_paths': len([p for p in paths if p.is_satisfiable()]),
             'paths': [path.to_dict() for path in paths],
             'summary': {
                 'functions_analyzed': len(self.global_env.functions),
-                'max_path_length': max(len(p.statements) for p in paths) if paths else 0,
-                'max_conditions': max(len(p.conditions) for p in paths) if paths else 0,
+                'max_path_length': max((len(p.statements) for p in paths), default=0),
+                'max_conditions': max((len(p.conditions) for p in paths), default=0),
             }
         }
 
-        # Add function analysis details if available
-        if hasattr(self, 'function_analyses'):
-            report['function_analyses'] = {}
-            for func_name, func_paths in self.function_analyses.items():
-                report['function_analyses'][func_name] = {
-                    'total_paths': len(func_paths),
-                    'satisfiable_paths': len([p for p in func_paths if p.is_satisfiable()]),
-                    'paths': [path.to_dict() for path in func_paths]
-                }
-
-        return report
-
-    def simplify_path_conditions(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
-        """Simplify and merge path conditions where possible"""
-        simplified_paths = []
-
-        for path in paths:
-            if not path.conditions:
-                simplified_paths.append(path)
-                continue
-
-            # Create a new path with simplified conditions
-            new_path = ExecutionPath(path.path_id)
-            new_path.statements = path.statements.copy()
-            new_path.return_value = path.return_value
-            new_path.variables = path.variables.copy()
-
-            # Group conditions by variable
-            condition_groups = self._group_conditions_by_variable(path.conditions)
-
-            # Simplify each group
-            simplified_conditions = []
-            for variable, conditions in condition_groups.items():
-                if len(conditions) > 1:
-                    merged = self._merge_conditions_for_variable(variable, conditions)
-                    simplified_conditions.extend(merged)
-                else:
-                    simplified_conditions.extend(conditions)
-
-            # Add ungrouped conditions (those that don't involve simple variable comparisons)
-            for condition in path.conditions:
-                if not self._is_simple_variable_condition(condition.expression):
-                    simplified_conditions.append(condition)
-
-            new_path.conditions = simplified_conditions
-            simplified_paths.append(new_path)
-
-        return simplified_paths
-
-    def _group_conditions_by_variable(self, conditions: List[PathCondition]) -> Dict[str, List[PathCondition]]:
-        """Group conditions by the variable they constrain"""
-        groups = {}
-
-        for condition in conditions:
-            variable = self._extract_variable_from_condition(condition.expression)
-            if variable:
-                if variable not in groups:
-                    groups[variable] = []
-                groups[variable].append(condition)
-
-        return groups
-
-    def _extract_variable_from_condition(self, expression: str) -> Optional[str]:
-        """Extract variable name from simple comparison expressions"""
-        import re
-
-        # Match patterns like "x > 5", "x <= 10", etc. with optional whitespace
-        pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*([><=!]+)\s*(.+)\s*$'
-        match = re.match(pattern, expression.strip())
-        if match:
-            return match.group(1)
-
-        return None
-
-    def _is_simple_variable_condition(self, expression: str) -> bool:
-        """Check if condition is a simple variable comparison"""
-        return self._extract_variable_from_condition(expression) is not None
-
-    def _merge_conditions_for_variable(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
-        """Merge conditions for a single variable"""
-        if len(conditions) <= 1:
-            return conditions
-
-        # For now, implement basic merging for common patterns
-        # Example: "not (x > 10)" and "not (x > 0)" -> "x <= 0"
-
-        # Separate positive and negative conditions
-        positive_conditions = [c for c in conditions if c.is_true]
-        negative_conditions = [c for c in conditions if not c.is_true]
-
-        # Try to merge negative conditions (not operators)
-        merged_negative = self._merge_negative_conditions(variable, negative_conditions)
-
-        # For now, keep positive conditions as-is
-        # In a more advanced implementation, we could merge these too
-
-        result = positive_conditions + merged_negative
-        return result if result else conditions
-
-    def _merge_negative_conditions(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
-        """Merge negative conditions like 'not (x > 10)' and 'not (x > 0)'"""
-        if len(conditions) <= 1:
-            return conditions
-
-        import re
-
-        # Extract comparison operations and values
-        greater_than_values = []
-        greater_equal_values = []
-        less_than_values = []
-        less_equal_values = []
-
-        for condition in conditions:
-            # Pattern: variable operator value
-            pattern = f'^{re.escape(variable)}\\s*([><=]+)\\s*(.+)$'
-            match = re.match(pattern, condition.expression)
-
-            if match:
-                operator = match.group(1).strip()
-                try:
-                    value = float(match.group(2).strip())
-
-                    if operator == '>':
-                        greater_than_values.append(value)
-                    elif operator == '>=':
-                        greater_equal_values.append(value)
-                    elif operator == '<':
-                        less_than_values.append(value)
-                    elif operator == '<=':
-                        less_equal_values.append(value)
-                except ValueError:
-                    # If we encounter non-numeric values, return original conditions
-                    return conditions
-
-        # Merge logic: not (x > a) and not (x > b) -> not (x > min(a,b)) -> x <= min(a,b)
-        if greater_than_values:
-            min_value = min(greater_than_values)
-            merged_expr = f"{variable} <= {min_value}"
-            return [PathCondition(merged_expr, True)]
-
-        # Similar logic for other operators could be added here
-
-        # If we can't merge, return original conditions
-        return conditions
+    def renumber_paths_sequentially(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
+        """Renumber paths sequentially starting from 1"""
+        for i, path in enumerate(paths, 1):
+            path.path_id = f"path_{i}"
+        return paths
 
     def enhance_paths_with_test_cases(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
-        """Enhance execution paths with Z3-generated test case information"""
+        """Enhanced version with Z3 solver (simplified)"""
         if not Z3_AVAILABLE:
-            # Just return paths with a note that Z3 is not available
             for path in paths:
-                if not hasattr(path, 'z3_error'):
-                    path.z3_error = "Z3 solver not available. Install with: pip install z3-solver"
+                path.satisfiable = True
+                path.z3_error = "Z3 solver not available"
             return paths
 
-        enhanced_paths = []
-
         for path in paths:
-            # Create a copy of the path
-            enhanced_path = ExecutionPath(path.path_id)
-            enhanced_path.conditions = path.conditions.copy()
-            enhanced_path.statements = path.statements.copy()
-            enhanced_path.return_value = path.return_value
-            enhanced_path.variables = path.variables.copy()
-
-            if not path.conditions:
-                # No conditions, mark as satisfiable with empty test inputs
-                enhanced_path.satisfiable = True
-                enhanced_path.test_inputs = {}
-                enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
-            else:
-                # Create Z3 solver
+            try:
                 solver = z3.Solver()
                 var_map = {}
 
-                # Convert conditions to Z3 constraints
+                # Add constraints
                 for condition in path.conditions:
-                    try:
-                        z3_constraint = self._condition_to_z3(condition, var_map, solver)
-                        if z3_constraint is not None:
-                            solver.add(z3_constraint)
-                    except Exception as e:
-                        # Mark conversion error
-                        if not hasattr(enhanced_path, 'z3_errors'):
-                            enhanced_path.z3_errors = []
-                        enhanced_path.z3_errors.append(f"Condition '{condition}': {e}")
+                    z3_constraint = self._condition_to_z3(condition, var_map, solver)
+                    if z3_constraint is not None:
+                        solver.add(z3_constraint)
 
                 # Check satisfiability
-                if solver.check() == z3.sat:
-                    enhanced_path.satisfiable = True
+                result = solver.check()
+                path.satisfiable = (result == z3.sat)
+
+                if result == z3.sat:
                     model = solver.model()
-                    test_inputs = {}
-
-                    # Extract concrete values from the model
-                    for var_name, z3_var in var_map.items():
-                        if model[z3_var] is not None:
-                            value = model[z3_var]
-                            # Convert Z3 value to Python value
-                            if z3.is_int_value(value):
-                                test_inputs[var_name] = value.as_long()
-                            elif z3.is_real_value(value):
-                                test_inputs[var_name] = float(value.as_fraction())
-                            elif z3.is_bool(value):
-                                test_inputs[var_name] = z3.is_true(value)
-                            else:
-                                test_inputs[var_name] = str(value)
-
-                    enhanced_path.test_inputs = test_inputs
-                    enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
+                    path.test_inputs = {str(var): str(model[var]) for var in model.decls()}
+                    path.expected_outputs = self._extract_outputs_from_path(path)
                 else:
-                    enhanced_path.satisfiable = False
-                    enhanced_path.test_inputs = None
-                    enhanced_path.expected_outputs = None
+                    path.test_inputs = {}
+                    path.expected_outputs = {}
 
-            enhanced_paths.append(enhanced_path)
+            except Exception as e:
+                path.satisfiable = True
+                path.z3_error = str(e)
 
-        return enhanced_paths
+        return paths
 
     def _condition_to_z3(self, condition: PathCondition, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
-        """Convert a path condition to Z3 constraint"""
-        expr = condition.expression.strip()
-
-        # Try to parse the expression as a tuple (symbolic expression)
+        """Convert condition to Z3 constraint (simplified)"""
         try:
-            if expr.startswith("(") and expr.endswith(")"):
-                # Try to evaluate as Python literal to get the tuple structure
-                parsed_expr = ast.literal_eval(expr)
-                z3_constraint = self._tuple_expr_to_z3(parsed_expr, var_map, solver)
-                if z3_constraint is not None:
-                    return z3_constraint if condition.is_true else z3.Not(z3_constraint)
-        except (ValueError, SyntaxError):
+            # Simple pattern matching for basic conditions
+            import re
+            expr = condition.expression.strip()
+
+            # Handle simple comparisons like "x > 5"
+            pattern = r'(\w+)\s*([><=!]+)\s*(.+)'
+            match = re.match(pattern, expr)
+
+            if match:
+                var_name, op, value_str = match.groups()
+
+                if var_name not in var_map:
+                    var_map[var_name] = z3.Int(var_name)
+
+                var = var_map[var_name]
+
+                try:
+                    value = z3.IntVal(int(value_str))
+                except ValueError:
+                    try:
+                        value = z3.RealVal(float(value_str))
+                    except ValueError:
+                        return None
+
+                ops = {
+                    '>': lambda a, b: a > b, '<': lambda a, b: a < b,
+                    '>=': lambda a, b: a >= b, '<=': lambda a, b: a <= b,
+                    '==': lambda a, b: a == b, '!=': lambda a, b: a != b
+                }
+
+                if op in ops:
+                    constraint = ops[op](var, value)
+                    return constraint if condition.is_true else z3.Not(constraint)
+
+        except Exception:
             pass
-
-        # Handle basic comparison operations
-        for op in ['>=', '<=', '==', '!=', '>', '<']:
-            if op in expr:
-                left, right = expr.split(op, 1)
-                left = left.strip()
-                right = right.strip()
-
-                # Get or create Z3 variables
-                left_z3 = self._expr_to_z3(left, var_map, solver)
-                right_z3 = self._expr_to_z3(right, var_map, solver)
-
-                if left_z3 is None or right_z3 is None:
-                    return None
-
-                # Create Z3 constraint
-                if op == '>=':
-                    constraint = left_z3 >= right_z3
-                elif op == '<=':
-                    constraint = left_z3 <= right_z3
-                elif op == '==':
-                    constraint = left_z3 == right_z3
-                elif op == '!=':
-                    constraint = left_z3 != right_z3
-                elif op == '>':
-                    constraint = left_z3 > right_z3
-                elif op == '<':
-                    constraint = left_z3 < right_z3
-
-                # Apply negation if needed
-                return constraint if condition.is_true else z3.Not(constraint)
-
-        # Handle boolean expressions
-        if expr in var_map:
-            z3_var = var_map[expr]
-            return z3_var if condition.is_true else z3.Not(z3_var)
 
         return None
 
-    def _expr_to_z3(self, expr, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
-        """Convert an expression to Z3 variable or constant"""
-
-        # Handle tuple expressions (from symbolic execution)
-        if isinstance(expr, tuple):
-            return self._tuple_expr_to_z3(expr, var_map, solver)
-
-        # Handle string expressions
-        if not isinstance(expr, str):
-            expr = str(expr)
-
-        expr = expr.strip()
-
-        # Try to parse as integer
-        try:
-            return z3.IntVal(int(expr))
-        except ValueError:
-            pass
-
-        # Try to parse as float
-        try:
-            return z3.RealVal(float(expr))
-        except ValueError:
-            pass
-
-        # Try to parse as boolean
-        if expr.lower() in ['true', 'false']:
-            return z3.BoolVal(expr.lower() == 'true')
-
-        # Treat as variable name
-        if expr not in var_map:
-            # Create appropriate Z3 variable based on context
-            # For now, assume integer variables (could be enhanced with type inference)
-            var_map[expr] = z3.Int(expr)
-
-        return var_map[expr]
-
     def _extract_outputs_from_path(self, path: ExecutionPath) -> Dict[str, Any]:
-        """Extract expected outputs from a path (e.g., print statements, return values)"""
+        """Extract expected outputs from a path"""
         outputs = {}
 
-        # Extract return value
         if path.return_value:
             outputs['return_value'] = str(path.return_value)
 
-        # Extract print statements
-        print_outputs = []
-        for statement in path.statements:
-            if 'print(' in statement:
-                # Simple extraction - could be enhanced
-                print_outputs.append(statement)
-
+        print_outputs = [stmt for stmt in path.statements if 'print(' in stmt]
         if print_outputs:
             outputs['print_statements'] = print_outputs
 
-        # Extract final variable values
-        final_vars = {}
-        for var_name, var_value in path.variables.items():
-            final_vars[var_name] = str(var_value)
-
-        if final_vars:
-            outputs['final_variables'] = final_vars
+        if path.variables:
+            outputs['final_variables'] = {k: str(v) for k, v in path.variables.items()}
 
         return outputs
 
-    def renumber_paths_sequentially(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
-        """Renumber paths sequentially starting from 1 for cleaner output"""
-        renumbered_paths = []
-        for i, path in enumerate(paths, 1):
-            new_path = ExecutionPath(f"path_{i}")
-            new_path.conditions = path.conditions
-            new_path.statements = path.statements
-            new_path.return_value = path.return_value
-            new_path.variables = path.variables
-            renumbered_paths.append(new_path)
-        return renumbered_paths
 
-    def _tuple_expr_to_z3(self, expr, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
-        """Convert tuple expression to Z3 constraint"""
-        if not isinstance(expr, tuple) or len(expr) < 2:
-            return None
-
-        op = expr[0]
-
-        if op == 'and':
-            # Handle logical AND
-            if len(expr) >= 3:
-                left = self._tuple_expr_to_z3(expr[1], var_map, solver)
-                right = self._tuple_expr_to_z3(expr[2], var_map, solver)
-                if left is not None and right is not None:
-                    return z3.And(left, right)
-
-        elif op == 'or':
-            # Handle logical OR
-            if len(expr) >= 3:
-                left = self._tuple_expr_to_z3(expr[1], var_map, solver)
-                right = self._tuple_expr_to_z3(expr[2], var_map, solver)
-                if left is not None and right is not None:
-                    return z3.Or(left, right)
-
-        elif op in ['>', '<', '>=', '<=', '==', '!=']:
-            # Handle comparison operations
-            if len(expr) >= 3:
-                left = self._expr_to_z3(expr[1], var_map, solver)
-                right = self._expr_to_z3(expr[2], var_map, solver)
-                if left is not None and right is not None:
-                    if op == '>':
-                        return left > right
-                    elif op == '<':
-                        return left < right
-                    elif op == '>=':
-                        return left >= right
-                    elif op == '<=':
-                        return left <= right
-                    elif op == '==':
-                        return left == right
-                    elif op == '!=':
-                        return left != right
-
-        return None
-
-    def _expr_to_z3(self, expr, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
-        """Convert an expression to Z3 variable or constant"""
-
-        # Handle tuple expressions (from symbolic execution)
-        if isinstance(expr, tuple):
-            return self._tuple_expr_to_z3(expr, var_map, solver)
-
-        # Handle string expressions
-        if not isinstance(expr, str):
-            expr = str(expr)
-
-        expr = expr.strip()
-
-        # Try to parse as integer
-        try:
-            return z3.IntVal(int(expr))
-        except ValueError:
-            pass
-
-        # Try to parse as float
-        try:
-            return z3.RealVal(float(expr))
-        except ValueError:
-            pass
-
-        # Try to parse as boolean
-        if expr.lower() in ['true', 'false']:
-            return z3.BoolVal(expr.lower() == 'true')
-
-        # Treat as variable name
-        if expr not in var_map:
-            # Create appropriate Z3 variable based on context
-            # For now, assume integer variables (could be enhanced with type inference)
-            var_map[expr] = z3.Int(expr)
-
-        return var_map[expr]
-
-    def _make_condition_readable(self, condition) -> str:
-        """Convert IR condition to readable format with recursive tuple handling"""
-        # Handle SymbolicValue objects first
-        if hasattr(condition, 'value') and hasattr(condition, 'type'):
-            return self._make_condition_readable(condition.value)
-
-        # Use shared conversion function for basic cases
-        try:
-            return make_expression_readable(condition)
-        except Exception:
-            pass
-
-        # Handle string representations of complex expressions
-        if isinstance(condition, str):
-            # Handle expressions like "('+', 'a', 'b') > ('+', 'c', 'd')"
-            import re
-
-            # Pattern to match expressions with operators between tuple-like structures
-            pattern = r"(\([^)]+\))\s*([><=!]+)\s*(\([^)]+\))"
-            match = re.match(pattern, condition.strip())
-
-            if match:
-                left_expr, operator, right_expr = match.groups()
-                try:
-                    left_parsed = eval(left_expr)
-                    right_parsed = eval(right_expr)
-                    left_readable = self._make_condition_readable(left_parsed)
-                    right_readable = self._make_condition_readable(right_parsed)
-                    return f"{left_readable} {operator} {right_readable}"
-                except:
-                    pass
-
-            # Handle simple tuple-like expressions
-            elif condition.startswith("(") and condition.endswith(")") and "', '" in condition:
-                try:
-                    parsed = eval(condition)
-                    if isinstance(parsed, tuple):
-                        return self._make_condition_readable(parsed)
-                except:
-                    pass
-
-        return str(condition)
-
-
-    def _simplify_value_display(self, value) -> str:
-        """Simplify value display for better readability in statements"""
-        # Handle SymbolicValue objects first
-        if hasattr(value, 'type') and hasattr(value, 'value'):
-            if value.type == SymbolicValueType.CONCRETE:
-                return str(value.value)
-            elif value.type == SymbolicValueType.SYMBOLIC:
-                return value.name if hasattr(value, 'name') and value.name else str(value.value)
-            elif value.type == SymbolicValueType.EXPRESSION:
-                # Recursively process the expression value
-                return self._simplify_value_display(value.value)
-
-        # Handle simple SymbolicValue objects by name
-        elif hasattr(value, 'name') and value.name:
-            return value.name
-
-        # Use shared conversion function for other cases
-        try:
-            return simplify_value_display(value)
-        except Exception:
-            pass
-
-        # Handle tuple-like expressions in string format: "('+', 'x', 1)"
-        if isinstance(value, str) and value.startswith("(") and value.endswith(")") and "', '" in value:
-            try:
-                # Try to parse as tuple and recursively process
-                parsed = eval(value)
-                if isinstance(parsed, tuple):
-                    return self._simplify_value_display(parsed)
-            except:
-                # If parsing fails, return as is
-                pass
-
-        # Default string representation
-        return str(value)
-
-    def _simplify_args_display(self, args) -> str:
-        """Simplify argument display for function calls"""
-        simplified_args = []
-        for arg in args:
-            simplified_args.append(self._simplify_value_display(arg))
-        return ", ".join(simplified_args)
-
-
-
-
-
+# Utility functions
 def execute_symbolic_from_file(file_path: str) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR file"""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
 
-        # Try to parse as JSON first
         try:
             ir_program = json.loads(content)
-            # Convert JSON lists to tuples for IR processing
             ir_program = _json_to_tuples(ir_program)
         except json.JSONDecodeError:
-            # Try to evaluate as Python literal - handle None values
             content = content.replace('null', 'None')
             ir_program = ast.literal_eval(content)
 
@@ -1273,13 +729,10 @@ def execute_symbolic_from_file(file_path: str) -> List[ExecutionPath]:
 def execute_symbolic_from_string(ir_string: str) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR string"""
     try:
-        # Try to parse as JSON first
         try:
             ir_program = json.loads(ir_string)
-            # Convert JSON lists to tuples for IR processing
             ir_program = _json_to_tuples(ir_program)
         except json.JSONDecodeError:
-            # Try to evaluate as Python literal - handle None values
             ir_string = ir_string.replace('null', 'None')
             ir_program = ast.literal_eval(ir_string)
 
@@ -1290,7 +743,6 @@ def execute_symbolic_from_string(ir_string: str) -> List[ExecutionPath]:
         raise RuntimeError(f"Error in symbolic execution from string: {e}")
 
 
-# Utility functions for JSON serialization
 def _json_to_tuples(json_obj):
     """Convert JSON objects back to tuples for IR processing"""
     if isinstance(json_obj, list):
