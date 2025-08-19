@@ -167,8 +167,5 @@ The codebase was recently refactored to eliminate code duplication between inter
 
 ## Demo Programs
 
-The repository includes several demo programs that showcase language features:
-- `demo.si`: Comprehensive demo of basic operations
-- `demo_control_flow.si`: If statements and while loops
-- `demo_functions.si`: Function definitions and calls
-- `demo_types.si`: Data types and type conversion
+The repository includes a single comprehensive demo program:
+- `demo.si`: Consolidated demo showcasing all core language features including variables, arithmetic, control flow, functions, type conversion, lambda expressions, and loop control

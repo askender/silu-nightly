@@ -1,114 +1,72 @@
-# Silu Programming Language Demo
-# Run this demo with: silu demo.si
+# Silu Programming Language - Core Features Demo
+# Run with: silu demo.si
 
-print("========================================")
-print("     Welcome to the Silu Demo!")
-print("========================================")
-print()
+print("=== Silu Language Demo ===")
 
-# Basic arithmetic operations
-print("1. Basic Arithmetic Operations:")
-print("-------------------------------")
-x = 10 + 5
-y = 10 - 3
-z = 10 * 2
-a = 10 / 3
-b = 10 // 3
-c = 10 % 3
-d = 2 ** 3
+# 1. Variables and Basic Types
+x = 42
+y = 3.14
+name = "Silu"
+flag = True
+print("Variables:", x, y, name, flag)
 
-print("x = 10 + 5 =", x)
-print("y = 10 - 3 =", y)
-print("z = 10 * 2 =", z)
-print("a = 10 / 3 =", a)
-print("b = 10 // 3 =", b)
-print("c = 10 % 3 =", c)
-print("d = 2 ** 3 =", d)
-print()
+# 2. Arithmetic Operations
+result = (10 + 5) * 2 - 8 // 3
+print("Arithmetic result:", result)
 
-# Unary operations
-print("2. Unary Operations:")
-print("--------------------")
-e = +5
-f = -5
-g = not True
-h = not False
+# 3. Comparisons and Boolean Logic
+check = (x > 30) and (y < 5) or flag
+print("Boolean logic:", check)
 
-print("e = +5 =", e)
-print("f = -5 =", f)
-print("g = not True =", g)
-print("h = not False =", h)
-print()
+# 4. Control Flow - If/Elif/Else
+score = 85
+if score >= 90:
+    grade = "A"
+elif score >= 80:
+    grade = "B"
+else:
+    grade = "C"
+print("Grade:", grade)
 
-# Boolean operations
-print("3. Boolean Operations:")
-print("----------------------")
-i = True and False
-j = True or False
-k = True and True
-l = False or False
+# 5. While Loop
+count = 3
+while count > 0:
+    print("Countdown:", count)
+    count = count - 1
 
-print("i = True and False =", i)
-print("j = True or False =", j)
-print("k = True and True =", k)
-print("l = False or False =", l)
-print()
+# 6. For Loop with Range and Lists
+numbers = [1, 2, 3, 4, 5]
+total = 0
+for num in numbers:
+    total = total + num
+print("Sum:", total)
 
-# Comparison operations
-print("4. Comparison Operations:")
-print("-------------------------")
-m = 5 == 5
-n = 5 != 3
-o = 5 < 10
-p = 5 <= 5
-q = 10 > 5
-r = 10 >= 10
+# 7. Functions
+def factorial(n):
+    if n <= 1:
+        return 1
+    else:
+        return n * factorial(n - 1)
 
-print("m = 5 == 5 =", m)
-print("n = 5 != 3 =", n)
-print("o = 5 < 10 =", o)
-print("p = 5 <= 5 =", p)
-print("q = 10 > 5 =", q)
-print("r = 10 >= 10 =", r)
-print()
+print("Factorial of 5:", factorial(5))
 
-# Chained comparisons
-print("5. Chained Comparisons:")
-print("-----------------------")
-s = 3 < 5 < 7
-t = 5 < 3 < 7
+# 8. Type Conversion and Checking
+str_num = "123"
+converted = int(str_num) + 77
+print("Converted:", converted)
+print("Type of converted:", type(converted))
 
-print("s = 3 < 5 < 7 =", s)
-print("t = 5 < 3 < 7 =", t)
-print()
+# 9. Lambda Functions
+double = lambda x: x * 2
+print("Lambda result:", double(21))
 
-# Variable assignments and usage
-print("6. Variable Assignments and Usage:")
-print("----------------------------------")
-# Assign some values
-width = 10
-height = 5
-area = width * height
+# 10. Break and Continue
+print("Even numbers 1-10:")
+for i in range(1, 11):
+    if i % 2 != 0:
+        continue
+    if i > 8:
+        break
+    print(i)
 
-# Use variables in expressions
-perimeter = 2 * (width + height)
-
-print("width =", width)
-print("height =", height)
-print("area = width * height =", area)
-print("perimeter = 2 * (width + height) =", perimeter)
-print()
-
-# Complex expressions
-print("7. Complex Expressions:")
-print("-----------------------")
-result = (10 + 5) * 2 - 5 // 2
-print("(10 + 5) * 2 - 5 // 2 =", result)
-
-comparison = (10 > 5) and (3 < 7)
-print("(10 > 5) and (3 < 7) =", comparison)
-print()
-
-print("========================================")
-print("        Demo completed successfully!")
-print("========================================")
+print("Demo completed!")
