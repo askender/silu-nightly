@@ -106,6 +106,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     try:
         executor = SymbolicExecutor()
         simplify = kwargs.get('simplify', False)
+        solve = kwargs.get('solve', False)
 
         if is_file:
             # Execute from file
@@ -141,9 +142,25 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 for func_name, func_paths in executor.function_analyses.items():
                     executor.function_analyses[func_name] = executor.simplify_path_conditions(func_paths)
 
-        # Generate and display report
+        # Generate and display unified report with optional test cases
         if paths:
-            report = executor.generate_report(paths)
+            # Renumber paths for cleaner output
+            renumbered_paths = executor.renumber_paths_sequentially(paths)
+
+            # Enhance paths with test cases if solve option is enabled
+            if solve:
+                renumbered_paths = executor.enhance_paths_with_test_cases(renumbered_paths)
+
+                # Also enhance function analyses paths
+                if hasattr(executor, 'function_analyses') and executor.function_analyses:
+                    for func_name, func_paths in executor.function_analyses.items():
+                        if isinstance(func_paths, list) and func_paths:
+                            # Renumber and enhance function paths
+                            renumbered_func_paths = executor.renumber_paths_sequentially(func_paths)
+                            enhanced_func_paths = executor.enhance_paths_with_test_cases(renumbered_func_paths)
+                            executor.function_analyses[func_name] = enhanced_func_paths
+
+            report = executor.generate_report(renumbered_paths)
             print(json.dumps(report, indent=2, default=str))
         else:
             print("No execution paths found.")
@@ -253,6 +270,9 @@ Examples:
     )
     symbolic_parser.add_argument(
         "--simplify", action="store_true", help="Simplify and merge path conditions where possible"
+    )
+    symbolic_parser.add_argument(
+        "--solve", action="store_true", help="Use Z3 solver to generate concrete test cases for each execution path"
     )
 
     return parser
@@ -378,7 +398,10 @@ def main() -> None:
 
         elif args.mode == "symbolic":
             # Symbolic execution
-            symbolic_kwargs = {'simplify': getattr(args, 'simplify', False)}
+            symbolic_kwargs = {
+                'simplify': getattr(args, 'simplify', False),
+                'solve': getattr(args, 'solve', False)
+            }
 
             if args.source:
                 # Symbolic execution from command line source

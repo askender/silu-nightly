@@ -70,8 +70,11 @@
 - [x] 添加uv包管理器支持和相关文档更新
 - [x] 实现符号执行功能，支持符号值和路径条件跟踪，CLI支持 `silu symbolic` 命令
 - [x] silu symbolic 支持可选的 --simplify 选项，可以将多个条件合并为单个更简洁的条件
+- [x] silu symbolic 支持可选的 --solve 选项，使用z3等求解器来进行求解，特别是对于函数的求解，每条路径求解后都生成testcase
 
 ## 🔄 正在进行的功能
+
+
 
 
 

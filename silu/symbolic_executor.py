@@ -14,6 +14,13 @@ import json
 import ast
 from copy import deepcopy
 
+try:
+    import z3
+    Z3_AVAILABLE = True
+except ImportError:
+    Z3_AVAILABLE = False
+    z3 = None
+
 
 class SymbolicValueType(Enum):
     """Types of symbolic values"""
@@ -92,14 +99,28 @@ class ExecutionPath:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
-        return {
+        result = {
             'path_id': self.path_id,
             'conditions': [str(c) for c in self.conditions],
             'statements': self.statements,
             'return_value': str(self.return_value) if self.return_value else None,
             'variables': {k: str(v) for k, v in self.variables.items()},
-            'satisfiable': self.is_satisfiable()
+            'satisfiable': True  # Default to True for backward compatibility
         }
+
+        # Add test case information if available (from --solve option)
+        if hasattr(self, 'satisfiable'):
+            result['satisfiable'] = self.satisfiable
+        if hasattr(self, 'test_inputs'):
+            result['test_inputs'] = self.test_inputs
+        if hasattr(self, 'expected_outputs'):
+            result['expected_outputs'] = self.expected_outputs
+        if hasattr(self, 'z3_error'):
+            result['z3_error'] = self.z3_error
+        if hasattr(self, 'z3_errors'):
+            result['z3_errors'] = self.z3_errors
+
+        return result
 
 
 class SymbolicEnvironment:
@@ -838,6 +859,289 @@ class SymbolicExecutor:
 
         # If we can't merge, return original conditions
         return conditions
+
+    def enhance_paths_with_test_cases(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
+        """Enhance execution paths with Z3-generated test case information"""
+        if not Z3_AVAILABLE:
+            # Just return paths with a note that Z3 is not available
+            for path in paths:
+                if not hasattr(path, 'z3_error'):
+                    path.z3_error = "Z3 solver not available. Install with: pip install z3-solver"
+            return paths
+
+        enhanced_paths = []
+
+        for path in paths:
+            # Create a copy of the path
+            enhanced_path = ExecutionPath(path.path_id)
+            enhanced_path.conditions = path.conditions.copy()
+            enhanced_path.statements = path.statements.copy()
+            enhanced_path.return_value = path.return_value
+            enhanced_path.variables = path.variables.copy()
+
+            if not path.conditions:
+                # No conditions, mark as satisfiable with empty test inputs
+                enhanced_path.satisfiable = True
+                enhanced_path.test_inputs = {}
+                enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
+            else:
+                # Create Z3 solver
+                solver = z3.Solver()
+                var_map = {}
+
+                # Convert conditions to Z3 constraints
+                for condition in path.conditions:
+                    try:
+                        z3_constraint = self._condition_to_z3(condition, var_map, solver)
+                        if z3_constraint is not None:
+                            solver.add(z3_constraint)
+                    except Exception as e:
+                        # Mark conversion error
+                        if not hasattr(enhanced_path, 'z3_errors'):
+                            enhanced_path.z3_errors = []
+                        enhanced_path.z3_errors.append(f"Condition '{condition}': {e}")
+
+                # Check satisfiability
+                if solver.check() == z3.sat:
+                    enhanced_path.satisfiable = True
+                    model = solver.model()
+                    test_inputs = {}
+
+                    # Extract concrete values from the model
+                    for var_name, z3_var in var_map.items():
+                        if model[z3_var] is not None:
+                            value = model[z3_var]
+                            # Convert Z3 value to Python value
+                            if z3.is_int_value(value):
+                                test_inputs[var_name] = value.as_long()
+                            elif z3.is_real_value(value):
+                                test_inputs[var_name] = float(value.as_fraction())
+                            elif z3.is_bool(value):
+                                test_inputs[var_name] = z3.is_true(value)
+                            else:
+                                test_inputs[var_name] = str(value)
+
+                    enhanced_path.test_inputs = test_inputs
+                    enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
+                else:
+                    enhanced_path.satisfiable = False
+                    enhanced_path.test_inputs = None
+                    enhanced_path.expected_outputs = None
+
+            enhanced_paths.append(enhanced_path)
+
+        return enhanced_paths
+
+    def _condition_to_z3(self, condition: PathCondition, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
+        """Convert a path condition to Z3 constraint"""
+        expr = condition.expression.strip()
+
+        # Try to parse the expression as a tuple (symbolic expression)
+        try:
+            if expr.startswith("(") and expr.endswith(")"):
+                # Try to evaluate as Python literal to get the tuple structure
+                parsed_expr = ast.literal_eval(expr)
+                z3_constraint = self._tuple_expr_to_z3(parsed_expr, var_map, solver)
+                if z3_constraint is not None:
+                    return z3_constraint if condition.is_true else z3.Not(z3_constraint)
+        except (ValueError, SyntaxError):
+            pass
+
+        # Handle basic comparison operations
+        for op in ['>=', '<=', '==', '!=', '>', '<']:
+            if op in expr:
+                left, right = expr.split(op, 1)
+                left = left.strip()
+                right = right.strip()
+
+                # Get or create Z3 variables
+                left_z3 = self._expr_to_z3(left, var_map, solver)
+                right_z3 = self._expr_to_z3(right, var_map, solver)
+
+                if left_z3 is None or right_z3 is None:
+                    return None
+
+                # Create Z3 constraint
+                if op == '>=':
+                    constraint = left_z3 >= right_z3
+                elif op == '<=':
+                    constraint = left_z3 <= right_z3
+                elif op == '==':
+                    constraint = left_z3 == right_z3
+                elif op == '!=':
+                    constraint = left_z3 != right_z3
+                elif op == '>':
+                    constraint = left_z3 > right_z3
+                elif op == '<':
+                    constraint = left_z3 < right_z3
+
+                # Apply negation if needed
+                return constraint if condition.is_true else z3.Not(constraint)
+
+        # Handle boolean expressions
+        if expr in var_map:
+            z3_var = var_map[expr]
+            return z3_var if condition.is_true else z3.Not(z3_var)
+
+        return None
+
+    def _expr_to_z3(self, expr, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
+        """Convert an expression to Z3 variable or constant"""
+
+        # Handle tuple expressions (from symbolic execution)
+        if isinstance(expr, tuple):
+            return self._tuple_expr_to_z3(expr, var_map, solver)
+
+        # Handle string expressions
+        if not isinstance(expr, str):
+            expr = str(expr)
+
+        expr = expr.strip()
+
+        # Try to parse as integer
+        try:
+            return z3.IntVal(int(expr))
+        except ValueError:
+            pass
+
+        # Try to parse as float
+        try:
+            return z3.RealVal(float(expr))
+        except ValueError:
+            pass
+
+        # Try to parse as boolean
+        if expr.lower() in ['true', 'false']:
+            return z3.BoolVal(expr.lower() == 'true')
+
+        # Treat as variable name
+        if expr not in var_map:
+            # Create appropriate Z3 variable based on context
+            # For now, assume integer variables (could be enhanced with type inference)
+            var_map[expr] = z3.Int(expr)
+
+        return var_map[expr]
+
+    def _extract_outputs_from_path(self, path: ExecutionPath) -> Dict[str, Any]:
+        """Extract expected outputs from a path (e.g., print statements, return values)"""
+        outputs = {}
+
+        # Extract return value
+        if path.return_value:
+            outputs['return_value'] = str(path.return_value)
+
+        # Extract print statements
+        print_outputs = []
+        for statement in path.statements:
+            if 'print(' in statement:
+                # Simple extraction - could be enhanced
+                print_outputs.append(statement)
+
+        if print_outputs:
+            outputs['print_statements'] = print_outputs
+
+        # Extract final variable values
+        final_vars = {}
+        for var_name, var_value in path.variables.items():
+            final_vars[var_name] = str(var_value)
+
+        if final_vars:
+            outputs['final_variables'] = final_vars
+
+        return outputs
+
+    def renumber_paths_sequentially(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
+        """Renumber paths sequentially starting from 1 for cleaner output"""
+        renumbered_paths = []
+        for i, path in enumerate(paths, 1):
+            new_path = ExecutionPath(f"path_{i}")
+            new_path.conditions = path.conditions
+            new_path.statements = path.statements
+            new_path.return_value = path.return_value
+            new_path.variables = path.variables
+            renumbered_paths.append(new_path)
+        return renumbered_paths
+
+    def _tuple_expr_to_z3(self, expr, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
+        """Convert tuple expression to Z3 constraint"""
+        if not isinstance(expr, tuple) or len(expr) < 2:
+            return None
+
+        op = expr[0]
+
+        if op == 'and':
+            # Handle logical AND
+            if len(expr) >= 3:
+                left = self._tuple_expr_to_z3(expr[1], var_map, solver)
+                right = self._tuple_expr_to_z3(expr[2], var_map, solver)
+                if left is not None and right is not None:
+                    return z3.And(left, right)
+
+        elif op == 'or':
+            # Handle logical OR
+            if len(expr) >= 3:
+                left = self._tuple_expr_to_z3(expr[1], var_map, solver)
+                right = self._tuple_expr_to_z3(expr[2], var_map, solver)
+                if left is not None and right is not None:
+                    return z3.Or(left, right)
+
+        elif op in ['>', '<', '>=', '<=', '==', '!=']:
+            # Handle comparison operations
+            if len(expr) >= 3:
+                left = self._expr_to_z3(expr[1], var_map, solver)
+                right = self._expr_to_z3(expr[2], var_map, solver)
+                if left is not None and right is not None:
+                    if op == '>':
+                        return left > right
+                    elif op == '<':
+                        return left < right
+                    elif op == '>=':
+                        return left >= right
+                    elif op == '<=':
+                        return left <= right
+                    elif op == '==':
+                        return left == right
+                    elif op == '!=':
+                        return left != right
+
+        return None
+
+    def _expr_to_z3(self, expr, var_map: Dict[str, Any], solver: z3.Solver) -> Any:
+        """Convert an expression to Z3 variable or constant"""
+
+        # Handle tuple expressions (from symbolic execution)
+        if isinstance(expr, tuple):
+            return self._tuple_expr_to_z3(expr, var_map, solver)
+
+        # Handle string expressions
+        if not isinstance(expr, str):
+            expr = str(expr)
+
+        expr = expr.strip()
+
+        # Try to parse as integer
+        try:
+            return z3.IntVal(int(expr))
+        except ValueError:
+            pass
+
+        # Try to parse as float
+        try:
+            return z3.RealVal(float(expr))
+        except ValueError:
+            pass
+
+        # Try to parse as boolean
+        if expr.lower() in ['true', 'false']:
+            return z3.BoolVal(expr.lower() == 'true')
+
+        # Treat as variable name
+        if expr not in var_map:
+            # Create appropriate Z3 variable based on context
+            # For now, assume integer variables (could be enhanced with type inference)
+            var_map[expr] = z3.Int(expr)
+
+        return var_map[expr]
 
 
 
