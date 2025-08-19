@@ -23,6 +23,10 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate assignment IR node."""
         return ("assign", target, value, None)
 
+    def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> Tuple:
+        """Generate subscript assignment IR node."""
+        return ("subscript_assign", obj, key, value)
+
     def process_name(self, name: str, context: ast.AST) -> str:
         """Return identifier string for IR."""
         return name
@@ -48,7 +52,7 @@ class SiluIRGenerator(BaseASTProcessor):
                 for op_str, comp in zip(ops, comparators):
                     comparisons.append((op_str, current_left, comp))
                     current_left = comp
-                return ("chained_compare", comparisons)
+                return ("chained_compare", tuple(comparisons))
         else:  # Boolean operation
             return tuple([op] + list(operands))
 
@@ -56,25 +60,38 @@ class SiluIRGenerator(BaseASTProcessor):
         self, func: Any, args: List[Any], keywords: Dict[str, Any]
     ) -> Tuple:
         """Generate function call IR node."""
-        return ("call", func, args, keywords)
+        # Convert to tuples for consistent IR format
+        args_tuple = tuple(args)
+        keywords_tuple = tuple(keywords.items()) if keywords else ()
+        return ("call", func, args_tuple, keywords_tuple)
 
     def process_control_flow(self, node_type: str, **kwargs) -> Tuple:
         """Generate control flow IR nodes."""
         if node_type == "function_def":
+            # Process function body statements
+            body = [self.visit(stmt) for stmt in kwargs["body"]]
             return (
                 "func_def",
                 kwargs["name"],
                 tuple(kwargs["args"]),
-                tuple(kwargs["body"]),
+                tuple(body),
             )
         elif node_type == "return":
             return ("return", kwargs["value"])
         elif node_type == "if":
-            return ("if", kwargs["test"], kwargs["body"], kwargs["orelse"])
+            # Process if statement body and orelse
+            body = [self.visit(stmt) for stmt in kwargs["body"]]
+            orelse = [self.visit(stmt) for stmt in kwargs["orelse"]] if kwargs["orelse"] else []
+            return ("if", kwargs["test"], tuple(body), tuple(orelse))
         elif node_type == "while":
-            return ("while", kwargs["test"], kwargs["body"])
+            # Process test_node ourselves for IR generation
+            test = self.visit(kwargs["test_node"])
+            body = [self.visit(stmt) for stmt in kwargs["body"]]
+            return ("while", test, tuple(body))
         elif node_type == "for":
-            return ("for", kwargs["target"], kwargs["iter"], kwargs["body"])
+            body = [self.visit(stmt) for stmt in kwargs["body"]]
+            orelse = [self.visit(stmt) for stmt in kwargs["orelse"]] if kwargs["orelse"] else []
+            return ("for", kwargs["target"], kwargs["iter"], tuple(body), tuple(orelse))
 
     def process_container(self, container_type: str, elements: List[Any]) -> Tuple:
         """Generate container IR nodes."""
@@ -83,7 +100,7 @@ class SiluIRGenerator(BaseASTProcessor):
         elif container_type == "tuple":
             return self._make_node("tuple", tuple(elements))
         elif container_type == "dict":
-            return self._make_node("dict", elements)
+            return self._make_node("dict", tuple(elements))
         elif container_type == "module":
             return ("module", tuple(elements))
 
@@ -135,7 +152,7 @@ class SiluIRGenerator(BaseASTProcessor):
     def visit_Set(self, node: ast.Set) -> Tuple:
         """Generate set IR."""
         elements = [self.visit(e) for e in node.elts]
-        return self._make_node("set", elements)
+        return self._make_node("set", tuple(elements))
 
     # ================== Control Flow Extensions ==================
 
@@ -161,9 +178,9 @@ class SiluIRGenerator(BaseASTProcessor):
             target = self.visit(gen.target)
             iter_val = self.visit(gen.iter)
             ifs = [self.visit(cond) for cond in gen.ifs]
-            generators.append((target, iter_val, ifs))
+            generators.append((target, iter_val, tuple(ifs)))
 
-        return self._make_node(f"{comp_type}_comp", elt, generators)
+        return self._make_node(f"{comp_type}_comp", elt, tuple(generators))
 
     def visit_ListComp(self, node: ast.ListComp) -> Tuple:
         """Generate list comprehension IR."""
@@ -211,14 +228,14 @@ class SiluIRGenerator(BaseASTProcessor):
         finalbody = (
             [self.visit(stmt) for stmt in node.finalbody] if node.finalbody else []
         )
-        return self._make_node("try", body, handlers, orelse, finalbody)
+        return self._make_node("try", tuple(body), tuple(handlers), tuple(orelse), tuple(finalbody))
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> Tuple:
         """Generate exception handler IR."""
         exc_type = self.visit(node.type) if node.type else None
         name = node.name if node.name else None
         body = [self.visit(stmt) for stmt in node.body]
-        return self._make_node("except", exc_type, name, body)
+        return self._make_node("except", exc_type, name, tuple(body))
 
     def visit_Raise(self, node: ast.Raise) -> Tuple:
         """Generate raise statement IR."""
@@ -230,14 +247,14 @@ class SiluIRGenerator(BaseASTProcessor):
     def visit_Import(self, node: ast.Import) -> Tuple:
         """Generate import statement IR."""
         names = [(alias.name, alias.asname) for alias in node.names]
-        return self._make_node("import", names)
+        return self._make_node("import", tuple(names))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Tuple:
         """Generate from-import statement IR."""
         module = node.module
         names = [(alias.name, alias.asname) for alias in node.names]
         level = node.level
-        return self._make_node("from_import", module, names, level)
+        return self._make_node("from_import", module, tuple(names), level)
 
     # ================== Context Managers ==================
 
@@ -251,7 +268,7 @@ class SiluIRGenerator(BaseASTProcessor):
             )
             items.append((context_expr, optional_vars))
         body = [self.visit(stmt) for stmt in node.body]
-        return self._make_node("with", items, body)
+        return self._make_node("with", tuple(items), tuple(body))
 
     # ================== Error Handling ==================
 

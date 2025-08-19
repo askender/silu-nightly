@@ -47,8 +47,13 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     # ================== Abstract Methods ==================
 
     @abstractmethod
-    def process_assign(self, target: str, value: Any) -> Any:
+    def process_assign(self, target: Any, value: Any) -> Any:
         """Process an assignment operation."""
+        pass
+
+    @abstractmethod
+    def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> Any:
+        """Process a subscript assignment operation (e.g., obj[key] = value)."""
         pass
 
     @abstractmethod
@@ -129,14 +134,26 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     def visit_Assign(self, node: ast.Assign) -> Any:
         """Visit an assignment node."""
-        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+        if len(node.targets) != 1:
             raise NotImplementedError(
-                "Only single simple variable assignments supported"
+                "Only single target assignments supported"
             )
 
-        target = node.targets[0].id
+        target = node.targets[0]
         value = self.visit(node.value)
-        return self.process_assign(target, value)
+
+        if isinstance(target, ast.Name):
+            # Simple variable assignment: x = value
+            return self.process_assign(target.id, value)
+        elif isinstance(target, ast.Subscript):
+            # Subscript assignment: obj[key] = value
+            obj = self.visit(target.value)
+            key = self.visit(target.slice)
+            return self.process_subscript_assign(obj, key, value)
+        else:
+            raise NotImplementedError(
+                f"Assignment to {type(target).__name__} not supported"
+            )
 
     def visit_Name(self, node: ast.Name) -> Any:
         """Visit a name node."""

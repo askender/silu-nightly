@@ -213,7 +213,7 @@ class TestSiluIRGenerator:
         compare = ast.Compare(left=left, ops=ops, comparators=comparators)
 
         result = generator.visit_Compare(compare)
-        expected = ("chained_compare", [("<", 1, "x"), ("<", "x", 10)])
+        expected = ("chained_compare", (("<", 1, "x"), ("<", "x", 10)))
         assert result == expected
 
     def test_nested_operations(self):
@@ -236,4 +236,34 @@ class TestSiluIRGenerator:
 
         result = generator.visit_BinOp(mult)
         expected = ("*", ("+", "a", "b"), ("-", "c", "d"))
+        assert result == expected
+
+    def test_subscript_assign(self):
+        """Test subscript assignment operations."""
+        generator = SiluIRGenerator()
+
+        # Test dictionary subscript assignment: d["key"] = "value"
+        target = ast.Subscript(
+            value=ast.Name(id="d", ctx=ast.Load()),
+            slice=ast.Constant(value="key"),
+            ctx=ast.Store()
+        )
+        value = ast.Constant(value="value")
+        assign_node = ast.Assign(targets=[target], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = ("subscript_assign", "d", "key", "value")
+        assert result == expected
+
+        # Test list subscript assignment: arr[1] = 99
+        target = ast.Subscript(
+            value=ast.Name(id="arr", ctx=ast.Load()),
+            slice=ast.Constant(value=1),
+            ctx=ast.Store()
+        )
+        value = ast.Constant(value=99)
+        assign_node = ast.Assign(targets=[target], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = ("subscript_assign", "arr", 1, 99)
         assert result == expected

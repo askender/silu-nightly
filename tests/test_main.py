@@ -18,7 +18,7 @@ def test_main_function(capsys):
         assert exc_info.value.code == 1
 
     captured = capsys.readouterr()
-    assert "Usage: silu <file.si>" in captured.out
+    assert "Silu Language Processor" in captured.out
 
 
 def test_main_as_module_entrypoint():
@@ -32,7 +32,7 @@ def test_main_as_module_entrypoint():
     )
 
     assert result.returncode == 1
-    assert "Usage: silu <file.si>" in result.stdout
+    assert "Silu Language Processor" in result.stdout
 
 
 def test_main_import():

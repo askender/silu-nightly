@@ -75,6 +75,10 @@ class TestASTProcessor(BaseASTProcessor):
         """Test implementation of process_subscript."""
         return f"subscript({obj}[{index}])"
 
+    def process_subscript_assign(self, obj, key, value):
+        """Test implementation of process_subscript_assign."""
+        return f"subscript_assign({obj}[{key}]={value})"
+
 
 class TestBaseASTProcessor:
     """Tests for the BaseASTProcessor class."""
@@ -127,7 +131,7 @@ class TestBaseASTProcessor:
 
         with pytest.raises(
             NotImplementedError,
-            match="Only single simple variable assignments supported",
+            match="Only single target assignments supported",
         ):
             processor.visit_Assign(assign)
 
@@ -144,9 +148,25 @@ class TestBaseASTProcessor:
 
         with pytest.raises(
             NotImplementedError,
-            match="Only single simple variable assignments supported",
+            match="Assignment to Attribute not supported",
         ):
             processor.visit_Assign(assign)
+
+    def test_visit_assign_subscript(self):
+        """Test visiting a subscript assignment."""
+        processor = TestASTProcessor()
+
+        # Create subscript assignment: arr[0] = 42
+        target = ast.Subscript(
+            value=ast.Name(id="arr", ctx=ast.Load()),
+            slice=ast.Constant(value=0),
+            ctx=ast.Store()
+        )
+        value = ast.Constant(value=42)
+        assign = ast.Assign(targets=[target], value=value)
+
+        result = processor.visit_Assign(assign)
+        assert result == "subscript_assign(load_arr[0]=42)"
 
     def test_visit_name_load(self):
         """Test visiting a name node with load context."""

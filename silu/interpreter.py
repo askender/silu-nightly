@@ -149,6 +149,21 @@ class SiluInterpreter(BaseASTProcessor):
         """Set variable in environment."""
         self.env.set(target, value)
 
+    def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> None:
+        """Handle subscript assignment (e.g., dict[key] = value)."""
+        if isinstance(obj, dict):
+            obj[key] = value
+        elif isinstance(obj, list):
+            if not isinstance(key, int):
+                raise TypeError("list indices must be integers")
+            if key < 0:
+                key = len(obj) + key
+            if key < 0 or key >= len(obj):
+                raise IndexError("list index out of range")
+            obj[key] = value
+        else:
+            raise TypeError(f"'{type(obj).__name__}' object does not support item assignment")
+
     def process_name(self, name: str, context: ast.AST) -> Any:
         """Handle variable lookup or return name for assignment."""
         if isinstance(context, ast.Load):

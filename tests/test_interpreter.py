@@ -122,23 +122,77 @@ class TestSiluInterpreter:
         assign_node = ast.Assign(targets=[target1, target2], value=value)
         with pytest.raises(
             NotImplementedError,
-            match="Only single simple variable assignments supported",
+            match="Only single target assignments supported",
         ):
             interpreter.visit_Assign(assign_node)
 
-        # Complex target
+    def test_subscript_assign(self):
+        """Test subscript assignment operations."""
+        interpreter = SiluInterpreter()
+
+        # Test dictionary subscript assignment
+        # Create a dictionary
+        interpreter.env.set("d", {})
+
+        # Create d["key"] = "value"
         target = ast.Subscript(
-            value=ast.Name(id="lst", ctx=ast.Load()),
-            slice=ast.Constant(value=0),
-            ctx=ast.Store(),
+            value=ast.Name(id="d", ctx=ast.Load()),
+            slice=ast.Constant(value="key"),
+            ctx=ast.Store()
         )
-        value = ast.Constant(value=42)
+        value = ast.Constant(value="value")
         assign_node = ast.Assign(targets=[target], value=value)
-        with pytest.raises(
-            NotImplementedError,
-            match="Only single simple variable assignments supported",
-        ):
+        interpreter.visit_Assign(assign_node)
+
+        # Check the result
+        d = interpreter.env.get("d")
+        assert d["key"] == "value"
+
+        # Test list subscript assignment
+        # Create a list
+        interpreter.env.set("arr", [1, 2, 3])
+
+        # Create arr[1] = 99
+        target = ast.Subscript(
+            value=ast.Name(id="arr", ctx=ast.Load()),
+            slice=ast.Constant(value=1),
+            ctx=ast.Store()
+        )
+        value = ast.Constant(value=99)
+        assign_node = ast.Assign(targets=[target], value=value)
+        interpreter.visit_Assign(assign_node)
+
+        # Check the result
+        arr = interpreter.env.get("arr")
+        assert arr == [1, 99, 3]
+
+        # Test error case: string subscript assignment
+        interpreter.env.set("s", "hello")
+        target = ast.Subscript(
+            value=ast.Name(id="s", ctx=ast.Load()),
+            slice=ast.Constant(value=0),
+            ctx=ast.Store()
+        )
+        value = ast.Constant(value="H")
+        assign_node = ast.Assign(targets=[target], value=value)
+
+        with pytest.raises(TypeError, match="does not support item assignment"):
             interpreter.visit_Assign(assign_node)
+
+        # Test error case: list index out of range
+        interpreter.env.set("small_arr", [1, 2])
+        target = ast.Subscript(
+            value=ast.Name(id="small_arr", ctx=ast.Load()),
+            slice=ast.Constant(value=5),
+            ctx=ast.Store()
+        )
+        value = ast.Constant(value=99)
+        assign_node = ast.Assign(targets=[target], value=value)
+
+        with pytest.raises(IndexError, match="list index out of range"):
+            interpreter.visit_Assign(assign_node)
+
+
 
     @pytest.mark.parametrize(
         "op,expected",
