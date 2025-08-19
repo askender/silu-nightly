@@ -21,6 +21,9 @@ except ImportError:
     Z3_AVAILABLE = False
     z3 = None
 
+# Import shared conversion functions
+from .ir_to_source import make_expression_readable, simplify_value_display
+
 
 class SymbolicValueType(Enum):
     """Types of symbolic values"""
@@ -1159,28 +1162,14 @@ class SymbolicExecutor:
         if hasattr(condition, 'value') and hasattr(condition, 'type'):
             return self._make_condition_readable(condition.value)
 
-        # Handle tuples directly
-        elif isinstance(condition, tuple) and len(condition) == 3:
-            op, left, right = condition
-
-            # Recursively process left and right operands
-            left_str = self._make_condition_readable(left) if isinstance(left, tuple) or hasattr(left, 'value') else str(left)
-            right_str = self._make_condition_readable(right) if isinstance(right, tuple) or hasattr(right, 'value') else str(right)
-
-            if op in ['>', '<', '>=', '<=', '==', '!=']:
-                return f"{left_str} {op} {right_str}"
-            elif op == 'and':
-                return f"({left_str}) and ({right_str})"
-            elif op == 'or':
-                return f"({left_str}) or ({right_str})"
-            elif op in ['+', '-', '*', '/', '//', '%', '**']:
-                # Handle arithmetic operations in conditions
-                return f"{left_str} {op} {right_str}"
-            else:
-                return f"{left_str} {op} {right_str}"
+        # Use shared conversion function for basic cases
+        try:
+            return make_expression_readable(condition)
+        except Exception:
+            pass
 
         # Handle string representations of complex expressions
-        elif isinstance(condition, str):
+        if isinstance(condition, str):
             # Handle expressions like "('+', 'a', 'b') > ('+', 'c', 'd')"
             import re
 
@@ -1223,28 +1212,18 @@ class SymbolicExecutor:
                 # Recursively process the expression value
                 return self._simplify_value_display(value.value)
 
-        # Handle tuples directly with recursive processing
-        elif isinstance(value, tuple) and len(value) >= 3:
-            op, left, right = value[0], value[1], value[2]
+        # Handle simple SymbolicValue objects by name
+        elif hasattr(value, 'name') and value.name:
+            return value.name
 
-            # Recursively process operands
-            left_str = self._simplify_value_display(left) if isinstance(left, tuple) or hasattr(left, 'type') else str(left)
-            right_str = self._simplify_value_display(right) if isinstance(right, tuple) or hasattr(right, 'type') else str(right)
-
-            # Handle arithmetic operations
-            if str(op) in ['+', '-', '*', '/', '//', '%', '**']:
-                return f"{left_str} {op} {right_str}"
-
-            # Handle comparison operations
-            elif str(op) in ['==', '!=', '<', '>', '<=', '>=']:
-                return f"{left_str} {op} {right_str}"
-
-            # Handle logical operations
-            elif str(op) in ['and', 'or']:
-                return f"({left_str}) {op} ({right_str})"
+        # Use shared conversion function for other cases
+        try:
+            return simplify_value_display(value)
+        except Exception:
+            pass
 
         # Handle tuple-like expressions in string format: "('+', 'x', 1)"
-        elif isinstance(value, str) and value.startswith("(") and value.endswith(")") and "', '" in value:
+        if isinstance(value, str) and value.startswith("(") and value.endswith(")") and "', '" in value:
             try:
                 # Try to parse as tuple and recursively process
                 parsed = eval(value)
@@ -1253,10 +1232,6 @@ class SymbolicExecutor:
             except:
                 # If parsing fails, return as is
                 pass
-
-        # Handle simple SymbolicValue objects by name
-        elif hasattr(value, 'name') and value.name:
-            return value.name
 
         # Default string representation
         return str(value)

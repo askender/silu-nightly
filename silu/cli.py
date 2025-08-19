@@ -14,6 +14,7 @@ from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
 from silu.ir_interpreter import IRInterpreter, execute_ir_from_file, execute_ir_from_string
 from silu.symbolic_executor import SymbolicExecutor, execute_symbolic_from_file, execute_symbolic_from_string
+from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 
 
 def read_source_file(file_path: str) -> str:
@@ -98,6 +99,26 @@ def save_ir_to_file(ir_result: Any, output_file: str, output_format: str) -> Non
         print(f"IR saved to: {output_file}")
     except IOError as e:
         print(f"Error writing to file '{output_file}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_ir_to_source_converter(ir_source: str, output_file: str = None, **kwargs) -> None:
+    """Convert IR to source code."""
+    try:
+        if ir_source.strip().startswith(('[', '(')):
+            # Direct IR string
+            source_code = convert_ir_string_to_source(ir_source)
+        else:
+            # Treat as filename
+            source_code = convert_ir_file_to_source(ir_source, output_file)
+
+        if not output_file:
+            print(source_code)
+        else:
+            print(f"Source code saved to: {output_file}")
+
+    except Exception as e:
+        print(f"Error converting IR to source: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -195,6 +216,12 @@ Examples:
   # Execute IR directly
   %(prog)s exec program.ir.json
 
+  # Convert IR back to source code
+  %(prog)s to-source program.ir.json
+
+  # Convert IR to source and save to file
+  %(prog)s to-source program.ir.json --output program_reconstructed.si
+
   # Symbolic execution of a Silu program
   %(prog)s symbolic program.si
 
@@ -253,6 +280,16 @@ Examples:
         "--debug", action="store_true", help="Enable debug mode with verbose output"
     )
 
+    # IR to source conversion subcommand
+    to_source_parser = subparsers.add_parser("to-source", help="Convert IR to source code")
+    to_source_parser.add_argument("file", nargs="?", help="IR file to convert")
+    to_source_parser.add_argument(
+        "--source", help="IR string to convert (alternative to file)"
+    )
+    to_source_parser.add_argument(
+        "--output", "-o", help="Output file to save source code (default: stdout)"
+    )
+
     # Symbolic execution subcommand
     symbolic_parser = subparsers.add_parser("symbolic", help="Perform symbolic execution")
     symbolic_parser.add_argument("file", nargs="?", help="Silu source file or IR file to analyze")
@@ -280,10 +317,15 @@ Examples:
 
 def validate_arguments(args) -> None:
     """Validate command line arguments."""
-    if args.mode in ["exec", "symbolic"]:
-        # For exec/symbolic modes, either file or --source is required
+    if args.mode in ["exec", "symbolic", "to-source"]:
+        # For exec/symbolic/to-source modes, either file or --source is required
         if not args.file and not args.source:
-            mode_name = "IR file" if args.mode == "exec" else "source file or IR file"
+            if args.mode == "exec":
+                mode_name = "IR file"
+            elif args.mode == "to-source":
+                mode_name = "IR file"
+            else:
+                mode_name = "source file or IR file"
             print(
                 f"Error: Either a {mode_name} or --source must be provided.", file=sys.stderr
             )
@@ -315,7 +357,7 @@ def handle_legacy_usage(args) -> bool:
     if (
         len(sys.argv) == 2
         and not sys.argv[1].startswith("-")
-        and sys.argv[1] not in ["interpret", "ir", "exec", "symbolic"]
+        and sys.argv[1] not in ["interpret", "ir", "exec", "symbolic", "to-source"]
     ):
         filename = sys.argv[1]
         try:
@@ -395,6 +437,17 @@ def main() -> None:
             else:
                 # Execute IR from file
                 run_ir_interpreter(args.file, **ir_kwargs)
+
+        elif args.mode == "to-source":
+            # IR to source conversion
+            to_source_kwargs = {"output_file": getattr(args, "output", None)}
+
+            if args.source:
+                # Convert IR from command line source
+                run_ir_to_source_converter(args.source, **to_source_kwargs)
+            else:
+                # Convert IR from file
+                run_ir_to_source_converter(args.file, **to_source_kwargs)
 
         elif args.mode == "symbolic":
             # Symbolic execution

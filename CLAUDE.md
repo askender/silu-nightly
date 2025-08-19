@@ -26,16 +26,18 @@ silu/
 ├── ast_processor.py    # Abstract base class for AST processing
 ├── interpreter.py      # Core interpreter (extends BaseASTProcessor)
 ├── ir_generator.py     # IR generator (extends BaseASTProcessor)
+├── ir_to_source.py     # IR to source code converter
 └── symbolic_executor.py # Symbolic execution engine
 ```
 
 ## Key Components
 
-1. **CLI (`cli.py`)**: Unified interface supporting interpretation, IR generation, and symbolic execution modes
+1. **CLI (`cli.py`)**: Unified interface supporting interpretation, IR generation, IR-to-source conversion, and symbolic execution modes
 2. **BaseASTProcessor (`ast_processor.py`)**: Abstract base class with shared AST traversal logic
 3. **SiluInterpreter (`interpreter.py`)**: Main interpreter with Environment and Function classes
 4. **SiluIRGenerator (`ir_generator.py`)**: Converts AST to intermediate representation
-5. **SymbolicExecutor (`symbolic_executor.py`)**: Performs symbolic program analysis
+5. **IRToSourceConverter (`ir_to_source.py`)**: Converts IR back to readable source code with shared conversion utilities
+6. **SymbolicExecutor (`symbolic_executor.py`)**: Performs symbolic program analysis
 
 ## Common Development Commands
 
@@ -55,6 +57,7 @@ silu program.si                    # Default interpretation
 silu interpret program.si --debug # Debug mode
 silu ir program.si --format json  # Generate IR
 silu exec program.ir.json         # Execute IR
+silu to-source program.ir.json    # Convert IR back to source
 silu symbolic program.si          # Symbolic analysis
 ```
 
@@ -75,11 +78,30 @@ silu symbolic program.si          # Symbolic analysis
 - **docs/interpreter_spec.md**: Core implementation details
 - **docs/symbolic_execution.md**: Program analysis capabilities
 - **docs/simple_ir_design.md**: Intermediate representation format
+- **docs/ir_to_source.md**: IR to source conversion and round-trip workflow
 
 ## Development Notes
 
 - Uses unified AST processing architecture to avoid code duplication
-- Comprehensive test suite with 175+ tests using pytest
-- Supports multiple execution modes (interpret, IR generation/execution, symbolic analysis)
+- Comprehensive test suite with 200+ tests using pytest
+- Supports multiple execution modes (interpret, IR generation/execution, IR-to-source conversion, symbolic analysis)
+- Shared conversion functions between IR-to-source converter and symbolic executor for consistent output
 - Package management with `uv` (recommended) or `pip`
 - Code formatting with `ruff`
+
+## IR to Source Conversion
+
+The toolkit now includes bidirectional conversion between source code and IR:
+
+### Features
+- **Round-trip conversion**: Source → IR → Source with syntax preservation
+- **Format support**: JSON and Python literal IR formats
+- **CLI integration**: `silu to-source` command for batch processing
+- **Shared utilities**: Common conversion functions used by symbolic executor for readable output
+- **Full validation**: Automatic syntax checking of reconstructed code
+
+### Use Cases
+- **Code analysis**: Convert programs to IR for analysis, then back to readable form
+- **IR debugging**: Generate human-readable source from complex IR structures
+- **Tool integration**: Bridge between IR-based tools and source code editors
+- **Round-trip testing**: Verify IR generation accuracy through reconstruction
