@@ -19,16 +19,17 @@ Silu is a simple AI programming language implemented in Python. It's an interpre
 
 - `silu/`: Main package directory
   - `__main__.py`: Entry point that delegates to CLI
-  - `cli.py`: Unified command-line interface supporting both interpretation and IR generation
+  - `cli.py`: Unified command-line interface supporting interpretation, IR generation, and symbolic execution
   - `ast_processor.py`: Abstract base class for AST processing with shared functionality
   - `interpreter.py`: Core interpreter that extends BaseASTProcessor for direct execution
   - `ir_generator.py`: IR generator that extends BaseASTProcessor for intermediate representation
+  - `symbolic_executor.py`: Symbolic execution engine for path analysis and constraint generation
 - `tests/`: Unit tests using pytest
 - `demo*.si`: Example Silu programs
 
 ## Key Components
 
-1. **CLI (`silu/cli.py`)**: Unified interface supporting both interpretation and IR generation modes
+1. **CLI (`silu/cli.py`)**: Unified interface supporting interpretation, IR generation, and symbolic execution modes
 2. **Base AST Processor (`silu/ast_processor.py`)**:
    - `BaseASTProcessor`: Abstract base class extending `ast.NodeVisitor`
    - Shared AST traversal logic and operator mappings
@@ -41,7 +42,12 @@ Silu is a simple AI programming language implemented in Python. It's an interpre
 4. **IR Generator (`silu/ir_generator.py`)**:
    - `SiluIRGenerator`: Converts AST to intermediate representation tuples
    - Supports advanced Python features and comprehensive syntax coverage
-5. **Built-in Functions**: print, type, isinstance, int, float, str, bool
+5. **Symbolic Executor (`silu/symbolic_executor.py`)**:
+   - `SymbolicExecutor`: Performs symbolic execution of IR programs
+   - `SymbolicValue`: Represents symbolic values and expressions
+   - `ExecutionPath`: Tracks execution paths with conditions and constraints
+   - `PathCondition`: Represents branch conditions for path analysis
+6. **Built-in Functions**: print, type, isinstance, int, float, str, bool
 
 ## Language Features
 
@@ -112,10 +118,15 @@ silu ir program.si --format compact  # Compact format
 silu ir program.si --output file.ir  # Save to file
 silu ir --source "x = 5"            # From source string
 
-# IR execution mode (NEW!)
+# IR execution mode
 silu exec program.ir.json            # Execute IR directly
 silu exec --source '("module", (("assign", "x", 42, null),))'
 python -m silu exec demo.ir          # Alternative execution method
+
+# Symbolic execution mode (NEW!)
+silu symbolic program.si             # Symbolic analysis of Silu program
+silu symbolic program.ir.json       # Symbolic analysis of IR
+silu symbolic --source "if x > 5: y = 1 else: y = 2"  # Analyze source string
 ```
 
 ### Cleaning
@@ -161,12 +172,19 @@ The IR generator works by:
 3. Supporting comprehensive Python syntax including advanced features
 4. Maintaining structural information without execution
 
-### IRInterpreter (NEW - Concrete Implementation)
+### IRInterpreter (Concrete Implementation)
 The IR interpreter works by:
 1. Directly executing IR tuples without AST traversal
 2. Providing better performance through flatter instruction execution
 3. Supporting all language features through IR instruction dispatch
 4. Enabling modular architecture for future compiler backends
+
+### SymbolicExecutor (NEW - Concrete Implementation)
+The symbolic executor works by:
+1. Analyzing IR programs symbolically without concrete values
+2. Tracking all possible execution paths through control flow
+3. Generating path conditions and constraints for each branch
+4. Supporting symbolic values, expressions, and constraint solving
 
 Key AST nodes supported by both processors:
 - Basic: Module, Expr, Assign, Name, Constant
@@ -186,11 +204,19 @@ The interpreter implements proper error handling for:
 
 ## Recent Implementations (Completed)
 
+### Symbolic Execution Engine Implementation ✅ (Latest)
+Successfully implemented a complete symbolic execution engine with the following features:
+- **Path Analysis**: Generates all possible execution paths through control flow
+- **Constraint Generation**: Creates path conditions for each branch decision
+- **Symbolic Values**: Supports symbolic variables and expressions
+- **Branch Coverage**: Analyzes if/else statements, while loops, and function calls
+- **Report Generation**: Provides comprehensive analysis reports in JSON format
+
 ### IR Interpreter Implementation ✅
 Successfully implemented a complete IR interpreter with the following features:
 - **Direct IR Execution**: Can execute IR tuples without AST interpretation
 - **Complete Language Support**: All Silu features work through IR execution
-- **Performance Benefits**: Faster execution through flatter instruction dispatch
+- **Performance Benefits**: Faster execution through flatter instruction execution
 - **Modular Architecture**: Clean separation between IR generation and execution
 
 ### Architecture Refactoring (Previously Completed) ✅
@@ -208,8 +234,9 @@ The codebase was refactored to eliminate code duplication:
 
 ## Demo Programs
 
-The repository includes a single comprehensive demo program:
+The repository includes comprehensive demo programs:
 - `demo.si`: Consolidated demo showcasing all core language features including variables, arithmetic, control flow, functions, type conversion, lambda expressions, and loop control
+- `symbolic_demo.si`: Demonstrates various control flow patterns for symbolic execution analysis
 
 Example usage:
 ```bash
@@ -222,6 +249,10 @@ silu ir demo.si --format json
 # Save demo IR to file and execute it
 silu ir demo.si --output demo.ir --format json
 silu exec demo.ir
+
+# Symbolic execution analysis
+silu symbolic demo.si
+silu symbolic symbolic_demo.si
 
 # Compare performance (interpretation vs IR execution)
 time silu interpret demo.si
