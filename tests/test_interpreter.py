@@ -121,7 +121,8 @@ class TestSiluInterpreter:
         value = ast.Constant(value=42)
         assign_node = ast.Assign(targets=[target1, target2], value=value)
         with pytest.raises(
-            NotImplementedError, match="Only single simple variable assignments supported"
+            NotImplementedError,
+            match="Only single simple variable assignments supported",
         ):
             interpreter.visit_Assign(assign_node)
 
@@ -134,7 +135,8 @@ class TestSiluInterpreter:
         value = ast.Constant(value=42)
         assign_node = ast.Assign(targets=[target], value=value)
         with pytest.raises(
-            NotImplementedError, match="Only single simple variable assignments supported"
+            NotImplementedError,
+            match="Only single simple variable assignments supported",
         ):
             interpreter.visit_Assign(assign_node)
 
@@ -278,9 +280,7 @@ class TestSiluInterpreter:
         comparators = [ast.Constant(value=3)]
         ops = [ast.In()]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
-        with pytest.raises(
-            NotImplementedError, match="Unsupported operator: In"
-        ):
+        with pytest.raises(NotImplementedError, match="Unsupported operator: In"):
             interpreter.visit_Compare(node)
 
         # Test mismatch between comparators and operators

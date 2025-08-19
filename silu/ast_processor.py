@@ -86,6 +86,16 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         """Process an expression statement."""
         pass
 
+    @abstractmethod
+    def process_attribute(self, obj: Any, attr: str) -> Any:
+        """Process attribute access."""
+        pass
+
+    @abstractmethod
+    def process_subscript(self, obj: Any, index: Any) -> Any:
+        """Process subscript operation."""
+        pass
+
     # ================== Generic Visit Methods ==================
 
     def visit_Module(self, node: ast.Module) -> Any:
@@ -185,7 +195,9 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         iter_ = self.visit(node.iter)
         body = node.body
         orelse = node.orelse if node.orelse else []
-        return self.process_control_flow("for", target=target, iter=iter_, body=body, orelse=orelse)
+        return self.process_control_flow(
+            "for", target=target, iter=iter_, body=body, orelse=orelse
+        )
 
     def visit_List(self, node: ast.List) -> Any:
         """Visit a list literal node."""
@@ -200,6 +212,44 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         if op_str is None:
             raise NotImplementedError(f"Unsupported operator: {type(op).__name__}")
         return op_str
+
+    def _make_node(self, node_type: str, *args) -> tuple:
+        """Helper to create IR nodes consistently."""
+        return (node_type, *args)
+
+    def validate_operation(self, op: str, *operands) -> None:
+        """Validate operations before processing."""
+        if op in ("/", "//", "%") and len(operands) == 2 and operands[1] == 0:
+            raise ZeroDivisionError(
+                "Division by zero" if op != "%" else "Modulo by zero"
+            )
+
+    # ================== Shared Node Processing Methods ==================
+
+    def visit_Attribute(self, node: ast.Attribute) -> Any:
+        """Handle attribute access."""
+        obj = self.visit(node.value)
+        return self.process_attribute(obj, node.attr)
+
+    def visit_Subscript(self, node: ast.Subscript) -> Any:
+        """Handle indexing operations."""
+        obj = self.visit(node.value)
+        index = self.visit(node.slice)
+        return self.process_subscript(obj, index)
+
+    def visit_Tuple(self, node: ast.Tuple) -> Any:
+        """Handle tuple literals."""
+        elements = tuple(self.visit(element) for element in node.elts)
+        return self.process_container("tuple", elements)
+
+    def visit_Dict(self, node: ast.Dict) -> Any:
+        """Handle dictionary literals."""
+        pairs = []
+        for key_node, value_node in zip(node.keys, node.values):
+            key = self.visit(key_node) if key_node else None
+            value = self.visit(value_node)
+            pairs.append((key, value))
+        return self.process_container("dict", pairs)
 
 
 def create_processor(processor_type: str, **kwargs) -> BaseASTProcessor:

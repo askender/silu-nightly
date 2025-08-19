@@ -51,6 +51,14 @@ class TestASTProcessor(BaseASTProcessor):
         """Test implementation of process_expr."""
         return f"expr({value})"
 
+    def process_attribute(self, obj, attr):
+        """Test implementation of process_attribute."""
+        return f"attr({obj}.{attr})"
+
+    def process_subscript(self, obj, index):
+        """Test implementation of process_subscript."""
+        return f"subscript({obj}[{index}])"
+
 
 class TestBaseASTProcessor:
     """Tests for the BaseASTProcessor class."""
@@ -101,7 +109,10 @@ class TestBaseASTProcessor:
         value = ast.Constant(value=42)
         assign = ast.Assign(targets=[target1, target2], value=value)
 
-        with pytest.raises(NotImplementedError, match="Only single simple variable assignments supported"):
+        with pytest.raises(
+            NotImplementedError,
+            match="Only single simple variable assignments supported",
+        ):
             processor.visit_Assign(assign)
 
     def test_visit_assign_non_name_target(self):
@@ -109,11 +120,16 @@ class TestBaseASTProcessor:
         processor = TestASTProcessor()
 
         # Create assignment with non-name target (e.g., attribute)
-        target = ast.Attribute(value=ast.Name(id="obj", ctx=ast.Load()), attr="attr", ctx=ast.Store())
+        target = ast.Attribute(
+            value=ast.Name(id="obj", ctx=ast.Load()), attr="attr", ctx=ast.Store()
+        )
         value = ast.Constant(value=42)
         assign = ast.Assign(targets=[target], value=value)
 
-        with pytest.raises(NotImplementedError, match="Only single simple variable assignments supported"):
+        with pytest.raises(
+            NotImplementedError,
+            match="Only single simple variable assignments supported",
+        ):
             processor.visit_Assign(assign)
 
     def test_visit_name_load(self):
@@ -273,7 +289,9 @@ class TestBaseASTProcessor:
 
         # Create a for statement
         target = ast.Name(id="i", ctx=ast.Store())
-        iter_node = ast.List(elts=[ast.Constant(value=1), ast.Constant(value=2)], ctx=ast.Load())
+        iter_node = ast.List(
+            elts=[ast.Constant(value=1), ast.Constant(value=2)], ctx=ast.Load()
+        )
         body = [ast.Expr(value=ast.Name(id="i", ctx=ast.Load()))]
         for_stmt = ast.For(target=target, iter=iter_node, body=body, orelse=[])
 
@@ -292,15 +310,11 @@ class TestBaseASTProcessor:
             kwonlyargs=[],
             kw_defaults=[],
             kwarg=None,
-            defaults=[]
+            defaults=[],
         )
         body = [ast.Return(value=ast.Name(id="x", ctx=ast.Load()))]
         funcdef = ast.FunctionDef(
-            name="test_func",
-            args=args,
-            body=body,
-            decorator_list=[],
-            returns=None
+            name="test_func", args=args, body=body, decorator_list=[], returns=None
         )
 
         result = processor.visit_FunctionDef(funcdef)

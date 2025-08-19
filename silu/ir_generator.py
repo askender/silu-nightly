@@ -80,6 +80,10 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate container IR nodes."""
         if container_type == "list":
             return ("list", tuple(elements))
+        elif container_type == "tuple":
+            return self._make_node("tuple", tuple(elements))
+        elif container_type == "dict":
+            return self._make_node("dict", elements)
         elif container_type == "module":
             return ("module", tuple(elements))
 
@@ -87,11 +91,15 @@ class SiluIRGenerator(BaseASTProcessor):
         """Process expression statements."""
         return value
 
-    # ================== Additional IR Generation Methods ==================
+    def process_attribute(self, obj: Any, attr: str) -> str:
+        """Process attribute access."""
+        return f"{obj}.{attr}"
 
-    def _make_node(self, node_type: str, *args) -> Tuple:
-        """Helper to create IR nodes consistently."""
-        return (node_type, *args)
+    def process_subscript(self, obj: Any, index: Any) -> Tuple:
+        """Process subscript operation."""
+        return self._make_node("subscript", obj, index)
+
+    # ================== Additional IR Generation Methods ==================
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> Tuple:
         """Generate annotated assignment IR."""
@@ -107,37 +115,12 @@ class SiluIRGenerator(BaseASTProcessor):
         value = self.visit(node.value)
         return self._make_node("aug_assign", target, f"{op}=", value)
 
-    def visit_Attribute(self, node: ast.Attribute) -> str:
-        """Generate attribute access IR."""
-        value = self.visit(node.value)
-        return f"{value}.{node.attr}"
-
-    def visit_Subscript(self, node: ast.Subscript) -> Tuple:
-        """Generate subscript IR."""
-        value = self.visit(node.value)
-        slice_val = self.visit(node.slice)
-        return self._make_node("subscript", value, slice_val)
-
     def visit_Slice(self, node: ast.Slice) -> Tuple:
         """Generate slice IR."""
         lower = self.visit(node.lower) if node.lower else None
         upper = self.visit(node.upper) if node.upper else None
         step = self.visit(node.step) if node.step else None
         return self._make_node("slice", lower, upper, step)
-
-    def visit_Tuple(self, node: ast.Tuple) -> Tuple:
-        """Generate tuple IR."""
-        elements = tuple(self.visit(elt) for elt in node.elts)
-        return self._make_node("tuple", elements)
-
-    def visit_Dict(self, node: ast.Dict) -> Tuple:
-        """Generate dictionary IR."""
-        pairs = []
-        for key, value in zip(node.keys, node.values):
-            key_ir = self.visit(key) if key else None
-            value_ir = self.visit(value)
-            pairs.append((key_ir, value_ir))
-        return self._make_node("dict", pairs)
 
     def visit_Set(self, node: ast.Set) -> Tuple:
         """Generate set IR."""

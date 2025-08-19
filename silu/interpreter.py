@@ -148,10 +148,7 @@ class SiluInterpreter(BaseASTProcessor):
 
     def _process_binary(self, op: str, left: Any, right: Any) -> Any:
         """Process binary operations with division by zero checking."""
-        if op in ("/", "//", "%") and right == 0:
-            raise ZeroDivisionError(
-                "Division by zero" if op != "%" else "Modulo by zero"
-            )
+        self.validate_operation(op, left, right)
 
         ops = {
             "+": lambda left, right: left + right,
@@ -247,12 +244,27 @@ class SiluInterpreter(BaseASTProcessor):
         """Handle containers."""
         if container_type == "list":
             return elements
+        elif container_type == "tuple":
+            return tuple(elements)
+        elif container_type == "dict":
+            result = {}
+            for key, value in elements:
+                result[key] = value
+            return result
         elif container_type == "module":
             return None  # Module execution is handled by statement processing
 
     def process_expr(self, value: Any) -> Any:
         """Process expression statements."""
         return value
+
+    def process_attribute(self, obj: Any, attr: str) -> Any:
+        """Process attribute access."""
+        return getattr(obj, attr)
+
+    def process_subscript(self, obj: Any, index: Any) -> Any:
+        """Process subscript operation."""
+        return obj[index]
 
     # ================== Special Node Handlers ==================
 
@@ -274,27 +286,3 @@ class SiluInterpreter(BaseASTProcessor):
         else:
             # Regular function call
             return super().visit_Call(node)
-
-    def visit_Subscript(self, node: ast.Subscript) -> Any:
-        """Handle indexing operations."""
-        obj = self.visit(node.value)
-        index = self.visit(node.slice)
-        return obj[index]
-
-    def visit_Attribute(self, node: ast.Attribute) -> Any:
-        """Handle attribute access."""
-        obj = self.visit(node.value)
-        return getattr(obj, node.attr)
-
-    def visit_Dict(self, node: ast.Dict) -> Dict[Any, Any]:
-        """Handle dictionary literals."""
-        result = {}
-        for key_node, value_node in zip(node.keys, node.values):
-            key = self.visit(key_node) if key_node else None
-            value = self.visit(value_node)
-            result[key] = value
-        return result
-
-    def visit_Tuple(self, node: ast.Tuple) -> tuple:
-        """Handle tuple literals."""
-        return tuple(self.visit(element) for element in node.elts)

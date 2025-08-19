@@ -3,7 +3,6 @@ Unit tests for the Silu IR generator module.
 """
 
 import ast
-import pytest
 from silu.ir_generator import SiluIRGenerator
 
 
