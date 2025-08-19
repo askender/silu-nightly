@@ -105,6 +105,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     """Run symbolic execution on source code or IR."""
     try:
         executor = SymbolicExecutor()
+        simplify = kwargs.get('simplify', False)
 
         if is_file:
             # Execute from file
@@ -129,6 +130,16 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 ir_generator = SiluIRGenerator()
                 ir_result = ir_generator.visit(tree)
                 paths = executor.execute_program(ir_result)
+
+        # Apply condition simplification if requested
+        if simplify:
+            if paths:
+                paths = executor.simplify_path_conditions(paths)
+
+            # Also simplify function analysis results
+            if hasattr(executor, 'function_analyses'):
+                for func_name, func_paths in executor.function_analyses.items():
+                    executor.function_analyses[func_name] = executor.simplify_path_conditions(func_paths)
 
         # Generate and display report
         if paths:
@@ -239,6 +250,9 @@ Examples:
         choices=["json", "pretty"],
         default="json",
         help="Output format for the report (default: json)",
+    )
+    symbolic_parser.add_argument(
+        "--simplify", action="store_true", help="Simplify and merge path conditions where possible"
     )
 
     return parser
@@ -364,12 +378,14 @@ def main() -> None:
 
         elif args.mode == "symbolic":
             # Symbolic execution
+            symbolic_kwargs = {'simplify': getattr(args, 'simplify', False)}
+
             if args.source:
                 # Symbolic execution from command line source
-                run_symbolic_executor(args.source, is_file=False)
+                run_symbolic_executor(args.source, is_file=False, **symbolic_kwargs)
             else:
                 # Symbolic execution from file
-                run_symbolic_executor(args.file, is_file=True)
+                run_symbolic_executor(args.file, is_file=True, **symbolic_kwargs)
 
             # TODO: Handle output file and format options if needed
             if hasattr(args, 'output') and args.output:

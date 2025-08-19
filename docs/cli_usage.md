@@ -106,10 +106,14 @@ silu symbolic program.ir.json
 
 # Analyze source code directly
 silu symbolic --source "if x > 5: y = 1 else: y = 2"
+
+# Simplify path conditions to reduce complexity
+silu symbolic your_program.si --simplify
 ```
 
 **Options:**
 - `--source TEXT`: Analyze source code directly instead of reading from file
+- `--simplify`: Simplify and merge path conditions where possible (reduces condition complexity)
 
 **Output:** JSON report containing:
 - All discovered execution paths
@@ -148,6 +152,9 @@ silu exec my_program.ir
 
 # 4. Perform symbolic analysis
 silu symbolic my_program.si
+
+# 4a. Perform symbolic analysis with condition simplification
+silu symbolic my_program.si --simplify
 ```
 
 ### Performance Testing Workflow
@@ -162,6 +169,9 @@ time silu exec large_program.ir
 # Generate all analysis outputs
 silu ir program.si --format json --output program.ir
 silu symbolic program.si > analysis_report.json
+
+# Generate simplified analysis for cleaner output
+silu symbolic program.si --simplify > simplified_analysis.json
 ```
 
 ## File Extensions

@@ -68,16 +68,14 @@
 - [x] 添加 break/continue 语句支持
 - [x] 实现 Simple IR 解释器，可以直接执行 IR
 - [x] 添加uv包管理器支持和相关文档更新
+- [x] 实现符号执行功能，支持符号值和路径条件跟踪，CLI支持 `silu symbolic` 命令
+- [x] silu symbolic 支持可选的 --simplify 选项，可以将多个条件合并为单个更简洁的条件
 
 ## 🔄 正在进行的功能
 
-## 🎯 高优先级功能
 
-- [x] 实现符号执行功能 ✅
-  - 创建 SymbolicExecutor 类，基于现有 IR 解释器架构
-  - 支持符号值和路径条件跟踪
-  - 生成函数的所有执行路径和分支约束
-  - 添加 CLI 支持 `silu symbolic` 命令
+
+## 🎯 高优先级功能
 
 - [ ] 集成 LLVM 工具链以执行生成的 IR
   - 研究 LLVM-Python 绑定

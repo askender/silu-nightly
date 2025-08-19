@@ -706,6 +706,141 @@ class SymbolicExecutor:
 
         return report
 
+    def simplify_path_conditions(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
+        """Simplify and merge path conditions where possible"""
+        simplified_paths = []
+
+        for path in paths:
+            if not path.conditions:
+                simplified_paths.append(path)
+                continue
+
+            # Create a new path with simplified conditions
+            new_path = ExecutionPath(path.path_id)
+            new_path.statements = path.statements.copy()
+            new_path.return_value = path.return_value
+            new_path.variables = path.variables.copy()
+
+            # Group conditions by variable
+            condition_groups = self._group_conditions_by_variable(path.conditions)
+
+            # Simplify each group
+            simplified_conditions = []
+            for variable, conditions in condition_groups.items():
+                if len(conditions) > 1:
+                    merged = self._merge_conditions_for_variable(variable, conditions)
+                    simplified_conditions.extend(merged)
+                else:
+                    simplified_conditions.extend(conditions)
+
+            # Add ungrouped conditions (those that don't involve simple variable comparisons)
+            for condition in path.conditions:
+                if not self._is_simple_variable_condition(condition.expression):
+                    simplified_conditions.append(condition)
+
+            new_path.conditions = simplified_conditions
+            simplified_paths.append(new_path)
+
+        return simplified_paths
+
+    def _group_conditions_by_variable(self, conditions: List[PathCondition]) -> Dict[str, List[PathCondition]]:
+        """Group conditions by the variable they constrain"""
+        groups = {}
+
+        for condition in conditions:
+            variable = self._extract_variable_from_condition(condition.expression)
+            if variable:
+                if variable not in groups:
+                    groups[variable] = []
+                groups[variable].append(condition)
+
+        return groups
+
+    def _extract_variable_from_condition(self, expression: str) -> Optional[str]:
+        """Extract variable name from simple comparison expressions"""
+        import re
+
+        # Match patterns like "x > 5", "x <= 10", etc. with optional whitespace
+        pattern = r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*([><=!]+)\s*(.+)\s*$'
+        match = re.match(pattern, expression.strip())
+        if match:
+            return match.group(1)
+
+        return None
+
+    def _is_simple_variable_condition(self, expression: str) -> bool:
+        """Check if condition is a simple variable comparison"""
+        return self._extract_variable_from_condition(expression) is not None
+
+    def _merge_conditions_for_variable(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
+        """Merge conditions for a single variable"""
+        if len(conditions) <= 1:
+            return conditions
+
+        # For now, implement basic merging for common patterns
+        # Example: "not (x > 10)" and "not (x > 0)" -> "x <= 0"
+
+        # Separate positive and negative conditions
+        positive_conditions = [c for c in conditions if c.is_true]
+        negative_conditions = [c for c in conditions if not c.is_true]
+
+        # Try to merge negative conditions (not operators)
+        merged_negative = self._merge_negative_conditions(variable, negative_conditions)
+
+        # For now, keep positive conditions as-is
+        # In a more advanced implementation, we could merge these too
+
+        result = positive_conditions + merged_negative
+        return result if result else conditions
+
+    def _merge_negative_conditions(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
+        """Merge negative conditions like 'not (x > 10)' and 'not (x > 0)'"""
+        if len(conditions) <= 1:
+            return conditions
+
+        import re
+
+        # Extract comparison operations and values
+        greater_than_values = []
+        greater_equal_values = []
+        less_than_values = []
+        less_equal_values = []
+
+        for condition in conditions:
+            # Pattern: variable operator value
+            pattern = f'^{re.escape(variable)}\\s*([><=]+)\\s*(.+)$'
+            match = re.match(pattern, condition.expression)
+
+            if match:
+                operator = match.group(1).strip()
+                try:
+                    value = float(match.group(2).strip())
+
+                    if operator == '>':
+                        greater_than_values.append(value)
+                    elif operator == '>=':
+                        greater_equal_values.append(value)
+                    elif operator == '<':
+                        less_than_values.append(value)
+                    elif operator == '<=':
+                        less_equal_values.append(value)
+                except ValueError:
+                    # If we encounter non-numeric values, return original conditions
+                    return conditions
+
+        # Merge logic: not (x > a) and not (x > b) -> not (x > min(a,b)) -> x <= min(a,b)
+        if greater_than_values:
+            min_value = min(greater_than_values)
+            merged_expr = f"{variable} <= {min_value}"
+            return [PathCondition(merged_expr, True)]
+
+        # Similar logic for other operators could be added here
+
+        # If we can't merge, return original conditions
+        return conditions
+
+
+
 
 def execute_symbolic_from_file(file_path: str) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR file"""
