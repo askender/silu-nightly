@@ -37,7 +37,7 @@ silu/
 3. **SiluInterpreter (`interpreter.py`)**: Main interpreter with Environment and Function classes
 4. **SiluIRGenerator (`ir_generator.py`)**: Converts AST to intermediate representation
 5. **IRToSourceConverter (`ir_to_source.py`)**: Converts IR back to readable source code with shared conversion utilities
-6. **SymbolicExecutor (`symbolic_executor.py`)**: Performs symbolic program analysis
+6. **SymbolicExecutor (`symbolic_executor.py`)**: Enhanced symbolic program analysis with Z3 constraint generation and precise loop handling
 
 ## Common Development Commands
 
@@ -85,6 +85,7 @@ silu symbolic program.si          # Symbolic analysis
 - Uses unified AST processing architecture to avoid code duplication
 - Comprehensive test suite with 200+ tests using pytest
 - Supports multiple execution modes (interpret, IR generation/execution, IR-to-source conversion, symbolic analysis)
+- Enhanced symbolic execution with Z3 constraint generation and precise loop analysis
 - Shared conversion functions between IR-to-source converter and symbolic executor for consistent output
 - Package management with `uv` (recommended) or `pip`
 - Code formatting with `ruff`
@@ -105,3 +106,21 @@ The toolkit now includes bidirectional conversion between source code and IR:
 - **IR debugging**: Generate human-readable source from complex IR structures
 - **Tool integration**: Bridge between IR-based tools and source code editors
 - **Round-trip testing**: Verify IR generation accuracy through reconstruction
+
+## Symbolic Execution Enhancements
+
+The symbolic executor has been significantly enhanced with advanced capabilities:
+
+### Enhanced Features
+- **Z3 Constraint Generation**: Automatic Z3 constraint generation for path conditions and loop bounds
+- **Precise Loop Analysis**: Advanced range loop analysis with exact iteration constraint modeling
+- **Extended AST Support**: Comprehensive AST-to-Z3 conversion supporting subscripts, built-ins, and complex expressions
+- **Path Satisfiability**: Real-time constraint satisfiability checking for path pruning
+- **Enhanced Reporting**: Detailed constraint analysis and path complexity metrics
+
+### Technical Improvements
+- **Advanced Loop Handling**: Special handling for `range()` loops with symbolic bounds and step values
+- **Constraint Simplification**: Automatic Z3 expression simplification for better performance
+- **Binary Operation Enhancement**: Z3-aware binary operation processing with constraint propagation
+- **Improved Path Management**: Unified path handling with automatic constraint validation
+- **Graceful Degradation**: Full functionality with or without Z3 solver installed
