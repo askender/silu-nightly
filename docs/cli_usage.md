@@ -98,26 +98,38 @@ python -m silu exec program.ir.json
 Perform symbolic analysis to discover all possible execution paths:
 
 ```bash
-# Analyze a Silu program
+# Basic symbolic execution
 silu symbolic your_program.si
 
-# Analyze pre-generated IR directly
-silu symbolic program.ir.json
+# Generate test cases with Z3 solver
+silu symbolic your_program.si --solve
 
-# Analyze source code directly
-silu symbolic --source "if x > 5: y = 1 else: y = 2"
-
-# Simplify path conditions to reduce complexity
+# Simplify path conditions
 silu symbolic your_program.si --simplify
+
+# Combined: solve and simplify
+silu symbolic your_program.si --solve --simplify
+
+# Performance mode for faster analysis
+silu symbolic your_program.si --performance-mode
+
+# Include function paths (compatibility mode)
+silu symbolic your_program.si --include-function-paths
 ```
 
 **Options:**
+- `--solve`: Generate test cases using Z3 solver (requires: `pip install z3-solver`)
+- `--simplify`: Simplify and merge path conditions
+- `--performance-mode`: Enable faster analysis with reduced depth
+- `--include-function-paths`: Include function internal paths in main collection
 - `--source TEXT`: Analyze source code directly instead of reading from file
-- `--simplify`: Simplify and merge path conditions where possible (reduces condition complexity)
+- `--format json|pretty`: Output format selection
+- `--output FILE`: Save results to file
 
 **Output:** JSON report containing:
-- All discovered execution paths
-- Path conditions and constraints
+- All discovered execution paths with conditions
+- Test cases and expected outputs (with `--solve`)
+- Satisfiability analysis and dead code detection
 - Branch coverage information
 - Symbolic variable states
 

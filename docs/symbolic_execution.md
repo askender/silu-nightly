@@ -28,14 +28,23 @@ Symbolic execution is a program analysis technique that explores all possible ex
 ### Basic Usage
 
 ```bash
-# Analyze a Silu program
+# Basic symbolic execution
 silu symbolic program.si
 
-# Analyze IR directly
-silu symbolic program.ir.json
+# Generate test cases with Z3 solver
+silu symbolic program.si --solve
 
-# Analyze source code string
-silu symbolic --source "if x > 5: y = 1 else: y = 2"
+# Simplify path conditions
+silu symbolic program.si --simplify
+
+# Combined: solve and simplify
+silu symbolic program.si --solve --simplify
+
+# Performance mode for faster analysis
+silu symbolic program.si --performance-mode
+
+# Include function paths (compatibility mode)
+silu symbolic program.si --include-function-paths
 ```
 
 ### Example Analysis
@@ -84,31 +93,89 @@ The symbolic executor discovers 3 execution paths:
 }
 ```
 
+## Z3 Solver Integration
+
+The `--solve` option integrates the Z3 SMT solver for automatic test case generation:
+
+### Installation
+```bash
+# Install Z3 solver
+uv pip install z3-solver  # or: pip install z3-solver
+```
+
+### Features
+- **Automatic Test Cases**: Generates concrete inputs for each execution path
+- **Satisfiability Checking**: Identifies impossible (dead code) paths
+- **Constraint Solving**: Handles complex logical conditions
+
+### Example with Test Generation
+```bash
+silu symbolic classify_number.si --solve
+```
+
+For a function like:
+```python
+def classify_number(x):
+    if x > 100:
+        return "large"
+    elif x > 0:
+        return "small"
+    else:
+        return "zero_or_negative"
+```
+
+Generates:
+```json
+{
+  "paths": [
+    {
+      "conditions": ["(x > 100)"],
+      "test_inputs": {"x": 101},
+      "expected_outputs": {"return_value": "large"}
+    },
+    {
+      "conditions": ["not (x > 100)", "(x > 0)"],
+      "test_inputs": {"x": 1},
+      "expected_outputs": {"return_value": "small"}
+    }
+  ]
+}
+```
+
+## Advanced Features
+
+### Path Simplification
+The `--simplify` option reduces complex conditions:
+- Merges redundant constraints
+- Simplifies boolean expressions
+- Improves readability
+
+### Performance Options
+- `--performance-mode`: Faster analysis with reduced depth
+- `--include-function-paths`: Include function internal paths in main collection
+
 ## Applications
 
-### Test Case Generation
-Path conditions can be used to generate test inputs:
-- `x > 10` → test with `x = 15`
-- `0 < x ≤ 10` → test with `x = 5`
-- `x ≤ 0` → test with `x = -1`
+### Automated Testing
+- Generate comprehensive test suites automatically
+- Ensure all code paths are tested
+- Identify edge cases and boundary conditions
 
-### Code Coverage Analysis
-- Identify all possible execution paths
-- Ensure test suites cover all branches
-- Detect unreachable code
-
-### Program Verification
+### Code Quality
+- Detect unreachable (dead) code
 - Find contradictory conditions
-- Analyze boundary cases
-- Verify function behavior across all inputs
+- Verify program logic across all inputs
 
-## Implementation Details
+## CLI Options Summary
 
-The symbolic executor operates on Silu's intermediate representation (IR) and uses:
-
-- **Path Explosion Prevention**: Configurable limits to prevent infinite analysis
-- **Environment Management**: Tracks symbolic variables and function scopes
-- **Constraint Solving**: Basic satisfiability checking for path conditions
+| Option | Description |
+|--------|-------------|
+| `--solve` | Generate test cases using Z3 solver |
+| `--simplify` | Simplify and merge path conditions |
+| `--performance-mode` | Enable faster analysis with reduced depth |
+| `--include-function-paths` | Include function internal paths |
+| `--format json\|pretty` | Output format selection |
+| `--output FILE` | Save results to file |
 
 ## Supported Language Features
 
