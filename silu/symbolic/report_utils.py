@@ -648,7 +648,7 @@ def enhance_paths_with_z3_test_cases(paths: List[Any]) -> List[Any]:
     if not Z3_AVAILABLE:
         # Just return paths with a note that Z3 is not available
         for path in paths:
-            if not hasattr(path, 'z3_error'):
+            if not hasattr(path, 'z3_error') or getattr(path, 'z3_error', None) is None:
                 path.z3_error = "Z3 solver not available. Install with: pip install z3-solver"
         return paths
 
@@ -760,48 +760,43 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
     expr = condition.expression.strip()
 
     # Handle expressions in format "> ('name', 'x') 0" or similar
-    if expr.startswith((">", "<", ">=", "<=", "==", "!=")):
-        # Split by first space to get operator and operands
-        parts = expr.split(" ", 1)
-        if len(parts) == 2:
-            op = parts[0]
-            operands_str = parts[1]
+    import re
+    # Pattern for "OPERATOR ('name', 'var') VALUE" or "OPERATOR VALUE VALUE"
+    pattern = r'^([><=!]+)\s+(.+)$'
+    match = re.match(pattern, expr)
 
-            # Try to parse operands
-            try:
-                import ast
-                operands = ast.literal_eval(f"[{operands_str}]")
-                if len(operands) == 2:
-                    left_operand = operands[0]
-                    right_operand = operands[1]
+    if match:
+        op = match.group(1)
+        operands_part = match.group(2)
 
-                    # Convert operands to Z3
-                    left_z3 = operand_to_z3(left_operand, var_map)
-                    right_z3 = operand_to_z3(right_operand, var_map)
+        # Try to parse operands - handle both tuple format and simple format
+        operands = parse_operands(operands_part)
+        if len(operands) == 2:
+            left_z3 = operand_to_z3(operands[0], var_map)
+            right_z3 = operand_to_z3(operands[1], var_map)
 
-                    if left_z3 is not None and right_z3 is not None:
-                        # Create Z3 constraint
-                        if op == '==':
-                            constraint = left_z3 == right_z3
-                        elif op == '!=':
-                            constraint = left_z3 != right_z3
-                        elif op == '<':
-                            constraint = left_z3 < right_z3
-                        elif op == '<=':
-                            constraint = left_z3 <= right_z3
-                        elif op == '>':
-                            constraint = left_z3 > right_z3
-                        elif op == '>=':
-                            constraint = left_z3 >= right_z3
+            if left_z3 is not None and right_z3 is not None:
+                # Create Z3 constraint
+                if op == '==':
+                    constraint = left_z3 == right_z3
+                elif op == '!=':
+                    constraint = left_z3 != right_z3
+                elif op == '<':
+                    constraint = left_z3 < right_z3
+                elif op == '<=':
+                    constraint = left_z3 <= right_z3
+                elif op == '>':
+                    constraint = left_z3 > right_z3
+                elif op == '>=':
+                    constraint = left_z3 >= right_z3
+                else:
+                    return None
 
-                        return constraint if condition.is_true else z3.Not(constraint)
-            except:
-                pass
+                return constraint if condition.is_true else z3.Not(constraint)
 
     # Try to parse the expression as a tuple (symbolic expression)
     try:
         if expr.startswith("(") and expr.endswith(")"):
-            # Try to evaluate as Python literal to get the tuple structure
             import ast
             parsed_expr = ast.literal_eval(expr)
             z3_constraint = tuple_expr_to_z3(parsed_expr, var_map, solver)
@@ -819,37 +814,85 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
         except Exception:
             pass
 
-    # Handle basic comparison operations
+    # Handle basic comparison operations with simple format like "x > 5"
     for op in ['>=', '<=', '==', '!=', '>', '<']:
-        if op in expr:
+        if op in expr and not expr.startswith(op):  # Avoid double parsing
             left, right = expr.split(op, 1)
             left = left.strip()
             right = right.strip()
 
-            # Get or create Z3 variables
             left_z3 = expr_to_z3(left, var_map, solver)
             right_z3 = expr_to_z3(right, var_map, solver)
 
-            if left_z3 is None or right_z3 is None:
-                return None
+            if left_z3 is not None and right_z3 is not None:
+                if op == '==':
+                    constraint = left_z3 == right_z3
+                elif op == '!=':
+                    constraint = left_z3 != right_z3
+                elif op == '<':
+                    constraint = left_z3 < right_z3
+                elif op == '<=':
+                    constraint = left_z3 <= right_z3
+                elif op == '>':
+                    constraint = left_z3 > right_z3
+                elif op == '>=':
+                    constraint = left_z3 >= right_z3
 
-            # Create Z3 constraint
-            if op == '==':
-                constraint = left_z3 == right_z3
-            elif op == '!=':
-                constraint = left_z3 != right_z3
-            elif op == '<':
-                constraint = left_z3 < right_z3
-            elif op == '<=':
-                constraint = left_z3 <= right_z3
-            elif op == '>':
-                constraint = left_z3 > right_z3
-            elif op == '>=':
-                constraint = left_z3 >= right_z3
-
-            return constraint if condition.is_true else z3.Not(constraint)
+                return constraint if condition.is_true else z3.Not(constraint)
 
     return None
+
+
+def parse_operands(operands_str: str) -> List[Any]:
+    """Parse operands from string like "('name', 'x') 0" """
+    operands = []
+
+    # Handle tuple operand followed by simple operand
+    import re
+    match = re.match(r"\(([^)]+)\)\s+(.+)$", operands_str.strip())
+    if match:
+        tuple_content = match.group(1)
+        second_operand = match.group(2)
+
+        try:
+            import ast
+            # Parse the tuple content
+            tuple_parts = [part.strip().strip("'\"") for part in tuple_content.split(',')]
+            if len(tuple_parts) == 2:
+                operands.append(tuple(tuple_parts))  # ('name', 'x')
+
+                # Parse second operand
+                try:
+                    operands.append(int(second_operand))
+                except ValueError:
+                    try:
+                        operands.append(float(second_operand))
+                    except ValueError:
+                        operands.append(second_operand)
+
+                return operands
+        except:
+            pass
+
+    # Fallback: try to split by spaces and parse each part
+    parts = operands_str.split()
+    for part in parts:
+        try:
+            operands.append(int(part))
+        except ValueError:
+            try:
+                operands.append(float(part))
+            except ValueError:
+                if part.startswith("(") and part.endswith(")"):
+                    try:
+                        import ast
+                        operands.append(ast.literal_eval(part))
+                    except:
+                        operands.append(part)
+                else:
+                    operands.append(part)
+
+    return operands
 
 
 def operand_to_z3(operand: Any, var_map: Dict[str, Any]) -> Any:
