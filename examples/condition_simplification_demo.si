@@ -1,0 +1,67 @@
+# Condition Simplification Demo
+# This program demonstrates how the --simplify option works with silu symbolic
+
+# Example 1: Basic range narrowing
+# This creates conditions like "not (x > 10)" and "not (x > 0)"
+# which simplify to "x <= 0"
+x = 5
+
+if x > 10:
+    result1 = "very high"
+elif x > 5:
+    result1 = "high"
+elif x > 0:
+    result1 = "positive"
+else:
+    result1 = "non-positive"  # This path gets: x <= 0
+
+print("Result 1:", result1)
+
+# Example 2: Multiple overlapping conditions
+# Creates complex nested conditions that can be simplified
+y = -2
+
+if y > 15:
+    if y > 20:
+        result2 = "maximum"
+    else:
+        result2 = "very high"
+elif y > 10:
+    result2 = "high"
+elif y > 5:
+    result2 = "medium"
+elif y > 0:
+    result2 = "low positive"
+else:
+    # This path will have: not (y > 15), not (y > 10), not (y > 5), not (y > 0)
+    # Which simplifies to: y <= 0
+    result2 = "non-positive"
+
+print("Result 2:", result2)
+
+# Example 3: Multiple variables with independent conditions
+z = 3
+w = 8
+
+if z > 5 and w > 10:
+    result3 = "both high"
+elif z > 5:
+    result3 = "z high, w low"
+elif w > 10:
+    result3 = "z low, w high"
+else:
+    # This creates conditions for both variables that can be simplified
+    result3 = "both low"
+
+print("Result 3:", result3)
+
+# To see the difference, run:
+# python -m silu.cli symbolic examples/condition_simplification_demo.si
+# vs
+# python -m silu.cli symbolic examples/condition_simplification_demo.si --simplify
+#
+# Without --simplify, you'll see complex conditions like:
+# "not (x > 10)", "not (x > 5)", "not (x > 0)"
+#
+# With --simplify, these become:
+# "x <= 0.0"
