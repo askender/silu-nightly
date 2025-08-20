@@ -28,15 +28,7 @@ from .symbolic.builtin_utils import (
     create_concrete_value,
     create_symbolic_value,
     create_expression_value,
-    symbolic_int,
-    symbolic_float,
-    symbolic_str,
-    symbolic_bool,
-    symbolic_type,
-    symbolic_isinstance,
-    symbolic_len,
-    symbolic_print,
-    simplify_args_display,
+    create_builtin_functions_dict,
 )
 from .symbolic.condition_utils import (
     PathCondition,
@@ -697,20 +689,7 @@ class SymbolicExecutor:
 
     def _init_builtins(self):
         """Initialize built-in functions"""
-        builtins = {
-            "print": lambda *args: symbolic_print(
-                *args,
-                current_path=self.current_path,
-                simplify_display_func=simplify_args_display,
-            ),
-            "int": symbolic_int,
-            "float": symbolic_float,
-            "str": symbolic_str,
-            "bool": symbolic_bool,
-            "type": symbolic_type,
-            "isinstance": symbolic_isinstance,
-            "len": symbolic_len,
-        }
+        builtins = create_builtin_functions_dict(current_path=self.current_path)
         self.global_env.functions.update(builtins)
 
     def execute_program(
