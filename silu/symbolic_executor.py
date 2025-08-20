@@ -23,12 +23,11 @@ from .symbolic.loop_utils import (
     LoopAnalyzer, LoopBound
 )
 
-# Import shared conversion functions
-from .ir_to_source import make_expression_readable, simplify_value_display
+# Removed ir_to_source dependency - implemented simplified versions internally
 
 # Import Z3 for enhanced symbolic execution
 if Z3_AVAILABLE:
-    from z3 import Int, IntVal, BoolVal, simplify, And, Not, Or, If, ArrayRef, Store, BoolSort
+    from z3 import Int, IntVal, BoolVal, simplify, And, Not, Or, If, ArrayRef, BoolSort
 
 
 class SymbolicValueType(Enum):
@@ -70,8 +69,10 @@ class PathCondition:
 
 
     def __str__(self) -> str:
-        prefix = "" if self.is_true else "not "
-        return f"{prefix}({self.expression})"
+        if self.is_true:
+            return self.expression
+        else:
+            return f"not ({self.expression})"
 
     def negate(self) -> 'PathCondition':
         """Return the negated condition"""
@@ -238,7 +239,6 @@ class SymbolicExecutor:
 
     def _symbolic_print(self, *args) -> SymbolicValue:
         """Symbolic version of print function"""
-        args_str = ", ".join(str(arg) for arg in args)
         if self.current_path:
             self.current_path.add_statement(f"print({self._simplify_args_display(args)})")
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
@@ -1346,9 +1346,9 @@ class SymbolicExecutor:
 
             return f"{left_readable} {op} {right_readable}"
 
-        # Use shared conversion function for basic cases
+        # Use internal simplified conversion for basic cases
         try:
-            return make_expression_readable(condition)
+            return self._convert_expression_readable(condition)
         except Exception:
             pass
 
@@ -1389,7 +1389,7 @@ class SymbolicExecutor:
             # Check if we have original IR to preserve formatting
             if hasattr(value, 'original_ir') and value.original_ir:
                 try:
-                    return simplify_value_display(value.original_ir)
+                    return self._convert_value_display(value.original_ir)
                 except Exception:
                     pass
 
@@ -1401,9 +1401,42 @@ class SymbolicExecutor:
                 return self._simplify_display(value.value)
 
         try:
-            return simplify_value_display(value)
+            return self._convert_value_display(value)
         except Exception:
             return str(value)
+
+    def _convert_expression_readable(self, expr: Any) -> str:
+        """Internal simplified expression to readable format converter"""
+        if isinstance(expr, str):
+            return expr
+        elif isinstance(expr, (int, float, bool)):
+            return str(expr)
+        elif isinstance(expr, tuple) and len(expr) >= 1:
+            if len(expr) == 3 and isinstance(expr[0], str):
+                # Binary operation: (op, left, right)
+                op, left, right = expr
+                left_str = self._convert_expression_readable(left)
+                right_str = self._convert_expression_readable(right)
+                return f"{left_str} {op} {right_str}"
+            elif len(expr) == 2 and isinstance(expr[0], str):
+                # Unary operation: (op, operand)
+                op, operand = expr
+                operand_str = self._convert_expression_readable(operand)
+                return f"{op}({operand_str})"
+        return str(expr)
+
+    def _convert_value_display(self, value: Any) -> str:
+        """Internal simplified value display converter"""
+        if isinstance(value, str):
+            return value
+        elif isinstance(value, (int, float, bool)):
+            return str(value)
+        elif isinstance(value, tuple):
+            return self._convert_expression_readable(value)
+        elif isinstance(value, list):
+            items = [self._convert_value_display(item) for item in value]
+            return f"[{', '.join(items)}]"
+        return str(value)
 
     def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
         """Generate a comprehensive report of symbolic execution results with enhanced analysis"""
