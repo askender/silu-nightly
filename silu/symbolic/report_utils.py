@@ -10,6 +10,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from enum import Enum
 import json
 
+# Z3 availability check for enhanced features
+try:
+    import z3
+    Z3_AVAILABLE = True
+except ImportError:
+    Z3_AVAILABLE = False
+
 
 class ReportFormat(Enum):
     """Supported report formats"""
@@ -502,3 +509,550 @@ def generate_test_case_report(paths: List[Any]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def generate_comprehensive_report(paths: List[Any], performance_mode: bool = False,
+                                global_env_functions: Dict = None, function_analyses: Dict = None) -> Dict[str, Any]:
+    """
+    Generate a comprehensive report of symbolic execution results with enhanced analysis
+
+    Args:
+        paths: List of execution paths
+        performance_mode: Whether to generate a simplified report for performance
+        global_env_functions: Global environment functions dict
+        function_analyses: Function analysis results
+
+    Returns:
+        Comprehensive report dictionary
+    """
+    if performance_mode:
+        return generate_fast_comprehensive_report(paths, global_env_functions, function_analyses)
+
+    satisfiable_paths = [p for p in paths if getattr(p, 'satisfiable', True)]
+
+    # Enhanced loop analysis
+    loop_info = {}
+    for path in paths:
+        loop_iterations = getattr(path, 'loop_iterations', {})
+        for loop_id, iteration in loop_iterations.items():
+            if loop_id not in loop_info:
+                loop_info[loop_id] = {'max_iteration': 0, 'paths': 0}
+            loop_info[loop_id]['max_iteration'] = max(loop_info[loop_id]['max_iteration'], iteration)
+            loop_info[loop_id]['paths'] += 1
+
+    # Enhanced constraint analysis
+    constraint_analysis = {
+        'total_constraints': sum(len(getattr(p, 'conditions', [])) for p in paths),
+        'z3_constraints': sum(1 for p in paths
+                            for c in getattr(p, 'conditions', [])
+                            if getattr(c, 'z3_constraint', None) is not None),
+        'symbolic_variables': 0,  # Will be set by caller if available
+        'satisfiable_constraint_ratio': len(satisfiable_paths) / len(paths) if paths else 0
+    }
+
+    # Path complexity metrics
+    path_metrics = {
+        'average_path_length': sum(len(getattr(p, 'statements', [])) for p in paths) / len(paths) if paths else 0,
+        'average_conditions_per_path': sum(len(getattr(p, 'conditions', [])) for p in paths) / len(paths) if paths else 0,
+        'paths_with_loops': sum(1 for p in paths if getattr(p, 'loop_iterations', {})),
+        'paths_with_returns': sum(1 for p in paths if getattr(p, 'return_value', None) is not None)
+    }
+
+    report = {
+        'total_paths': len(paths),
+        'satisfiable_paths': len(satisfiable_paths),
+        'paths': [path_to_dict(path) for path in paths],
+        'summary': {
+            'functions_analyzed': len(global_env_functions) if global_env_functions else 0,
+            'max_path_length': max((len(getattr(p, 'statements', [])) for p in paths), default=0),
+            'max_conditions': max((len(getattr(p, 'conditions', [])) for p in paths), default=0),
+            'z3_available': Z3_AVAILABLE,
+            'loop_analysis': loop_info,
+            'constraint_analysis': constraint_analysis,
+            'path_metrics': path_metrics,
+            'enhanced_features': {
+                'z3_constraint_generation': Z3_AVAILABLE,
+                'range_loop_precision': True,
+                'enhanced_ast_conversion': True,
+                'path_satisfiability_checking': Z3_AVAILABLE
+            }
+        }
+    }
+
+    # Add function analysis details if available
+    if function_analyses:
+        report['function_analyses'] = {}
+        for func_name, func_paths in function_analyses.items():
+            report['function_analyses'][func_name] = {
+                'total_paths': len(func_paths),
+                'satisfiable_paths': len([p for p in func_paths if getattr(p, 'satisfiable', True)]),
+                'paths': [path_to_dict(path) for path in func_paths]
+            }
+
+    return report
+
+
+def generate_fast_comprehensive_report(paths: List[Any], global_env_functions: Dict = None,
+                                     function_analyses: Dict = None) -> Dict[str, Any]:
+    """Generate simplified report for performance mode"""
+    satisfiable_paths = [p for p in paths if getattr(p, 'satisfiable', True)]
+
+    report = {
+        'total_paths': len(paths),
+        'satisfiable_paths': len(satisfiable_paths),
+        'paths': [path_to_dict(path) for path in paths],
+        'summary': {
+            'functions_analyzed': len(global_env_functions) if global_env_functions else 0,
+            'max_path_length': max((len(getattr(p, 'statements', [])) for p in paths), default=0),
+            'max_conditions': max((len(getattr(p, 'conditions', [])) for p in paths), default=0),
+            'performance_mode': True
+        }
+    }
+
+    # Add function analysis if available
+    if function_analyses:
+        report['function_analyses'] = {}
+        for func_name, func_paths in function_analyses.items():
+            report['function_analyses'][func_name] = {
+                'total_paths': len(func_paths),
+                'satisfiable_paths': len([p for p in func_paths if getattr(p, 'satisfiable', True)]),
+                'paths': [path_to_dict(path) for path in func_paths]
+            }
+
+    return report
+
+
+def path_to_dict(path: Any) -> Dict[str, Any]:
+    """Convert a path object to dictionary format"""
+    if hasattr(path, 'to_dict'):
+        return path.to_dict()
+
+    # Fallback manual conversion
+    path_dict = {
+        'path_id': getattr(path, 'path_id', 'unknown'),
+        'conditions': [str(c) for c in getattr(path, 'conditions', [])],
+        'statements': list(getattr(path, 'statements', [])),
+        'return_value': str(getattr(path, 'return_value', None)) if getattr(path, 'return_value', None) is not None else None,
+        'variables': {k: str(v) for k, v in getattr(path, 'variables', {}).items()},
+        'satisfiable': getattr(path, 'satisfiable', True),
+        'loop_iterations': getattr(path, 'loop_iterations', {}),
+        'test_inputs': getattr(path, 'test_inputs', {}),
+        'expected_outputs': getattr(path, 'expected_outputs', {}),
+        'z3_error': getattr(path, 'z3_error', None)
+    }
+    return path_dict
+
+
+def enhance_paths_with_z3_test_cases(paths: List[Any]) -> List[Any]:
+    """Enhance execution paths with Z3-generated test case information"""
+    if not Z3_AVAILABLE:
+        # Just return paths with a note that Z3 is not available
+        for path in paths:
+            if not hasattr(path, 'z3_error'):
+                path.z3_error = "Z3 solver not available. Install with: pip install z3-solver"
+        return paths
+
+    enhanced_paths = []
+
+    for path in paths:
+        # Create enhanced path data
+        enhanced_path = type(path)(getattr(path, 'path_id', 'unknown'))
+
+        # Copy basic attributes
+        if hasattr(path, 'conditions'):
+            enhanced_path.conditions = path.conditions.copy()
+        if hasattr(path, 'statements'):
+            enhanced_path.statements = path.statements.copy()
+        if hasattr(path, 'return_value'):
+            enhanced_path.return_value = path.return_value
+        if hasattr(path, 'variables'):
+            enhanced_path.variables = path.variables.copy()
+        if hasattr(path, 'loop_iterations'):
+            enhanced_path.loop_iterations = path.loop_iterations.copy()
+
+        conditions = getattr(path, 'conditions', [])
+
+        if not conditions:
+            # No conditions, mark as satisfiable with empty test inputs
+            enhanced_path.satisfiable = True
+            enhanced_path.test_inputs = {}
+            enhanced_path.expected_outputs = extract_outputs_from_path(path)
+        else:
+            # Create Z3 solver
+            from z3 import Solver, sat
+            solver = Solver()
+            var_map = {}
+
+            # Convert conditions to Z3 constraints
+            for condition in conditions:
+                try:
+                    z3_constraint = condition_to_z3(condition, var_map, solver)
+                    if z3_constraint is not None:
+                        solver.add(z3_constraint)
+                except Exception as e:
+                    # Mark conversion error
+                    if not hasattr(enhanced_path, 'z3_errors'):
+                        enhanced_path.z3_errors = []
+                    enhanced_path.z3_errors.append(f"Condition '{condition}': {e}")
+
+            # Check satisfiability
+            if solver.check() == sat:
+                enhanced_path.satisfiable = True
+                model = solver.model()
+                test_inputs = {}
+
+                # Extract concrete values from the model
+                for var_name, z3_var in var_map.items():
+                    if model[z3_var] is not None:
+                        value = model[z3_var]
+                        # Convert Z3 value to Python value
+                        if z3.is_int_value(value):
+                            test_inputs[var_name] = value.as_long()
+                        elif z3.is_real_value(value):
+                            test_inputs[var_name] = float(value.as_fraction())
+                        elif z3.is_bool(value):
+                            test_inputs[var_name] = z3.is_true(value)
+                        else:
+                            test_inputs[var_name] = str(value)
+
+                enhanced_path.test_inputs = test_inputs
+                enhanced_path.expected_outputs = extract_outputs_from_path(path)
+            else:
+                enhanced_path.satisfiable = False
+                enhanced_path.test_inputs = None
+                enhanced_path.expected_outputs = None
+
+        enhanced_paths.append(enhanced_path)
+
+    return enhanced_paths
+
+
+def extract_outputs_from_path(path: Any) -> Dict[str, Any]:
+    """Extract expected outputs from a path"""
+    outputs = {}
+
+    return_value = getattr(path, 'return_value', None)
+    if return_value:
+        outputs['return_value'] = str(return_value)
+
+    statements = getattr(path, 'statements', [])
+    print_outputs = [stmt for stmt in statements if 'print(' in stmt]
+    if print_outputs:
+        outputs['print_statements'] = print_outputs
+
+    variables = getattr(path, 'variables', {})
+    if variables:
+        outputs['final_variables'] = {k: str(v) for k, v in variables.items()}
+
+    loop_iterations = getattr(path, 'loop_iterations', {})
+    if loop_iterations:
+        outputs['loop_iterations'] = loop_iterations
+
+    return outputs
+
+
+def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
+    """Convert a path condition to Z3 constraint"""
+    if not Z3_AVAILABLE:
+        return None
+
+    import z3
+    expr = condition.expression.strip()
+
+    # Handle expressions in format "> ('name', 'x') 0" or similar
+    if expr.startswith((">", "<", ">=", "<=", "==", "!=")):
+        # Split by first space to get operator and operands
+        parts = expr.split(" ", 1)
+        if len(parts) == 2:
+            op = parts[0]
+            operands_str = parts[1]
+
+            # Try to parse operands
+            try:
+                import ast
+                operands = ast.literal_eval(f"[{operands_str}]")
+                if len(operands) == 2:
+                    left_operand = operands[0]
+                    right_operand = operands[1]
+
+                    # Convert operands to Z3
+                    left_z3 = operand_to_z3(left_operand, var_map)
+                    right_z3 = operand_to_z3(right_operand, var_map)
+
+                    if left_z3 is not None and right_z3 is not None:
+                        # Create Z3 constraint
+                        if op == '==':
+                            constraint = left_z3 == right_z3
+                        elif op == '!=':
+                            constraint = left_z3 != right_z3
+                        elif op == '<':
+                            constraint = left_z3 < right_z3
+                        elif op == '<=':
+                            constraint = left_z3 <= right_z3
+                        elif op == '>':
+                            constraint = left_z3 > right_z3
+                        elif op == '>=':
+                            constraint = left_z3 >= right_z3
+
+                        return constraint if condition.is_true else z3.Not(constraint)
+            except:
+                pass
+
+    # Try to parse the expression as a tuple (symbolic expression)
+    try:
+        if expr.startswith("(") and expr.endswith(")"):
+            # Try to evaluate as Python literal to get the tuple structure
+            import ast
+            parsed_expr = ast.literal_eval(expr)
+            z3_constraint = tuple_expr_to_z3(parsed_expr, var_map, solver)
+            if z3_constraint is not None:
+                return z3_constraint if condition.is_true else z3.Not(z3_constraint)
+    except (ValueError, SyntaxError):
+        pass
+
+    # Handle Z3-like expressions (And, Or, etc.)
+    if any(z3_op in expr for z3_op in ['And(', 'Or(', 'Not(']):
+        try:
+            z3_constraint = parse_z3_expression(expr, var_map, solver)
+            if z3_constraint is not None:
+                return z3_constraint if condition.is_true else z3.Not(z3_constraint)
+        except Exception:
+            pass
+
+    # Handle basic comparison operations
+    for op in ['>=', '<=', '==', '!=', '>', '<']:
+        if op in expr:
+            left, right = expr.split(op, 1)
+            left = left.strip()
+            right = right.strip()
+
+            # Get or create Z3 variables
+            left_z3 = expr_to_z3(left, var_map, solver)
+            right_z3 = expr_to_z3(right, var_map, solver)
+
+            if left_z3 is None or right_z3 is None:
+                return None
+
+            # Create Z3 constraint
+            if op == '==':
+                constraint = left_z3 == right_z3
+            elif op == '!=':
+                constraint = left_z3 != right_z3
+            elif op == '<':
+                constraint = left_z3 < right_z3
+            elif op == '<=':
+                constraint = left_z3 <= right_z3
+            elif op == '>':
+                constraint = left_z3 > right_z3
+            elif op == '>=':
+                constraint = left_z3 >= right_z3
+
+            return constraint if condition.is_true else z3.Not(constraint)
+
+    return None
+
+
+def operand_to_z3(operand: Any, var_map: Dict[str, Any]) -> Any:
+    """Convert an operand (which could be ('name', 'x') or a constant) to Z3"""
+    if not Z3_AVAILABLE:
+        return None
+
+    import z3
+
+    # Handle tuple format like ('name', 'x')
+    if isinstance(operand, tuple) and len(operand) == 2:
+        if operand[0] == 'name':
+            var_name = operand[1]
+            if var_name not in var_map:
+                var_map[var_name] = z3.Int(var_name)
+            return var_map[var_name]
+        elif operand[0] == 'const':
+            return z3.IntVal(operand[1])
+
+    # Handle direct values
+    if isinstance(operand, int):
+        return z3.IntVal(operand)
+    elif isinstance(operand, float):
+        return z3.RealVal(operand)
+    elif isinstance(operand, str) and operand.isidentifier():
+        if operand not in var_map:
+            var_map[operand] = z3.Int(operand)
+        return var_map[operand]
+
+    return None
+
+
+def expr_to_z3(expr, var_map: Dict[str, Any], solver) -> Any:
+    """Convert an expression to Z3 variable or constant"""
+    if not Z3_AVAILABLE:
+        return None
+
+    import z3
+
+    # Remove whitespace
+    expr = str(expr).strip()
+
+    # Try to parse as integer
+    try:
+        return z3.IntVal(int(expr))
+    except ValueError:
+        pass
+
+    # Try to parse as float
+    try:
+        return z3.RealVal(float(expr))
+    except ValueError:
+        pass
+
+    # Check if it's a variable name
+    if expr.isidentifier():
+        if expr not in var_map:
+            var_map[expr] = z3.Int(expr)
+        return var_map[expr]
+
+    return None
+
+
+def tuple_expr_to_z3(expr, var_map: Dict[str, Any], solver) -> Any:
+    """Convert tuple expression to Z3 constraint"""
+    if not Z3_AVAILABLE:
+        return None
+
+    import z3
+
+    if not isinstance(expr, tuple) or len(expr) < 2:
+        return None
+
+    op = expr[0]
+
+    if op in ['>', '<', '>=', '<=', '==', '!=']:
+        if len(expr) != 3:
+            return None
+
+        left_z3 = expr_to_z3(expr[1], var_map, solver)
+        right_z3 = expr_to_z3(expr[2], var_map, solver)
+
+        if left_z3 is None or right_z3 is None:
+            return None
+
+        if op == '>':
+            return left_z3 > right_z3
+        elif op == '<':
+            return left_z3 < right_z3
+        elif op == '>=':
+            return left_z3 >= right_z3
+        elif op == '<=':
+            return left_z3 <= right_z3
+        elif op == '==':
+            return left_z3 == right_z3
+        elif op == '!=':
+            return left_z3 != right_z3
+
+    return None
+
+
+def parse_z3_expression(expr: str, var_map: Dict[str, Any], solver) -> Any:
+    """Parse Z3-like expressions such as 'And(0 < x, 10 > y)'"""
+    if not Z3_AVAILABLE:
+        return None
+
+    import z3
+
+    # Handle And expressions
+    and_match = re.match(r'And\((.+)\)$', expr)
+    if and_match:
+        args_str = and_match.group(1)
+        args = split_condition_args(args_str)
+        constraints = []
+        for arg in args:
+            constraint = parse_simple_condition(arg.strip(), var_map)
+            if constraint is not None:
+                constraints.append(constraint)
+        if constraints:
+            return z3.And(*constraints) if len(constraints) > 1 else constraints[0]
+
+    # Handle Or expressions
+    or_match = re.match(r'Or\((.+)\)$', expr)
+    if or_match:
+        args_str = or_match.group(1)
+        args = split_condition_args(args_str)
+        constraints = []
+        for arg in args:
+            constraint = parse_simple_condition(arg.strip(), var_map)
+            if constraint is not None:
+                constraints.append(constraint)
+        if constraints:
+            return z3.Or(*constraints) if len(constraints) > 1 else constraints[0]
+
+    # For other cases, try to parse as simple condition
+    return parse_simple_condition(expr, var_map)
+
+
+def split_condition_args(args_str: str) -> List[str]:
+    """Split condition arguments, handling nested parentheses"""
+    args = []
+    current_arg = ""
+    paren_count = 0
+
+    for char in args_str:
+        if char == ',' and paren_count == 0:
+            args.append(current_arg.strip())
+            current_arg = ""
+        else:
+            if char == '(':
+                paren_count += 1
+            elif char == ')':
+                paren_count -= 1
+            current_arg += char
+
+    # Add the last argument
+    if current_arg.strip():
+        args.append(current_arg.strip())
+
+    return args
+
+
+def parse_simple_condition(expr: str, var_map: Dict[str, Any]) -> Any:
+    """Parse a simple condition like '0 < x' or 'x > 10'"""
+    if not Z3_AVAILABLE:
+        return None
+
+    import z3
+
+    # Handle basic comparison operations
+    for op in ['>=', '<=', '==', '!=', '>', '<']:
+        if op in expr:
+            left, right = expr.split(op, 1)
+            left = left.strip()
+            right = right.strip()
+
+            # Get or create Z3 variables/constants
+            left_z3 = expr_to_z3(left, var_map, None)
+            right_z3 = expr_to_z3(right, var_map, None)
+
+            if left_z3 is None or right_z3 is None:
+                return None
+
+            # Create Z3 constraint
+            if op == '==':
+                return left_z3 == right_z3
+            elif op == '!=':
+                return left_z3 != right_z3
+            elif op == '<':
+                return left_z3 < right_z3
+            elif op == '<=':
+                return left_z3 <= right_z3
+            elif op == '>':
+                return left_z3 > right_z3
+            elif op == '>=':
+                return left_z3 >= right_z3
+
+    return None
+
+
+def renumber_paths_sequentially(paths: List[Any]) -> List[Any]:
+    """Renumber paths sequentially starting from 1"""
+    for i, path in enumerate(paths, 1):
+        if hasattr(path, 'path_id'):
+            path.path_id = f"path_{i}"
+    return paths

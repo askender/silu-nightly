@@ -34,6 +34,11 @@ from .symbolic.condition_utils import (
     group_conditions_by_variable, merge_conditions_for_variable,
     simplify_conditions_list
 )
+from .symbolic.report_utils import (
+    generate_comprehensive_report, generate_fast_comprehensive_report,
+    enhance_paths_with_z3_test_cases, extract_outputs_from_path,
+    renumber_paths_sequentially
+)
 
 # Removed ir_to_source dependency - implemented simplified versions internally
 
@@ -509,7 +514,7 @@ class SymbolicExecutor:
 
         # Filter out empty paths and renumber
         self.paths = [p for p in self.paths if p.statements or p.conditions or p.variables]
-        return self.renumber_paths_sequentially(self.paths)
+        return renumber_paths_sequentially(self.paths)
 
     def analyze_function(self, func_name: str, param_names: List[str], ir_program: Tuple) -> List[ExecutionPath]:
         """Analyze a specific function with symbolic parameters"""
@@ -531,7 +536,7 @@ class SymbolicExecutor:
         if self.current_path and self.current_path not in self.paths:
             self.paths.append(self.current_path)
 
-        return self.renumber_paths_sequentially(self.paths)
+        return renumber_paths_sequentially(self.paths)
 
     def analyze_function_definition(self, func_name: str, params: List[str], body_ir: Any) -> List[ExecutionPath]:
         """Analyze all paths within a function definition"""
@@ -1341,102 +1346,23 @@ class SymbolicExecutor:
 
     def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
         """Generate a comprehensive report of symbolic execution results with enhanced analysis"""
-        if self.performance_mode:
-            return self._generate_fast_report(paths)
+        # Use enhanced report generation from report_utils
+        report = generate_comprehensive_report(
+            paths=paths,
+            performance_mode=self.performance_mode,
+            global_env_functions=self.global_env.functions,
+            function_analyses=getattr(self, 'function_analyses', None)
+        )
 
-        satisfiable_paths = [p for p in paths if p.is_satisfiable()]
-
-        # Enhanced loop analysis
-        loop_info = {}
-        for path in paths:
-            for loop_id, iteration in path.loop_iterations.items():
-                if loop_id not in loop_info:
-                    loop_info[loop_id] = {'max_iteration': 0, 'paths': 0}
-                loop_info[loop_id]['max_iteration'] = max(loop_info[loop_id]['max_iteration'], iteration)
-                loop_info[loop_id]['paths'] += 1
-
-        # Enhanced constraint analysis
-        constraint_analysis = {
-            'total_constraints': sum(len(p.conditions) for p in paths),
-            'z3_constraints': sum(1 for p in paths for c in p.conditions if c.z3_constraint is not None),
-            'symbolic_variables': len(self.current_env.z3_variables) if hasattr(self.current_env, 'z3_variables') else 0,
-            'satisfiable_constraint_ratio': len(satisfiable_paths) / len(paths) if paths else 0
-        }
-
-        # Path complexity metrics
-        path_metrics = {
-            'average_path_length': sum(len(p.statements) for p in paths) / len(paths) if paths else 0,
-            'average_conditions_per_path': sum(len(p.conditions) for p in paths) / len(paths) if paths else 0,
-            'paths_with_loops': sum(1 for p in paths if p.loop_iterations),
-            'paths_with_returns': sum(1 for p in paths if p.return_value is not None)
-        }
-
-        report = {
-            'total_paths': len(paths),
-            'satisfiable_paths': len(satisfiable_paths),
-            'paths': [path.to_dict() for path in paths],
-            'summary': {
-                'functions_analyzed': len(self.global_env.functions),
-                'max_path_length': max((len(p.statements) for p in paths), default=0),
-                'max_conditions': max((len(p.conditions) for p in paths), default=0),
-                'z3_available': Z3_AVAILABLE,
-                'loop_analysis': loop_info,
-                'constraint_analysis': constraint_analysis,
-                'path_metrics': path_metrics,
-                'enhanced_features': {
-                    'z3_constraint_generation': Z3_AVAILABLE,
-                    'range_loop_precision': True,
-                    'enhanced_ast_conversion': True,
-                    'path_satisfiability_checking': Z3_AVAILABLE
-                }
-            }
-        }
-
-        # Add function analysis details if available
-        if hasattr(self, 'function_analyses') and self.function_analyses:
-            report['function_analyses'] = {}
-            for func_name, func_paths in self.function_analyses.items():
-                report['function_analyses'][func_name] = {
-                    'total_paths': len(func_paths),
-                    'satisfiable_paths': len([p for p in func_paths if p.is_satisfiable()]),
-                    'paths': [path.to_dict() for path in func_paths]
-                }
+        # Update symbolic variables count if available
+        if hasattr(self.current_env, 'z3_variables'):
+            report['summary']['constraint_analysis']['symbolic_variables'] = len(self.current_env.z3_variables)
 
         return report
 
-    def _generate_fast_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
-        """Generate simplified report for performance mode"""
-        satisfiable_paths = [p for p in paths if p.is_satisfiable()]
+    # Removed _generate_fast_report - now using report_utils.generate_fast_comprehensive_report
 
-        report = {
-            'total_paths': len(paths),
-            'satisfiable_paths': len(satisfiable_paths),
-            'paths': [path.to_dict() for path in paths],
-            'summary': {
-                'functions_analyzed': len(self.global_env.functions),
-                'max_path_length': max((len(p.statements) for p in paths), default=0),
-                'max_conditions': max((len(p.conditions) for p in paths), default=0),
-                'performance_mode': True
-            }
-        }
-
-        # Add function analysis if available
-        if self.function_analyses:
-            report['function_analyses'] = {}
-            for func_name, func_paths in self.function_analyses.items():
-                report['function_analyses'][func_name] = {
-                    'total_paths': len(func_paths),
-                    'satisfiable_paths': len([p for p in func_paths if p.is_satisfiable()]),
-                    'paths': [path.to_dict() for path in func_paths]
-                }
-
-        return report
-
-    def renumber_paths_sequentially(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
-        """Renumber paths sequentially starting from 1"""
-        for i, path in enumerate(paths, 1):
-            path.path_id = f"path_{i}"
-        return paths
+    # Removed renumber_paths_sequentially - now using report_utils.renumber_paths_sequentially
 
     def simplify_path_conditions(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
         """Simplify and merge path conditions where possible"""
@@ -1545,84 +1471,8 @@ class SymbolicExecutor:
 
     def enhance_paths_with_test_cases(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
         """Enhance execution paths with Z3-generated test case information"""
-        if not Z3_AVAILABLE:
-            # Just return paths with a note that Z3 is not available
-            for path in paths:
-                if not hasattr(path, 'z3_error'):
-                    path.z3_error = "Z3 solver not available. Install with: pip install z3-solver"
-            return paths
-
-        enhanced_paths = []
-
-        for path in paths:
-            # Create a copy of the path
-            enhanced_path = ExecutionPath(path.path_id)
-            enhanced_path.conditions = path.conditions.copy()
-            enhanced_path.statements = path.statements.copy()
-            enhanced_path.return_value = path.return_value
-            enhanced_path.variables = path.variables.copy()
-            enhanced_path.loop_iterations = getattr(path, 'loop_iterations', {}).copy()
-
-            if not path.conditions:
-                # No conditions, mark as satisfiable with empty test inputs
-                enhanced_path.satisfiable = True
-                enhanced_path.test_inputs = {}
-                enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
-            else:
-                # Create Z3 solver
-                if Z3_AVAILABLE:
-                    from z3 import Solver, sat
-                    solver = Solver()
-                    var_map = {}
-
-                    # Convert conditions to Z3 constraints
-                    for condition in path.conditions:
-                        try:
-                            z3_constraint = self._condition_to_z3(condition, var_map, solver)
-                            if z3_constraint is not None:
-                                solver.add(z3_constraint)
-                        except Exception as e:
-                            # Mark conversion error
-                            if not hasattr(enhanced_path, 'z3_errors'):
-                                enhanced_path.z3_errors = []
-                            enhanced_path.z3_errors.append(f"Condition '{condition}': {e}")
-
-                    # Check satisfiability
-                    if solver.check() == sat:
-                        enhanced_path.satisfiable = True
-                        model = solver.model()
-                        test_inputs = {}
-
-                        # Extract concrete values from the model
-                        for var_name, z3_var in var_map.items():
-                            if model[z3_var] is not None:
-                                value = model[z3_var]
-                                # Convert Z3 value to Python value
-                                if Z3_AVAILABLE:
-                                    import z3
-                                    if z3.is_int_value(value):
-                                        test_inputs[var_name] = value.as_long()
-                                    elif z3.is_real_value(value):
-                                        test_inputs[var_name] = float(value.as_fraction())
-                                    elif z3.is_bool(value):
-                                        test_inputs[var_name] = z3.is_true(value)
-                                    else:
-                                        test_inputs[var_name] = str(value)
-
-                        enhanced_path.test_inputs = test_inputs
-                        enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
-                    else:
-                        enhanced_path.satisfiable = False
-                        enhanced_path.test_inputs = None
-                        enhanced_path.expected_outputs = None
-                else:
-                    enhanced_path.satisfiable = True
-                    enhanced_path.test_inputs = {}
-                    enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
-
-            enhanced_paths.append(enhanced_path)
-
-        return enhanced_paths
+        # Use enhanced path enhancement from report_utils
+        return enhance_paths_with_z3_test_cases(paths)
 
     def _condition_to_z3(self, condition: PathCondition, var_map: Dict[str, Any], solver) -> Any:
         """Convert a path condition to Z3 constraint"""
@@ -1928,24 +1778,7 @@ class SymbolicExecutor:
 
         return None
 
-    def _extract_outputs_from_path(self, path: ExecutionPath) -> Dict[str, Any]:
-        """Extract expected outputs from a path"""
-        outputs = {}
-
-        if path.return_value:
-            outputs['return_value'] = str(path.return_value)
-
-        print_outputs = [stmt for stmt in path.statements if 'print(' in stmt]
-        if print_outputs:
-            outputs['print_statements'] = print_outputs
-
-        if path.variables:
-            outputs['final_variables'] = {k: str(v) for k, v in path.variables.items()}
-
-        if path.loop_iterations:
-            outputs['loop_iterations'] = path.loop_iterations
-
-        return outputs
+    # Removed _extract_outputs_from_path - now using report_utils.extract_outputs_from_path
 
 
 # Utility functions

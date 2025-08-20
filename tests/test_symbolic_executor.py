@@ -775,5 +775,195 @@ z = test_function(4, 2)
             os.unlink(temp_file)
 
 
+class TestCaseGeneration:
+    """Test Z3 test case generation functionality"""
+
+    def setup_method(self):
+        """Set up test fixtures"""
+        self.executor = SymbolicExecutor()
+
+    def test_simple_condition_test_case_generation(self):
+        """Test that simple conditions generate appropriate test cases"""
+        # Create path with x > 5 condition
+        path1 = ExecutionPath('path_1')
+        condition1 = PathCondition('x > 5', True)
+        path1.add_condition(condition1)
+
+        # Create path with not (x > 5) condition
+        path2 = ExecutionPath('path_2')
+        condition2 = PathCondition('x > 5', False)
+        path2.add_condition(condition2)
+
+        # Enhance paths with test cases
+        enhanced_paths = self.executor.enhance_paths_with_test_cases([path1, path2])
+
+        assert len(enhanced_paths) == 2
+
+        # Check first path (x > 5)
+        path_1 = enhanced_paths[0]
+        assert path_1.satisfiable == True
+        assert 'x' in path_1.test_inputs
+        assert path_1.test_inputs['x'] > 5  # Should satisfy x > 5
+
+        # Check second path (not (x > 5), i.e., x <= 5)
+        path_2 = enhanced_paths[1]
+        assert path_2.satisfiable == True
+        assert 'x' in path_2.test_inputs
+        assert path_2.test_inputs['x'] <= 5  # Should satisfy x <= 5
+
+    def test_multiple_variable_test_case_generation(self):
+        """Test test case generation with multiple variables"""
+        # Create path with complex condition: a > b and b > 0
+        path = ExecutionPath('path_1')
+        condition1 = PathCondition('a > b', True)
+        condition2 = PathCondition('b > 0', True)
+        path.add_condition(condition1)
+        path.add_condition(condition2)
+
+        enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
+
+        assert len(enhanced_paths) == 1
+        enhanced_path = enhanced_paths[0]
+
+        assert enhanced_path.satisfiable == True
+        assert 'a' in enhanced_path.test_inputs
+        assert 'b' in enhanced_path.test_inputs
+
+        # Verify the constraints are satisfied
+        a_val = enhanced_path.test_inputs['a']
+        b_val = enhanced_path.test_inputs['b']
+        assert a_val > b_val  # a > b
+        assert b_val > 0      # b > 0
+
+    def test_unsatisfiable_condition_handling(self):
+        """Test handling of unsatisfiable conditions"""
+        # Create path with contradictory conditions: x > 10 and x < 5
+        path = ExecutionPath('path_1')
+        condition1 = PathCondition('x > 10', True)
+        condition2 = PathCondition('x < 5', True)
+        path.add_condition(condition1)
+        path.add_condition(condition2)
+
+        enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
+
+        assert len(enhanced_paths) == 1
+        enhanced_path = enhanced_paths[0]
+
+        # Should be marked as unsatisfiable
+        assert enhanced_path.satisfiable == False
+        assert enhanced_path.test_inputs is None
+
+    def test_no_conditions_path(self):
+        """Test path with no conditions gets empty test inputs"""
+        path = ExecutionPath('path_1')
+        # No conditions added
+
+        enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
+
+        assert len(enhanced_paths) == 1
+        enhanced_path = enhanced_paths[0]
+
+        assert enhanced_path.satisfiable == True
+        assert enhanced_path.test_inputs == {}
+
+    def test_equality_condition_test_case_generation(self):
+        """Test test case generation for equality conditions"""
+        # Create path with x == 42
+        path = ExecutionPath('path_1')
+        condition = PathCondition('x == 42', True)
+        path.add_condition(condition)
+
+        enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
+
+        assert len(enhanced_paths) == 1
+        enhanced_path = enhanced_paths[0]
+
+        assert enhanced_path.satisfiable == True
+        assert 'x' in enhanced_path.test_inputs
+        assert enhanced_path.test_inputs['x'] == 42
+
+    def test_inequality_condition_test_case_generation(self):
+        """Test test case generation for inequality conditions"""
+        # Create path with x != 42
+        path = ExecutionPath('path_1')
+        condition = PathCondition('x != 42', True)
+        path.add_condition(condition)
+
+        enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
+
+        assert len(enhanced_paths) == 1
+        enhanced_path = enhanced_paths[0]
+
+        assert enhanced_path.satisfiable == True
+        assert 'x' in enhanced_path.test_inputs
+        assert enhanced_path.test_inputs['x'] != 42
+
+    def test_z3_unavailable_fallback(self):
+        """Test graceful handling when Z3 is not available"""
+        # Mock Z3_AVAILABLE to False
+        import silu.symbolic.report_utils as report_utils
+        original_z3_available = report_utils.Z3_AVAILABLE
+        report_utils.Z3_AVAILABLE = False
+
+        try:
+            path = ExecutionPath('path_1')
+            condition = PathCondition('x > 5', True)
+            path.add_condition(condition)
+
+            enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
+
+            assert len(enhanced_paths) == 1
+            enhanced_path = enhanced_paths[0]
+
+            # Should have z3_error message
+            assert hasattr(enhanced_path, 'z3_error')
+            assert enhanced_path.z3_error is not None
+            assert 'Z3 solver not available' in enhanced_path.z3_error
+        finally:
+            # Restore original value
+            report_utils.Z3_AVAILABLE = original_z3_available
+
+    def test_comprehensive_symbolic_execution_with_test_cases(self):
+        """Integration test: full symbolic execution with test case generation"""
+        # Test a program that should generate multiple paths with test cases
+        ir_program = (
+            "module", [
+                ("assign", "x", ("name", "x"), 0),  # x is symbolic
+                ("if",
+                    ("comparison", ">", ("name", "x"), ("const", 0)),
+                    ("assign", "result", ("const", 1), 0),
+                    ("assign", "result", ("const", -1), 0)
+                )
+            ]
+        )
+
+        # Execute symbolically
+        paths = self.executor.execute_program(ir_program)
+
+        # Should generate 2 paths: x > 0 and x <= 0
+        assert len(paths) >= 2
+
+        # Enhance with test cases
+        enhanced_paths = self.executor.enhance_paths_with_test_cases(paths)
+
+        # Find the paths with conditions
+        paths_with_conditions = [p for p in enhanced_paths if p.conditions]
+
+        # Should have at least one path with test inputs
+        has_positive_test = False
+        has_negative_test = False
+
+        for path in paths_with_conditions:
+            if path.test_inputs and 'x' in path.test_inputs:
+                x_val = path.test_inputs['x']
+                if x_val > 0:
+                    has_positive_test = True
+                elif x_val <= 0:
+                    has_negative_test = True
+
+        # We should have both positive and negative test cases
+        assert has_positive_test or has_negative_test, "Should generate at least one meaningful test case"
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

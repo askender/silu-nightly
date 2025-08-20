@@ -14,6 +14,7 @@ from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
 from silu.ir_interpreter import IRInterpreter, execute_ir_from_file, execute_ir_from_string
 from silu.symbolic_executor import SymbolicExecutor, execute_symbolic_from_file, execute_symbolic_from_string
+from silu.symbolic.report_utils import renumber_paths_sequentially
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 
 
@@ -168,7 +169,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         # Generate and display unified report with optional test cases
         if paths:
             # Renumber paths for cleaner output
-            renumbered_paths = executor.renumber_paths_sequentially(paths)
+            renumbered_paths = renumber_paths_sequentially(paths)
 
             # Enhance paths with test cases if solve option is enabled
             if solve:
@@ -179,7 +180,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                     for func_name, func_paths in executor.function_analyses.items():
                         if isinstance(func_paths, list) and func_paths:
                             # Renumber and enhance function paths
-                            renumbered_func_paths = executor.renumber_paths_sequentially(func_paths)
+                            renumbered_func_paths = renumber_paths_sequentially(func_paths)
                             enhanced_func_paths = executor.enhance_paths_with_test_cases(renumbered_func_paths)
                             executor.function_analyses[func_name] = enhanced_func_paths
 
