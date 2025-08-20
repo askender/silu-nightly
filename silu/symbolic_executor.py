@@ -57,6 +57,9 @@ from .symbolic.report_utils import (
 # Import Z3 for enhanced symbolic execution
 if Z3_AVAILABLE:
     from z3 import Int, IntVal, BoolVal, simplify, And, Not, Or, If, ArrayRef
+else:
+    # Create dummy classes for type checking when Z3 is not available
+    Int = IntVal = BoolVal = simplify = And = Not = Or = If = ArrayRef = None
 
 
 @dataclass
@@ -174,23 +177,32 @@ class SymbolicEnvironment:
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR"""
 
+    # Configuration constants
+    DEFAULT_MAX_PATHS = 100
+    DEFAULT_MAX_LOOP_ITERATIONS = 5
+    PERFORMANCE_MAX_PATHS = 50
+    PERFORMANCE_MAX_LOOP_ITERATIONS = 3
+    DEFAULT_PATH_PREFIX = "path_"
+
     def __init__(self, include_function_paths=False, performance_mode=False):
         self.global_env = SymbolicEnvironment()
         self.current_env = self.global_env
         self.paths: List[ExecutionPath] = []
         self.current_path: Optional[ExecutionPath] = None
         self.path_counter = 0
-        self.max_paths = 100
-        self.max_loop_iterations = 5
+
+        # Configure limits based on mode
+        if performance_mode:
+            self.max_paths = self.PERFORMANCE_MAX_PATHS
+            self.max_loop_iterations = self.PERFORMANCE_MAX_LOOP_ITERATIONS
+        else:
+            self.max_paths = self.DEFAULT_MAX_PATHS
+            self.max_loop_iterations = self.DEFAULT_MAX_LOOP_ITERATIONS
+
         self.loop_analyzer = LoopAnalyzer(max_iterations=self.max_loop_iterations)
         self.function_analyses: Dict[str, List[ExecutionPath]] = {}
         self.include_function_paths = include_function_paths
         self.performance_mode = performance_mode
-
-        # Performance optimizations
-        if performance_mode:
-            self.max_loop_iterations = 3
-            self.max_paths = 50
 
         # Initialize built-in functions
         builtins = {
@@ -296,7 +308,7 @@ class SymbolicExecutor:
         # Prepare Z3 variable dictionary from current environment
         if hasattr(self.current_env, "variables"):
             for name, sym_val in self.current_env.variables.items():
-                if Z3_AVAILABLE and sym_val.type == SymbolicValueType.SYMBOLIC:
+                if Z3_AVAILABLE and Int is not None and sym_val.type == SymbolicValueType.SYMBOLIC:
                     var_dict[name] = Int(name)
 
         if iterable_type == "range":
@@ -325,7 +337,7 @@ class SymbolicExecutor:
                             break
 
                 # Create iteration path
-                iter_path = ExecutionPath(f"path_{self.path_counter}")
+                iter_path = ExecutionPath(f"{self.DEFAULT_PATH_PREFIX}{self.path_counter}")
                 self.path_counter += 1
                 if original_path:
                     iter_path.conditions = original_path.conditions.copy()
@@ -605,114 +617,115 @@ class SymbolicExecutor:
 
         condition = self._execute_ir(condition_ir)
         readable_condition = self._make_condition_readable(condition)
-        condition_str = readable_condition
 
-        # For concrete conditions, take the appropriate branch directly
+        # Handle concrete conditions directly
         if condition.type == SymbolicValueType.CONCRETE:
-            if self.current_path:
-                self.current_path.add_statement(f"if {readable_condition}:")
+            return self._execute_concrete_if(condition, readable_condition, then_block, else_block)
 
-            if condition.value:
-                if then_block:
-                    self._execute_ir(then_block)
-            else:
-                if else_block:
-                    self._execute_ir(else_block)
-            return create_concrete_value(None)
-
+        # Check path limits
         if len(self.paths) >= self.max_paths:
             if self.current_path:
                 self.current_path.add_statement(
-                    f"Path limit reached at if condition: {condition_str}"
+                    f"Path limit reached at if condition: {readable_condition}"
                 )
             return create_concrete_value(None)
 
-        # Store current state
+        # Execute symbolic if with path splitting
+        return self._execute_symbolic_if(condition, readable_condition, then_block, else_block)
+
+    def _execute_concrete_if(self, condition, readable_condition, then_block, else_block):
+        """Execute if statement with concrete condition"""
+        if self.current_path:
+            self.current_path.add_statement(f"if {readable_condition}:")
+
+        if condition.value:
+            if then_block:
+                self._execute_ir(then_block)
+        else:
+            if else_block:
+                self._execute_ir(else_block)
+        return create_concrete_value(None)
+
+    def _execute_symbolic_if(self, condition, readable_condition, then_block, else_block):
+        """Execute if statement with symbolic condition by splitting paths"""
         original_path = self.current_path
         original_env = self.current_env.copy()
 
-        # Generate Z3 constraint for condition
-        z3_constraint = None
+        # Generate Z3 constraint
+        z3_constraint = self._generate_z3_constraint(condition)
+
+        # Execute true path
+        true_path_result = self._execute_if_branch(
+            original_path, original_env, readable_condition, True,
+            then_block, z3_constraint, "if"
+        )
+
+        # Execute false path
+        false_path_result = self._execute_if_branch(
+            original_path, original_env, readable_condition, False,
+            else_block, z3_constraint, "else"
+        )
+
+        # Continue with first satisfiable path
+        self._select_continuation_path([true_path_result, false_path_result])
+        return create_concrete_value(None)
+
+    def _generate_z3_constraint(self, condition):
+        """Generate Z3 constraint from condition"""
         if Z3_AVAILABLE and hasattr(condition, "value"):
             try:
-                z3_constraint = to_z3_expr(
-                    condition.value, self.current_env.z3_variables
-                )
+                return to_z3_expr(condition.value, self.current_env.z3_variables)
             except Exception:
                 pass
+        return None
 
-        # True path
-        true_path = ExecutionPath(f"path_{self.path_counter}")
+    def _execute_if_branch(self, original_path, original_env, readable_condition,
+                          is_true_branch, block, z3_constraint, branch_name):
+        """Execute a single branch of an if statement"""
+        # Create new path
+        branch_path = ExecutionPath(f"{self.DEFAULT_PATH_PREFIX}{self.path_counter}")
         self.path_counter += 1
+
         if original_path:
-            true_path.conditions = original_path.conditions.copy()
-            true_path.statements = original_path.statements.copy()
-            true_path.variables = original_path.variables.copy()
-            true_path.loop_iterations = original_path.loop_iterations.copy()
+            branch_path.conditions = original_path.conditions.copy()
+            branch_path.statements = original_path.statements.copy()
+            branch_path.variables = original_path.variables.copy()
+            branch_path.loop_iterations = original_path.loop_iterations.copy()
 
-        true_condition = PathCondition(
-            readable_condition, True, z3_constraint=z3_constraint
+        # Add condition
+        condition_obj = PathCondition(
+            readable_condition, is_true_branch, z3_constraint=z3_constraint
         )
-        true_path.add_condition(true_condition)
-        true_path.add_statement(f"if {readable_condition}:")
+        branch_path.add_condition(condition_obj)
 
-        self.current_path = true_path
+        statement = f"{branch_name} {readable_condition}:" if is_true_branch else f"else (not {readable_condition}):"
+        branch_path.add_statement(statement)
+
+        # Execute block
+        self.current_path = branch_path
         self.current_env = original_env.copy()
 
-        if then_block:
+        if block:
             try:
-                self._execute_ir(then_block)
+                self._execute_ir(block)
             except Exception as e:
                 if self.current_path:
-                    self.current_path.add_statement(f"Error in then block: {e}")
+                    self.current_path.add_statement(f"Error in {branch_name} block: {e}")
 
-        # Store the true path result
-        true_path_result = self.current_path
-        if true_path_result and true_path_result.is_satisfiable():
-            if true_path_result not in self.paths:
-                self.paths.append(true_path_result)
+        # Store result if satisfiable
+        if self.current_path and self.current_path.is_satisfiable():
+            if self.current_path not in self.paths:
+                self.paths.append(self.current_path)
+            return self.current_path
+        return None
 
-        # False path
-        false_path = ExecutionPath(f"path_{self.path_counter}")
-        self.path_counter += 1
-        if original_path:
-            false_path.conditions = original_path.conditions.copy()
-            false_path.statements = original_path.statements.copy()
-            false_path.variables = original_path.variables.copy()
-            false_path.loop_iterations = original_path.loop_iterations.copy()
-
-        false_condition = PathCondition(
-            readable_condition, False, z3_constraint=z3_constraint
-        )
-        false_path.add_condition(false_condition)
-        false_path.add_statement(f"else (not {readable_condition}):")
-
-        self.current_path = false_path
-        self.current_env = original_env.copy()
-
-        if else_block:
-            try:
-                self._execute_ir(else_block)
-            except Exception as e:
-                if self.current_path:
-                    self.current_path.add_statement(f"Error in else block: {e}")
-
-        # Store the false path result
-        false_path_result = self.current_path
-        if false_path_result and false_path_result.is_satisfiable():
-            if false_path_result not in self.paths:
-                self.paths.append(false_path_result)
-
-        # Continue with first satisfiable path for subsequent statements in same block
-        satisfiable_paths = [
-            p for p in [true_path_result, false_path_result] if p and p.is_satisfiable()
-        ]
+    def _select_continuation_path(self, path_results):
+        """Select which path to continue execution with"""
+        satisfiable_paths = [p for p in path_results if p and p.is_satisfiable()]
         if satisfiable_paths:
             self.current_path = satisfiable_paths[0]
         else:
             self.current_path = None
-
-        return create_concrete_value(None)
 
     def _execute_while(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a while loop symbolically with enhanced Z3 constraint analysis"""

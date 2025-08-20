@@ -52,7 +52,7 @@ def create_symbolic_value(name: str) -> SymbolicValue:
     return SymbolicValue(SymbolicValueType.SYMBOLIC, None, name)
 
 
-def create_expression_value(expression: str) -> SymbolicValue:
+def create_expression_value(expression) -> SymbolicValue:
     """Create an expression symbolic value"""
     return SymbolicValue(SymbolicValueType.EXPRESSION, expression)
 
