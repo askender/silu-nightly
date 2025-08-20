@@ -429,5 +429,223 @@ class TestIntegration:
         assert any("print" in stmt for stmt in all_statements)
 
 
+class TestConditionSimplification:
+    """Test cases for path condition simplification"""
+
+    def setup_method(self):
+        """Setup test environment"""
+        self.executor = SymbolicExecutor()
+
+    def test_extract_variable_from_condition(self):
+        """Test variable extraction from simple conditions"""
+        # Test basic comparisons
+        assert self.executor._extract_variable_from_condition("x > 5") == "x"
+        assert self.executor._extract_variable_from_condition("y <= 10") == "y"
+        assert self.executor._extract_variable_from_condition("z >= 0") == "z"
+        assert self.executor._extract_variable_from_condition("abc < 100") == "abc"
+
+        # Test with whitespace
+        assert self.executor._extract_variable_from_condition("  x  >  5  ") == "x"
+
+        # Test complex expressions (should return None for now)
+        assert self.executor._extract_variable_from_condition("x + y > 5") is None
+        assert self.executor._extract_variable_from_condition("func(x) > 0") is None
+
+    def test_is_simple_variable_condition(self):
+        """Test identification of simple variable conditions"""
+        assert self.executor._is_simple_variable_condition("x > 5") is True
+        assert self.executor._is_simple_variable_condition("y <= 10") is True
+        assert self.executor._is_simple_variable_condition("x + y > 5") is False
+        assert self.executor._is_simple_variable_condition("complex_expr") is False
+
+    def test_group_conditions_by_variable(self):
+        """Test grouping of conditions by variable"""
+        conditions = [
+            PathCondition("x > 5", True),
+            PathCondition("x > 10", False),
+            PathCondition("y < 0", True),
+            PathCondition("x <= 3", True),
+            PathCondition("z >= 1", True),
+        ]
+
+        groups = self.executor._group_conditions_by_variable(conditions)
+
+        assert "x" in groups
+        assert "y" in groups
+        assert "z" in groups
+        assert len(groups["x"]) == 3  # x > 5, not (x > 10), x <= 3
+        assert len(groups["y"]) == 1  # y < 0
+        assert len(groups["z"]) == 1  # z >= 1
+
+    def test_merge_negative_conditions_basic(self):
+        """Test basic merging of negative conditions"""
+        # Test case: not (x > 10) and not (x > 0) should become x <= 0
+        conditions = [
+            PathCondition("x > 10", False),  # not (x > 10)
+            PathCondition("x > 0", False),   # not (x > 0)
+        ]
+
+        merged = self.executor._merge_negative_conditions("x", conditions)
+
+        assert len(merged) == 1
+        assert merged[0].expression == "x <= 0.0"
+        assert merged[0].is_true is True
+
+    def test_merge_negative_conditions_multiple_values(self):
+        """Test merging with multiple comparison values"""
+        # Test case: not (x > 15), not (x > 10), not (x > 5) should become x <= 5
+        conditions = [
+            PathCondition("x > 15", False),
+            PathCondition("x > 10", False),
+            PathCondition("x > 5", False),
+        ]
+
+        merged = self.executor._merge_negative_conditions("x", conditions)
+
+        assert len(merged) == 1
+        assert merged[0].expression == "x <= 5.0"
+        assert merged[0].is_true is True
+
+    def test_merge_negative_conditions_no_merge_needed(self):
+        """Test that single conditions are not unnecessarily changed"""
+        conditions = [
+            PathCondition("x > 5", False),
+        ]
+
+        merged = self.executor._merge_negative_conditions("x", conditions)
+
+        assert len(merged) == 1
+        assert merged == conditions  # Should return original
+
+    def test_merge_negative_conditions_non_numeric(self):
+        """Test handling of non-numeric comparison values"""
+        conditions = [
+            PathCondition("x > variable_y", False),
+            PathCondition("x > 10", False),
+        ]
+
+        # Should return original conditions when non-numeric values are present
+        merged = self.executor._merge_negative_conditions("x", conditions)
+        assert merged == conditions
+
+    def test_simplify_path_conditions_single_path(self):
+        """Test simplification of a single execution path"""
+        # Create a path with conditions that can be simplified
+        path = ExecutionPath("test_path")
+        path.conditions = [
+            PathCondition("x > 10", False),  # not (x > 10)
+            PathCondition("x > 0", False),   # not (x > 0)
+            PathCondition("y > 5", True),    # y > 5
+        ]
+        path.statements = ["statement1", "statement2"]
+        path.variables = {"x": "symbol_x", "y": "symbol_y"}
+
+        simplified_paths = self.executor.simplify_path_conditions([path])
+
+        assert len(simplified_paths) == 1
+        simplified = simplified_paths[0]
+
+        # Should have fewer conditions after simplification
+        condition_strings = [str(c) for c in simplified.conditions]
+
+        # Should contain the simplified x condition
+        assert any("x <= 0.0" in cond for cond in condition_strings)
+
+        # Should still contain the y condition (can't be simplified)
+        assert any("y > 5" in cond for cond in condition_strings)
+
+        # Should preserve other path properties
+        assert simplified.statements == path.statements
+        assert simplified.variables == path.variables
+
+    def test_simplify_path_conditions_multiple_paths(self):
+        """Test simplification of multiple execution paths"""
+        # Create multiple paths with different condition patterns
+        path1 = ExecutionPath("path1")
+        path1.conditions = [
+            PathCondition("x > 10", False),
+            PathCondition("x > 0", False),
+        ]
+
+        path2 = ExecutionPath("path2")
+        path2.conditions = [
+            PathCondition("y > 5", True),
+        ]
+
+        path3 = ExecutionPath("path3")
+        path3.conditions = [
+            PathCondition("z > 20", False),
+            PathCondition("z > 15", False),
+            PathCondition("z > 10", False),
+        ]
+
+        simplified_paths = self.executor.simplify_path_conditions([path1, path2, path3])
+
+        assert len(simplified_paths) == 3
+
+        # Check path1 simplification (should have x <= 0.0)
+        path1_conditions = [str(c) for c in simplified_paths[0].conditions]
+        assert any("x <= 0.0" in cond for cond in path1_conditions)
+
+        # Check path2 (should remain unchanged)
+        path2_conditions = [str(c) for c in simplified_paths[1].conditions]
+        assert len(path2_conditions) == 1
+        assert "(y > 5)" in path2_conditions[0]
+
+        # Check path3 simplification (should have z <= 10.0)
+        path3_conditions = [str(c) for c in simplified_paths[2].conditions]
+        assert any("z <= 10.0" in cond for cond in path3_conditions)
+
+    def test_simplify_path_conditions_empty_conditions(self):
+        """Test handling of paths with no conditions"""
+        path = ExecutionPath("empty_path")
+        path.conditions = []
+        path.statements = ["some_statement"]
+
+        simplified_paths = self.executor.simplify_path_conditions([path])
+
+        assert len(simplified_paths) == 1
+        assert len(simplified_paths[0].conditions) == 0
+        assert simplified_paths[0].statements == path.statements
+
+    def test_simplify_path_conditions_complex_expressions(self):
+        """Test that complex expressions are preserved during simplification"""
+        path = ExecutionPath("complex_path")
+        path.conditions = [
+            PathCondition("x > 10", False),      # Can be simplified
+            PathCondition("x > 0", False),       # Can be simplified
+            PathCondition("func(x, y) > 0", True),  # Complex - should be preserved
+            PathCondition("x + y <= z", True),   # Complex - should be preserved
+        ]
+
+        simplified_paths = self.executor.simplify_path_conditions([path])
+        simplified = simplified_paths[0]
+
+        condition_strings = [str(c) for c in simplified.conditions]
+
+        # Should have the simplified x condition
+        assert any("x <= 0.0" in cond for cond in condition_strings)
+
+        # Should preserve complex conditions
+        assert any("func(x, y) > 0" in cond for cond in condition_strings)
+        assert any("x + y <= z" in cond for cond in condition_strings)
+
+    def test_simplify_preserves_path_id_and_metadata(self):
+        """Test that path ID and metadata are preserved during simplification"""
+        path = ExecutionPath("original_id")
+        path.conditions = [PathCondition("x > 5", False)]
+        path.statements = ["stmt1", "stmt2"]
+        path.return_value = "return_val"
+        path.variables = {"x": "sym_x", "y": "sym_y"}
+
+        simplified_paths = self.executor.simplify_path_conditions([path])
+        simplified = simplified_paths[0]
+
+        assert simplified.path_id == "original_id"
+        assert simplified.statements == ["stmt1", "stmt2"]
+        assert simplified.return_value == "return_val"
+        assert simplified.variables == {"x": "sym_x", "y": "sym_y"}
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

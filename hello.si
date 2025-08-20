@@ -1,0 +1,12 @@
+# Simple Hello World example for Silu
+print("Hello, World!")
+
+# Basic variable assignment
+name = "Silu"
+print("Welcome to " + name + "!")
+
+# Simple arithmetic
+x = 10
+y = 5
+result = x + y
+print("10 + 5 = " + str(result))

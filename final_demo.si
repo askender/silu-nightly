@@ -1,0 +1,63 @@
+# Final Demo: Silu Symbolic Execution with Z3 Solver
+# This demonstrates the --solve feature for automatic test case generation
+
+def max_finder(a, b, c):
+    """Find the maximum of three numbers"""
+    if a >= b and a >= c:
+        return a
+    elif b >= a and b >= c:
+        return b
+    else:
+        return c
+
+def grade_checker(score):
+    """Convert numeric score to letter grade"""
+    if score < 0 or score > 100:
+        return "invalid"
+    elif score >= 90:
+        return "A"
+    elif score >= 80:
+        return "B"
+    elif score >= 70:
+        return "C"
+    elif score >= 60:
+        return "D"
+    else:
+        return "F"
+
+def triangle_validator(a, b, c):
+    """Check if three sides can form a triangle"""
+    # Triangle inequality: sum of any two sides > third side
+    if a + b <= c or a + c <= b or b + c <= a:
+        return "not a triangle"
+
+    # Check for special triangles
+    if a == b and b == c:
+        return "equilateral"
+    elif a == b or b == c or a == c:
+        return "isosceles"
+    else:
+        return "scalene"
+
+def contradictory_example(x):
+    """Function with impossible conditions for testing dead code detection"""
+    if x > 10 and x < 5:
+        # This path is mathematically impossible
+        return "impossible"
+    elif x == 7 and x != 7:
+        # This is also impossible
+        return "contradiction"
+    else:
+        return "possible"
+
+# Test the functions
+result1 = max_finder(10, 20, 15)
+result2 = grade_checker(85)
+result3 = triangle_validator(3, 4, 5)
+result4 = contradictory_example(8)
+
+print("Demo Results:")
+print("Max:", result1)
+print("Grade:", result2)
+print("Triangle:", result3)
+print("Logic:", result4)
