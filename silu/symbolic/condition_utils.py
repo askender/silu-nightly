@@ -44,13 +44,19 @@ class PathCondition:
         # Simple expressions are single comparisons or variable names
         simple_patterns = [
             # Single comparison operators
-            ' > ', ' < ', ' >= ', ' <= ', ' == ', ' != ',
+            " > ",
+            " < ",
+            " >= ",
+            " <= ",
+            " == ",
+            " != ",
             # Boolean operators at top level indicate compound expressions
-            ' and ', ' or '
+            " and ",
+            " or ",
         ]
 
         # If it contains 'and' or 'or', it's compound and needs parentheses
-        if ' and ' in expr or ' or ' in expr:
+        if " and " in expr or " or " in expr:
             return False
 
         # If it contains simple comparison operators, it's a simple comparison

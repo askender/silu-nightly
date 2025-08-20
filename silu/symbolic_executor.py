@@ -19,14 +19,9 @@ from copy import deepcopy
 from .symbolic.z3_utils import (
     Z3_AVAILABLE,
     to_z3_expr,
-    simplify_range_cond,
-    is_sat,
     check_path_satisfiability,
-    enhanced_ast_to_z3,
-    z3_min_list,
-    z3_max_list,
 )
-from .symbolic.loop_utils import LoopAnalyzer, LoopBound
+from .symbolic.loop_utils import LoopAnalyzer
 from .symbolic.builtin_utils import (
     SymbolicValueType,
     SymbolicValue,
@@ -65,6 +60,7 @@ else:
 # Configuration Constants
 class Config:
     """Configuration constants for symbolic execution"""
+
     DEFAULT_MAX_PATHS = 100
     DEFAULT_MAX_LOOP_ITERATIONS = 5
     PERFORMANCE_MAX_PATHS = 50
@@ -75,6 +71,7 @@ class Config:
 
 class ExecutionPathState(Enum):
     """Enumeration of execution path states"""
+
     ACTIVE = "active"
     COMPLETED = "completed"
     ERROR = "error"
@@ -84,6 +81,7 @@ class ExecutionPathState(Enum):
 @dataclass
 class ExecutionPath:
     """Represents a single execution path through a function"""
+
     path_id: str
     conditions: List[PathCondition] = field(default_factory=list)
     statements: List[str] = field(default_factory=list)
@@ -164,7 +162,9 @@ class SymbolicEnvironment:
         self.symbol_counter = 0
         self.z3_variables: Dict[str, Any] = {}
 
-    def create_symbol(self, name: Optional[str] = None, var_type: str = "int") -> SymbolicValue:
+    def create_symbol(
+        self, name: Optional[str] = None, var_type: str = "int"
+    ) -> SymbolicValue:
         """Create a new symbolic value with optional Z3 variable"""
         if not name:
             name = f"sym_{self.symbol_counter}"
@@ -179,6 +179,7 @@ class SymbolicEnvironment:
     def _create_z3_variable(self, name: str, var_type: str) -> Any:
         """Create Z3 variable based on type"""
         from .symbolic.z3_utils import create_z3_variable
+
         return create_z3_variable(name, var_type)
 
     def get_variable(self, name: str) -> SymbolicValue:
@@ -231,7 +232,9 @@ class PathManager:
             return True
         return False
 
-    def copy_path(self, source_path: ExecutionPath, new_prefix: str = "") -> ExecutionPath:
+    def copy_path(
+        self, source_path: ExecutionPath, new_prefix: str = ""
+    ) -> ExecutionPath:
         """Create a copy of an existing path"""
         new_path = self.create_path(new_prefix or Config.DEFAULT_PATH_PREFIX)
         new_path.conditions = source_path.conditions.copy()
@@ -249,8 +252,7 @@ class PathManager:
         """Finalize and return processed paths"""
         # Filter out empty paths
         valid_paths = [
-            p for p in self.paths
-            if p.statements or p.conditions or p.variables
+            p for p in self.paths if p.statements or p.conditions or p.variables
         ]
         return renumber_paths_sequentially(valid_paths)
 
@@ -273,7 +275,9 @@ class AssignmentHandler(IRNodeHandler):
     """Handler for assignment operations"""
 
     def can_handle(self, ir_node: Tuple) -> bool:
-        return isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "assign"
+        return (
+            isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "assign"
+        )
 
     def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         try:
@@ -329,7 +333,9 @@ class ConditionalHandler(IRNodeHandler):
             executor, condition, readable_condition, then_block, else_block
         )
 
-    def _execute_concrete_if(self, executor, condition, readable_condition, then_block, else_block):
+    def _execute_concrete_if(
+        self, executor, condition, readable_condition, then_block, else_block
+    ):
         """Execute if statement with concrete condition"""
         if executor.current_path:
             executor.current_path.add_statement(f"if {readable_condition}:")
@@ -342,7 +348,9 @@ class ConditionalHandler(IRNodeHandler):
                 executor._execute_ir(else_block)
         return create_concrete_value(None)
 
-    def _execute_symbolic_if(self, executor, condition, readable_condition, then_block, else_block):
+    def _execute_symbolic_if(
+        self, executor, condition, readable_condition, then_block, else_block
+    ):
         """Execute if statement with symbolic condition by splitting paths"""
         original_path = executor.current_path
         original_env = executor.current_env.copy()
@@ -352,26 +360,51 @@ class ConditionalHandler(IRNodeHandler):
 
         # Execute true path
         true_path = self._execute_if_branch(
-            executor, original_path, original_env, readable_condition, True,
-            then_block, z3_constraint, "if"
+            executor,
+            original_path,
+            original_env,
+            readable_condition,
+            True,
+            then_block,
+            z3_constraint,
+            "if",
         )
 
         # Execute false path
         false_path = self._execute_if_branch(
-            executor, original_path, original_env, readable_condition, False,
-            else_block, z3_constraint, "else"
+            executor,
+            original_path,
+            original_env,
+            readable_condition,
+            False,
+            else_block,
+            z3_constraint,
+            "else",
         )
 
         # Continue with first satisfiable path
-        satisfiable_paths = [p for p in [true_path, false_path] if p and p.is_satisfiable()]
+        satisfiable_paths = [
+            p for p in [true_path, false_path] if p and p.is_satisfiable()
+        ]
         executor.current_path = satisfiable_paths[0] if satisfiable_paths else None
 
         return create_concrete_value(None)
 
-    def _execute_if_branch(self, executor, original_path, original_env, readable_condition,
-                          is_true_branch, block, z3_constraint, branch_name):
+    def _execute_if_branch(
+        self,
+        executor,
+        original_path,
+        original_env,
+        readable_condition,
+        is_true_branch,
+        block,
+        z3_constraint,
+        branch_name,
+    ):
         """Execute a single branch of an if statement"""
-        branch_path = executor.path_manager.copy_path(original_path or ExecutionPath("temp"))
+        branch_path = executor.path_manager.copy_path(
+            original_path or ExecutionPath("temp")
+        )
 
         # Add condition
         condition_obj = PathCondition(
@@ -379,8 +412,11 @@ class ConditionalHandler(IRNodeHandler):
         )
         branch_path.add_condition(condition_obj)
 
-        statement = (f"{branch_name} {readable_condition}:" if is_true_branch
-                    else f"else not {readable_condition}:")
+        statement = (
+            f"{branch_name} {readable_condition}:"
+            if is_true_branch
+            else f"else not {readable_condition}:"
+        )
         branch_path.add_statement(statement)
 
         # Execute block
@@ -392,7 +428,9 @@ class ConditionalHandler(IRNodeHandler):
                 executor._execute_ir(block)
             except Exception as e:
                 if executor.current_path:
-                    executor.current_path.add_statement(f"Error in {branch_name} block: {e}")
+                    executor.current_path.add_statement(
+                        f"Error in {branch_name} block: {e}"
+                    )
                     executor.current_path.state = ExecutionPathState.ERROR
 
         # Store result if satisfiable
@@ -406,7 +444,11 @@ class LoopHandler(IRNodeHandler):
     """Handler for loop operations"""
 
     def can_handle(self, ir_node: Tuple) -> bool:
-        return isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] in ["while", "for"]
+        return (
+            isinstance(ir_node, tuple)
+            and len(ir_node) > 0
+            and ir_node[0] in ["while", "for"]
+        )
 
     def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         if ir_node[0] == "while":
@@ -415,7 +457,9 @@ class LoopHandler(IRNodeHandler):
             return self._handle_for_loop(ir_node, executor)
         return create_concrete_value(None)
 
-    def _handle_while_loop(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+    def _handle_while_loop(
+        self, ir_node: Tuple, executor: "SymbolicExecutor"
+    ) -> SymbolicValue:
         """Handle while loop with enhanced constraint analysis"""
         _, condition_ir, body_ir = ir_node
         condition = executor._execute_ir(condition_ir)
@@ -427,18 +471,26 @@ class LoopHandler(IRNodeHandler):
         # For concrete false conditions, skip the loop entirely
         if condition.type == SymbolicValueType.CONCRETE and not condition.value:
             if executor.current_path:
-                executor.current_path.add_statement("# Loop not entered (condition false)")
+                executor.current_path.add_statement(
+                    "# Loop not entered (condition false)"
+                )
             return create_concrete_value(None)
 
-        return self._execute_while_iterations(executor, ir_node, condition, readable_condition, body_ir)
+        return self._execute_while_iterations(
+            executor, ir_node, condition, readable_condition, body_ir
+        )
 
-    def _execute_while_iterations(self, executor, ir_node, condition, readable_condition, body_ir):
+    def _execute_while_iterations(
+        self, executor, ir_node, condition, readable_condition, body_ir
+    ):
         """Execute while loop iterations"""
         original_path = executor.current_path
         original_env = executor.current_env.copy()
 
         # Create exit path (condition false)
-        exit_path = executor.path_manager.copy_path(original_path or ExecutionPath("temp"))
+        exit_path = executor.path_manager.copy_path(
+            original_path or ExecutionPath("temp")
+        )
         exit_condition = PathCondition(readable_condition, False)
         exit_path.add_condition(exit_condition)
         exit_path.add_statement("# Loop not entered/exited")
@@ -448,7 +500,9 @@ class LoopHandler(IRNodeHandler):
 
         # Create iteration paths
         for i in range(executor.max_loop_iterations):
-            iter_path = executor.path_manager.copy_path(original_path or ExecutionPath("temp"))
+            iter_path = executor.path_manager.copy_path(
+                original_path or ExecutionPath("temp")
+            )
 
             iter_condition = PathCondition(readable_condition, True)
             iter_path.add_condition(iter_condition)
@@ -474,7 +528,9 @@ class LoopHandler(IRNodeHandler):
         executor.current_path = None
         return create_concrete_value(None)
 
-    def _handle_for_loop(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+    def _handle_for_loop(
+        self, ir_node: Tuple, executor: "SymbolicExecutor"
+    ) -> SymbolicValue:
         """Handle for loop with enhanced range analysis"""
         if len(ir_node) < 4:
             return create_concrete_value(None)
@@ -485,11 +541,17 @@ class LoopHandler(IRNodeHandler):
             executor.current_path.add_statement(f"for {var_name} in {iter_expr}:")
 
         # Check if it's a range call
-        if (isinstance(iter_expr, tuple) and len(iter_expr) >= 3
-            and iter_expr[0] == "call" and iter_expr[1] == "range"):
+        if (
+            isinstance(iter_expr, tuple)
+            and len(iter_expr) >= 3
+            and iter_expr[0] == "call"
+            and iter_expr[1] == "range"
+        ):
             bounds = executor.loop_analyzer.extract_range_bounds(iter_expr)
             if bounds:
-                return self._execute_range_loop(executor, var_name, bounds, body_ir, ir_node)
+                return self._execute_range_loop(
+                    executor, var_name, bounds, body_ir, ir_node
+                )
 
         # Fallback to simple iteration
         return self._execute_generic_for(executor, var_name, iter_expr, body_ir)
@@ -509,12 +571,21 @@ class LoopHandler(IRNodeHandler):
             if not self._is_valid_iteration(k, start_val, stop_val, step_val):
                 break
 
-            iter_path = executor.path_manager.copy_path(original_path or ExecutionPath("temp"))
+            iter_path = executor.path_manager.copy_path(
+                original_path or ExecutionPath("temp")
+            )
 
             # Calculate iteration value
-            iter_val = start_val + k * step_val if isinstance(start_val, int) and isinstance(step_val, int) else f"{start_val} + {k} * {step_val}"
-            loop_var = (create_concrete_value(iter_val) if isinstance(iter_val, int)
-                       else create_expression_value(iter_val))
+            iter_val = (
+                start_val + k * step_val
+                if isinstance(start_val, int) and isinstance(step_val, int)
+                else f"{start_val} + {k} * {step_val}"
+            )
+            loop_var = (
+                create_concrete_value(iter_val)
+                if isinstance(iter_val, int)
+                else create_expression_value(iter_val)
+            )
             loop_var.name = var_name
 
             iter_path.variables[var_name] = loop_var
@@ -574,7 +645,9 @@ class LoopHandler(IRNodeHandler):
         executor.current_env.set_variable(var_name, loop_var)
 
         if executor.current_path:
-            executor.current_path.add_statement(f"# Generic for loop: {var_name} = {loop_var}")
+            executor.current_path.add_statement(
+                f"# Generic for loop: {var_name} = {loop_var}"
+            )
 
         self._execute_loop_body(executor, body_ir)
         return create_concrete_value(None)
@@ -583,15 +656,24 @@ class LoopHandler(IRNodeHandler):
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
 
-    def __init__(self, include_function_paths: bool = False, performance_mode: bool = False):
+    def __init__(
+        self, include_function_paths: bool = False, performance_mode: bool = False
+    ):
         self.global_env = SymbolicEnvironment()
         self.current_env = self.global_env
         self.current_path: Optional[ExecutionPath] = None
 
         # Configure limits based on mode
-        max_paths = Config.PERFORMANCE_MAX_PATHS if performance_mode else Config.DEFAULT_MAX_PATHS
-        self.max_loop_iterations = (Config.PERFORMANCE_MAX_LOOP_ITERATIONS if performance_mode
-                                   else Config.DEFAULT_MAX_LOOP_ITERATIONS)
+        max_paths = (
+            Config.PERFORMANCE_MAX_PATHS
+            if performance_mode
+            else Config.DEFAULT_MAX_PATHS
+        )
+        self.max_loop_iterations = (
+            Config.PERFORMANCE_MAX_LOOP_ITERATIONS
+            if performance_mode
+            else Config.DEFAULT_MAX_LOOP_ITERATIONS
+        )
 
         self.path_manager = PathManager(max_paths)
         self.loop_analyzer = LoopAnalyzer(max_iterations=self.max_loop_iterations)
@@ -631,7 +713,9 @@ class SymbolicExecutor:
         }
         self.global_env.functions.update(builtins)
 
-    def execute_program(self, ir_program: Tuple, include_function_paths: Optional[bool] = None) -> List[ExecutionPath]:
+    def execute_program(
+        self, ir_program: Tuple, include_function_paths: Optional[bool] = None
+    ) -> List[ExecutionPath]:
         """Execute an IR program symbolically and return all paths"""
         if not ir_program or ir_program[0] != "module":
             raise ValueError("Invalid IR program format")
@@ -653,7 +737,9 @@ class SymbolicExecutor:
 
         return self.path_manager.finalize_paths()
 
-    def analyze_function(self, func_name: str, param_names: List[str], ir_program: Tuple) -> List[ExecutionPath]:
+    def analyze_function(
+        self, func_name: str, param_names: List[str], ir_program: Tuple
+    ) -> List[ExecutionPath]:
         """Analyze a specific function with symbolic parameters"""
         self.current_path = self.path_manager.create_path()
 
@@ -713,7 +799,24 @@ class SymbolicExecutor:
 
         if op in dispatch_table:
             return dispatch_table[op](ir_node)
-        elif op in ["+", "-", "*", "/", "//", "%", "**", "==", "!=", "<", ">", "<=", ">=", "and", "or", "not"]:
+        elif op in [
+            "+",
+            "-",
+            "*",
+            "/",
+            "//",
+            "%",
+            "**",
+            "==",
+            "!=",
+            "<",
+            ">",
+            "<=",
+            ">=",
+            "and",
+            "or",
+            "not",
+        ]:
             return self._execute_binary_op(ir_node)
         elif isinstance(op, str) and op.isdigit():
             return create_concrete_value(int(op))
@@ -766,7 +869,9 @@ class SymbolicExecutor:
 
         return create_concrete_value(None)
 
-    def _analyze_function_definition(self, func_name: str, params: List[str], body_ir: Any) -> List[ExecutionPath]:
+    def _analyze_function_definition(
+        self, func_name: str, params: List[str], body_ir: Any
+    ) -> List[ExecutionPath]:
         """Analyze all paths within a function definition"""
         # Save current state
         original_path_manager = self.path_manager
@@ -818,7 +923,9 @@ class SymbolicExecutor:
         else:
             self._execute_ir(body_ir)
 
-    def _add_function_paths_to_main(self, func_name: str, params: List[str], function_paths: List[ExecutionPath]) -> None:
+    def _add_function_paths_to_main(
+        self, func_name: str, params: List[str], function_paths: List[ExecutionPath]
+    ) -> None:
         """Add function paths to main path collection"""
         for func_path in function_paths:
             func_path.path_id = f"func_{func_name}_{func_path.path_id}"
@@ -849,14 +956,18 @@ class SymbolicExecutor:
                 return_symbol = self.current_env.create_symbol(f"{func_name}_return")
                 if self.current_path:
                     args_str = ", ".join(str(arg) for arg in args)
-                    self.current_path.add_statement(f"{return_symbol} = {func_name}({args_str})")
+                    self.current_path.add_statement(
+                        f"{return_symbol} = {func_name}({args_str})"
+                    )
                 return return_symbol
         else:
             # Unknown function
             result = self.current_env.create_symbol(f"unknown_{func_name}")
             if self.current_path:
                 args_str = ", ".join(str(arg) for arg in args)
-                self.current_path.add_statement(f"{result} = {func_name}({args_str}) # unknown function")
+                self.current_path.add_statement(
+                    f"{result} = {func_name}({args_str}) # unknown function"
+                )
             return result
 
     def _execute_return(self, ir_node: Tuple) -> SymbolicValue:
@@ -877,7 +988,9 @@ class SymbolicExecutor:
         """Execute a block of statements"""
         result = create_concrete_value(None)
         if len(ir_node) > 1:
-            statements = ir_node[1] if isinstance(ir_node[1], (tuple, list)) else ir_node[1:]
+            statements = (
+                ir_node[1] if isinstance(ir_node[1], (tuple, list)) else ir_node[1:]
+            )
             for stmt in statements:
                 result = self._execute_ir(stmt)
         return result
@@ -902,17 +1015,23 @@ class SymbolicExecutor:
 
             # Always create symbolic expressions for operations involving symbolic variables
             # This prevents boolean casting errors
-            if (left.type == SymbolicValueType.SYMBOLIC or
-                right.type == SymbolicValueType.SYMBOLIC or
-                left.type == SymbolicValueType.EXPRESSION or
-                right.type == SymbolicValueType.EXPRESSION):
+            if (
+                left.type == SymbolicValueType.SYMBOLIC
+                or right.type == SymbolicValueType.SYMBOLIC
+                or left.type == SymbolicValueType.EXPRESSION
+                or right.type == SymbolicValueType.EXPRESSION
+            ):
                 expr = (op, left, right)
                 return create_expression_value(expr)
 
             # Try concrete evaluation only if both operands are concrete
-            if (left.type == SymbolicValueType.CONCRETE and
-                right.type == SymbolicValueType.CONCRETE):
-                concrete_result = self._try_concrete_operation(op, left.value, right.value)
+            if (
+                left.type == SymbolicValueType.CONCRETE
+                and right.type == SymbolicValueType.CONCRETE
+            ):
+                concrete_result = self._try_concrete_operation(
+                    op, left.value, right.value
+                )
                 if concrete_result is not None:
                     return create_concrete_value(concrete_result)
 
@@ -938,7 +1057,9 @@ class SymbolicExecutor:
                 self.current_path.state = ExecutionPathState.ERROR
             return create_concrete_value(None)
 
-    def _try_concrete_operation(self, op: str, left_val: Any, right_val: Any) -> Optional[Any]:
+    def _try_concrete_operation(
+        self, op: str, left_val: Any, right_val: Any
+    ) -> Optional[Any]:
         """Try to perform concrete operation"""
         try:
             operations = {
@@ -948,7 +1069,7 @@ class SymbolicExecutor:
                 "/": lambda a, b: a / b,
                 "//": lambda a, b: a // b,
                 "%": lambda a, b: a % b,
-                "**": lambda a, b: a ** b,
+                "**": lambda a, b: a**b,
                 "==": lambda a, b: a == b,
                 "!=": lambda a, b: a != b,
                 "<": lambda a, b: a < b,
@@ -968,35 +1089,43 @@ class SymbolicExecutor:
         """Check if operand is symbolic"""
         return operand.type == SymbolicValueType.SYMBOLIC
 
-    def _try_create_z3_expression(self, op: str, left: SymbolicValue, right: SymbolicValue) -> Optional[Any]:
+    def _try_create_z3_expression(
+        self, op: str, left: SymbolicValue, right: SymbolicValue
+    ) -> Optional[Any]:
         """Try to create Z3 expression for the operation"""
         try:
             var_dict = getattr(self.current_env, "z3_variables", {})
 
             # Get Z3 input values
-            left_z3_input = (left.name if left.type == SymbolicValueType.SYMBOLIC
-                           else (left.value if hasattr(left, "value") else left))
-            right_z3_input = (right.name if right.type == SymbolicValueType.SYMBOLIC
-                            else (right.value if hasattr(right, "value") else right))
+            left_z3_input = (
+                left.name
+                if left.type == SymbolicValueType.SYMBOLIC
+                else (left.value if hasattr(left, "value") else left)
+            )
+            right_z3_input = (
+                right.name
+                if right.type == SymbolicValueType.SYMBOLIC
+                else (right.value if hasattr(right, "value") else right)
+            )
 
             left_z3 = to_z3_expr(left_z3_input, var_dict)
             right_z3 = to_z3_expr(right_z3_input, var_dict)
 
             if left_z3 is not None and right_z3 is not None:
                 z3_operations = {
-                    "+": lambda l, r: l + r,
-                    "-": lambda l, r: l - r,
-                    "*": lambda l, r: l * r,
-                    "/": lambda l, r: l / r,
-                    "%": lambda l, r: l % r,
-                    "==": lambda l, r: l == r,
-                    "!=": lambda l, r: l != r,
-                    "<": lambda l, r: l < r,
-                    ">": lambda l, r: l > r,
-                    "<=": lambda l, r: l <= r,
-                    ">=": lambda l, r: l >= r,
-                    "and": lambda l, r: And(l, r),
-                    "or": lambda l, r: Or(l, r),
+                    "+": lambda left, right: left + right,
+                    "-": lambda left, right: left - right,
+                    "*": lambda left, right: left * right,
+                    "/": lambda left, right: left / right,
+                    "%": lambda left, right: left % right,
+                    "==": lambda left, right: left == right,
+                    "!=": lambda left, right: left != right,
+                    "<": lambda left, right: left < right,
+                    ">": lambda left, right: left > right,
+                    "<=": lambda left, right: left <= right,
+                    ">=": lambda left, right: left >= right,
+                    "and": lambda left, right: And(left, right),
+                    "or": lambda left, right: Or(left, right),
                 }
 
                 if op in z3_operations:
@@ -1119,7 +1248,9 @@ class SymbolicExecutor:
 
         return report
 
-    def simplify_path_conditions(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
+    def simplify_path_conditions(
+        self, paths: List[ExecutionPath]
+    ) -> List[ExecutionPath]:
         """Simplify and merge path conditions where possible"""
         simplified_paths = []
 
@@ -1135,7 +1266,9 @@ class SymbolicExecutor:
             simplified_conditions = []
             for var_name, conditions in grouped_conditions.items():
                 if var_name and len(conditions) > 1:
-                    merged_conditions = self._merge_conditions_for_variable(var_name, conditions)
+                    merged_conditions = self._merge_conditions_for_variable(
+                        var_name, conditions
+                    )
                     simplified_conditions.extend(merged_conditions)
                 else:
                     simplified_conditions.extend(conditions)
@@ -1161,7 +1294,9 @@ class SymbolicExecutor:
 
         return simplified_paths
 
-    def _merge_conditions_for_variable(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
+    def _merge_conditions_for_variable(
+        self, variable: str, conditions: List[PathCondition]
+    ) -> List[PathCondition]:
         """Merge conditions for a single variable"""
         if len(conditions) <= 1:
             return conditions
@@ -1176,7 +1311,9 @@ class SymbolicExecutor:
         result = positive_conditions + merged_negative
         return result if result else conditions
 
-    def _merge_negative_conditions(self, var_name: str, conditions: List[PathCondition]) -> List[PathCondition]:
+    def _merge_negative_conditions(
+        self, var_name: str, conditions: List[PathCondition]
+    ) -> List[PathCondition]:
         """Merge negative conditions for the same variable"""
         import re
 
@@ -1208,16 +1345,16 @@ class SymbolicExecutor:
 
         return other_conditions
 
-    def enhance_paths_with_test_cases(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
+    def enhance_paths_with_test_cases(
+        self, paths: List[ExecutionPath]
+    ) -> List[ExecutionPath]:
         """Enhance execution paths with Z3-generated test case information"""
         return enhance_paths_with_z3_test_cases(paths)
 
 
 # Utility functions for external access
 def execute_symbolic_from_file(
-    file_path: str,
-    include_function_paths: bool = False,
-    performance_mode: bool = False
+    file_path: str, include_function_paths: bool = False, performance_mode: bool = False
 ) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR file"""
     try:
@@ -1236,9 +1373,7 @@ def execute_symbolic_from_file(
 
 
 def execute_symbolic_from_string(
-    ir_string: str,
-    include_function_paths: bool = False,
-    performance_mode: bool = False
+    ir_string: str, include_function_paths: bool = False, performance_mode: bool = False
 ) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR string"""
     try:
