@@ -22,6 +22,17 @@ from .symbolic.z3_utils import (
 from .symbolic.loop_utils import (
     LoopAnalyzer, LoopBound
 )
+from .symbolic.builtin_utils import (
+    create_builtin_functions_dict, symbolic_print, simplify_args_display
+)
+from .symbolic.condition_utils import (
+    extract_variable_from_condition, is_simple_variable_condition,
+    group_conditions_by_variable, merge_conditions_for_variable, make_condition_readable,
+    simplify_conditions_list
+)
+from .symbolic.report_utils import (
+    generate_report, generate_fast_report, ReportFormat, extract_test_cases
+)
 
 # Import shared conversion functions
 from .ir_to_source import make_expression_readable, simplify_value_display
@@ -67,11 +78,10 @@ class PathCondition:
     source_line: Optional[int] = None
     z3_constraint: Optional[Any] = None
 
-
-
     def __str__(self) -> str:
-        prefix = "" if self.is_true else "not "
-        return f"{prefix}({self.expression})"
+        if self.is_true:
+            return self.expression
+        return f"not ({self.expression})"
 
     def negate(self) -> 'PathCondition':
         """Return the negated condition"""
@@ -223,81 +233,9 @@ class SymbolicExecutor:
         self._init_builtins()
 
     def _init_builtins(self):
-        """Initialize built-in functions"""
-        builtins = {
-            'print': self._symbolic_print,
-            'int': self._symbolic_int,
-            'float': self._symbolic_float,
-            'str': self._symbolic_str,
-            'bool': self._symbolic_bool,
-            'type': self._symbolic_type,
-            'isinstance': self._symbolic_isinstance,
-            'len': self._symbolic_len,
-        }
+        """Initialize built-in functions using utility module"""
+        builtins = create_builtin_functions_dict(self.current_path)
         self.global_env.functions.update(builtins)
-
-    def _symbolic_print(self, *args) -> SymbolicValue:
-        """Symbolic version of print function"""
-        args_str = ", ".join(str(arg) for arg in args)
-        if self.current_path:
-            self.current_path.add_statement(f"print({self._simplify_args_display(args)})")
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
-
-    def _symbolic_int(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of int conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            try:
-                return SymbolicValue(SymbolicValueType.CONCRETE, int(value.value))
-            except (ValueError, TypeError):
-                return SymbolicValue(SymbolicValueType.EXPRESSION, f"int({value})")
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"int({value})")
-
-    def _symbolic_float(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of float conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            try:
-                return SymbolicValue(SymbolicValueType.CONCRETE, float(value.value))
-            except (ValueError, TypeError):
-                return SymbolicValue(SymbolicValueType.EXPRESSION, f"float({value})")
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"float({value})")
-
-    def _symbolic_str(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of str conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            return SymbolicValue(SymbolicValueType.CONCRETE, str(value.value))
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"str({value})")
-
-    def _symbolic_bool(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of bool conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            return SymbolicValue(SymbolicValueType.CONCRETE, bool(value.value))
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"bool({value})")
-
-    def _symbolic_type(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of type function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"type({value})")
-
-    def _symbolic_isinstance(self, value: SymbolicValue, type_obj: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of isinstance function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"isinstance({value}, {type_obj})")
-
-    def _symbolic_len(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of len function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"len({value})")
-
-    def _simplify_args_display(self, args) -> str:
-        """Simplify arguments display for better readability"""
-        simplified_args = []
-        for arg in args:
-            if hasattr(arg, 'value') and arg.type == SymbolicValueType.CONCRETE:
-                simplified_args.append(str(arg.value))
-            else:
-                simplified_args.append(str(arg))
-        return ', '.join(simplified_args)
 
     def _enhanced_ast_to_z3(self, node, var_dict):
         """Enhanced AST to Z3 conversion with support for more node types"""
@@ -1331,60 +1269,12 @@ class SymbolicExecutor:
                 return condition.name or str(condition.value)
             elif condition.type == SymbolicValueType.CONCRETE:
                 return str(condition.value)
-            else:
-                return str(condition)
 
-        # Handle tuples (expressions like ('>', left, right))
-        if isinstance(condition, tuple) and len(condition) >= 3:
-            op = condition[0]
-            left = condition[1]
-            right = condition[2]
-
-            # Recursively convert operands
-            left_readable = self._make_condition_readable(left)
-            right_readable = self._make_condition_readable(right)
-
-            return f"{left_readable} {op} {right_readable}"
-
-        # Use shared conversion function for basic cases
-        try:
-            return make_expression_readable(condition)
-        except Exception:
-            pass
-
-        # Handle string representations of complex expressions
-        if isinstance(condition, str):
-            # Handle expressions like "('+', 'a', 'b') > ('+', 'c', 'd')"
-            import re
-
-            # Pattern to match expressions with operators between tuple-like structures
-            pattern = r"(\([^)]+\))\s*([><=!]+)\s*(\([^)]+\))"
-            match = re.match(pattern, condition.strip())
-
-            if match:
-                left_expr, operator, right_expr = match.groups()
-                try:
-                    left_parsed = eval(left_expr)
-                    right_parsed = eval(right_expr)
-                    left_readable = self._make_condition_readable(left_parsed)
-                    right_readable = self._make_condition_readable(right_parsed)
-                    return f"{left_readable} {operator} {right_readable}"
-                except:
-                    pass
-
-            # Handle simple tuple-like expressions
-            elif condition.startswith("(") and condition.endswith(")") and "', '" in condition:
-                try:
-                    parsed = eval(condition)
-                    if isinstance(parsed, tuple):
-                        return self._make_condition_readable(parsed)
-                except:
-                    pass
-
-        return str(condition)
+        # Use utility function for making conditions readable
+        return make_condition_readable(str(condition))
 
     def _simplify_display(self, value) -> str:
-        """Simplify value display for better readability"""
+        """Simplify value display for better readability using utility functions"""
         if hasattr(value, 'type') and hasattr(value, 'value'):
             # Check if we have original IR to preserve formatting
             if hasattr(value, 'original_ir') and value.original_ir:
@@ -1395,10 +1285,8 @@ class SymbolicExecutor:
 
             if value.type == SymbolicValueType.CONCRETE:
                 return str(value.value)
-            elif value.type == SymbolicValueType.SYMBOLIC:
-                return getattr(value, 'name', str(value.value)) or str(value.value)
-            else:  # EXPRESSION
-                return self._simplify_display(value.value)
+            else:
+                return str(value)
 
         try:
             return simplify_value_display(value)
@@ -1504,8 +1392,26 @@ class SymbolicExecutor:
             path.path_id = f"path_{i}"
         return paths
 
+    # Add methods for test compatibility
+    def _extract_variable_from_condition(self, condition_str: str) -> Optional[str]:
+        """Extract variable name from a simple condition (compatibility method)"""
+        return extract_variable_from_condition(condition_str)
+
+    def _is_simple_variable_condition(self, condition_str: str) -> bool:
+        """Check if condition is a simple variable comparison (compatibility method)"""
+        return is_simple_variable_condition(condition_str)
+
+    def _group_conditions_by_variable(self, conditions: List[PathCondition]) -> Dict[str, List[PathCondition]]:
+        """Group conditions by variable (compatibility method)"""
+        return group_conditions_by_variable(conditions)
+
+    def _merge_negative_conditions(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
+        """Merge negative conditions for a variable (compatibility method)"""
+        from .symbolic.condition_utils import merge_negative_conditions
+        return merge_negative_conditions(variable, conditions)
+
     def simplify_path_conditions(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
-        """Simplify and merge path conditions where possible"""
+        """Simplify and merge path conditions using utility functions"""
         simplified_paths = []
 
         for path in paths:
@@ -1513,23 +1419,8 @@ class SymbolicExecutor:
                 simplified_paths.append(path)
                 continue
 
-            # Group conditions by variable for potential simplification
-            grouped_conditions = self._group_conditions_by_variable(path.conditions)
-
-            # Simplify conditions for each variable group
-            simplified_conditions = []
-            for var_name, conditions in grouped_conditions.items():
-                if var_name and len(conditions) > 1:
-                    # Use the enhanced variable-level merging strategy
-                    merged_conditions = self._merge_conditions_for_variable(var_name, conditions)
-                    simplified_conditions.extend(merged_conditions)
-                else:
-                    simplified_conditions.extend(conditions)
-
-            # Add any conditions that couldn't be grouped by variable
-            for condition in path.conditions:
-                if not self._is_simple_variable_condition(condition.expression):
-                    simplified_conditions.append(condition)
+            # Use utility functions for condition processing
+            simplified_conditions = simplify_conditions_list(path.conditions)
 
             # Create new path with simplified conditions
             simplified_path = ExecutionPath(path.path_id)
@@ -1539,112 +1430,16 @@ class SymbolicExecutor:
             simplified_path.variables = path.variables
             simplified_path.loop_iterations = path.loop_iterations
             simplified_path.satisfiable = path.satisfiable
-            simplified_path.test_inputs = path.test_inputs
-            simplified_path.expected_outputs = path.expected_outputs
-            simplified_path.z3_error = path.z3_error
+            simplified_path.test_inputs = getattr(path, 'test_inputs', {})
+            simplified_path.expected_outputs = getattr(path, 'expected_outputs', {})
+            simplified_path.z3_error = getattr(path, 'z3_error', None)
 
             simplified_paths.append(simplified_path)
 
         return simplified_paths
 
-    def _extract_variable_from_condition(self, condition_str: str) -> Optional[str]:
-        """Extract variable name from a simple condition like 'x > 5'"""
-        import re
-
-        # Clean up whitespace
-        condition_str = condition_str.strip()
-
-        # Pattern for simple variable comparisons: variable op value
-        pattern = r'^(\w+)\s*([><=!]+)\s*(.+)$'
-        match = re.match(pattern, condition_str)
-
-        if match:
-            var_name = match.group(1)
-            # Check if this is a simple variable (not a function call or complex expression)
-            if var_name.isidentifier():
-                return var_name
-
-        return None
-
-    def _is_simple_variable_condition(self, condition_str: str) -> bool:
-        """Check if condition is a simple variable comparison"""
-        return self._extract_variable_from_condition(condition_str) is not None
-
-    def _group_conditions_by_variable(self, conditions: List[PathCondition]) -> Dict[str, List[PathCondition]]:
-        """Group conditions by the variable they reference"""
-        groups = {}
-
-        for condition in conditions:
-            var_name = self._extract_variable_from_condition(condition.expression)
-            if var_name:
-                if var_name not in groups:
-                    groups[var_name] = []
-                groups[var_name].append(condition)
-
-        return groups
-
-    def _merge_conditions_for_variable(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
-        """Merge conditions for a single variable (from original executor)"""
-        if len(conditions) <= 1:
-            return conditions
-
-        # For now, implement basic merging for common patterns
-        # Example: "not (x > 10)" and "not (x > 0)" -> "x <= 0"
-
-        # Separate positive and negative conditions
-        positive_conditions = [c for c in conditions if c.is_true]
-        negative_conditions = [c for c in conditions if not c.is_true]
-
-        # Try to merge negative conditions (not operators)
-        merged_negative = self._merge_negative_conditions(variable, negative_conditions)
-
-        # For now, keep positive conditions as-is
-        # In a more advanced implementation, we could merge these too
-
-        result = positive_conditions + merged_negative
-        return result if result else conditions
-
-    def _merge_negative_conditions(self, var_name: str, conditions: List[PathCondition]) -> List[PathCondition]:
-        """Merge negative conditions for the same variable"""
-        import re
-
-        # Find all negative conditions of the form "not (var > value)"
-        negative_gt_conditions = []
-        other_conditions = []
-
-        for condition in conditions:
-            if not condition.is_true and var_name in condition.expression:
-                # Check if it's a "var > value" condition that's negated
-                pattern = rf'{re.escape(var_name)}\s*>\s*(.+)'
-                match = re.search(pattern, condition.expression)
-                if match:
-                    try:
-                        value = float(match.group(1))
-                        negative_gt_conditions.append((condition, value))
-                    except ValueError:
-                        # Non-numeric value, can't merge
-                        other_conditions.append(condition)
-                else:
-                    other_conditions.append(condition)
-            else:
-                other_conditions.append(condition)
-
-        # If we have multiple "not (var > value)" conditions, merge them
-        if len(negative_gt_conditions) > 1:
-            # Find the minimum value (most restrictive condition)
-            min_value = min(value for _, value in negative_gt_conditions)
-
-            # Create a single merged condition: var <= min_value
-            merged_condition = PathCondition(f"{var_name} <= {min_value}", True)
-            other_conditions.append(merged_condition)
-        elif len(negative_gt_conditions) == 1:
-            # Single condition, keep as is
-            other_conditions.append(negative_gt_conditions[0][0])
-
-        return other_conditions
-
     def enhance_paths_with_test_cases(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
-        """Enhance execution paths with Z3-generated test case information"""
+        """Enhance execution paths with Z3-generated test case information using utility functions"""
         if not Z3_AVAILABLE:
             # Just return paths with a note that Z3 is not available
             for path in paths:
@@ -1669,364 +1464,17 @@ class SymbolicExecutor:
                 enhanced_path.test_inputs = {}
                 enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
             else:
-                # Create Z3 solver
-                if Z3_AVAILABLE:
-                    from z3 import Solver, sat
-                    solver = Solver()
-                    var_map = {}
+                # Use utility function for path satisfiability checking
+                condition_strings = [str(cond) for cond in path.conditions]
+                is_satisfiable, model_values = check_path_satisfiability(condition_strings)
 
-                    # Convert conditions to Z3 constraints
-                    for condition in path.conditions:
-                        try:
-                            z3_constraint = self._condition_to_z3(condition, var_map, solver)
-                            if z3_constraint is not None:
-                                solver.add(z3_constraint)
-                        except Exception as e:
-                            # Mark conversion error
-                            if not hasattr(enhanced_path, 'z3_errors'):
-                                enhanced_path.z3_errors = []
-                            enhanced_path.z3_errors.append(f"Condition '{condition}': {e}")
-
-                    # Check satisfiability
-                    if solver.check() == sat:
-                        enhanced_path.satisfiable = True
-                        model = solver.model()
-                        test_inputs = {}
-
-                        # Extract concrete values from the model
-                        for var_name, z3_var in var_map.items():
-                            if model[z3_var] is not None:
-                                value = model[z3_var]
-                                # Convert Z3 value to Python value
-                                if Z3_AVAILABLE:
-                                    import z3
-                                    if z3.is_int_value(value):
-                                        test_inputs[var_name] = value.as_long()
-                                    elif z3.is_real_value(value):
-                                        test_inputs[var_name] = float(value.as_fraction())
-                                    elif z3.is_bool(value):
-                                        test_inputs[var_name] = z3.is_true(value)
-                                    else:
-                                        test_inputs[var_name] = str(value)
-
-                        enhanced_path.test_inputs = test_inputs
-                        enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
-                    else:
-                        enhanced_path.satisfiable = False
-                        enhanced_path.test_inputs = None
-                        enhanced_path.expected_outputs = None
-                else:
-                    enhanced_path.satisfiable = True
-                    enhanced_path.test_inputs = {}
-                    enhanced_path.expected_outputs = self._extract_outputs_from_path(path)
+                enhanced_path.satisfiable = is_satisfiable
+                enhanced_path.test_inputs = model_values if model_values else {}
+                enhanced_path.expected_outputs = self._extract_outputs_from_path(path) if is_satisfiable else {}
 
             enhanced_paths.append(enhanced_path)
 
         return enhanced_paths
-
-    def _condition_to_z3(self, condition: PathCondition, var_map: Dict[str, Any], solver) -> Any:
-        """Convert a path condition to Z3 constraint"""
-        if not Z3_AVAILABLE:
-            return None
-
-        import z3
-        expr = condition.expression.strip()
-
-        # Try to parse the expression as a tuple (symbolic expression)
-        try:
-            if expr.startswith("(") and expr.endswith(")"):
-                # Try to evaluate as Python literal to get the tuple structure
-                import ast
-                parsed_expr = ast.literal_eval(expr)
-                z3_constraint = self._tuple_expr_to_z3(parsed_expr, var_map, solver)
-                if z3_constraint is not None:
-                    return z3_constraint if condition.is_true else z3.Not(z3_constraint)
-        except (ValueError, SyntaxError):
-            pass
-
-        # Handle Z3-like expressions (And, Or, etc.)
-        if any(z3_op in expr for z3_op in ['And(', 'Or(', 'Not(']):
-            try:
-                z3_constraint = self._parse_z3_expression(expr, var_map, solver)
-                if z3_constraint is not None:
-                    return z3_constraint if condition.is_true else z3.Not(z3_constraint)
-            except Exception:
-                pass
-
-        # Handle basic comparison operations
-        for op in ['>=', '<=', '==', '!=', '>', '<']:
-            if op in expr:
-                left, right = expr.split(op, 1)
-                left = left.strip()
-                right = right.strip()
-
-                # Get or create Z3 variables
-                left_z3 = self._expr_to_z3(left, var_map, solver)
-                right_z3 = self._expr_to_z3(right, var_map, solver)
-
-                if left_z3 is None or right_z3 is None:
-                    return None
-
-                # Create Z3 constraint
-                if op == '>=':
-                    constraint = left_z3 >= right_z3
-                elif op == '<=':
-                    constraint = left_z3 <= right_z3
-                elif op == '==':
-                    constraint = left_z3 == right_z3
-                elif op == '!=':
-                    constraint = left_z3 != right_z3
-                elif op == '>':
-                    constraint = left_z3 > right_z3
-                elif op == '<':
-                    constraint = left_z3 < right_z3
-
-                # Apply negation if needed
-                return constraint if condition.is_true else z3.Not(constraint)
-
-        # Handle boolean expressions
-        if expr in var_map:
-            z3_var = var_map[expr]
-            return z3_var if condition.is_true else z3.Not(z3_var)
-
-        return None
-
-    def _expr_to_z3(self, expr, var_map: Dict[str, Any], solver) -> Any:
-        """Convert an expression to Z3 variable or constant"""
-        if not Z3_AVAILABLE:
-            return None
-
-        import z3
-
-        # Handle tuple expressions (from symbolic execution)
-        if isinstance(expr, tuple):
-            return self._tuple_expr_to_z3(expr, var_map, solver)
-
-        # Handle string expressions
-        if not isinstance(expr, str):
-            expr = str(expr)
-
-        expr = expr.strip()
-
-        # Try to parse as integer
-        try:
-            return z3.IntVal(int(expr))
-        except ValueError:
-            pass
-
-        # Try to parse as float
-        try:
-            return z3.RealVal(float(expr))
-        except ValueError:
-            pass
-
-        # Try to parse as boolean
-        if expr.lower() in ['true', 'false']:
-            return z3.BoolVal(expr.lower() == 'true')
-
-        # Treat as variable name
-        if expr not in var_map:
-            # Create appropriate Z3 variable based on context
-            # For now, assume integer variables (could be enhanced with type inference)
-            var_map[expr] = z3.Int(expr)
-
-        return var_map[expr]
-
-    def _tuple_expr_to_z3(self, expr, var_map: Dict[str, Any], solver) -> Any:
-        """Convert tuple expression to Z3 constraint"""
-        if not Z3_AVAILABLE:
-            return None
-
-        import z3
-
-        if not isinstance(expr, tuple) or len(expr) < 2:
-            return None
-
-    def _parse_z3_expression(self, expr: str, var_map: Dict[str, Any], solver) -> Any:
-        """Parse Z3-like expressions such as 'And(0 < x, 10 > y)'"""
-        if not Z3_AVAILABLE:
-            return None
-
-        import z3
-        import re
-
-        # Handle And expressions
-        and_match = re.match(r'And\((.*)\)', expr)
-        if and_match:
-            args_str = and_match.group(1)
-            args = self._split_condition_args(args_str)
-            constraints = []
-            for arg in args:
-                constraint = self._parse_simple_condition(arg.strip(), var_map)
-                if constraint is not None:
-                    constraints.append(constraint)
-            if constraints:
-                return z3.And(*constraints) if len(constraints) > 1 else constraints[0]
-
-        # Handle Or expressions
-        or_match = re.match(r'Or\((.*)\)', expr)
-        if or_match:
-            args_str = or_match.group(1)
-            args = self._split_condition_args(args_str)
-            constraints = []
-            for arg in args:
-                constraint = self._parse_simple_condition(arg.strip(), var_map)
-                if constraint is not None:
-                    constraints.append(constraint)
-            if constraints:
-                return z3.Or(*constraints) if len(constraints) > 1 else constraints[0]
-
-        # Handle Not expressions
-        not_match = re.match(r'Not\((.*)\)', expr)
-        if not_match:
-            inner_expr = not_match.group(1)
-            constraint = self._parse_z3_expression(inner_expr, var_map, solver)
-            if constraint is not None:
-                return z3.Not(constraint)
-
-        # Try as simple condition
-        return self._parse_simple_condition(expr, var_map)
-
-    def _split_condition_args(self, args_str: str) -> List[str]:
-        """Split condition arguments, handling nested parentheses"""
-        args = []
-        current_arg = ""
-        paren_count = 0
-
-        for char in args_str:
-            if char == ',' and paren_count == 0:
-                args.append(current_arg.strip())
-                current_arg = ""
-            else:
-                if char == '(':
-                    paren_count += 1
-                elif char == ')':
-                    paren_count -= 1
-                current_arg += char
-
-        if current_arg.strip():
-            args.append(current_arg.strip())
-
-        return args
-
-    def _parse_simple_condition(self, expr: str, var_map: Dict[str, Any]) -> Any:
-        """Parse a simple condition like '0 < x' or 'x > 10'"""
-        if not Z3_AVAILABLE:
-            return None
-
-        import z3
-        import re
-
-        # Handle comparison operations
-        patterns = [
-            (r'(\w+)\s*([><=!]+)\s*(.+)', lambda m: (m.group(1), m.group(2), m.group(3))),
-            (r'(.+)\s*([><=!]+)\s*(\w+)', lambda m: (m.group(1), m.group(2), m.group(3)))
-        ]
-
-        for pattern, extractor in patterns:
-            match = re.match(pattern, expr.strip())
-            if match:
-                left_str, op, right_str = extractor(match)
-                left_str = left_str.strip()
-                right_str = right_str.strip()
-
-                # Convert to Z3 expressions
-                left_z3 = self._simple_expr_to_z3(left_str, var_map)
-                right_z3 = self._simple_expr_to_z3(right_str, var_map)
-
-                if left_z3 is None or right_z3 is None:
-                    continue
-
-                # Create constraint
-                ops = {
-                    '>': lambda a, b: a > b,
-                    '<': lambda a, b: a < b,
-                    '>=': lambda a, b: a >= b,
-                    '<=': lambda a, b: a <= b,
-                    '==': lambda a, b: a == b,
-                    '!=': lambda a, b: a != b,
-                }
-
-                if op in ops:
-                    return ops[op](left_z3, right_z3)
-
-        return None
-
-    def _simple_expr_to_z3(self, expr: str, var_map: Dict[str, Any]) -> Any:
-        """Convert simple expressions to Z3, handling variables and constants"""
-        if not Z3_AVAILABLE:
-            return None
-
-        import z3
-
-        expr = expr.strip()
-
-        # Try integer
-        try:
-            return z3.IntVal(int(expr))
-        except ValueError:
-            pass
-
-        # Try float
-        try:
-            return z3.RealVal(float(expr))
-        except ValueError:
-            pass
-
-        # Try boolean
-        if expr.lower() in ['true', 'false']:
-            return z3.BoolVal(expr.lower() == 'true')
-
-        # Handle special Z3 functions
-        if expr.startswith('ToReal(') and expr.endswith(')'):
-            inner = expr[7:-1]
-            inner_z3 = self._simple_expr_to_z3(inner, var_map)
-            if inner_z3 is not None:
-                return z3.ToReal(inner_z3)
-
-        # Treat as variable
-        if expr not in var_map:
-            var_map[expr] = z3.Int(expr)
-        return var_map[expr]
-
-        op = expr[0]
-
-        if op == 'and':
-            # Handle logical AND
-            if len(expr) >= 3:
-                left = self._tuple_expr_to_z3(expr[1], var_map, solver)
-                right = self._tuple_expr_to_z3(expr[2], var_map, solver)
-                if left is not None and right is not None:
-                    return z3.And(left, right)
-
-        elif op == 'or':
-            # Handle logical OR
-            if len(expr) >= 3:
-                left = self._tuple_expr_to_z3(expr[1], var_map, solver)
-                right = self._tuple_expr_to_z3(expr[2], var_map, solver)
-                if left is not None and right is not None:
-                    return z3.Or(left, right)
-
-        elif op in ['>', '<', '>=', '<=', '==', '!=']:
-            # Handle comparison operations
-            if len(expr) >= 3:
-                left = self._expr_to_z3(expr[1], var_map, solver)
-                right = self._expr_to_z3(expr[2], var_map, solver)
-                if left is not None and right is not None:
-                    if op == '>':
-                        return left > right
-                    elif op == '<':
-                        return left < right
-                    elif op == '>=':
-                        return left >= right
-                    elif op == '<=':
-                        return left <= right
-                    elif op == '==':
-                        return left == right
-                    elif op == '!=':
-                        return left != right
-
-        return None
 
     def _extract_outputs_from_path(self, path: ExecutionPath) -> Dict[str, Any]:
         """Extract expected outputs from a path"""
@@ -2042,7 +1490,7 @@ class SymbolicExecutor:
         if path.variables:
             outputs['final_variables'] = {k: str(v) for k, v in path.variables.items()}
 
-        if path.loop_iterations:
+        if getattr(path, 'loop_iterations', None):
             outputs['loop_iterations'] = path.loop_iterations
 
         return outputs

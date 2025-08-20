@@ -44,7 +44,7 @@ class TestPathCondition:
     def test_true_condition(self):
         """Test true path condition"""
         cond = PathCondition("x > 5", True)
-        assert str(cond) == "(x > 5)"
+        assert str(cond) == "x > 5"
 
     def test_false_condition(self):
         """Test false path condition"""
@@ -590,7 +590,7 @@ class TestConditionSimplification:
         # Check path2 (should remain unchanged)
         path2_conditions = [str(c) for c in simplified_paths[1].conditions]
         assert len(path2_conditions) == 1
-        assert "(y > 5)" in path2_conditions[0]
+        assert "y > 5" in path2_conditions[0]
 
         # Check path3 simplification (should have z <= 10.0)
         path3_conditions = [str(c) for c in simplified_paths[2].conditions]
@@ -645,6 +645,127 @@ class TestConditionSimplification:
         assert simplified.statements == ["stmt1", "stmt2"]
         assert simplified.return_value == "return_val"
         assert simplified.variables == {"x": "sym_x", "y": "sym_y"}
+
+
+class TestFunctionAnalyses:
+    """Test function analysis functionality"""
+
+    def test_function_analyses_generation(self):
+        """Test that function analyses are properly generated in reports"""
+        import ast
+        from silu.ir_generator import SiluIRGenerator
+
+        code = """
+def simple_branch(x):
+    if x > 5:
+        result = x + 1
+        return result
+    else:
+        result = x - 1
+        return result
+
+def test_function(a, b):
+    if a > b:
+        return a + b
+    else:
+        return a * b
+
+# Test the functions
+y = simple_branch(3)
+z = test_function(4, 2)
+"""
+
+        # Convert source code to IR first
+        tree = ast.parse(code)
+        ir_generator = SiluIRGenerator()
+        ir_result = ir_generator.visit(tree)
+
+        # Execute symbolic analysis using SymbolicExecutor directly
+        executor = SymbolicExecutor()
+        paths = executor.execute_program(ir_result)
+        result = executor.generate_report(paths)
+
+        # Check that function analyses are present
+        assert 'function_analyses' in result
+
+        # Check that both functions are analyzed
+        assert 'simple_branch' in result['function_analyses']
+        assert 'test_function' in result['function_analyses']
+
+        # Check simple_branch analysis
+        simple_branch_analysis = result['function_analyses']['simple_branch']
+        assert simple_branch_analysis['total_paths'] == 2  # Two paths: x > 5 and x <= 5
+        assert simple_branch_analysis['satisfiable_paths'] == 2
+        assert len(simple_branch_analysis['paths']) == 2
+
+        # Check test_function analysis
+        test_function_analysis = result['function_analyses']['test_function']
+        assert test_function_analysis['total_paths'] == 2  # Two paths: a > b and a <= b
+        assert test_function_analysis['satisfiable_paths'] == 2
+        assert len(test_function_analysis['paths']) == 2
+
+        # Verify that each function path has conditions
+        for path in simple_branch_analysis['paths']:
+            assert len(path['conditions']) >= 1  # Should have at least one condition
+            assert 'x' in path['variables']  # Should have the parameter
+
+        for path in test_function_analysis['paths']:
+            assert len(path['conditions']) >= 1  # Should have at least one condition
+            assert 'a' in path['variables'] and 'b' in path['variables']  # Should have parameters
+
+    def test_cli_symbolic_solve_command(self):
+        """Test that the CLI symbolic solve command works correctly"""
+        import subprocess
+        import tempfile
+        import os
+
+        # Create a temporary file with the test code
+        test_code = """def simple_branch(x):
+    if x > 5:
+        result = x + 1
+        return result
+    else:
+        result = x - 1
+        return result
+
+def test_function(a, b):
+    if a > b:
+        return a + b
+    else:
+        return a * b
+
+# Test the functions
+y = simple_branch(3)
+z = test_function(4, 2)
+"""
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.si', delete=False) as f:
+            f.write(test_code)
+            temp_file = f.name
+
+        try:
+            # Run the symbolic solve command
+            result = subprocess.run([
+                'python', '-m', 'silu', 'symbolic', temp_file, '--solve'
+            ], capture_output=True, text=True, cwd='.')
+
+            assert result.returncode == 0, f"Command failed with error: {result.stderr}"
+
+            # Parse the JSON output
+            output_data = json.loads(result.stdout)
+
+            # Verify function analyses are present
+            assert 'function_analyses' in output_data
+            assert 'simple_branch' in output_data['function_analyses']
+            assert 'test_function' in output_data['function_analyses']
+
+            # Verify the structure is correct
+            assert output_data['function_analyses']['simple_branch']['total_paths'] == 2
+            assert output_data['function_analyses']['test_function']['total_paths'] == 2
+
+        finally:
+            # Clean up the temporary file
+            os.unlink(temp_file)
 
 
 if __name__ == "__main__":
