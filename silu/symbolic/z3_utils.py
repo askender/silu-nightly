@@ -35,6 +35,7 @@ try:
 except ImportError:
     Z3_AVAILABLE = False
     z3 = None
+
     # Create dummy classes/functions when Z3 is not available
     class _DummyZ3:
         def __getattr__(self, name):
@@ -44,11 +45,49 @@ except ImportError:
         z3 = _DummyZ3()
 
     # Dummy functions for when Z3 is not available
-    Solver = lambda: None
+    def Solver():
+        return None
+
     sat = None
-    And = Or = Not = If = lambda *args: None
-    IntVal = BoolVal = RealVal = lambda x: None
-    BoolSort = Int = Real = Bool = ToReal = simplify = lambda *args: None
+
+    def And(*args):
+        return None
+
+    def Or(*args):
+        return None
+
+    def Not(*args):
+        return None
+
+    def If(*args):
+        return None
+
+    def IntVal(x):
+        return None
+
+    def BoolVal(x):
+        return None
+
+    def RealVal(x):
+        return None
+
+    def BoolSort(*args):
+        return None
+
+    def Int(*args):
+        return None
+
+    def Real(*args):
+        return None
+
+    def Bool(*args):
+        return None
+
+    def ToReal(*args):
+        return None
+
+    def simplify(*args):
+        return None
 
 
 # Operator mappings from AST to Z3
@@ -175,14 +214,19 @@ class Z3SafeOperations:
             return None
 
         try:
-            if (hasattr(z3, 'is_int_value') and z3 is not None and
-                z3.is_int_value(z3_expr)):
+            if (
+                hasattr(z3, "is_int_value")
+                and z3 is not None
+                and z3.is_int_value(z3_expr)
+            ):
                 return z3_expr.as_long()
-            elif (hasattr(z3, 'is_rational_value') and z3 is not None and
-                  z3.is_rational_value(z3_expr)):
+            elif (
+                hasattr(z3, "is_rational_value")
+                and z3 is not None
+                and z3.is_rational_value(z3_expr)
+            ):
                 return float(z3_expr.as_decimal(10))
-            elif (hasattr(z3, 'is_bool') and z3 is not None and
-                  z3.is_bool(z3_expr)):
+            elif hasattr(z3, "is_bool") and z3 is not None and z3.is_bool(z3_expr):
                 return z3.is_true(z3_expr)
         except Exception:
             pass
@@ -232,7 +276,9 @@ class ExpressionParser:
     def __init__(self):
         self.comparison_ops = [">=", "<=", "==", "!=", ">", "<"]
 
-    def _parse_basic_comparison(self, expr: str, var_map: Dict[str, Any]) -> Optional[Any]:
+    def _parse_basic_comparison(
+        self, expr: str, var_map: Dict[str, Any]
+    ) -> Optional[Any]:
         """Parse basic comparison operations like 'x > 5'"""
         if not Z3_AVAILABLE:
             return None
@@ -404,8 +450,9 @@ class ConditionProcessor:
     def __init__(self):
         self.parser = ExpressionParser()
 
-    def condition_to_z3_simple(self, condition_str: str, var_map: Dict[str, Any],
-                              is_true: bool = True) -> Any:
+    def condition_to_z3_simple(
+        self, condition_str: str, var_map: Dict[str, Any], is_true: bool = True
+    ) -> Any:
         """Simple condition processing for basic cases"""
         if not Z3_AVAILABLE:
             return None
@@ -637,55 +684,96 @@ class EnhancedASTConverter:
     def __init__(self):
         self.mapper = Z3OperatorMapper()
 
-    def convert(self, node, var_dict, handle_subscript_func=None,
-                handle_in_notin_func=None, z3_min_list_func=None,
-                z3_max_list_func=None):
+    def convert(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func=None,
+        handle_in_notin_func=None,
+        z3_min_list_func=None,
+        z3_max_list_func=None,
+    ):
         """Main conversion method"""
         if not Z3_AVAILABLE:
             return None
 
         return self._convert_node(
-            node, var_dict, handle_subscript_func,
-            handle_in_notin_func, z3_min_list_func, z3_max_list_func
+            node,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
         )
 
-    def _convert_node(self, node, var_dict, handle_subscript_func,
-                      handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _convert_node(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Convert individual AST node"""
         if isinstance(node, ast.BoolOp):
             return self._handle_boolop(
-                node, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
 
         if isinstance(node, ast.UnaryOp):
             return self._handle_unaryop(
-                node, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
 
         if isinstance(node, ast.Compare):
             return self._handle_compare(
-                node, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
 
         if isinstance(node, ast.BinOp):
             return self._handle_binop(
-                node, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
 
         if isinstance(node, ast.Subscript):
             return self._handle_subscript(
-                node, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
 
         if isinstance(node, ast.Call):
             return self._handle_call(
-                node, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
 
         if isinstance(node, ast.Name):
@@ -696,20 +784,35 @@ class EnhancedASTConverter:
 
         if isinstance(node, (ast.Tuple, ast.List)):
             return self._handle_sequence(
-                node, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
 
         return None
 
-    def _handle_boolop(self, node, var_dict, handle_subscript_func,
-                       handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _handle_boolop(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Handle boolean operations"""
         values = []
         for v in node.values:
             converted = self._convert_node(
-                v, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                v,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
             if converted is not None:
                 values.append(converted)
@@ -718,13 +821,24 @@ class EnhancedASTConverter:
             return simplify(self.mapper.get_boolop_func(node.op)(*values))
         return None
 
-    def _handle_unaryop(self, node, var_dict, handle_subscript_func,
-                        handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _handle_unaryop(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Handle unary operations"""
         if isinstance(node.op, ast.Not):
             operand = self._convert_node(
-                node.operand, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node.operand,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
             if operand is not None and Z3_AVAILABLE:
                 try:
@@ -736,12 +850,23 @@ class EnhancedASTConverter:
             return None
         return None
 
-    def _handle_compare(self, node, var_dict, handle_subscript_func,
-                        handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _handle_compare(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Handle comparison operations"""
         left = self._convert_node(
-            node.left, var_dict, handle_subscript_func,
-            handle_in_notin_func, z3_min_list_func, z3_max_list_func
+            node.left,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
         )
         if left is None:
             return None
@@ -753,38 +878,68 @@ class EnhancedASTConverter:
             return handle_in_notin_func(left, op, right_node, var_dict)
 
         right = self._convert_node(
-            right_node, var_dict, handle_subscript_func,
-            handle_in_notin_func, z3_min_list_func, z3_max_list_func
+            right_node,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
         )
         if right is None:
             return None
 
         return self.mapper.get_cmp_func(op)(left, right)
 
-    def _handle_binop(self, node, var_dict, handle_subscript_func,
-                      handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _handle_binop(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Handle binary operations"""
         left = self._convert_node(
-            node.left, var_dict, handle_subscript_func,
-            handle_in_notin_func, z3_min_list_func, z3_max_list_func
+            node.left,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
         )
         right = self._convert_node(
-            node.right, var_dict, handle_subscript_func,
-            handle_in_notin_func, z3_min_list_func, z3_max_list_func
+            node.right,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
         )
         if left is None or right is None:
             return None
         return self.mapper.get_binop_func(node.op)(left, right)
 
-    def _handle_subscript(self, node, var_dict, handle_subscript_func,
-                          handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _handle_subscript(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Handle subscript operations"""
         if not handle_subscript_func:
             return None
 
         value = self._convert_node(
-            node.value, var_dict, handle_subscript_func,
-            handle_in_notin_func, z3_min_list_func, z3_max_list_func
+            node.value,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
         )
         if value is None:
             return None
@@ -803,13 +958,24 @@ class EnhancedASTConverter:
             return handle_subscript_func(value, idx, var_dict)
         else:
             idx = self._convert_node(
-                node.slice, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                node.slice,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
             return handle_subscript_func(value, idx, var_dict) if idx else None
 
-    def _handle_call(self, node, var_dict, handle_subscript_func,
-                     handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _handle_call(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Handle function calls"""
         if not isinstance(node.func, ast.Name):
             return None
@@ -819,8 +985,12 @@ class EnhancedASTConverter:
         if func_name == "int":
             if node.args:
                 return self._convert_node(
-                    node.args[0], var_dict, handle_subscript_func,
-                    handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                    node.args[0],
+                    var_dict,
+                    handle_subscript_func,
+                    handle_in_notin_func,
+                    z3_min_list_func,
+                    z3_max_list_func,
                 )
             return IntVal(0)
 
@@ -832,8 +1002,12 @@ class EnhancedASTConverter:
             args_z3 = []
             for arg in node.args:
                 converted = self._convert_node(
-                    arg, var_dict, handle_subscript_func,
-                    handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                    arg,
+                    var_dict,
+                    handle_subscript_func,
+                    handle_in_notin_func,
+                    z3_min_list_func,
+                    z3_max_list_func,
                 )
                 if converted is not None:
                     args_z3.append(converted)
@@ -847,8 +1021,12 @@ class EnhancedASTConverter:
                 elts_z3 = []
                 for e in elts:
                     converted = self._convert_node(
-                        e, var_dict, handle_subscript_func,
-                        handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                        e,
+                        var_dict,
+                        handle_subscript_func,
+                        handle_in_notin_func,
+                        z3_min_list_func,
+                        z3_max_list_func,
                     )
                     if converted is not None:
                         elts_z3.append(converted)
@@ -883,14 +1061,25 @@ class EnhancedASTConverter:
             return BoolVal(False)
         return None
 
-    def _handle_sequence(self, node, var_dict, handle_subscript_func,
-                        handle_in_notin_func, z3_min_list_func, z3_max_list_func):
+    def _handle_sequence(
+        self,
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
+    ):
         """Handle tuple and list nodes"""
         result = []
         for elt in node.elts:
             converted = self._convert_node(
-                elt, var_dict, handle_subscript_func,
-                handle_in_notin_func, z3_min_list_func, z3_max_list_func
+                elt,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
             )
             result.append(converted)
         return result
@@ -908,8 +1097,12 @@ def enhanced_ast_to_z3(
     """Enhanced AST to Z3 conversion with support for more node types"""
     converter = EnhancedASTConverter()
     return converter.convert(
-        node, var_dict, handle_subscript_func,
-        handle_in_notin_func, z3_min_list_func, z3_max_list_func
+        node,
+        var_dict,
+        handle_subscript_func,
+        handle_in_notin_func,
+        z3_min_list_func,
+        z3_max_list_func,
     )
 
 
@@ -1102,8 +1295,9 @@ class RangeConstraintGenerator:
     """Generates Z3 constraints for range loop iterations"""
 
     @staticmethod
-    def generate_constraint(k: int, start, stop, step=None,
-                           var_dict: Optional[Dict[str, Any]] = None):
+    def generate_constraint(
+        k: int, start, stop, step=None, var_dict: Optional[Dict[str, Any]] = None
+    ):
         """Generate Z3 constraint for the k-th iteration of a range loop"""
         if not Z3_AVAILABLE:
             return None
@@ -1237,9 +1431,9 @@ class PathSatisfiabilityChecker:
     def __init__(self):
         self.parser = ExpressionParser()
 
-    def check_satisfiability(self, conditions: List[str],
-                           var_dict: Optional[Dict[str, Any]] = None
-                           ) -> tuple[bool, Optional[Dict[str, Any]]]:
+    def check_satisfiability(
+        self, conditions: List[str], var_dict: Optional[Dict[str, Any]] = None
+    ) -> tuple[bool, Optional[Dict[str, Any]]]:
         """
         Check if a list of path conditions is satisfiable.
 
@@ -1269,7 +1463,9 @@ class PathSatisfiabilityChecker:
             result = solver.check()
             if result == sat:
                 model = solver.model()
-                model_values = self._extract_model_values(model, var_dict, program_variables)
+                model_values = self._extract_model_values(
+                    model, var_dict, program_variables
+                )
                 return True, model_values
             else:
                 return False, None
@@ -1284,14 +1480,23 @@ class PathSatisfiabilityChecker:
                 z3_value = model[var_dict[var_name]]
                 # Convert Z3 value to Python value
                 try:
-                    if (hasattr(z3, 'is_int_value') and z3 is not None and
-                        z3.is_int_value(z3_value)):
+                    if (
+                        hasattr(z3, "is_int_value")
+                        and z3 is not None
+                        and z3.is_int_value(z3_value)
+                    ):
                         model_values[var_name] = str(z3_value.as_long())
-                    elif (hasattr(z3, 'is_real_value') and z3 is not None and
-                          z3.is_real_value(z3_value)):
+                    elif (
+                        hasattr(z3, "is_real_value")
+                        and z3 is not None
+                        and z3.is_real_value(z3_value)
+                    ):
                         model_values[var_name] = str(float(z3_value.as_fraction()))
-                    elif (hasattr(z3, 'is_bool') and z3 is not None and
-                          z3.is_bool(z3_value)):
+                    elif (
+                        hasattr(z3, "is_bool")
+                        and z3 is not None
+                        and z3.is_bool(z3_value)
+                    ):
                         model_values[var_name] = str(z3.is_true(z3_value)).lower()
                     else:
                         model_values[var_name] = str(z3_value)
@@ -1299,8 +1504,9 @@ class PathSatisfiabilityChecker:
                     model_values[var_name] = str(z3_value)
         return model_values
 
-    def _parse_condition_string(self, condition: str, var_dict: Dict[str, Any],
-                               program_variables: set) -> Optional[Any]:
+    def _parse_condition_string(
+        self, condition: str, var_dict: Dict[str, Any], program_variables: set
+    ) -> Optional[Any]:
         """Parse a condition string into a Z3 constraint"""
         if not Z3_AVAILABLE:
             return None
@@ -1336,8 +1542,9 @@ class PathSatisfiabilityChecker:
         constraint = self.parser._create_comparison(left_value, op, right_value)
         return Not(constraint) if negated else constraint
 
-    def _parse_value(self, value_str: str, var_dict: Dict[str, Any],
-                    program_variables: set):
+    def _parse_value(
+        self, value_str: str, var_dict: Dict[str, Any], program_variables: set
+    ):
         """Parse a value string to Z3 expression"""
         # Try to parse as constant first
         try:

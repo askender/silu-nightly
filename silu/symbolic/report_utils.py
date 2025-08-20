@@ -714,7 +714,7 @@ def generate_comprehensive_report(
 def generate_fast_comprehensive_report(
     paths: List[Any],
     global_env_functions: Optional[Dict] = None,
-    function_analyses: Optional[Dict] = None
+    function_analyses: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """Generate simplified report for performance mode"""
     satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
@@ -798,7 +798,9 @@ def _convert_z3_value_to_python(z3_value) -> Any:
         return str(z3_value)
 
 
-def _create_enhanced_path(path: Any, satisfiable: bool, test_inputs: Optional[Dict], expected_outputs: Dict) -> Any:
+def _create_enhanced_path(
+    path: Any, satisfiable: bool, test_inputs: Optional[Dict], expected_outputs: Dict
+) -> Any:
     """Create an enhanced path object with test case information"""
     # Create enhanced path data
     enhanced_path = type(path)(getattr(path, "path_id", "unknown"))
@@ -817,7 +819,9 @@ def _create_enhanced_path(path: Any, satisfiable: bool, test_inputs: Optional[Di
 
     # Set new attributes
     enhanced_path.satisfiable = satisfiable
-    enhanced_path.test_inputs = test_inputs if test_inputs is not None else ({} if satisfiable else None)
+    enhanced_path.test_inputs = (
+        test_inputs if test_inputs is not None else ({} if satisfiable else None)
+    )
     enhanced_path.expected_outputs = expected_outputs if satisfiable else None
 
     return enhanced_path
@@ -884,7 +888,9 @@ def enhance_paths_with_z3_test_cases(paths: List[Any]) -> List[Any]:
     for path in paths:
         expected_outputs = extract_outputs_from_path(path)
         satisfiable, test_inputs = _solve_path_constraints(path)
-        enhanced_path = _create_enhanced_path(path, satisfiable, test_inputs, expected_outputs)
+        enhanced_path = _create_enhanced_path(
+            path, satisfiable, test_inputs, expected_outputs
+        )
         enhanced_paths.append(enhanced_path)
 
     return enhanced_paths

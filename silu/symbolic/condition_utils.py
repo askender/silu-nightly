@@ -60,15 +60,16 @@ class PathCondition:
 
         # Check for simple comparison patterns
         comparison_patterns = [
-            r'\w+\s*>=\s*\w+',   # x >= y
-            r'\w+\s*<=\s*\w+',   # x <= y
-            r'\w+\s*==\s*\w+',   # x == y
-            r'\w+\s*!=\s*\w+',   # x != y
-            r'\w+\s*>\s*\w+',    # x > y
-            r'\w+\s*<\s*\w+',    # x < y
+            r"\w+\s*>=\s*\w+",  # x >= y
+            r"\w+\s*<=\s*\w+",  # x <= y
+            r"\w+\s*==\s*\w+",  # x == y
+            r"\w+\s*!=\s*\w+",  # x != y
+            r"\w+\s*>\s*\w+",  # x > y
+            r"\w+\s*<\s*\w+",  # x < y
         ]
 
         import re
+
         for pattern in comparison_patterns:
             if re.match(pattern, expr):
                 return True
@@ -78,7 +79,11 @@ class PathCondition:
             return True
 
         # Function calls are simple if they don't contain operators
-        if "(" in expr and ")" in expr and not any(op in expr for op in [" and ", " or ", " not "]):
+        if (
+            "(" in expr
+            and ")" in expr
+            and not any(op in expr for op in [" and ", " or ", " not "])
+        ):
             return True
 
         return False
@@ -88,6 +93,7 @@ class PathCondition:
         negated_constraint = None
         if self.z3_constraint is not None and Z3_AVAILABLE:
             from z3 import Not
+
             negated_constraint = Not(self.z3_constraint)
 
         # Handle logical negation properly
@@ -222,7 +228,11 @@ def merge_negative_conditions(
     if len(negative_conditions) <= 1:
         # Still convert single negative conditions to positive form
         if len(negative_conditions) == 1 and not negative_conditions[0].is_true:
-            return [_convert_negative_condition_to_positive(negative_conditions[0], variable)]
+            return [
+                _convert_negative_condition_to_positive(
+                    negative_conditions[0], variable
+                )
+            ]
         return negative_conditions
 
     # Separate conditions by type and convert negative to positive
@@ -269,7 +279,9 @@ def merge_negative_conditions(
         original_condition = next(cond for val, cond in gt_values if val == min_value)
         formatted_value = int(min_value) if min_value.is_integer() else min_value
         converted_conditions.append(
-            PathCondition(f"{variable} <= {formatted_value}", True, original_condition.source_line)
+            PathCondition(
+                f"{variable} <= {formatted_value}", True, original_condition.source_line
+            )
         )
 
     # Merge lt conditions: "not (x < a)" and "not (x < b)" -> "x >= max(a,b)"
@@ -278,7 +290,9 @@ def merge_negative_conditions(
         original_condition = next(cond for val, cond in lt_values if val == max_value)
         formatted_value = int(max_value) if max_value.is_integer() else max_value
         converted_conditions.append(
-            PathCondition(f"{variable} >= {formatted_value}", True, original_condition.source_line)
+            PathCondition(
+                f"{variable} >= {formatted_value}", True, original_condition.source_line
+            )
         )
 
     # Add any non-negative conditions unchanged
@@ -287,7 +301,9 @@ def merge_negative_conditions(
     return converted_conditions
 
 
-def _convert_negative_condition_to_positive(condition: PathCondition, variable: str) -> PathCondition:
+def _convert_negative_condition_to_positive(
+    condition: PathCondition, variable: str
+) -> PathCondition:
     """
     Convert a single negative condition to its positive equivalent
 
@@ -305,12 +321,12 @@ def _convert_negative_condition_to_positive(condition: PathCondition, variable: 
 
     # Parse different comparison patterns - order matters: compound operators first
     patterns = [
-        (rf"^{re.escape(variable)}\s*>=\s*(.+)$", "<"),   # x >= v -> x < v
-        (rf"^{re.escape(variable)}\s*<=\s*(.+)$", ">"),   # x <= v -> x > v
+        (rf"^{re.escape(variable)}\s*>=\s*(.+)$", "<"),  # x >= v -> x < v
+        (rf"^{re.escape(variable)}\s*<=\s*(.+)$", ">"),  # x <= v -> x > v
         (rf"^{re.escape(variable)}\s*==\s*(.+)$", "!="),  # x == v -> x != v
         (rf"^{re.escape(variable)}\s*!=\s*(.+)$", "=="),  # x != v -> x == v
-        (rf"^{re.escape(variable)}\s*>\s*(.+)$", "<="),   # x > v -> x <= v
-        (rf"^{re.escape(variable)}\s*<\s*(.+)$", ">="),   # x < v -> x >= v
+        (rf"^{re.escape(variable)}\s*>\s*(.+)$", "<="),  # x > v -> x <= v
+        (rf"^{re.escape(variable)}\s*<\s*(.+)$", ">="),  # x < v -> x >= v
     ]
 
     for pattern, new_op in patterns:
@@ -319,10 +335,14 @@ def _convert_negative_condition_to_positive(condition: PathCondition, variable: 
             value_str = match.group(1).strip()
             new_expr = f"{variable} {new_op} {value_str}"
 
-            return PathCondition(new_expr, True, condition.source_line, condition.z3_constraint)
+            return PathCondition(
+                new_expr, True, condition.source_line, condition.z3_constraint
+            )
 
     # If no pattern matches, return the condition unchanged but marked as problematic
-    return PathCondition(f"not ({expr})", True, condition.source_line, condition.z3_constraint)
+    return PathCondition(
+        f"not ({expr})", True, condition.source_line, condition.z3_constraint
+    )
 
 
 def simplify_condition_expression(expression: str) -> str:
@@ -439,17 +459,17 @@ def make_condition_readable(condition_str: str) -> str:
             readable_str = condition_str
 
             # Handle And() expressions
-            readable_str = re.sub(r'And\(([^)]+)\)', r'(\1)', readable_str)
+            readable_str = re.sub(r"And\(([^)]+)\)", r"(\1)", readable_str)
 
             # Handle Or() expressions
-            readable_str = re.sub(r'Or\(([^)]+)\)', r'(\1)', readable_str)
+            readable_str = re.sub(r"Or\(([^)]+)\)", r"(\1)", readable_str)
 
             # Handle Not() expressions
-            readable_str = re.sub(r'Not\(([^)]+)\)', r'not (\1)', readable_str)
+            readable_str = re.sub(r"Not\(([^)]+)\)", r"not (\1)", readable_str)
 
             # Replace comma separators with appropriate operators
             # This is a simplified approach - in practice, we'd need more sophisticated parsing
-            readable_str = re.sub(r',\s*', ' and ', readable_str)
+            readable_str = re.sub(r",\s*", " and ", readable_str)
 
             condition_str = readable_str
         except Exception:
@@ -512,7 +532,9 @@ def normalize_condition(condition: PathCondition) -> PathCondition:
         # Remove outer parentheses if they exist
         if inner_expr.startswith("(") and inner_expr.endswith(")"):
             inner_expr = inner_expr[1:-1].strip()
-        return PathCondition(inner_expr, True, condition.source_line, condition.z3_constraint)
+        return PathCondition(
+            inner_expr, True, condition.source_line, condition.z3_constraint
+        )
 
     # Handle case where expression doesn't start with "not" but is_true=False
     # This represents a negated condition that should be normalized
@@ -528,10 +550,9 @@ def normalize_condition(condition: PathCondition) -> PathCondition:
     # Simplify the expression
     simplified_expr = make_condition_readable(expr)
 
-    return PathCondition(simplified_expr, is_true, condition.source_line, condition.z3_constraint)
-
-
-
+    return PathCondition(
+        simplified_expr, is_true, condition.source_line, condition.z3_constraint
+    )
 
 
 def conditions_are_contradictory(cond1: PathCondition, cond2: PathCondition) -> bool:

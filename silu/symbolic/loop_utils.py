@@ -51,7 +51,10 @@ class LoopIteration:
     """Represents a single loop iteration with constraints"""
 
     def __init__(
-        self, iteration: int, constraint=None, variable_values: Optional[Dict[str, Any]] = None
+        self,
+        iteration: int,
+        constraint=None,
+        variable_values: Optional[Dict[str, Any]] = None,
     ):
         self.iteration = iteration
         self.constraint = constraint

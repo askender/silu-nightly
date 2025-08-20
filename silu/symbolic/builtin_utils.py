@@ -21,7 +21,9 @@ class SymbolicValueType(Enum):
 class SymbolicValue:
     """Represents a symbolic value that can be either concrete or an expression"""
 
-    def __init__(self, value_type: SymbolicValueType, value: Any, name: Optional[str] = None):
+    def __init__(
+        self, value_type: SymbolicValueType, value: Any, name: Optional[str] = None
+    ):
         self.type = value_type
         self.value = value
         self.name = name
@@ -155,8 +157,11 @@ def symbolic_abs(value: SymbolicValue) -> SymbolicValue:
 
 def symbolic_max(*args) -> SymbolicValue:
     """Symbolic version of max function"""
-    if (len(args) == 1 and hasattr(args[0], "__iter__")
-        and not isinstance(args[0], (str, bytes, bytearray))):
+    if (
+        len(args) == 1
+        and hasattr(args[0], "__iter__")
+        and not isinstance(args[0], (str, bytes, bytearray))
+    ):
         # max(iterable)
         iterable = args[0]
         if hasattr(iterable, "type") and iterable.type == SymbolicValueType.CONCRETE:
@@ -187,8 +192,11 @@ def symbolic_max(*args) -> SymbolicValue:
 
 def symbolic_min(*args) -> SymbolicValue:
     """Symbolic version of min function"""
-    if (len(args) == 1 and hasattr(args[0], "__iter__")
-        and not isinstance(args[0], (str, bytes, bytearray))):
+    if (
+        len(args) == 1
+        and hasattr(args[0], "__iter__")
+        and not isinstance(args[0], (str, bytes, bytearray))
+    ):
         # min(iterable)
         iterable = args[0]
         if hasattr(iterable, "type") and iterable.type == SymbolicValueType.CONCRETE:
