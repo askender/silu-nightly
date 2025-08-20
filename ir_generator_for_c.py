@@ -1,0 +1,500 @@
+"""
+C IR Generator Module
+
+This module provides a C-to-IR generator that converts C programs into the same
+intermediate representation format used by Silu, enabling symbolic execution
+and analysis of C code.
+"""
+
+import json
+import sys
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+try:
+    from pycparser import c_parser, c_ast
+except ImportError:
+    print("Error: pycparser is required for C IR generation.", file=sys.stderr)
+    print("Install it with: pip install pycparser", file=sys.stderr)
+    sys.exit(1)
+
+
+class CIRGenerator(c_ast.NodeVisitor):
+    """
+    C IR generator that converts pycparser C AST to Silu IR format.
+
+    This generator produces the same IR format as SiluIRGenerator, allowing
+    C programs to be analyzed using the existing symbolic execution tools.
+    """
+
+    def __init__(self, record_types: bool = True):
+        """
+        Initialize the C IR generator.
+
+        Args:
+            record_types: Whether to record type information in the IR
+        """
+        self.record_types = record_types
+        self.current_function = None
+
+    # ================== Top-level Constructs ==================
+
+    def visit_FileAST(self, node: c_ast.FileAST) -> Tuple[str, Tuple]:
+        """Convert file AST to module IR."""
+        statements = []
+        for ext in node.ext or []:
+            result = self.visit(ext)
+            if result is not None:
+                statements.append(result)
+        return ("module", tuple(statements))
+
+    def visit_FuncDef(self, node: c_ast.FuncDef) -> Tuple:
+        """Convert function definition to IR."""
+        name = node.decl.name
+        self.current_function = name
+
+        # Extract parameters
+        params = []
+        param_types = []
+        if hasattr(node.decl.type, 'args') and node.decl.type.args:
+            for param in node.decl.type.args.params:
+                if hasattr(param, 'name') and param.name:
+                    params.append(param.name)
+                    if self.record_types:
+                        param_types.append(self._get_type_string(param.type))
+
+        # Extract return type
+        return_type = None
+        if self.record_types and hasattr(node.decl.type, 'type'):
+            return_type = self._get_type_string(node.decl.type.type)
+
+        # Process function body
+        body = []
+        if node.body and hasattr(node.body, 'block_items') and node.body.block_items:
+            for stmt in node.body.block_items:
+                result = self.visit(stmt)
+                if result is not None:
+                    body.append(result)
+
+        self.current_function = None
+
+        # Return IR in format: ('func_def', name, params, body, param_types, return_type)
+        if self.record_types:
+            return ("func_def", name, tuple(params), tuple(body), tuple(param_types), return_type)
+        else:
+            return ("func_def", name, tuple(params), tuple(body))
+
+    # ================== Statements ==================
+
+    def visit_Decl(self, node: c_ast.Decl) -> Optional[Tuple]:
+        """Convert variable declaration to IR."""
+        if not node.name:
+            return None
+
+        name = node.name
+        type_info = self._get_type_string(node.type) if self.record_types else None
+
+        # Handle initialization
+        value = None
+        if node.init:
+            value = self.visit(node.init)
+
+        return ("assign", name, value, type_info)
+
+    def visit_Assignment(self, node: c_ast.Assignment) -> Tuple:
+        """Convert assignment to IR."""
+        lvalue = self.visit(node.lvalue)
+        rvalue = self.visit(node.rvalue)
+
+        # Map C assignment operators
+        op_map = {
+            '=': '=',
+            '+=': '+=',
+            '-=': '-=',
+            '*=': '*=',
+            '/=': '/=',
+            '%=': '%=',
+            '&=': '&=',
+            '|=': '|=',
+            '^=': '^=',
+            '<<=': '<<=',
+            '>>=': '>>='
+        }
+
+        op = op_map.get(node.op, node.op)
+
+        if op == '=':
+            return ("assign", lvalue, rvalue, None)
+        else:
+            return ("aug_assign", lvalue, op, rvalue)
+
+    def visit_Return(self, node: c_ast.Return) -> Tuple:
+        """Convert return statement to IR."""
+        value = self.visit(node.expr) if node.expr else None
+        return ("return", value)
+
+    # ================== Control Flow ==================
+
+    def visit_If(self, node: c_ast.If) -> Tuple:
+        """Convert if statement to IR."""
+        condition = self.visit(node.cond)
+
+        # Process then block
+        then_body = []
+        if node.iftrue:
+            if hasattr(node.iftrue, 'block_items') and node.iftrue.block_items:
+                for stmt in node.iftrue.block_items:
+                    result = self.visit(stmt)
+                    if result is not None:
+                        then_body.append(result)
+            else:
+                result = self.visit(node.iftrue)
+                if result is not None:
+                    then_body.append(result)
+
+        # Process else block
+        else_body = []
+        if node.iffalse:
+            if hasattr(node.iffalse, 'block_items') and node.iffalse.block_items:
+                for stmt in node.iffalse.block_items:
+                    result = self.visit(stmt)
+                    if result is not None:
+                        else_body.append(result)
+            else:
+                result = self.visit(node.iffalse)
+                if result is not None:
+                    else_body.append(result)
+
+        return ("if", condition, tuple(then_body), tuple(else_body))
+
+    def visit_While(self, node: c_ast.While) -> Tuple:
+        """Convert while loop to IR."""
+        condition = self.visit(node.cond)
+
+        # Process body
+        body = []
+        if node.stmt:
+            if hasattr(node.stmt, 'block_items') and node.stmt.block_items:
+                for stmt in node.stmt.block_items:
+                    result = self.visit(stmt)
+                    if result is not None:
+                        body.append(result)
+            else:
+                result = self.visit(node.stmt)
+                if result is not None:
+                    body.append(result)
+
+        return ("while", condition, tuple(body))
+
+    def visit_For(self, node: c_ast.For) -> Tuple:
+        """Convert for loop to IR."""
+        init = self.visit(node.init) if node.init else None
+        condition = self.visit(node.cond) if node.cond else ("const", True)
+        next_stmt = self.visit(node.next) if node.next else None
+
+        # Process body
+        body = []
+        if node.stmt:
+            if hasattr(node.stmt, 'block_items') and node.stmt.block_items:
+                for stmt in node.stmt.block_items:
+                    result = self.visit(stmt)
+                    if result is not None:
+                        body.append(result)
+            else:
+                result = self.visit(node.stmt)
+                if result is not None:
+                    body.append(result)
+
+        return ("c_for", init, condition, next_stmt, tuple(body))
+
+    def visit_Break(self, node: c_ast.Break) -> Tuple:
+        """Convert break statement to IR."""
+        return ("break",)
+
+    def visit_Continue(self, node: c_ast.Continue) -> Tuple:
+        """Convert continue statement to IR."""
+        return ("continue",)
+
+    # ================== Expressions ==================
+
+    def visit_BinaryOp(self, node: c_ast.BinaryOp) -> Tuple:
+        """Convert binary operation to IR."""
+        left = self.visit(node.left)
+        right = self.visit(node.right)
+
+        # Map C operators to IR operators
+        op_map = {
+            '+': '+',
+            '-': '-',
+            '*': '*',
+            '/': '/',
+            '%': '%',
+            '<<': '<<',
+            '>>': '>>',
+            '&': '&',
+            '|': '|',
+            '^': '^',
+            '&&': 'and',
+            '||': 'or',
+            '==': '==',
+            '!=': '!=',
+            '<': '<',
+            '<=': '<=',
+            '>': '>',
+            '>=': '>='
+        }
+
+        op = op_map.get(node.op, node.op)
+        return (op, left, right)
+
+    def visit_UnaryOp(self, node: c_ast.UnaryOp) -> Tuple:
+        """Convert unary operation to IR."""
+        operand = self.visit(node.expr)
+
+        # Map C unary operators
+        op_map = {
+            '+': '+',
+            '-': '-',
+            '!': 'not',
+            '~': '~',
+            '++': '++',
+            '--': '--',
+            'p++': 'p++',  # post-increment
+            'p--': 'p--',  # post-decrement
+            '*': 'deref',
+            '&': 'addr'
+        }
+
+        op = op_map.get(node.op, node.op)
+        return (op, operand)
+
+    def visit_ID(self, node: c_ast.ID) -> Tuple:
+        """Convert identifier to IR."""
+        return ("name", node.name)
+
+    def visit_Constant(self, node: c_ast.Constant) -> Tuple:
+        """Convert constant to IR."""
+        value = node.value
+
+        # Convert string constants
+        if hasattr(node, 'type'):
+            if node.type == 'int':
+                try:
+                    value = int(value)
+                except ValueError:
+                    # Handle hex, octal, etc.
+                    value = int(value, 0)
+            elif node.type == 'float':
+                value = float(value)
+            elif node.type == 'char':
+                # Handle character literals
+                if value.startswith("'") and value.endswith("'"):
+                    if len(value) == 3:  # Simple character like 'a'
+                        value = value[1]
+                    else:  # Escape sequences like '\n'
+                        value = value[1:-1].encode().decode('unicode_escape')
+            elif node.type == 'string':
+                # Handle string literals
+                if value.startswith('"') and value.endswith('"'):
+                    value = value[1:-1].encode().decode('unicode_escape')
+
+        return ("const", value)
+
+    def visit_FuncCall(self, node: c_ast.FuncCall) -> Tuple:
+        """Convert function call to IR."""
+        func_name = self.visit(node.name)
+
+        # Process arguments
+        args = []
+        if node.args and hasattr(node.args, 'exprs'):
+            for arg in node.args.exprs:
+                args.append(self.visit(arg))
+
+        # Convert to format compatible with Silu IR
+        return ("call", func_name, tuple(args), tuple())
+
+    def visit_ArrayRef(self, node: c_ast.ArrayRef) -> Tuple:
+        """Convert array reference to IR."""
+        array = self.visit(node.name)
+        subscript = self.visit(node.subscript)
+        return ("subscript", array, subscript)
+
+    def visit_StructRef(self, node: c_ast.StructRef) -> Tuple:
+        """Convert struct member reference to IR."""
+        struct = self.visit(node.name)
+        field = node.field.name if hasattr(node.field, 'name') else str(node.field)
+        return ("attribute", struct, field)
+
+    # ================== Compound Statements ==================
+
+    def visit_Compound(self, node: c_ast.Compound) -> List:
+        """Convert compound statement (block) to list of IR statements."""
+        statements = []
+        if node.block_items:
+            for stmt in node.block_items:
+                result = self.visit(stmt)
+                if result is not None:
+                    statements.append(result)
+        return statements
+
+    def visit_ExprList(self, node: c_ast.ExprList) -> List:
+        """Convert expression list to list of IR expressions."""
+        return [self.visit(expr) for expr in node.exprs]
+
+    # ================== Type Handling ==================
+
+    def _get_type_string(self, type_node) -> str:
+        """Extract type information as a string."""
+        if isinstance(type_node, c_ast.TypeDecl):
+            if isinstance(type_node.type, c_ast.IdentifierType):
+                return ' '.join(type_node.type.names)
+            else:
+                return self._get_type_string(type_node.type)
+        elif isinstance(type_node, c_ast.PtrDecl):
+            base_type = self._get_type_string(type_node.type)
+            return f"{base_type}*"
+        elif isinstance(type_node, c_ast.ArrayDecl):
+            base_type = self._get_type_string(type_node.type)
+            return f"{base_type}[]"
+        elif isinstance(type_node, c_ast.FuncDecl):
+            return "function"
+        elif isinstance(type_node, c_ast.IdentifierType):
+            return ' '.join(type_node.names)
+        else:
+            return str(type(type_node).__name__)
+
+    # ================== Error Handling ==================
+
+    def generic_visit(self, node: c_ast.Node) -> Optional[str]:
+        """Handle unsupported AST nodes."""
+        node_name = type(node).__name__
+        print(f"Warning: Unsupported C construct: {node_name}", file=sys.stderr)
+        return f"<unsupported:{node_name}>"
+
+
+# ================== Main Functions ==================
+
+def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple:
+    """
+    Generate IR from C source code.
+
+    Args:
+        c_code: C source code as a string
+        record_types: Whether to include type information in IR
+
+    Returns:
+        IR tuple representing the C program
+    """
+    try:
+        parser = c_parser.CParser()
+        ast = parser.parse(c_code)
+
+        generator = CIRGenerator(record_types=record_types)
+        ir = generator.visit(ast)
+
+        return ir
+    except Exception as e:
+        print(f"Error generating IR from C code: {e}", file=sys.stderr)
+        raise
+
+
+def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
+    """
+    Generate IR from C source file.
+
+    Args:
+        file_path: Path to C source file
+        record_types: Whether to include type information in IR
+
+    Returns:
+        IR tuple representing the C program
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            c_code = f.read()
+        return generate_ir_from_c_code(c_code, record_types)
+    except FileNotFoundError:
+        print(f"Error: C file '{file_path}' not found.", file=sys.stderr)
+        raise
+    except IOError as e:
+        print(f"Error reading C file '{file_path}': {e}", file=sys.stderr)
+        raise
+
+
+def save_ir_to_file(ir: Tuple, output_path: str, format_type: str = "json") -> None:
+    """
+    Save IR to file.
+
+    Args:
+        ir: IR tuple to save
+        output_path: Output file path
+        format_type: Output format ("json" or "pretty")
+    """
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            if format_type == "json":
+                json.dump(ir, f, indent=2, default=str)
+            else:
+                import pprint
+                f.write(pprint.pformat(ir, width=80))
+    except IOError as e:
+        print(f"Error writing IR file '{output_path}': {e}", file=sys.stderr)
+        raise
+
+
+# ================== Command Line Interface ==================
+
+def main():
+    """Command line interface for C IR generation."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Generate IR from C source code for symbolic execution"
+    )
+    parser.add_argument("input_file", help="Input C source file")
+    parser.add_argument("-o", "--output", help="Output IR file (default: input.ir.json)")
+    parser.add_argument(
+        "--format",
+        choices=["json", "pretty"],
+        default="json",
+        help="Output format (default: json)"
+    )
+    parser.add_argument(
+        "--no-types",
+        action="store_true",
+        help="Don't record type information in IR"
+    )
+
+    args = parser.parse_args()
+
+    # Determine output file name
+    output_file = args.output
+    if not output_file:
+        input_path = args.input_file
+        if input_path.endswith('.c'):
+            output_file = input_path[:-2] + '.ir.json'
+        else:
+            output_file = input_path + '.ir.json'
+
+    try:
+        # Generate IR
+        print(f"Generating IR from {args.input_file}...")
+        ir = generate_ir_from_c_file(args.input_file, record_types=not args.no_types)
+
+        # Save IR
+        print(f"Saving IR to {output_file}...")
+        save_ir_to_file(ir, output_file, args.format)
+
+        print(f"IR generation complete. Output saved to {output_file}")
+
+        # Print summary
+        print(f"\nIR Summary:")
+        print(f"  Format: {args.format}")
+        print(f"  Type info: {'No' if args.no_types else 'Yes'}")
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
