@@ -1062,9 +1062,6 @@ class SymbolicExecutor:
             pass
         return None
 
-    def _is_symbolic_operand(self, operand: SymbolicValue) -> bool:
-        """Check if operand is symbolic"""
-        return operand.type == SymbolicValueType.SYMBOLIC
 
 
 
