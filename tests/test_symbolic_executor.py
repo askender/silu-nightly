@@ -54,7 +54,7 @@ class TestPathCondition:
     def test_false_condition(self):
         """Test false path condition"""
         cond = PathCondition("x > 5", False)
-        assert str(cond) == "not (x > 5)"
+        assert str(cond) == "not x > 5"
 
     def test_negate(self):
         """Test condition negation"""

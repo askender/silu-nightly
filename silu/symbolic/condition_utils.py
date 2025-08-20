@@ -32,7 +32,34 @@ class PathCondition:
         if self.is_true:
             return self.expression
         else:
-            return f"not ({self.expression})"
+            # Check if expression needs parentheses for negation
+            # Simple comparisons don't need extra parentheses
+            if self._is_simple_expression(self.expression):
+                return f"not {self.expression}"
+            else:
+                return f"not ({self.expression})"
+
+    def _is_simple_expression(self, expr: str) -> bool:
+        """Check if expression is simple enough to not need parentheses when negated"""
+        # Simple expressions are single comparisons or variable names
+        simple_patterns = [
+            # Single comparison operators
+            ' > ', ' < ', ' >= ', ' <= ', ' == ', ' != ',
+            # Boolean operators at top level indicate compound expressions
+            ' and ', ' or '
+        ]
+
+        # If it contains 'and' or 'or', it's compound and needs parentheses
+        if ' and ' in expr or ' or ' in expr:
+            return False
+
+        # If it contains simple comparison operators, it's a simple comparison
+        for pattern in simple_patterns[:6]:  # Only comparison operators
+            if pattern in expr:
+                return True
+
+        # Single variable or simple expression
+        return True
 
     def negate(self) -> "PathCondition":
         """Return the negated condition"""

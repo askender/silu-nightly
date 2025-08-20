@@ -698,7 +698,7 @@ class SymbolicExecutor:
         )
         branch_path.add_condition(condition_obj)
 
-        statement = f"{branch_name} {readable_condition}:" if is_true_branch else f"else (not {readable_condition}):"
+        statement = f"{branch_name} {readable_condition}:" if is_true_branch else f"else not {readable_condition}:"
         branch_path.add_statement(statement)
 
         # Execute block
