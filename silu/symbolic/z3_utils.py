@@ -34,89 +34,46 @@ try:
     Z3_AVAILABLE = True
 except ImportError:
     Z3_AVAILABLE = False
-    z3 = None
-
-    # Create dummy classes/functions when Z3 is not available
-    class _DummyZ3:
-        def __getattr__(self, name):
-            return lambda *args, **kwargs: None
-
-    if z3 is None:
-        z3 = _DummyZ3()
-
-    # Dummy functions for when Z3 is not available
-    def Solver():
-        return None
-
-    sat = None
-
-    def And(*args):
-        return None
-
-    def Or(*args):
-        return None
-
-    def Not(*args):
-        return None
-
-    def If(*args):
-        return None
-
-    def IntVal(x):
-        return None
-
-    def BoolVal(x):
-        return None
-
-    def RealVal(x):
-        return None
-
-    def BoolSort(*args):
-        return None
-
-    def Int(*args):
-        return None
-
-    def Real(*args):
-        return None
-
-    def Bool(*args):
-        return None
-
-    def ToReal(*args):
-        return None
-
-    def simplify(*args):
-        return None
 
 
-# Operator mappings from AST to Z3
-BOOLOP_MAP = {ast.And: And, ast.Or: Or}
+# Operator mappings from AST to Z3 (only available when Z3 is imported)
+if Z3_AVAILABLE:
+    BOOLOP_MAP = {ast.And: And, ast.Or: Or}
+else:
+    BOOLOP_MAP = {}
 
-BINOP_MAP = {
-    ast.Add: lambda left, right: left + right,
-    ast.Sub: lambda left, right: left - right,
-    ast.Mult: lambda left, right: left * right,
-    ast.Div: lambda left, right: left / right,
-    ast.FloorDiv: lambda left, right: left // right,
-    ast.Mod: lambda left, right: left % right,
-    ast.Pow: lambda left, right: left**right,
-}
+if Z3_AVAILABLE:
+    BINOP_MAP = {
+        ast.Add: lambda left, right: left + right,
+        ast.Sub: lambda left, right: left - right,
+        ast.Mult: lambda left, right: left * right,
+        ast.Div: lambda left, right: left / right,
+        ast.Mod: lambda left, right: left % right,
+        ast.Pow: lambda left, right: left**right,
+    }
+else:
+    BINOP_MAP = {}
 
-CMP_MAP = {
-    ast.Eq: lambda left, right: left == right,
-    ast.NotEq: lambda left, right: left != right,
-    ast.Lt: lambda left, right: left < right,
-    ast.LtE: lambda left, right: left <= right,
-    ast.Gt: lambda left, right: left > right,
-    ast.GtE: lambda left, right: left >= right,
-}
+if Z3_AVAILABLE:
+    CMP_MAP = {
+        ast.Eq: lambda left, right: left == right,
+        ast.NotEq: lambda left, right: left != right,
+        ast.Lt: lambda left, right: left < right,
+        ast.LtE: lambda left, right: left <= right,
+        ast.Gt: lambda left, right: left > right,
+        ast.GtE: lambda left, right: left >= right,
+    }
+else:
+    CMP_MAP = {}
 
-UNARYOP_MAP = {
-    ast.UAdd: lambda x: x,
-    ast.USub: lambda x: -x,
-    ast.Not: lambda x: Not(x),
-}
+if Z3_AVAILABLE:
+    UNARYOP_MAP = {
+        ast.UAdd: lambda x: x,
+        ast.USub: lambda x: -x,
+        ast.Not: lambda x: Not(x),
+    }
+else:
+    UNARYOP_MAP = {}
 
 
 class Z3OperatorMapper:

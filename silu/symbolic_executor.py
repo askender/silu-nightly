@@ -43,10 +43,7 @@ from .symbolic.report_utils import (
 
 # Import Z3 for enhanced symbolic execution
 if Z3_AVAILABLE:
-    from z3 import Int, IntVal, BoolVal, simplify, And, Not, Or, If, ArrayRef
-else:
-    # Create dummy classes for type checking when Z3 is not available
-    Int = IntVal = BoolVal = simplify = And = Not = Or = If = ArrayRef = None
+    from z3 import And, Or
 
 
 # Configuration Constants
