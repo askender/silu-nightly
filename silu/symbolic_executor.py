@@ -1066,52 +1066,7 @@ class SymbolicExecutor:
         """Check if operand is symbolic"""
         return operand.type == SymbolicValueType.SYMBOLIC
 
-    def _try_create_z3_expression(
-        self, op: str, left: SymbolicValue, right: SymbolicValue
-    ) -> Optional[Any]:
-        """Try to create Z3 expression for the operation"""
-        try:
-            var_dict = getattr(self.current_env, "z3_variables", {})
 
-            # Get Z3 input values
-            left_z3_input = (
-                left.name
-                if left.type == SymbolicValueType.SYMBOLIC
-                else (left.value if hasattr(left, "value") else left)
-            )
-            right_z3_input = (
-                right.name
-                if right.type == SymbolicValueType.SYMBOLIC
-                else (right.value if hasattr(right, "value") else right)
-            )
-
-            left_z3 = to_z3_expr(left_z3_input, var_dict)
-            right_z3 = to_z3_expr(right_z3_input, var_dict)
-
-            if left_z3 is not None and right_z3 is not None:
-                z3_operations = {
-                    "+": lambda left, right: left + right,
-                    "-": lambda left, right: left - right,
-                    "*": lambda left, right: left * right,
-                    "/": lambda left, right: left / right,
-                    "%": lambda left, right: left % right,
-                    "==": lambda left, right: left == right,
-                    "!=": lambda left, right: left != right,
-                    "<": lambda left, right: left < right,
-                    ">": lambda left, right: left > right,
-                    "<=": lambda left, right: left <= right,
-                    ">=": lambda left, right: left >= right,
-                    "and": lambda left, right: And(left, right),
-                    "or": lambda left, right: Or(left, right),
-                }
-
-                if op in z3_operations:
-                    return z3_operations[op](left_z3, right_z3)
-        except (TypeError, AttributeError, ValueError) as e:
-            # Z3 expression creation failed, fallback to symbolic representation
-            if self.debug:
-                print(f"Debug: Z3 expression creation failed for {op}: {e}")
-        return None
 
     def _execute_chained_compare(self, ir_node: Tuple) -> SymbolicValue:
         """Execute chained comparison"""
