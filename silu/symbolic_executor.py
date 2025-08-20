@@ -29,6 +29,7 @@ from .symbolic.builtin_utils import (
     symbolic_type, symbolic_isinstance, symbolic_len,
     symbolic_print, simplify_args_display
 )
+from .symbolic.condition_utils import PathCondition
 
 # Removed ir_to_source dependency - implemented simplified versions internally
 
@@ -40,35 +41,6 @@ if Z3_AVAILABLE:
 
 
 
-@dataclass
-class PathCondition:
-    """Represents a condition that must be satisfied for a path to be taken"""
-    expression: str
-    is_true: bool
-    source_line: Optional[int] = None
-    z3_constraint: Optional[Any] = None
-
-
-
-    def __str__(self) -> str:
-        if self.is_true:
-            return self.expression
-        else:
-            return f"not ({self.expression})"
-
-    def negate(self) -> 'PathCondition':
-        """Return the negated condition"""
-        negated_constraint = None
-        if self.z3_constraint is not None and Z3_AVAILABLE:
-            from z3 import Not
-            negated_constraint = Not(self.z3_constraint)
-
-        return PathCondition(
-            expression=self.expression,
-            is_true=not self.is_true,
-            source_line=self.source_line,
-            z3_constraint=negated_constraint
-        )
 
 
 @dataclass
