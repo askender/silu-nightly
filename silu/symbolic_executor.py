@@ -22,6 +22,13 @@ from .symbolic.z3_utils import (
 from .symbolic.loop_utils import (
     LoopAnalyzer, LoopBound
 )
+from .symbolic.builtin_utils import (
+    SymbolicValueType, SymbolicValue,
+    create_concrete_value, create_symbolic_value, create_expression_value,
+    symbolic_int, symbolic_float, symbolic_str, symbolic_bool,
+    symbolic_type, symbolic_isinstance, symbolic_len,
+    symbolic_print, simplify_args_display
+)
 
 # Removed ir_to_source dependency - implemented simplified versions internally
 
@@ -30,32 +37,7 @@ if Z3_AVAILABLE:
     from z3 import Int, IntVal, BoolVal, simplify, And, Not, Or, If, ArrayRef, BoolSort
 
 
-class SymbolicValueType(Enum):
-    """Types of symbolic values"""
-    SYMBOLIC = "symbolic"
-    CONCRETE = "concrete"
-    EXPRESSION = "expression"
 
-
-@dataclass
-class SymbolicValue:
-    """Represents a symbolic value in the execution"""
-    type: SymbolicValueType
-    value: Any
-    name: Optional[str] = None
-    constraints: List[str] = field(default_factory=list)
-    original_ir: Optional[Tuple] = None
-
-    def __str__(self) -> str:
-        if self.type == SymbolicValueType.CONCRETE:
-            return str(self.value)
-        elif self.type == SymbolicValueType.SYMBOLIC:
-            return self.name or f"sym_{id(self)}"
-        else:  # EXPRESSION
-            return str(self.value)
-
-    def __repr__(self) -> str:
-        return f"SymbolicValue({self.type.value}, {self.value}, {self.name})"
 
 
 @dataclass
@@ -172,7 +154,7 @@ class SymbolicEnvironment:
             from .symbolic.z3_utils import create_z3_variable
             self.z3_variables[name] = create_z3_variable(name, var_type)
 
-        return SymbolicValue(SymbolicValueType.SYMBOLIC, None, name)
+        return create_symbolic_value(name)
 
     def get_variable(self, name: str) -> SymbolicValue:
         """Get a variable value"""
@@ -226,78 +208,18 @@ class SymbolicExecutor:
     def _init_builtins(self):
         """Initialize built-in functions"""
         builtins = {
-            'print': self._symbolic_print,
-            'int': self._symbolic_int,
-            'float': self._symbolic_float,
-            'str': self._symbolic_str,
-            'bool': self._symbolic_bool,
-            'type': self._symbolic_type,
-            'isinstance': self._symbolic_isinstance,
-            'len': self._symbolic_len,
+            'print': lambda *args: symbolic_print(*args, current_path=self.current_path, simplify_display_func=simplify_args_display),
+            'int': symbolic_int,
+            'float': symbolic_float,
+            'str': symbolic_str,
+            'bool': symbolic_bool,
+            'type': symbolic_type,
+            'isinstance': symbolic_isinstance,
+            'len': symbolic_len,
         }
         self.global_env.functions.update(builtins)
 
-    def _symbolic_print(self, *args) -> SymbolicValue:
-        """Symbolic version of print function"""
-        if self.current_path:
-            self.current_path.add_statement(f"print({self._simplify_args_display(args)})")
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
-    def _symbolic_int(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of int conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            try:
-                return SymbolicValue(SymbolicValueType.CONCRETE, int(value.value))
-            except (ValueError, TypeError):
-                return SymbolicValue(SymbolicValueType.EXPRESSION, f"int({value})")
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"int({value})")
-
-    def _symbolic_float(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of float conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            try:
-                return SymbolicValue(SymbolicValueType.CONCRETE, float(value.value))
-            except (ValueError, TypeError):
-                return SymbolicValue(SymbolicValueType.EXPRESSION, f"float({value})")
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"float({value})")
-
-    def _symbolic_str(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of str conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            return SymbolicValue(SymbolicValueType.CONCRETE, str(value.value))
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"str({value})")
-
-    def _symbolic_bool(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of bool conversion"""
-        if value.type == SymbolicValueType.CONCRETE:
-            return SymbolicValue(SymbolicValueType.CONCRETE, bool(value.value))
-        else:
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"bool({value})")
-
-    def _symbolic_type(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of type function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"type({value})")
-
-    def _symbolic_isinstance(self, value: SymbolicValue, type_obj: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of isinstance function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"isinstance({value}, {type_obj})")
-
-    def _symbolic_len(self, value: SymbolicValue) -> SymbolicValue:
-        """Symbolic version of len function"""
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"len({value})")
-
-    def _simplify_args_display(self, args) -> str:
-        """Simplify arguments display for better readability"""
-        simplified_args = []
-        for arg in args:
-            if hasattr(arg, 'value') and arg.type == SymbolicValueType.CONCRETE:
-                simplified_args.append(str(arg.value))
-            else:
-                simplified_args.append(str(arg))
-        return ', '.join(simplified_args)
 
     def _enhanced_ast_to_z3(self, node, var_dict):
         """Enhanced AST to Z3 conversion with support for more node types"""
@@ -495,7 +417,7 @@ class SymbolicExecutor:
     def _process_enhanced_for_loop(self, loop_var_name, iterable_type, iterable_data, body_ir, loop_level):
         """Enhanced for loop processing with precise Z3 constraint generation"""
         if not self.current_path:
-            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_concrete_value(None)
 
         original_path = self.current_path
         original_env = self.current_env.copy()
@@ -585,7 +507,7 @@ class SymbolicExecutor:
 
         # Reset current path
         self.current_path = None
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+        return create_concrete_value(None)
 
     def execute_program(self, ir_program: Tuple, include_function_paths=None) -> List[ExecutionPath]:
         """Execute an IR program symbolically and return all paths"""
@@ -695,7 +617,7 @@ class SymbolicExecutor:
             # Handle string identifiers as variable references
             if isinstance(ir_node, str) and ir_node.isidentifier():
                 return self.current_env.get_variable(ir_node)
-            return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
+            return create_concrete_value(ir_node)
 
         op = ir_node[0]
 
@@ -725,18 +647,18 @@ class SymbolicExecutor:
         elif op == "comparison":
             return self._execute_comparison(ir_node)
         elif isinstance(op, str) and op.isdigit():
-            return SymbolicValue(SymbolicValueType.CONCRETE, int(op))
+            return create_concrete_value(int(op))
         else:
             # Variable reference or literal
             if isinstance(op, str):
                 return self.current_env.get_variable(op)
-            return SymbolicValue(SymbolicValueType.CONCRETE, op)
+            return create_concrete_value(op)
 
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a module IR node"""
         for stmt in ir_node[1]:
             self._execute_ir(stmt)
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+        return create_concrete_value(None)
 
     def _execute_assign(self, ir_node: Tuple) -> SymbolicValue:
         """Execute an assignment IR node"""
@@ -759,13 +681,15 @@ class SymbolicExecutor:
     def _execute_const(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a constant IR node"""
         _, value = ir_node
-        return SymbolicValue(SymbolicValueType.CONCRETE, value, original_ir=ir_node)
+        result = create_concrete_value(value)
+        result.original_ir = ir_node
+        return result
 
     def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a literal IR node"""
         if len(ir_node) > 1:
-            return SymbolicValue(SymbolicValueType.CONCRETE, ir_node[1])
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_concrete_value(ir_node[1])
+        return create_concrete_value(None)
 
     def _execute_if(self, ir_node: Tuple) -> SymbolicValue:
         """Execute an if statement symbolically - creates multiple paths with enhanced Z3 constraints"""
@@ -791,12 +715,12 @@ class SymbolicExecutor:
             else:
                 if else_block:
                     self._execute_ir(else_block)
-            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_concrete_value(None)
 
         if len(self.paths) >= self.max_paths:
             if self.current_path:
                 self.current_path.add_statement(f"Path limit reached at if condition: {condition_str}")
-            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_concrete_value(None)
 
         # Store current state
         original_path = self.current_path
@@ -875,7 +799,7 @@ class SymbolicExecutor:
         else:
             self.current_path = None
 
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+        return create_concrete_value(None)
 
     def _execute_while(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a while loop symbolically with enhanced Z3 constraint analysis"""
@@ -891,7 +815,7 @@ class SymbolicExecutor:
         if condition.type == SymbolicValueType.CONCRETE and not condition.value:
             if self.current_path:
                 self.current_path.add_statement("# Loop not entered (condition false)")
-            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_concrete_value(None)
 
         original_path = self.current_path
         original_env = self.current_env.copy()
@@ -987,12 +911,12 @@ class SymbolicExecutor:
         # End current path as we've split into multiple paths
         self.current_path = None
 
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+        return create_concrete_value(None)
 
     def _execute_for(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a for loop symbolically with enhanced range analysis"""
         if len(ir_node) < 4:
-            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_concrete_value(None)
 
         # Handle different IR formats: ('for', var, iter_expr, body, extras...)
         _, var_name, iter_expr, body_ir = ir_node[:4]
@@ -1058,7 +982,8 @@ class SymbolicExecutor:
             # Calculate iteration value
             if isinstance(start_val, int) and isinstance(step_val, int):
                 iter_val = start_val + k * step_val
-                loop_var = SymbolicValue(SymbolicValueType.CONCRETE, iter_val, var_name)
+                loop_var = create_concrete_value(iter_val)
+                loop_var.name = var_name
             else:
                 # Symbolic iteration value
                 loop_var = self.current_env.create_symbol(f"{var_name}_{k}")
@@ -1107,7 +1032,7 @@ class SymbolicExecutor:
 
         # End current path
         self.current_path = None
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+        return create_concrete_value(None)
 
     def _extract_literal_value(self, expr):
         """Extract literal value from IR expression"""
@@ -1133,7 +1058,7 @@ class SymbolicExecutor:
         else:
             self._execute_ir(body_ir)
 
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+        return create_concrete_value(None)
 
     def _execute_func_def(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function definition and analyze its internal paths"""
@@ -1164,7 +1089,7 @@ class SymbolicExecutor:
                 if func_path not in self.paths:
                     self.paths.append(func_path)
 
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+        return create_concrete_value(None)
 
     def _execute_call(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function call symbolically"""
@@ -1197,14 +1122,14 @@ class SymbolicExecutor:
                 args_str = ", ".join(str(arg) for arg in args)
                 self.current_path.add_statement(f"{result} = {func_name}({args_str}) # unknown function")
             return result
-        return SymbolicValue(SymbolicValueType.EXPRESSION, f"{func_name}({args_str})")
+        return create_expression_value(f"{func_name}({args_str})")
 
     def _execute_return(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a return statement"""
         if len(ir_node) > 1:
             value = self._execute_ir(ir_node[1])
         else:
-            value = SymbolicValue(SymbolicValueType.CONCRETE, None)
+            value = create_concrete_value(None)
 
         if self.current_path:
             self.current_path.return_value = value
@@ -1228,9 +1153,9 @@ class SymbolicExecutor:
             # Unary operation
             op, operand_ir = ir_node
             operand = self._execute_ir(operand_ir)
-            return SymbolicValue(SymbolicValueType.EXPRESSION, f"{op}{operand}")
+            return create_expression_value(f"{op}{operand}")
         else:
-            return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_concrete_value(None)
 
         # Try concrete evaluation if both operands are concrete
         if left.type == SymbolicValueType.CONCRETE and right.type == SymbolicValueType.CONCRETE:
@@ -1247,7 +1172,7 @@ class SymbolicExecutor:
                 }
                 if op in operators:
                     result = operators[op](left.value, right.value)
-                    return SymbolicValue(SymbolicValueType.CONCRETE, result)
+                    return create_concrete_value(result)
             except (ZeroDivisionError, TypeError, ValueError):
                 pass
 
@@ -1257,7 +1182,7 @@ class SymbolicExecutor:
         # For symbolic comparisons, always create symbolic expressions
         if (left.type == SymbolicValueType.SYMBOLIC or right.type == SymbolicValueType.SYMBOLIC) and op in ['==', '!=', '<', '>', '<=', '>=']:
             # This is a symbolic comparison, always return an expression
-            return SymbolicValue(SymbolicValueType.EXPRESSION, expr)
+            return create_expression_value(expr)
 
         # Try to create Z3 expression for constraint generation
         if Z3_AVAILABLE:
@@ -1286,14 +1211,14 @@ class SymbolicExecutor:
                     if op in z3_ops:
                         z3_expr = z3_ops[op](left_z3, right_z3)
                         # Store the tuple representation instead of Z3 expression to avoid conversion issues
-                        result = SymbolicValue(SymbolicValueType.EXPRESSION, expr)
+                        result = create_expression_value(expr)
                         result.constraints.append(str(z3_expr))
                         return result
 
             except Exception:
                 pass
 
-        return SymbolicValue(SymbolicValueType.EXPRESSION, expr)
+        return create_expression_value(expr)
 
     def _execute_chained_compare(self, ir_node: Tuple) -> SymbolicValue:
         """Execute chained comparison"""
@@ -1304,8 +1229,8 @@ class SymbolicExecutor:
             right = self._execute_ir(right_ir)
 
             # Create comparison expression
-            return SymbolicValue(SymbolicValueType.EXPRESSION, (op, left, right))
-        return SymbolicValue(SymbolicValueType.CONCRETE, None)
+            return create_expression_value((op, left, right))
+        return create_concrete_value(None)
 
     def _execute_comparison(self, ir_node: Tuple) -> SymbolicValue:
         """Execute comparison operations"""
@@ -1313,7 +1238,7 @@ class SymbolicExecutor:
 
     def _execute_block(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a block of statements"""
-        result = SymbolicValue(SymbolicValueType.CONCRETE, None)
+        result = create_concrete_value(None)
         if len(ir_node) > 1:
             statements = ir_node[1] if isinstance(ir_node[1], (tuple, list)) else ir_node[1:]
             for stmt in statements:
