@@ -756,7 +756,7 @@ class SymbolicExecutor:
             try:
                 # Simple Z3 constraint creation for exit condition
                 exit_z3_constraint = f"not ({readable_condition})"
-            except:
+            except Exception:
                 pass
 
         exit_condition = PathCondition(
@@ -787,7 +787,7 @@ class SymbolicExecutor:
                 try:
                     # Simple Z3 constraint creation for iteration condition
                     iter_z3_constraint = condition_str
-                except:
+                except Exception:
                     pass
 
             iter_condition = PathCondition(
@@ -1155,19 +1155,19 @@ class SymbolicExecutor:
                 if left_z3 is not None and right_z3 is not None:
                     # Create Z3 expression based on operator
                     z3_ops = {
-                        "+": lambda l, r: l + r,
-                        "-": lambda l, r: l - r,
-                        "*": lambda l, r: l * r,
-                        "/": lambda l, r: l / r,
-                        "%": lambda l, r: l % r,
-                        "==": lambda l, r: l == r,
-                        "!=": lambda l, r: l != r,
-                        "<": lambda l, r: l < r,
-                        ">": lambda l, r: l > r,
-                        "<=": lambda l, r: l <= r,
-                        ">=": lambda l, r: l >= r,
-                        "and": lambda l, r: And(l, r),
-                        "or": lambda l, r: Or(l, r),
+                        "+": lambda left, right: left + right,
+                        "-": lambda left, right: left - right,
+                        "*": lambda left, right: left * right,
+                        "/": lambda left, right: left / right,
+                        "%": lambda left, right: left % right,
+                        "==": lambda left, right: left == right,
+                        "!=": lambda left, right: left != right,
+                        "<": lambda left, right: left < right,
+                        ">": lambda left, right: left > right,
+                        "<=": lambda left, right: left <= right,
+                        ">=": lambda left, right: left >= right,
+                        "and": lambda left, right: And(left, right),
+                        "or": lambda left, right: Or(left, right),
                     }
 
                     if op in z3_ops:
@@ -1258,7 +1258,7 @@ class SymbolicExecutor:
                     left_readable = self._make_condition_readable(left_parsed)
                     right_readable = self._make_condition_readable(right_parsed)
                     return f"{left_readable} {operator} {right_readable}"
-                except:
+                except Exception:
                     pass
 
             # Handle simple tuple-like expressions
@@ -1271,7 +1271,7 @@ class SymbolicExecutor:
                     parsed = eval(condition)
                     if isinstance(parsed, tuple):
                         return self._make_condition_readable(parsed)
-                except:
+                except Exception:
                     pass
 
         return str(condition)

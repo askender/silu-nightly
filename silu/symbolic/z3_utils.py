@@ -23,8 +23,6 @@ try:
         IntVal,
         BoolVal,
         RealVal,
-        IntNumRef,
-        BoolRef,
         BoolSort,
         Int,
         Real,
@@ -43,22 +41,22 @@ except ImportError:
 BOOLOP_MAP = {ast.And: And, ast.Or: Or}
 
 BINOP_MAP = {
-    ast.Add: lambda l, r: l + r,
-    ast.Sub: lambda l, r: l - r,
-    ast.Mult: lambda l, r: l * r,
-    ast.Div: lambda l, r: l / r,
-    ast.FloorDiv: lambda l, r: l // r,
-    ast.Mod: lambda l, r: l % r,
-    ast.Pow: lambda l, r: l**r,
+    ast.Add: lambda left, right: left + right,
+    ast.Sub: lambda left, right: left - right,
+    ast.Mult: lambda left, right: left * right,
+    ast.Div: lambda left, right: left / right,
+    ast.FloorDiv: lambda left, right: left // right,
+    ast.Mod: lambda left, right: left % right,
+    ast.Pow: lambda left, right: left**right,
 }
 
 CMP_MAP = {
-    ast.Eq: lambda l, r: l == r,
-    ast.NotEq: lambda l, r: l != r,
-    ast.Lt: lambda l, r: l < r,
-    ast.LtE: lambda l, r: l <= r,
-    ast.Gt: lambda l, r: l > r,
-    ast.GtE: lambda l, r: l >= r,
+    ast.Eq: lambda left, right: left == right,
+    ast.NotEq: lambda left, right: left != right,
+    ast.Lt: lambda left, right: left < right,
+    ast.LtE: lambda left, right: left <= right,
+    ast.Gt: lambda left, right: left > right,
+    ast.GtE: lambda left, right: left >= right,
 }
 
 UNARYOP_MAP = {
@@ -496,7 +494,7 @@ def enhanced_ast_to_z3(
                 try:
                     if hasattr(operand, "sort") and operand.sort() != BoolSort():
                         operand = operand != 0
-                except:
+                except Exception:
                     pass
             return Not(operand) if operand else None
         return None
@@ -1054,8 +1052,6 @@ def parse_condition_string(
     right_str = right_str.strip()
 
     # Determine which is variable and which is constant
-    left_is_var = False
-    right_is_var = False
     left_value = None
     right_value = None
 
@@ -1070,7 +1066,7 @@ def parse_condition_string(
                 left_value = BoolVal(left_str.lower() == "true")
             else:
                 # It's a variable
-                left_is_var = True
+
                 if left_str not in var_dict:
                     var_dict[left_str] = create_z3_variable(left_str)
                     program_variables.add(left_str)
@@ -1087,7 +1083,7 @@ def parse_condition_string(
                 right_value = BoolVal(right_str.lower() == "true")
             else:
                 # It's a variable
-                right_is_var = True
+
                 if right_str not in var_dict:
                     var_dict[right_str] = create_z3_variable(right_str)
                     program_variables.add(right_str)
@@ -1142,7 +1138,7 @@ def parse_operands(operands_str: str) -> List[Any]:
                         operands.append(second_operand)
 
                 return operands
-        except:
+        except Exception:
             pass
 
     # Fallback: try to split by spaces and parse each part
@@ -1157,7 +1153,7 @@ def parse_operands(operands_str: str) -> List[Any]:
                 if part.startswith("(") and part.endswith(")"):
                     try:
                         operands.append(ast.literal_eval(part))
-                    except:
+                    except Exception:
                         operands.append(part)
                 else:
                     operands.append(part)

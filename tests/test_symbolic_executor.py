@@ -60,7 +60,7 @@ class TestPathCondition:
         """Test condition negation"""
         cond = PathCondition("x > 5", True)
         negated = cond.negate()
-        assert negated.is_true == False
+        assert not negated.is_true
         assert negated.expression == "x > 5"
 
 
@@ -73,7 +73,7 @@ class TestExecutionPath:
         assert path.path_id == "path_0"
         assert len(path.conditions) == 0
         assert len(path.statements) == 0
-        assert path.is_satisfiable() == True
+        assert path.is_satisfiable()
 
     def test_add_conditions(self):
         """Test adding conditions to path"""
@@ -85,7 +85,7 @@ class TestExecutionPath:
         path.add_condition(cond2)
 
         assert len(path.conditions) == 2
-        assert path.is_satisfiable() == True
+        assert path.is_satisfiable()
 
     def test_contradictory_conditions(self):
         """Test contradictory conditions"""
@@ -96,7 +96,7 @@ class TestExecutionPath:
         path.add_condition(cond1)
         path.add_condition(cond2)
 
-        assert path.is_satisfiable() == False
+        assert not path.is_satisfiable()
 
     def test_to_dict(self):
         """Test path serialization"""
@@ -896,13 +896,13 @@ class TestCaseGeneration:
 
         # Check first path (x > 5)
         path_1 = enhanced_paths[0]
-        assert path_1.satisfiable == True
+        assert path_1.satisfiable
         assert "x" in path_1.test_inputs
         assert path_1.test_inputs["x"] > 5  # Should satisfy x > 5
 
         # Check second path (not (x > 5), i.e., x <= 5)
         path_2 = enhanced_paths[1]
-        assert path_2.satisfiable == True
+        assert path_2.satisfiable
         assert "x" in path_2.test_inputs
         assert path_2.test_inputs["x"] <= 5  # Should satisfy x <= 5
 
@@ -920,7 +920,7 @@ class TestCaseGeneration:
         assert len(enhanced_paths) == 1
         enhanced_path = enhanced_paths[0]
 
-        assert enhanced_path.satisfiable == True
+        assert enhanced_path.satisfiable
         assert "a" in enhanced_path.test_inputs
         assert "b" in enhanced_path.test_inputs
 
@@ -945,7 +945,7 @@ class TestCaseGeneration:
         enhanced_path = enhanced_paths[0]
 
         # Should be marked as unsatisfiable
-        assert enhanced_path.satisfiable == False
+        assert not enhanced_path.satisfiable
         assert enhanced_path.test_inputs is None
 
     def test_no_conditions_path(self):
@@ -958,7 +958,7 @@ class TestCaseGeneration:
         assert len(enhanced_paths) == 1
         enhanced_path = enhanced_paths[0]
 
-        assert enhanced_path.satisfiable == True
+        assert enhanced_path.satisfiable
         assert enhanced_path.test_inputs == {}
 
     def test_equality_condition_test_case_generation(self):
@@ -973,7 +973,7 @@ class TestCaseGeneration:
         assert len(enhanced_paths) == 1
         enhanced_path = enhanced_paths[0]
 
-        assert enhanced_path.satisfiable == True
+        assert enhanced_path.satisfiable
         assert "x" in enhanced_path.test_inputs
         assert enhanced_path.test_inputs["x"] == 42
 
@@ -989,7 +989,7 @@ class TestCaseGeneration:
         assert len(enhanced_paths) == 1
         enhanced_path = enhanced_paths[0]
 
-        assert enhanced_path.satisfiable == True
+        assert enhanced_path.satisfiable
         assert "x" in enhanced_path.test_inputs
         assert enhanced_path.test_inputs["x"] != 42
 

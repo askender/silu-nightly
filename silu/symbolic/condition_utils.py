@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 # Z3 availability check
 try:
-    import z3
+    import z3  # noqa: F401
 
     Z3_AVAILABLE = True
 except ImportError:

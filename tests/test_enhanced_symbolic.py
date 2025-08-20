@@ -15,7 +15,7 @@ from silu.symbolic_executor import (
 # Check if Z3 is available for testing
 try:
     from silu.symbolic.z3_utils import Z3_AVAILABLE, check_path_satisfiability
-    from silu.symbolic.loop_utils import LoopAnalyzer, LoopType, LoopBound
+    from silu.symbolic.loop_utils import LoopAnalyzer
 
     Z3_TESTS_ENABLED = Z3_AVAILABLE
 except ImportError:

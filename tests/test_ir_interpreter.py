@@ -71,7 +71,7 @@ class TestIRInterpreter:
         # Test type function
         ir = ("module", (("assign", "x", ("call", "type", (42,), ()), None),))
         self.interpreter.execute_program(ir)
-        assert self.interpreter._get_variable("x") == int
+        assert self.interpreter._get_variable("x") is int
 
     def test_function_definition_and_call(self):
         """Test user-defined functions."""
@@ -395,13 +395,13 @@ class TestIRExecutionFromString:
     def test_simple_execution(self):
         """Test executing IR from string."""
         ir_string = '("module", (("assign", "x", 42, null),))'
-        result = execute_ir_from_string(ir_string)
+        execute_ir_from_string(ir_string)
         # The function doesn't return the variable values, but we can test that it doesn't error
 
     def test_json_format_execution(self):
         """Test executing IR from JSON string."""
         ir_json = '["module", [["assign", "x", 42, null]]]'
-        result = execute_ir_from_string(ir_json)
+        execute_ir_from_string(ir_json)
         # The function doesn't return the variable values, but we can test that it doesn't error
 
 

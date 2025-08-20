@@ -13,7 +13,6 @@ from typing import Any
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
 from silu.ir_interpreter import (
-    IRInterpreter,
     execute_ir_from_file,
     execute_ir_from_string,
 )
@@ -87,13 +86,12 @@ def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> No
 def run_ir_interpreter(ir_source: str, **kwargs) -> None:
     """Run the IR interpreter on IR code."""
     try:
-        interpreter = IRInterpreter()
         if ir_source.strip().startswith(("[", "(")):
             # Direct IR string
-            result = execute_ir_from_string(ir_source)
+            execute_ir_from_string(ir_source)
         else:
             # Treat as filename
-            result = execute_ir_from_file(ir_source)
+            execute_ir_from_file(ir_source)
     except Exception as e:
         print(f"Error executing IR: {e}", file=sys.stderr)
         sys.exit(1)

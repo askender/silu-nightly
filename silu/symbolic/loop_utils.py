@@ -255,7 +255,7 @@ class LoopAnalyzer:
 
         if loop_type == LoopType.RANGE:
             bounds = loop_data.get("bounds")
-            var_name = loop_data.get("variable", "i")
+
             max_iter = loop_data.get("max_iterations", self.max_iterations)
 
             if bounds:

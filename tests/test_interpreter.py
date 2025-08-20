@@ -452,10 +452,10 @@ while True:
 
     def test_type_function(self):
         interpreter = SiluInterpreter()
-        assert interpreter.env.vars["type"](42) == int
-        assert interpreter.env.vars["type"](3.14) == float
-        assert interpreter.env.vars["type"]("hello") == str
-        assert interpreter.env.vars["type"](True) == bool
+        assert interpreter.env.vars["type"](42) is int
+        assert interpreter.env.vars["type"](3.14) is float
+        assert interpreter.env.vars["type"]("hello") is str
+        assert interpreter.env.vars["type"](True) is bool
 
     @pytest.mark.parametrize(
         "func_name,input_val,expected",
