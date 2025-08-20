@@ -136,9 +136,11 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     try:
         include_function_paths = kwargs.get("include_function_paths", False)
         performance_mode = kwargs.get("performance_mode", False)
+        debug = kwargs.get("debug", False)
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
+            debug=debug,
         )
         simplify = kwargs.get("simplify", False)
         solve = kwargs.get("solve", False)
@@ -158,6 +160,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                     source,
                     include_function_paths=include_function_paths,
                     performance_mode=performance_mode,
+                    debug=debug,
                 )
         else:
             # Execute from string
@@ -368,6 +371,9 @@ Examples:
         action="store_true",
         help="Enable performance optimizations for faster execution with simplified analysis",
     )
+    symbolic_parser.add_argument(
+        "--debug", action="store_true", help="Enable debug mode with verbose output"
+    )
 
     return parser
 
@@ -517,6 +523,7 @@ def main() -> None:
                     args, "include_function_paths", False
                 ),
                 "performance_mode": getattr(args, "performance_mode", False),
+                "debug": getattr(args, "debug", False),
             }
 
             if args.source:

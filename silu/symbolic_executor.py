@@ -646,7 +646,7 @@ class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
 
     def __init__(
-        self, include_function_paths: bool = False, performance_mode: bool = False
+        self, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
     ):
         self.global_env = SymbolicEnvironment()
         self.current_env = self.global_env
@@ -669,6 +669,7 @@ class SymbolicExecutor:
         self.function_analyses: Dict[str, List[ExecutionPath]] = {}
         self.include_function_paths = include_function_paths
         self.performance_mode = performance_mode
+        self.debug = debug
 
         # Initialize handlers
         self._init_handlers()
@@ -1106,8 +1107,10 @@ class SymbolicExecutor:
 
                 if op in z3_operations:
                     return z3_operations[op](left_z3, right_z3)
-        except Exception:
-            pass
+        except (TypeError, AttributeError, ValueError) as e:
+            # Z3 expression creation failed, fallback to symbolic representation
+            if self.debug:
+                print(f"Debug: Z3 expression creation failed for {op}: {e}")
         return None
 
     def _execute_chained_compare(self, ir_node: Tuple) -> SymbolicValue:
@@ -1128,8 +1131,10 @@ class SymbolicExecutor:
         if Z3_AVAILABLE and hasattr(condition, "value"):
             try:
                 return to_z3_expr(condition.value, self.current_env.z3_variables)
-            except Exception:
-                pass
+            except (TypeError, AttributeError, ValueError) as e:
+                # Z3 constraint generation failed, will proceed without constraint
+                if self.debug:
+                    print(f"Debug: Z3 constraint generation failed: {e}")
         return None
 
     def _make_condition_readable(self, condition: Any) -> str:
@@ -1152,7 +1157,10 @@ class SymbolicExecutor:
 
         try:
             return self._convert_expression_readable(condition)
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            # Expression conversion failed, use string representation
+            if self.debug:
+                print(f"Debug: Condition readability conversion failed: {e}")
             return str(condition)
 
     def _simplify_display(self, value: Any) -> str:
@@ -1161,7 +1169,8 @@ class SymbolicExecutor:
             if hasattr(value, "original_ir") and value.original_ir:
                 try:
                     return self._convert_value_display(value.original_ir)
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
+                    # Original IR conversion failed, continue with other display options
                     pass
 
             if value.type == SymbolicValueType.CONCRETE:
@@ -1173,7 +1182,10 @@ class SymbolicExecutor:
 
         try:
             return self._convert_value_display(value)
-        except Exception:
+        except (AttributeError, TypeError, ValueError) as e:
+            # Value display conversion failed, use string representation
+            if self.debug:
+                print(f"Debug: Value display conversion failed: {e}")
             return str(value)
 
     def _convert_expression_readable(self, expr: Any) -> str:
@@ -1330,7 +1342,7 @@ class SymbolicExecutor:
 
 # Utility functions for external access
 def execute_symbolic_from_file(
-    file_path: str, include_function_paths: bool = False, performance_mode: bool = False
+    file_path: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
 ) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR file"""
     try:
@@ -1341,6 +1353,7 @@ def execute_symbolic_from_file(
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
+            debug=debug,
         )
         return executor.execute_program(ir_program)
 
@@ -1349,7 +1362,7 @@ def execute_symbolic_from_file(
 
 
 def execute_symbolic_from_string(
-    ir_string: str, include_function_paths: bool = False, performance_mode: bool = False
+    ir_string: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
 ) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR string"""
     try:
@@ -1357,6 +1370,7 @@ def execute_symbolic_from_string(
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
+            debug=debug,
         )
         return executor.execute_program(ir_program)
 
