@@ -760,6 +760,13 @@ class SymbolicExecutor:
         """Dispatch IR node to appropriate handler method"""
         op = ir_node[0]
 
+        # Binary operations that should use _execute_binary_op
+        binary_ops = {
+            "+", "-", "*", "/", "//", "%", "**",
+            "==", "!=", "<", ">", "<=", ">=",
+            "and", "or", "not"
+        }
+
         dispatch_table = {
             "module": self._execute_module,
             "name": self._execute_name,
@@ -774,27 +781,12 @@ class SymbolicExecutor:
             "comparison": self._execute_comparison,
         }
 
+        # Add binary operations to dispatch table
+        for binary_op in binary_ops:
+            dispatch_table[binary_op] = self._execute_binary_op
+
         if op in dispatch_table:
             return dispatch_table[op](ir_node)
-        elif op in [
-            "+",
-            "-",
-            "*",
-            "/",
-            "//",
-            "%",
-            "**",
-            "==",
-            "!=",
-            "<",
-            ">",
-            "<=",
-            ">=",
-            "and",
-            "or",
-            "not",
-        ]:
-            return self._execute_binary_op(ir_node)
         elif isinstance(op, str) and op.isdigit():
             return create_concrete_value(int(op))
         else:
