@@ -943,8 +943,24 @@ class TestCaseGeneration:
         # Should generate 2 paths: x > 0 and x <= 0
         assert len(paths) >= 2
 
+        # Debug: Print path conditions before enhancement
+        print(f"\n=== DEBUG: Original paths ({len(paths)}) ===")
+        for i, path in enumerate(paths):
+            print(f"Path {i}: {path.path_id}")
+            print(f"  Conditions: {[str(c) for c in path.conditions]}")
+            print(f"  Variables: {path.variables}")
+
         # Enhance with test cases
         enhanced_paths = self.executor.enhance_paths_with_test_cases(paths)
+
+        # Debug: Print enhanced paths
+        print(f"\n=== DEBUG: Enhanced paths ({len(enhanced_paths)}) ===")
+        for i, path in enumerate(enhanced_paths):
+            print(f"Path {i}: {path.path_id}")
+            print(f"  Conditions: {[str(c) for c in path.conditions]}")
+            print(f"  Satisfiable: {getattr(path, 'satisfiable', 'N/A')}")
+            print(f"  Test inputs: {getattr(path, 'test_inputs', 'N/A')}")
+            print(f"  Z3 errors: {getattr(path, 'z3_errors', 'N/A')}")
 
         # Find the paths with conditions
         paths_with_conditions = [p for p in enhanced_paths if p.conditions]
@@ -962,7 +978,7 @@ class TestCaseGeneration:
                     has_negative_test = True
 
         # We should have both positive and negative test cases
-        assert has_positive_test or has_negative_test, "Should generate at least one meaningful test case"
+        assert has_positive_test or has_negative_test, f"Should generate at least one meaningful test case. Paths: {[(p.path_id, getattr(p, 'test_inputs', None)) for p in enhanced_paths]}"
 
 
 if __name__ == "__main__":
