@@ -6,7 +6,7 @@ This module provides utilities for handling builtin functions in symbolic execut
 including type conversions and other standard Python builtins.
 """
 
-from typing import Any
+from typing import Any, Optional
 from enum import Enum
 
 
@@ -21,7 +21,7 @@ class SymbolicValueType(Enum):
 class SymbolicValue:
     """Represents a symbolic value that can be either concrete or an expression"""
 
-    def __init__(self, value_type: SymbolicValueType, value: Any, name: str = None):
+    def __init__(self, value_type: SymbolicValueType, value: Any, name: Optional[str] = None):
         self.type = value_type
         self.value = value
         self.name = name
@@ -75,7 +75,7 @@ def symbolic_type_conversion(
         try:
             converted = converter_func(value.value)
             return create_concrete_value(converted)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError, AttributeError):
             return create_expression_value(f"{func_name}({value})")
     else:
         return create_expression_value(f"{func_name}({value})")
@@ -119,7 +119,7 @@ def symbolic_len(value: SymbolicValue) -> SymbolicValue:
             if hasattr(value.value, "__len__"):
                 length = len(value.value)
                 return create_concrete_value(length)
-        except (TypeError, AttributeError):
+        except (TypeError, AttributeError, OverflowError):
             pass
     return create_expression_value(f"len({value})")
 
@@ -155,14 +155,15 @@ def symbolic_abs(value: SymbolicValue) -> SymbolicValue:
 
 def symbolic_max(*args) -> SymbolicValue:
     """Symbolic version of max function"""
-    if len(args) == 1 and hasattr(args[0], "__iter__") and not isinstance(args[0], str):
+    if (len(args) == 1 and hasattr(args[0], "__iter__")
+        and not isinstance(args[0], (str, bytes, bytearray))):
         # max(iterable)
         iterable = args[0]
         if hasattr(iterable, "type") and iterable.type == SymbolicValueType.CONCRETE:
             try:
                 result = max(iterable.value)
                 return create_concrete_value(result)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 pass
         return create_expression_value(f"max({iterable})")
     else:
@@ -178,7 +179,7 @@ def symbolic_max(*args) -> SymbolicValue:
                 values = [arg.value for arg in args]
                 result = max(values)
                 return create_concrete_value(result)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 pass
 
         return create_expression_value(f"max({args_str})")
@@ -186,14 +187,15 @@ def symbolic_max(*args) -> SymbolicValue:
 
 def symbolic_min(*args) -> SymbolicValue:
     """Symbolic version of min function"""
-    if len(args) == 1 and hasattr(args[0], "__iter__") and not isinstance(args[0], str):
+    if (len(args) == 1 and hasattr(args[0], "__iter__")
+        and not isinstance(args[0], (str, bytes, bytearray))):
         # min(iterable)
         iterable = args[0]
         if hasattr(iterable, "type") and iterable.type == SymbolicValueType.CONCRETE:
             try:
                 result = min(iterable.value)
                 return create_concrete_value(result)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 pass
         return create_expression_value(f"min({iterable})")
     else:
@@ -209,7 +211,7 @@ def symbolic_min(*args) -> SymbolicValue:
                 values = [arg.value for arg in args]
                 result = min(values)
                 return create_concrete_value(result)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 pass
 
         return create_expression_value(f"min({args_str})")
@@ -228,9 +230,10 @@ def symbolic_range(*args) -> SymbolicValue:
     ):
         try:
             values = [arg.value for arg in args]
-            result = list(range(*values))
+            # Keep as range object to preserve lazy evaluation semantics
+            result = range(*values)
             return create_concrete_value(result)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             pass
 
     return create_expression_value(f"range({args_str})")
