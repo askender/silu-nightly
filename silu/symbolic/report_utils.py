@@ -34,7 +34,13 @@ def generate_execution_summary(paths: List[Any], total_time: float = 0.0) -> Dic
             'total_paths': 0,
             'satisfiable_paths': 0,
             'unsatisfiable_paths': 0,
+            'total_conditions': 0,
+            'total_statements': 0,
+            'unique_variables': 0,
+            'variables': [],
             'execution_time': total_time,
+            'avg_conditions_per_path': 0,
+            'avg_statements_per_path': 0,
             'coverage_info': {}
         }
 

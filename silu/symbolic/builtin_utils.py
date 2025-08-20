@@ -24,6 +24,8 @@ class SymbolicValue:
         self.type = value_type
         self.value = value
         self.name = name
+        self.constraints = []
+        self.original_ir = None
 
     def __str__(self) -> str:
         if self.type == SymbolicValueType.CONCRETE:

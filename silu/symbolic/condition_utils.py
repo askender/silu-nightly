@@ -9,38 +9,43 @@ and managing condition-related operations in symbolic execution.
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 from enum import Enum
+from dataclasses import dataclass
+
+# Z3 availability check
+try:
+    import z3
+    Z3_AVAILABLE = True
+except ImportError:
+    Z3_AVAILABLE = False
 
 
+@dataclass
 class PathCondition:
-    """Represents a path condition in symbolic execution"""
-
-    def __init__(self, expression: str, is_true: bool = True):
-        self.expression = expression
-        self.is_true = is_true
+    """Represents a condition that must be satisfied for a path to be taken"""
+    expression: str
+    is_true: bool
+    source_line: Optional[int] = None
+    z3_constraint: Optional[Any] = None
 
     def __str__(self) -> str:
         if self.is_true:
             return self.expression
-        return f"not ({self.expression})"
+        else:
+            return f"not ({self.expression})"
 
     def negate(self) -> 'PathCondition':
-        """Return the negation of this condition"""
-        # Handle double negation
-        if not self.is_true and self.expression.startswith("not (") and self.expression.endswith(")"):
-            # Extract the inner expression from "not (inner)"
-            inner = self.expression[5:-1]  # Remove "not (" and ")"
-            return PathCondition(inner, True)
+        """Return the negated condition"""
+        negated_constraint = None
+        if self.z3_constraint is not None and Z3_AVAILABLE:
+            from z3 import Not
+            negated_constraint = Not(self.z3_constraint)
 
-        # Handle already negated expressions
-        if self.expression.startswith("not "):
-            inner = self.expression[4:]  # Remove "not "
-            return PathCondition(inner, True)
-
-        # Simple negation
-        return PathCondition(self.expression, not self.is_true)
-
-    def __repr__(self) -> str:
-        return f"PathCondition({self.expression!r}, {self.is_true})"
+        return PathCondition(
+            expression=self.expression,
+            is_true=not self.is_true,
+            source_line=self.source_line,
+            z3_constraint=negated_constraint
+        )
 
 
 def extract_variable_from_condition(condition_str: str) -> Optional[str]:
