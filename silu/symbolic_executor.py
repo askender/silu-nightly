@@ -45,6 +45,7 @@ class SymbolicValue:
     value: Any
     name: Optional[str] = None
     constraints: List[str] = field(default_factory=list)
+    original_ir: Optional[Tuple] = None
 
     def __str__(self) -> str:
         if self.type == SymbolicValueType.CONCRETE:
@@ -711,6 +712,8 @@ class SymbolicExecutor:
             "block": self._execute_block,
             "literal": self._execute_literal,
             "binary_op": self._execute_binary_op,
+            "name": self._execute_name,
+            "const": self._execute_const,
         }
 
         if op in handlers:
@@ -747,6 +750,16 @@ class SymbolicExecutor:
             self.current_path.variables[var_name] = value
 
         return value
+
+    def _execute_name(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a name (variable reference) IR node"""
+        _, var_name = ir_node
+        return self.current_env.get_variable(var_name)
+
+    def _execute_const(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a constant IR node"""
+        _, value = ir_node
+        return SymbolicValue(SymbolicValueType.CONCRETE, value, original_ir=ir_node)
 
     def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a literal IR node"""
@@ -1373,6 +1386,13 @@ class SymbolicExecutor:
     def _simplify_display(self, value) -> str:
         """Simplify value display for better readability"""
         if hasattr(value, 'type') and hasattr(value, 'value'):
+            # Check if we have original IR to preserve formatting
+            if hasattr(value, 'original_ir') and value.original_ir:
+                try:
+                    return simplify_value_display(value.original_ir)
+                except Exception:
+                    pass
+
             if value.type == SymbolicValueType.CONCRETE:
                 return str(value.value)
             elif value.type == SymbolicValueType.SYMBOLIC:

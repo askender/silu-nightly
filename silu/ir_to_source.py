@@ -22,7 +22,11 @@ class IRToSourceConverter:
             node_type = ir_node[0]
 
             # Handle different IR node types
-            if node_type == "module":
+            if node_type == "name":
+                return self._convert_name(ir_node)
+            elif node_type == "const":
+                return self._convert_const(ir_node)
+            elif node_type == "module":
                 return self._convert_module(ir_node, indent_level)
             elif node_type == "assign":
                 return self._convert_assign(ir_node, indent_level)
@@ -96,6 +100,16 @@ class IRToSourceConverter:
             if converted.strip():  # Don't add empty lines
                 lines.append(converted)
         return "\n".join(lines)
+
+    def _convert_name(self, ir_node: Tuple) -> str:
+        """Convert name IR node to identifier."""
+        _, name = ir_node
+        return name
+
+    def _convert_const(self, ir_node: Tuple) -> str:
+        """Convert constant IR node to literal value."""
+        _, value = ir_node
+        return self._convert_literal(value)
 
     def _convert_assign(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert assignment IR to source code."""

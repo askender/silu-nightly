@@ -13,14 +13,14 @@ class TestSiluIRGenerator:
         """Test processing a name with load context."""
         generator = SiluIRGenerator()
         result = generator.process_name("x", ast.Load())
-        expected = "x"
+        expected = ("name", "x")
         assert result == expected
 
     def test_process_name_store(self):
         """Test processing a name with store context."""
         generator = SiluIRGenerator()
         result = generator.process_name("x", ast.Store())
-        expected = "x"
+        expected = ("name", "x")
         assert result == expected
 
     def test_process_name_unsupported_context(self):
@@ -28,7 +28,7 @@ class TestSiluIRGenerator:
         generator = SiluIRGenerator()
         # Current implementation doesn't validate context, just returns name
         result = generator.process_name("x", ast.Del())
-        assert result == "x"
+        assert result == ("name", "x")
 
     def test_process_operation_binary(self):
         """Test processing binary operations."""
@@ -83,7 +83,7 @@ class TestSiluIRGenerator:
         assign = ast.Assign(targets=[target], value=value)
 
         result = generator.visit_Assign(assign)
-        expected = ("assign", "x", 42, None)
+        expected = ("assign", "x", ("const", 42), None)
         assert result == expected
 
     def test_visit_binop(self):
@@ -96,7 +96,7 @@ class TestSiluIRGenerator:
         binop = ast.BinOp(left=left, op=ast.Add(), right=right)
 
         result = generator.visit_BinOp(binop)
-        expected = ("+", 5, 3)
+        expected = ("+", ("const", 5), ("const", 3))
         assert result == expected
 
     def test_visit_unaryop(self):
@@ -108,7 +108,7 @@ class TestSiluIRGenerator:
         unaryop = ast.UnaryOp(op=ast.USub(), operand=operand)
 
         result = generator.visit_UnaryOp(unaryop)
-        expected = ("-", 5)
+        expected = ("-", ("const", 5))
         assert result == expected
 
     def test_visit_compare(self):
@@ -122,7 +122,7 @@ class TestSiluIRGenerator:
         compare = ast.Compare(left=left, ops=ops, comparators=comparators)
 
         result = generator.visit_Compare(compare)
-        expected = ("<", 5, 3)
+        expected = ("<", ("const", 5), ("const", 3))
         assert result == expected
 
     def test_visit_boolop(self):
@@ -134,7 +134,7 @@ class TestSiluIRGenerator:
         boolop = ast.BoolOp(op=ast.And(), values=values)
 
         result = generator.visit_BoolOp(boolop)
-        expected = ("and", True, False)
+        expected = ("and", ("const", True), ("const", False))
         assert result == expected
 
     def test_visit_name(self):
@@ -144,13 +144,13 @@ class TestSiluIRGenerator:
         # Test load context
         name_load = ast.Name(id="x", ctx=ast.Load())
         result = generator.visit_Name(name_load)
-        expected = "x"
+        expected = ("name", "x")
         assert result == expected
 
         # Test store context
         name_store = ast.Name(id="y", ctx=ast.Store())
         result = generator.visit_Name(name_store)
-        expected = "y"
+        expected = ("name", "y")
         assert result == expected
 
     def test_visit_constant(self):
@@ -159,19 +159,19 @@ class TestSiluIRGenerator:
 
         # Test integer constant
         const_int = ast.Constant(value=42)
-        assert generator.visit_Constant(const_int) == 42
+        assert generator.visit_Constant(const_int) == ("const", 42)
 
         # Test string constant
         const_str = ast.Constant(value="hello")
-        assert generator.visit_Constant(const_str) == "hello"
+        assert generator.visit_Constant(const_str) == ("const", "hello")
 
         # Test boolean constant
         const_bool = ast.Constant(value=True)
-        assert generator.visit_Constant(const_bool) is True
+        assert generator.visit_Constant(const_bool) == ("const", True)
 
         # Test float constant
         const_float = ast.Constant(value=3.14)
-        assert generator.visit_Constant(const_float) == 3.14
+        assert generator.visit_Constant(const_float) == ("const", 3.14)
 
     def test_visit_expr(self):
         """Test visiting expressions."""
@@ -182,7 +182,7 @@ class TestSiluIRGenerator:
         expr = ast.Expr(value=value)
 
         result = generator.visit_Expr(expr)
-        assert result == 42
+        assert result == ("const", 42)
 
     def test_complex_expression(self):
         """Test visiting a complex expression."""
@@ -199,7 +199,7 @@ class TestSiluIRGenerator:
         assign = ast.Assign(targets=[target], value=add)
 
         result = generator.visit_Assign(assign)
-        expected = ("assign", "x", ("+", 10, ("*", 5, 2)), None)
+        expected = ("assign", "x", ("+", ("const", 10), ("*", ("const", 5), ("const", 2))), None)
         assert result == expected
 
     def test_chained_comparison(self):
@@ -213,7 +213,7 @@ class TestSiluIRGenerator:
         compare = ast.Compare(left=left, ops=ops, comparators=comparators)
 
         result = generator.visit_Compare(compare)
-        expected = ("chained_compare", (("<", 1, "x"), ("<", "x", 10)))
+        expected = ("chained_compare", (("<", ("const", 1), ("name", "x")), ("<", ("name", "x"), ("const", 10))))
         assert result == expected
 
     def test_nested_operations(self):
@@ -235,7 +235,7 @@ class TestSiluIRGenerator:
         mult = ast.BinOp(left=left_add, op=ast.Mult(), right=right_sub)
 
         result = generator.visit_BinOp(mult)
-        expected = ("*", ("+", "a", "b"), ("-", "c", "d"))
+        expected = ("*", ("+", ("name", "a"), ("name", "b")), ("-", ("name", "c"), ("name", "d")))
         assert result == expected
 
     def test_subscript_assign(self):
@@ -252,7 +252,7 @@ class TestSiluIRGenerator:
         assign_node = ast.Assign(targets=[target], value=value)
 
         result = generator.visit_Assign(assign_node)
-        expected = ("subscript_assign", "d", "key", "value")
+        expected = ("subscript_assign", ("name", "d"), ("const", "key"), ("const", "value"))
         assert result == expected
 
         # Test list subscript assignment: arr[1] = 99
@@ -265,5 +265,5 @@ class TestSiluIRGenerator:
         assign_node = ast.Assign(targets=[target], value=value)
 
         result = generator.visit_Assign(assign_node)
-        expected = ("subscript_assign", "arr", 1, 99)
+        expected = ("subscript_assign", ("name", "arr"), ("const", 1), ("const", 99))
         assert result == expected

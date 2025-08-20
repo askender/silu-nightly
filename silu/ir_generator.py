@@ -27,13 +27,13 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate subscript assignment IR node."""
         return ("subscript_assign", obj, key, value)
 
-    def process_name(self, name: str, context: ast.AST) -> str:
-        """Return identifier string for IR."""
-        return name
+    def process_name(self, name: str, context: ast.AST) -> Tuple[str, str]:
+        """Return identifier with type information for IR."""
+        return ("name", name)
 
-    def process_constant(self, value: Any) -> Any:
-        """Return constant value directly."""
-        return value
+    def process_constant(self, value: Any) -> Tuple[str, Any]:
+        """Return constant value with type information for IR."""
+        return ("const", value)
 
     def process_operation(self, op: str, *operands) -> Tuple:
         """Generate operation IR nodes."""
