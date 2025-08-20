@@ -51,11 +51,11 @@ class LoopIteration:
     """Represents a single loop iteration with constraints"""
 
     def __init__(
-        self, iteration: int, constraint=None, variable_values: Dict[str, Any] = None
+        self, iteration: int, constraint=None, variable_values: Optional[Dict[str, Any]] = None
     ):
         self.iteration = iteration
         self.constraint = constraint
-        self.variable_values = variable_values or {}
+        self.variable_values = variable_values if variable_values is not None else {}
         self.is_valid = constraint is not None
 
     def __str__(self):
@@ -67,7 +67,7 @@ class LoopAnalyzer:
 
     def __init__(self, max_iterations: int = 10):
         self.max_iterations = max_iterations
-        self.variable_dict = {}
+        self.variable_dict: Dict[str, Any] = {}
 
     def analyze_range_loop(
         self, start, stop, step=None, var_name: str = "i"
@@ -297,11 +297,12 @@ class LoopAnalyzer:
             step = 1
 
         # Try to extract constant values
-        start_val = self._extract_value(start)
-        stop_val = self._extract_value(stop)
-        step_val = self._extract_value(step)
+        start_val = self._extract_numeric_value(start)
+        stop_val = self._extract_numeric_value(stop)
+        step_val = self._extract_numeric_value(step)
 
-        if all(isinstance(v, (int, float)) for v in [start_val, stop_val, step_val]):
+        # Only proceed with calculation if all values are numeric
+        if start_val is not None and stop_val is not None and step_val is not None:
             if step_val == 0:
                 return 0  # Infinite loop or error
             elif step_val > 0:
@@ -312,8 +313,35 @@ class LoopAnalyzer:
         # Default estimate for symbolic values
         return self.max_iterations
 
+    def _extract_numeric_value(self, expr) -> Optional[Union[int, float]]:
+        """Extract numeric value from expression if possible, return None for non-numeric"""
+        if isinstance(expr, (int, float)):
+            return expr
+
+        if Z3_AVAILABLE:
+            z3_expr = to_z3_expr(expr, self.variable_dict)
+            if z3_expr is not None:
+                const_val = extract_constant_value(z3_expr)
+                if isinstance(const_val, (int, float)):
+                    return const_val
+
+        # For string expressions, try to parse as number
+        if isinstance(expr, str):
+            try:
+                # Try integer first
+                return int(expr)
+            except ValueError:
+                try:
+                    # Try float
+                    return float(expr)
+                except ValueError:
+                    # Not a numeric string
+                    pass
+
+        return None
+
     def _extract_value(self, expr) -> Union[int, float, str, None]:
-        """Extract value from expression if possible"""
+        """Extract value from expression if possible (kept for backward compatibility)"""
         if isinstance(expr, (int, float)):
             return expr
 

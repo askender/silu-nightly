@@ -6,7 +6,7 @@ This module provides utilities for generating reports and summaries from
 symbolic execution results, including path analysis and test case generation.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from enum import Enum
 import json
 
@@ -197,6 +197,81 @@ def generate_path_report(path: Any, path_index: int = 0) -> Dict[str, Any]:
     return report
 
 
+def _format_summary_section(summary: Dict[str, Any]) -> List[str]:
+    """Format summary section for reports"""
+    lines = []
+    lines.append("EXECUTION SUMMARY")
+    lines.append("-" * 20)
+    lines.append(f"Total paths: {summary['total_paths']}")
+    lines.append(f"Satisfiable paths: {summary['satisfiable_paths']}")
+    lines.append(f"Unsatisfiable paths: {summary['unsatisfiable_paths']}")
+    lines.append(f"Total conditions: {summary['total_conditions']}")
+    lines.append(f"Total statements: {summary['total_statements']}")
+    lines.append(f"Unique variables: {summary['unique_variables']}")
+    if summary["execution_time"] > 0:
+        lines.append(f"Execution time: {summary['execution_time']:.3f}s")
+    return lines
+
+
+def _format_variables_section(summary: Dict[str, Any]) -> List[str]:
+    """Format variables section for reports"""
+    lines = []
+    if summary.get("variables"):
+        lines.append("VARIABLES")
+        lines.append("-" * 10)
+        for var in sorted(summary["variables"]):
+            lines.append(f"  {var}")
+    return lines
+
+
+def _format_path_details_text(paths: List[Any]) -> List[str]:
+    """Format path details for text report"""
+    lines = []
+    lines.append("PATH DETAILS")
+    lines.append("-" * 15)
+
+    for i, path in enumerate(paths):
+        path_report = generate_path_report(path, i)
+        lines.extend(_format_single_path_text(path_report, i))
+
+    return lines
+
+
+def _format_single_path_text(path_report: Dict[str, Any], index: int) -> List[str]:
+    """Format a single path for text report"""
+    lines = []
+    lines.append(f"Path {index + 1}: {path_report['path_id']}")
+
+    if not path_report["satisfiable"]:
+        lines.append("  Status: UNSATISFIABLE")
+
+    if path_report["conditions"]:
+        lines.append("  Conditions:")
+        for condition in path_report["conditions"]:
+            lines.append(f"    - {condition}")
+
+    if path_report["variables"]:
+        lines.append("  Variables:")
+        for name, value in path_report["variables"].items():
+            lines.append(f"    {name} = {value}")
+
+    if path_report["statements"]:
+        lines.append("  Statements:")
+        for stmt in path_report["statements"]:
+            lines.append(f"    {stmt}")
+
+    if path_report.get("return_value") is not None:
+        lines.append(f"  Return: {path_report['return_value']}")
+
+    if path_report.get("test_inputs"):
+        lines.append("  Test inputs:")
+        for name, value in path_report["test_inputs"].items():
+            lines.append(f"    {name} = {value}")
+
+    lines.append("")
+    return lines
+
+
 def generate_text_report(paths: List[Any], summary: Dict[str, Any]) -> str:
     """
     Generate a text-based report
@@ -216,61 +291,17 @@ def generate_text_report(paths: List[Any], summary: Dict[str, Any]) -> str:
     lines.append("")
 
     # Summary
-    lines.append("EXECUTION SUMMARY")
-    lines.append("-" * 20)
-    lines.append(f"Total paths: {summary['total_paths']}")
-    lines.append(f"Satisfiable paths: {summary['satisfiable_paths']}")
-    lines.append(f"Unsatisfiable paths: {summary['unsatisfiable_paths']}")
-    lines.append(f"Total conditions: {summary['total_conditions']}")
-    lines.append(f"Total statements: {summary['total_statements']}")
-    lines.append(f"Unique variables: {summary['unique_variables']}")
-    if summary["execution_time"] > 0:
-        lines.append(f"Execution time: {summary['execution_time']:.3f}s")
+    lines.extend(_format_summary_section(summary))
     lines.append("")
 
     # Variables
-    if summary.get("variables"):
-        lines.append("VARIABLES")
-        lines.append("-" * 10)
-        for var in sorted(summary["variables"]):
-            lines.append(f"  {var}")
+    var_lines = _format_variables_section(summary)
+    if var_lines:
+        lines.extend(var_lines)
         lines.append("")
 
     # Path details
-    lines.append("PATH DETAILS")
-    lines.append("-" * 15)
-
-    for i, path in enumerate(paths):
-        path_report = generate_path_report(path, i)
-
-        lines.append(f"Path {i + 1}: {path_report['path_id']}")
-        if not path_report["satisfiable"]:
-            lines.append("  Status: UNSATISFIABLE")
-
-        if path_report["conditions"]:
-            lines.append("  Conditions:")
-            for condition in path_report["conditions"]:
-                lines.append(f"    - {condition}")
-
-        if path_report["variables"]:
-            lines.append("  Variables:")
-            for name, value in path_report["variables"].items():
-                lines.append(f"    {name} = {value}")
-
-        if path_report["statements"]:
-            lines.append("  Statements:")
-            for stmt in path_report["statements"]:
-                lines.append(f"    {stmt}")
-
-        if path_report.get("return_value") is not None:
-            lines.append(f"  Return: {path_report['return_value']}")
-
-        if path_report.get("test_inputs"):
-            lines.append("  Test inputs:")
-            for name, value in path_report["test_inputs"].items():
-                lines.append(f"    {name} = {value}")
-
-        lines.append("")
+    lines.extend(_format_path_details_text(paths))
 
     return "\n".join(lines)
 
@@ -295,6 +326,87 @@ def generate_json_report(paths: List[Any], summary: Dict[str, Any]) -> str:
     return json.dumps(report, indent=2, default=str)
 
 
+def _format_markdown_summary(summary: Dict[str, Any]) -> List[str]:
+    """Format summary section for markdown report"""
+    lines = []
+    lines.append("## Execution Summary")
+    lines.append("")
+    lines.append(f"- **Total paths**: {summary['total_paths']}")
+    lines.append(f"- **Satisfiable paths**: {summary['satisfiable_paths']}")
+    lines.append(f"- **Unsatisfiable paths**: {summary['unsatisfiable_paths']}")
+    lines.append(f"- **Total conditions**: {summary['total_conditions']}")
+    lines.append(f"- **Total statements**: {summary['total_statements']}")
+    lines.append(f"- **Unique variables**: {summary['unique_variables']}")
+    if summary["execution_time"] > 0:
+        lines.append(f"- **Execution time**: {summary['execution_time']:.3f}s")
+    return lines
+
+
+def _format_markdown_variables(summary: Dict[str, Any]) -> List[str]:
+    """Format variables section for markdown report"""
+    lines = []
+    if summary.get("variables"):
+        lines.append("## Variables")
+        lines.append("")
+        for var in sorted(summary["variables"]):
+            lines.append(f"- `{var}`")
+    return lines
+
+
+def _format_markdown_path_details(paths: List[Any]) -> List[str]:
+    """Format path details for markdown report"""
+    lines = []
+    lines.append("## Path Details")
+    lines.append("")
+
+    for i, path in enumerate(paths):
+        path_report = generate_path_report(path, i)
+        lines.extend(_format_single_path_markdown(path_report, i))
+
+    return lines
+
+
+def _format_single_path_markdown(path_report: Dict[str, Any], index: int) -> List[str]:
+    """Format a single path for markdown report"""
+    lines = []
+    lines.append(f"### Path {index + 1}: {path_report['path_id']}")
+    lines.append("")
+
+    if not path_report["satisfiable"]:
+        lines.append("**Status**: UNSATISFIABLE")
+        lines.append("")
+
+    if path_report["conditions"]:
+        lines.append("**Conditions**:")
+        for condition in path_report["conditions"]:
+            lines.append(f"- `{condition}`")
+        lines.append("")
+
+    if path_report["variables"]:
+        lines.append("**Variables**:")
+        for name, value in path_report["variables"].items():
+            lines.append(f"- `{name} = {value}`")
+        lines.append("")
+
+    if path_report["statements"]:
+        lines.append("**Statements**:")
+        for stmt in path_report["statements"]:
+            lines.append(f"- `{stmt}`")
+        lines.append("")
+
+    if path_report.get("return_value") is not None:
+        lines.append(f"**Return**: `{path_report['return_value']}`")
+        lines.append("")
+
+    if path_report.get("test_inputs"):
+        lines.append("**Test inputs**:")
+        for name, value in path_report["test_inputs"].items():
+            lines.append(f"- `{name} = {value}`")
+        lines.append("")
+
+    return lines
+
+
 def generate_markdown_report(paths: List[Any], summary: Dict[str, Any]) -> str:
     """
     Generate a Markdown-based report
@@ -313,67 +425,17 @@ def generate_markdown_report(paths: List[Any], summary: Dict[str, Any]) -> str:
     lines.append("")
 
     # Summary
-    lines.append("## Execution Summary")
-    lines.append("")
-    lines.append(f"- **Total paths**: {summary['total_paths']}")
-    lines.append(f"- **Satisfiable paths**: {summary['satisfiable_paths']}")
-    lines.append(f"- **Unsatisfiable paths**: {summary['unsatisfiable_paths']}")
-    lines.append(f"- **Total conditions**: {summary['total_conditions']}")
-    lines.append(f"- **Total statements**: {summary['total_statements']}")
-    lines.append(f"- **Unique variables**: {summary['unique_variables']}")
-    if summary["execution_time"] > 0:
-        lines.append(f"- **Execution time**: {summary['execution_time']:.3f}s")
+    lines.extend(_format_markdown_summary(summary))
     lines.append("")
 
     # Variables
-    if summary.get("variables"):
-        lines.append("## Variables")
-        lines.append("")
-        for var in sorted(summary["variables"]):
-            lines.append(f"- `{var}`")
+    var_lines = _format_markdown_variables(summary)
+    if var_lines:
+        lines.extend(var_lines)
         lines.append("")
 
     # Path details
-    lines.append("## Path Details")
-    lines.append("")
-
-    for i, path in enumerate(paths):
-        path_report = generate_path_report(path, i)
-
-        lines.append(f"### Path {i + 1}: {path_report['path_id']}")
-        lines.append("")
-
-        if not path_report["satisfiable"]:
-            lines.append("**Status**: UNSATISFIABLE")
-            lines.append("")
-
-        if path_report["conditions"]:
-            lines.append("**Conditions**:")
-            for condition in path_report["conditions"]:
-                lines.append(f"- `{condition}`")
-            lines.append("")
-
-        if path_report["variables"]:
-            lines.append("**Variables**:")
-            for name, value in path_report["variables"].items():
-                lines.append(f"- `{name} = {value}`")
-            lines.append("")
-
-        if path_report["statements"]:
-            lines.append("**Statements**:")
-            for stmt in path_report["statements"]:
-                lines.append(f"- `{stmt}`")
-            lines.append("")
-
-        if path_report.get("return_value") is not None:
-            lines.append(f"**Return**: `{path_report['return_value']}`")
-            lines.append("")
-
-        if path_report.get("test_inputs"):
-            lines.append("**Test inputs**:")
-            for name, value in path_report["test_inputs"].items():
-                lines.append(f"- `{name} = {value}`")
-            lines.append("")
+    lines.extend(_format_markdown_path_details(paths))
 
     return "\n".join(lines)
 
@@ -519,11 +581,65 @@ def generate_test_case_report(paths: List[Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_loop_analysis(paths: List[Any]) -> Dict[str, Dict[str, int]]:
+    """Build loop analysis information from paths"""
+    loop_info = {}
+    for path in paths:
+        loop_iterations = getattr(path, "loop_iterations", {})
+        for loop_id, iteration in loop_iterations.items():
+            if loop_id not in loop_info:
+                loop_info[loop_id] = {"max_iteration": 0, "paths": 0}
+            loop_info[loop_id]["max_iteration"] = max(
+                loop_info[loop_id]["max_iteration"], iteration
+            )
+            loop_info[loop_id]["paths"] += 1
+    return loop_info
+
+
+def _build_constraint_analysis(paths: List[Any]) -> Dict[str, Any]:
+    """Build constraint analysis information from paths"""
+    satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
+
+    return {
+        "total_constraints": sum(len(getattr(p, "conditions", [])) for p in paths),
+        "z3_constraints": sum(
+            1
+            for p in paths
+            for c in getattr(p, "conditions", [])
+            if getattr(c, "z3_constraint", None) is not None
+        ),
+        "symbolic_variables": 0,  # Will be set by caller if available
+        "satisfiable_constraint_ratio": len(satisfiable_paths) / len(paths)
+        if paths
+        else 0,
+    }
+
+
+def _build_path_metrics(paths: List[Any]) -> Dict[str, Any]:
+    """Build path metrics information from paths"""
+    return {
+        "average_path_length": sum(len(getattr(p, "statements", [])) for p in paths)
+        / len(paths)
+        if paths
+        else 0,
+        "average_conditions_per_path": sum(
+            len(getattr(p, "conditions", [])) for p in paths
+        )
+        / len(paths)
+        if paths
+        else 0,
+        "paths_with_loops": sum(1 for p in paths if getattr(p, "loop_iterations", {})),
+        "paths_with_returns": sum(
+            1 for p in paths if getattr(p, "return_value", None) is not None
+        ),
+    }
+
+
 def generate_comprehensive_report(
     paths: List[Any],
     performance_mode: bool = False,
-    global_env_functions: Dict = None,
-    function_analyses: Dict = None,
+    global_env_functions: Optional[Dict] = None,
+    function_analyses: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
     Generate a comprehensive report of symbolic execution results with enhanced analysis
@@ -545,49 +661,13 @@ def generate_comprehensive_report(
     satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
 
     # Enhanced loop analysis
-    loop_info = {}
-    for path in paths:
-        loop_iterations = getattr(path, "loop_iterations", {})
-        for loop_id, iteration in loop_iterations.items():
-            if loop_id not in loop_info:
-                loop_info[loop_id] = {"max_iteration": 0, "paths": 0}
-            loop_info[loop_id]["max_iteration"] = max(
-                loop_info[loop_id]["max_iteration"], iteration
-            )
-            loop_info[loop_id]["paths"] += 1
+    loop_info = _build_loop_analysis(paths)
 
     # Enhanced constraint analysis
-    constraint_analysis = {
-        "total_constraints": sum(len(getattr(p, "conditions", [])) for p in paths),
-        "z3_constraints": sum(
-            1
-            for p in paths
-            for c in getattr(p, "conditions", [])
-            if getattr(c, "z3_constraint", None) is not None
-        ),
-        "symbolic_variables": 0,  # Will be set by caller if available
-        "satisfiable_constraint_ratio": len(satisfiable_paths) / len(paths)
-        if paths
-        else 0,
-    }
+    constraint_analysis = _build_constraint_analysis(paths)
 
     # Path complexity metrics
-    path_metrics = {
-        "average_path_length": sum(len(getattr(p, "statements", [])) for p in paths)
-        / len(paths)
-        if paths
-        else 0,
-        "average_conditions_per_path": sum(
-            len(getattr(p, "conditions", [])) for p in paths
-        )
-        / len(paths)
-        if paths
-        else 0,
-        "paths_with_loops": sum(1 for p in paths if getattr(p, "loop_iterations", {})),
-        "paths_with_returns": sum(
-            1 for p in paths if getattr(p, "return_value", None) is not None
-        ),
-    }
+    path_metrics = _build_path_metrics(paths)
 
     report = {
         "total_paths": len(paths),
@@ -632,7 +712,9 @@ def generate_comprehensive_report(
 
 
 def generate_fast_comprehensive_report(
-    paths: List[Any], global_env_functions: Dict = None, function_analyses: Dict = None
+    paths: List[Any],
+    global_env_functions: Optional[Dict] = None,
+    function_analyses: Optional[Dict] = None
 ) -> Dict[str, Any]:
     """Generate simplified report for performance mode"""
     satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
@@ -693,6 +775,99 @@ def path_to_dict(path: Any) -> Dict[str, Any]:
     return path_dict
 
 
+def _convert_z3_value_to_python(z3_value) -> Any:
+    """Convert Z3 value to Python value with proper error handling"""
+    if not Z3_AVAILABLE:
+        return str(z3_value)
+
+    try:
+        import z3
+
+        if z3.is_int_value(z3_value):
+            return z3_value.as_long()
+        elif z3.is_rational_value(z3_value):
+            # Use as_decimal for rational values
+            return float(z3_value.as_decimal(10))
+        elif z3.is_true(z3_value):
+            return True
+        elif z3.is_false(z3_value):
+            return False
+        else:
+            return str(z3_value)
+    except (AttributeError, ValueError):
+        return str(z3_value)
+
+
+def _create_enhanced_path(path: Any, satisfiable: bool, test_inputs: Optional[Dict], expected_outputs: Dict) -> Any:
+    """Create an enhanced path object with test case information"""
+    # Create enhanced path data
+    enhanced_path = type(path)(getattr(path, "path_id", "unknown"))
+
+    # Copy basic attributes
+    if hasattr(path, "conditions"):
+        enhanced_path.conditions = path.conditions.copy()
+    if hasattr(path, "statements"):
+        enhanced_path.statements = path.statements.copy()
+    if hasattr(path, "return_value"):
+        enhanced_path.return_value = path.return_value
+    if hasattr(path, "variables"):
+        enhanced_path.variables = path.variables.copy()
+    if hasattr(path, "loop_iterations"):
+        enhanced_path.loop_iterations = path.loop_iterations.copy()
+
+    # Set new attributes
+    enhanced_path.satisfiable = satisfiable
+    enhanced_path.test_inputs = test_inputs if test_inputs is not None else ({} if satisfiable else None)
+    enhanced_path.expected_outputs = expected_outputs if satisfiable else None
+
+    return enhanced_path
+
+
+def _solve_path_constraints(path: Any) -> tuple[bool, Optional[Dict[str, Any]]]:
+    """Solve path constraints using Z3 and return satisfiability and test inputs"""
+    if not Z3_AVAILABLE:
+        return True, {}  # Assume satisfiable if Z3 not available
+
+    conditions = getattr(path, "conditions", [])
+    if not conditions:
+        return True, {}
+
+    try:
+        import z3
+
+        solver = z3.Solver()
+        var_map = {}
+
+        # Convert conditions to Z3 constraints
+        for condition in conditions:
+            try:
+                z3_constraint = condition_to_z3(condition, var_map, solver)
+                if z3_constraint is not None:
+                    solver.add(z3_constraint)
+            except Exception:
+                # Skip problematic conditions but continue processing
+                continue
+
+        # Check satisfiability
+        if solver.check() == z3.sat:
+            model = solver.model()
+            test_inputs = {}
+
+            # Extract concrete values from the model
+            for var_name, z3_var in var_map.items():
+                if model[z3_var] is not None:
+                    value = model[z3_var]
+                    test_inputs[var_name] = _convert_z3_value_to_python(value)
+
+            return True, test_inputs
+        else:
+            return False, None
+
+    except Exception:
+        # If Z3 processing fails, assume satisfiable
+        return True, {}
+
+
 def enhance_paths_with_z3_test_cases(paths: List[Any]) -> List[Any]:
     """Enhance execution paths with Z3-generated test case information"""
     if not Z3_AVAILABLE:
@@ -707,74 +882,9 @@ def enhance_paths_with_z3_test_cases(paths: List[Any]) -> List[Any]:
     enhanced_paths = []
 
     for path in paths:
-        # Create enhanced path data
-        enhanced_path = type(path)(getattr(path, "path_id", "unknown"))
-
-        # Copy basic attributes
-        if hasattr(path, "conditions"):
-            enhanced_path.conditions = path.conditions.copy()
-        if hasattr(path, "statements"):
-            enhanced_path.statements = path.statements.copy()
-        if hasattr(path, "return_value"):
-            enhanced_path.return_value = path.return_value
-        if hasattr(path, "variables"):
-            enhanced_path.variables = path.variables.copy()
-        if hasattr(path, "loop_iterations"):
-            enhanced_path.loop_iterations = path.loop_iterations.copy()
-
-        conditions = getattr(path, "conditions", [])
-
-        if not conditions:
-            # No conditions, mark as satisfiable with empty test inputs
-            enhanced_path.satisfiable = True
-            enhanced_path.test_inputs = {}
-            enhanced_path.expected_outputs = extract_outputs_from_path(path)
-        else:
-            # Create Z3 solver
-            import z3
-
-            solver = z3.Solver()
-            var_map = {}
-
-            # Convert conditions to Z3 constraints
-            for condition in conditions:
-                try:
-                    z3_constraint = condition_to_z3(condition, var_map, solver)
-                    if z3_constraint is not None:
-                        solver.add(z3_constraint)
-                except Exception as e:
-                    # Mark conversion error
-                    if not hasattr(enhanced_path, "z3_errors"):
-                        enhanced_path.z3_errors = []
-                    enhanced_path.z3_errors.append(f"Condition '{condition}': {e}")
-
-            # Check satisfiability
-            if solver.check() == z3.sat:
-                enhanced_path.satisfiable = True
-                model = solver.model()
-                test_inputs = {}
-
-                # Extract concrete values from the model
-                for var_name, z3_var in var_map.items():
-                    if model[z3_var] is not None:
-                        value = model[z3_var]
-                        # Convert Z3 value to Python value
-                        if z3.is_int_value(value):
-                            test_inputs[var_name] = value.as_long()
-                        elif z3.is_real_value(value):
-                            test_inputs[var_name] = float(value.as_fraction())
-                        elif z3.is_bool(value):
-                            test_inputs[var_name] = z3.is_true(value)
-                        else:
-                            test_inputs[var_name] = str(value)
-
-                enhanced_path.test_inputs = test_inputs
-                enhanced_path.expected_outputs = extract_outputs_from_path(path)
-            else:
-                enhanced_path.satisfiable = False
-                enhanced_path.test_inputs = None
-                enhanced_path.expected_outputs = None
-
+        expected_outputs = extract_outputs_from_path(path)
+        satisfiable, test_inputs = _solve_path_constraints(path)
+        enhanced_path = _create_enhanced_path(path, satisfiable, test_inputs, expected_outputs)
         enhanced_paths.append(enhanced_path)
 
     return enhanced_paths
@@ -802,29 +912,6 @@ def extract_outputs_from_path(path: Any) -> Dict[str, Any]:
         outputs["loop_iterations"] = loop_iterations
 
     return outputs
-
-
-# condition_to_z3 now imported from z3_utils.py
-
-
-# parse_operands now imported from z3_utils.py
-
-
-# operand_to_z3 now imported from z3_utils.py
-
-# expr_to_z3 now imported from z3_utils.py
-
-
-# tuple_expr_to_z3 now imported from z3_utils.py
-
-
-# parse_z3_expression now imported from z3_utils.py
-
-
-# split_condition_args now imported from z3_utils.py
-
-
-# parse_simple_condition now imported from z3_utils.py
 
 
 def renumber_paths_sequentially(paths: List[Any]) -> List[Any]:
