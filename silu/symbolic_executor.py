@@ -66,6 +66,8 @@ class PathCondition:
     source_line: Optional[int] = None
     z3_constraint: Optional[Any] = None
 
+
+
     def __str__(self) -> str:
         prefix = "" if self.is_true else "not "
         return f"{prefix}({self.expression})"
@@ -761,8 +763,9 @@ class SymbolicExecutor:
             else_block = None
 
         condition = self._execute_ir(condition_ir)
-        condition_str = str(condition)
         readable_condition = self._make_condition_readable(condition)
+        condition_str = readable_condition
+
 
         # For concrete conditions, take the appropriate branch directly
         if condition.type == SymbolicValueType.CONCRETE:
@@ -803,7 +806,7 @@ class SymbolicExecutor:
             true_path.variables = original_path.variables.copy()
             true_path.loop_iterations = original_path.loop_iterations.copy()
 
-        true_condition = PathCondition(condition_str, True, z3_constraint=z3_constraint)
+        true_condition = PathCondition(readable_condition, True, z3_constraint=z3_constraint)
         true_path.add_condition(true_condition)
         true_path.add_statement(f"if {readable_condition}:")
 
@@ -832,7 +835,7 @@ class SymbolicExecutor:
             false_path.variables = original_path.variables.copy()
             false_path.loop_iterations = original_path.loop_iterations.copy()
 
-        false_condition = PathCondition(condition_str, False, z3_constraint=z3_constraint)
+        false_condition = PathCondition(readable_condition, False, z3_constraint=z3_constraint)
         false_path.add_condition(false_condition)
         false_path.add_statement(f"else (not {readable_condition}):")
 
@@ -865,8 +868,8 @@ class SymbolicExecutor:
         """Execute a while loop symbolically with enhanced Z3 constraint analysis"""
         _, condition_ir, body_ir = ir_node
         condition = self._execute_ir(condition_ir)
-        condition_str = str(condition)
         readable_condition = self._make_condition_readable(condition)
+        condition_str = readable_condition
 
         if self.current_path:
             self.current_path.add_statement(f"while {readable_condition}:")
@@ -899,15 +902,15 @@ class SymbolicExecutor:
 
         # Generate Z3 constraint for exit condition
         exit_z3_constraint = None
-        if Z3_AVAILABLE and condition_str:
+        if Z3_AVAILABLE and readable_condition:
             try:
                 # Simple Z3 constraint creation for exit condition
-                exit_z3_constraint = f"not ({condition_str})"
+                exit_z3_constraint = f"not ({readable_condition})"
             except:
                 pass
 
         exit_condition = PathCondition(
-            expression=condition_str,
+            expression=readable_condition,
             is_true=False,
             z3_constraint=exit_z3_constraint
         )
@@ -938,7 +941,7 @@ class SymbolicExecutor:
                     pass
 
             iter_condition = PathCondition(
-                expression=condition_str,
+                expression=readable_condition,
                 is_true=True,
                 z3_constraint=iter_z3_constraint
             )
@@ -1311,8 +1314,24 @@ class SymbolicExecutor:
             # For EXPRESSION type, use the tuple representation for readability
             if condition.type == SymbolicValueType.EXPRESSION:
                 return self._make_condition_readable(condition.value)
+            elif condition.type == SymbolicValueType.SYMBOLIC:
+                return condition.name or str(condition.value)
+            elif condition.type == SymbolicValueType.CONCRETE:
+                return str(condition.value)
             else:
                 return str(condition)
+
+        # Handle tuples (expressions like ('>', left, right))
+        if isinstance(condition, tuple) and len(condition) >= 3:
+            op = condition[0]
+            left = condition[1]
+            right = condition[2]
+
+            # Recursively convert operands
+            left_readable = self._make_condition_readable(left)
+            right_readable = self._make_condition_readable(right)
+
+            return f"{left_readable} {op} {right_readable}"
 
         # Use shared conversion function for basic cases
         try:
