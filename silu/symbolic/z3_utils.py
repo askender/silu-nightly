@@ -14,9 +14,25 @@ from typing import Any, Dict, List, Optional, Set, Union
 try:
     import z3
     from z3 import (
-        Solver, sat, And, Or, Not, If, IntVal, BoolVal, RealVal,
-        IntNumRef, BoolRef, BoolSort, Int, Real, Bool, ToReal, simplify
+        Solver,
+        sat,
+        And,
+        Or,
+        Not,
+        If,
+        IntVal,
+        BoolVal,
+        RealVal,
+        IntNumRef,
+        BoolRef,
+        BoolSort,
+        Int,
+        Real,
+        Bool,
+        ToReal,
+        simplify,
     )
+
     Z3_AVAILABLE = True
 except ImportError:
     Z3_AVAILABLE = False
@@ -24,10 +40,7 @@ except ImportError:
 
 
 # Operator mappings from AST to Z3
-BOOLOP_MAP = {
-    ast.And: And,
-    ast.Or: Or
-}
+BOOLOP_MAP = {ast.And: And, ast.Or: Or}
 
 BINOP_MAP = {
     ast.Add: lambda l, r: l + r,
@@ -36,7 +49,7 @@ BINOP_MAP = {
     ast.Div: lambda l, r: l / r,
     ast.FloorDiv: lambda l, r: l // r,
     ast.Mod: lambda l, r: l % r,
-    ast.Pow: lambda l, r: l ** r,
+    ast.Pow: lambda l, r: l**r,
 }
 
 CMP_MAP = {
@@ -121,8 +134,9 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
 
     # Handle expressions in format "> ('name', 'x') 0" or similar (from symbolic execution)
     import re
+
     # Pattern for "OPERATOR ('name', 'var') VALUE" or "OPERATOR VALUE VALUE"
-    pattern = r'^([><=!]+)\s+(.+)$'
+    pattern = r"^([><=!]+)\s+(.+)$"
     match = re.match(pattern, expr)
 
     if match:
@@ -137,17 +151,17 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
 
             if left_z3 is not None and right_z3 is not None:
                 # Create Z3 constraint
-                if op == '==':
+                if op == "==":
                     constraint = left_z3 == right_z3
-                elif op == '!=':
+                elif op == "!=":
                     constraint = left_z3 != right_z3
-                elif op == '<':
+                elif op == "<":
                     constraint = left_z3 < right_z3
-                elif op == '<=':
+                elif op == "<=":
                     constraint = left_z3 <= right_z3
-                elif op == '>':
+                elif op == ">":
                     constraint = left_z3 > right_z3
-                elif op == '>=':
+                elif op == ">=":
                     constraint = left_z3 >= right_z3
                 else:
                     return None
@@ -166,7 +180,7 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
         pass
 
     # Handle Z3-like expressions (And, Or, etc.)
-    if any(z3_op in expr for z3_op in ['And(', 'Or(', 'Not(']):
+    if any(z3_op in expr for z3_op in ["And(", "Or(", "Not("]):
         try:
             z3_constraint = parse_z3_expression(expr, var_map, solver)
             if z3_constraint is not None:
@@ -175,7 +189,7 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
             pass
 
     # Handle basic comparison operations with simple format like "x > 5"
-    for op in ['>=', '<=', '==', '!=', '>', '<']:
+    for op in [">=", "<=", "==", "!=", ">", "<"]:
         if op in expr and not expr.startswith(op):  # Avoid double parsing
             left, right = expr.split(op, 1)
             left = left.strip()
@@ -185,17 +199,17 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
             right_z3 = expr_to_z3(right, var_map, solver)
 
             if left_z3 is not None and right_z3 is not None:
-                if op == '==':
+                if op == "==":
                     constraint = left_z3 == right_z3
-                elif op == '!=':
+                elif op == "!=":
                     constraint = left_z3 != right_z3
-                elif op == '<':
+                elif op == "<":
                     constraint = left_z3 < right_z3
-                elif op == '<=':
+                elif op == "<=":
                     constraint = left_z3 <= right_z3
-                elif op == '>':
+                elif op == ">":
                     constraint = left_z3 > right_z3
-                elif op == '>=':
+                elif op == ">=":
                     constraint = left_z3 >= right_z3
 
                 return constraint if condition.is_true else Not(constraint)
@@ -236,8 +250,8 @@ def expr_to_z3(expr, var_map: Dict[str, Any], solver) -> Any:
         pass
 
     # Try to parse as boolean
-    if expr.lower() in ['true', 'false']:
-        return BoolVal(expr.lower() == 'true')
+    if expr.lower() in ["true", "false"]:
+        return BoolVal(expr.lower() == "true")
 
     # Treat as variable name
     if expr not in var_map:
@@ -258,7 +272,7 @@ def tuple_expr_to_z3(expr, var_map: Dict[str, Any], solver) -> Any:
 
     op = expr[0]
 
-    if op == 'and':
+    if op == "and":
         # Handle logical AND
         if len(expr) >= 3:
             left = tuple_expr_to_z3(expr[1], var_map, solver)
@@ -266,7 +280,7 @@ def tuple_expr_to_z3(expr, var_map: Dict[str, Any], solver) -> Any:
             if left is not None and right is not None:
                 return And(left, right)
 
-    elif op == 'or':
+    elif op == "or":
         # Handle logical OR
         if len(expr) >= 3:
             left = tuple_expr_to_z3(expr[1], var_map, solver)
@@ -274,23 +288,23 @@ def tuple_expr_to_z3(expr, var_map: Dict[str, Any], solver) -> Any:
             if left is not None and right is not None:
                 return Or(left, right)
 
-    elif op in ['>', '<', '>=', '<=', '==', '!=']:
+    elif op in [">", "<", ">=", "<=", "==", "!="]:
         # Handle comparison operations
         if len(expr) >= 3:
             left = expr_to_z3(expr[1], var_map, solver)
             right = expr_to_z3(expr[2], var_map, solver)
             if left is not None and right is not None:
-                if op == '>':
+                if op == ">":
                     return left > right
-                elif op == '<':
+                elif op == "<":
                     return left < right
-                elif op == '>=':
+                elif op == ">=":
                     return left >= right
-                elif op == '<=':
+                elif op == "<=":
                     return left <= right
-                elif op == '==':
+                elif op == "==":
                     return left == right
-                elif op == '!=':
+                elif op == "!=":
                     return left != right
 
     return None
@@ -302,7 +316,7 @@ def parse_z3_expression(expr: str, var_map: Dict[str, Any], solver) -> Any:
         return None
 
     # Handle And expressions
-    and_match = re.match(r'And\((.*)\)', expr)
+    and_match = re.match(r"And\((.*)\)", expr)
     if and_match:
         args_str = and_match.group(1)
         args = split_condition_args(args_str)
@@ -315,7 +329,7 @@ def parse_z3_expression(expr: str, var_map: Dict[str, Any], solver) -> Any:
             return And(*constraints) if len(constraints) > 1 else constraints[0]
 
     # Handle Or expressions
-    or_match = re.match(r'Or\((.*)\)', expr)
+    or_match = re.match(r"Or\((.*)\)", expr)
     if or_match:
         args_str = or_match.group(1)
         args = split_condition_args(args_str)
@@ -328,7 +342,7 @@ def parse_z3_expression(expr: str, var_map: Dict[str, Any], solver) -> Any:
             return Or(*constraints) if len(constraints) > 1 else constraints[0]
 
     # Handle Not expressions
-    not_match = re.match(r'Not\((.*)\)', expr)
+    not_match = re.match(r"Not\((.*)\)", expr)
     if not_match:
         inner_expr = not_match.group(1)
         constraint = parse_z3_expression(inner_expr, var_map, solver)
@@ -346,13 +360,13 @@ def split_condition_args(args_str: str) -> List[str]:
     paren_count = 0
 
     for char in args_str:
-        if char == ',' and paren_count == 0:
+        if char == "," and paren_count == 0:
             args.append(current_arg.strip())
             current_arg = ""
         else:
-            if char == '(':
+            if char == "(":
                 paren_count += 1
-            elif char == ')':
+            elif char == ")":
                 paren_count -= 1
             current_arg += char
 
@@ -369,8 +383,8 @@ def parse_simple_condition(expr: str, var_map: Dict[str, Any]) -> Any:
 
     # Handle comparison operations
     patterns = [
-        (r'(\w+)\s*([><=!]+)\s*(.+)', lambda m: (m.group(1), m.group(2), m.group(3))),
-        (r'(.+)\s*([><=!]+)\s*(\w+)', lambda m: (m.group(1), m.group(2), m.group(3)))
+        (r"(\w+)\s*([><=!]+)\s*(.+)", lambda m: (m.group(1), m.group(2), m.group(3))),
+        (r"(.+)\s*([><=!]+)\s*(\w+)", lambda m: (m.group(1), m.group(2), m.group(3))),
     ]
 
     for pattern, extractor in patterns:
@@ -389,12 +403,12 @@ def parse_simple_condition(expr: str, var_map: Dict[str, Any]) -> Any:
 
             # Create constraint
             ops = {
-                '>': lambda a, b: a > b,
-                '<': lambda a, b: a < b,
-                '>=': lambda a, b: a >= b,
-                '<=': lambda a, b: a <= b,
-                '==': lambda a, b: a == b,
-                '!=': lambda a, b: a != b,
+                ">": lambda a, b: a > b,
+                "<": lambda a, b: a < b,
+                ">=": lambda a, b: a >= b,
+                "<=": lambda a, b: a <= b,
+                "==": lambda a, b: a == b,
+                "!=": lambda a, b: a != b,
             }
 
             if op in ops:
@@ -423,11 +437,11 @@ def simple_expr_to_z3(expr: str, var_map: Dict[str, Any]) -> Any:
         pass
 
     # Try boolean
-    if expr.lower() in ['true', 'false']:
-        return BoolVal(expr.lower() == 'true')
+    if expr.lower() in ["true", "false"]:
+        return BoolVal(expr.lower() == "true")
 
     # Handle special Z3 functions
-    if expr.startswith('ToReal(') and expr.endswith(')'):
+    if expr.startswith("ToReal(") and expr.endswith(")"):
         inner = expr[7:-1]
         inner_z3 = simple_expr_to_z3(inner, var_map)
         if inner_z3 is not None:
@@ -439,20 +453,48 @@ def simple_expr_to_z3(expr: str, var_map: Dict[str, Any]) -> Any:
     return var_map[expr]
 
 
-def enhanced_ast_to_z3(node, var_dict, handle_subscript_func=None, handle_in_notin_func=None, z3_min_list_func=None, z3_max_list_func=None):
+def enhanced_ast_to_z3(
+    node,
+    var_dict,
+    handle_subscript_func=None,
+    handle_in_notin_func=None,
+    z3_min_list_func=None,
+    z3_max_list_func=None,
+):
     """Enhanced AST to Z3 conversion with support for more node types"""
     if not Z3_AVAILABLE:
         return None
 
     if isinstance(node, ast.BoolOp):
-        return simplify(get_boolop_func(node.op)(*[enhanced_ast_to_z3(v, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func) for v in node.values]))
+        return simplify(
+            get_boolop_func(node.op)(
+                *[
+                    enhanced_ast_to_z3(
+                        v,
+                        var_dict,
+                        handle_subscript_func,
+                        handle_in_notin_func,
+                        z3_min_list_func,
+                        z3_max_list_func,
+                    )
+                    for v in node.values
+                ]
+            )
+        )
 
     if isinstance(node, ast.UnaryOp):
         if isinstance(node.op, ast.Not):
-            operand = enhanced_ast_to_z3(node.operand, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
+            operand = enhanced_ast_to_z3(
+                node.operand,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
+            )
             if operand and Z3_AVAILABLE:
                 try:
-                    if hasattr(operand, 'sort') and operand.sort() != BoolSort():
+                    if hasattr(operand, "sort") and operand.sort() != BoolSort():
                         operand = operand != 0
                 except:
                     pass
@@ -460,7 +502,14 @@ def enhanced_ast_to_z3(node, var_dict, handle_subscript_func=None, handle_in_not
         return None
 
     if isinstance(node, ast.Compare):
-        left = enhanced_ast_to_z3(node.left, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
+        left = enhanced_ast_to_z3(
+            node.left,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
+        )
         if not left:
             return None
 
@@ -470,21 +519,49 @@ def enhanced_ast_to_z3(node, var_dict, handle_subscript_func=None, handle_in_not
         if isinstance(op, (ast.In, ast.NotIn)) and handle_in_notin_func:
             return handle_in_notin_func(left, op, right_node, var_dict)
 
-        right = enhanced_ast_to_z3(right_node, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
+        right = enhanced_ast_to_z3(
+            right_node,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
+        )
         if not right:
             return None
 
         return get_cmp_func(op)(left, right)
 
     if isinstance(node, ast.BinOp):
-        left = enhanced_ast_to_z3(node.left, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
-        right = enhanced_ast_to_z3(node.right, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
+        left = enhanced_ast_to_z3(
+            node.left,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
+        )
+        right = enhanced_ast_to_z3(
+            node.right,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
+        )
         if not left or not right:
             return None
         return get_binop_func(node.op)(left, right)
 
     if isinstance(node, ast.Subscript) and handle_subscript_func:
-        value = enhanced_ast_to_z3(node.value, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
+        value = enhanced_ast_to_z3(
+            node.value,
+            var_dict,
+            handle_subscript_func,
+            handle_in_notin_func,
+            z3_min_list_func,
+            z3_max_list_func,
+        )
         if not value:
             return None
 
@@ -502,7 +579,14 @@ def enhanced_ast_to_z3(node, var_dict, handle_subscript_func=None, handle_in_not
                 var_dict[node.slice.id] = idx
             return handle_subscript_func(value, idx, var_dict)
         else:
-            idx = enhanced_ast_to_z3(node.slice, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
+            idx = enhanced_ast_to_z3(
+                node.slice,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
+            )
             return handle_subscript_func(value, idx, var_dict) if idx else None
 
     if isinstance(node, ast.Call):
@@ -511,17 +595,34 @@ def enhanced_ast_to_z3(node, var_dict, handle_subscript_func=None, handle_in_not
 
         func_name = node.func.id
 
-        if func_name == 'int':
+        if func_name == "int":
             if node.args:
-                return enhanced_ast_to_z3(node.args[0], var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func)
+                return enhanced_ast_to_z3(
+                    node.args[0],
+                    var_dict,
+                    handle_subscript_func,
+                    handle_in_notin_func,
+                    z3_min_list_func,
+                    z3_max_list_func,
+                )
             return IntVal(0)
 
-        if func_name == 'len':
+        if func_name == "len":
             # Simplified length handling - assume known length
             return IntVal(3)  # Default length for symbolic lists
 
-        if func_name in ['min', 'max']:
-            args_z3 = [enhanced_ast_to_z3(arg, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func) for arg in node.args]
+        if func_name in ["min", "max"]:
+            args_z3 = [
+                enhanced_ast_to_z3(
+                    arg,
+                    var_dict,
+                    handle_subscript_func,
+                    handle_in_notin_func,
+                    z3_min_list_func,
+                    z3_max_list_func,
+                )
+                for arg in node.args
+            ]
             args_z3 = [arg for arg in args_z3 if arg is not None]
             if not args_z3:
                 return None
@@ -529,17 +630,27 @@ def enhanced_ast_to_z3(node, var_dict, handle_subscript_func=None, handle_in_not
             if len(args_z3) == 1 and isinstance(node.args[0], (ast.List, ast.Tuple)):
                 # min([a,b,c]) or max([a,b,c])
                 elts = node.args[0].elts
-                elts_z3 = [enhanced_ast_to_z3(e, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func) for e in elts]
+                elts_z3 = [
+                    enhanced_ast_to_z3(
+                        e,
+                        var_dict,
+                        handle_subscript_func,
+                        handle_in_notin_func,
+                        z3_min_list_func,
+                        z3_max_list_func,
+                    )
+                    for e in elts
+                ]
                 elts_z3 = [e for e in elts_z3 if e is not None]
-                if func_name == 'min' and z3_min_list_func:
+                if func_name == "min" and z3_min_list_func:
                     return z3_min_list_func(elts_z3)
-                elif func_name == 'max' and z3_max_list_func:
+                elif func_name == "max" and z3_max_list_func:
                     return z3_max_list_func(elts_z3)
             else:
                 # min(a,b,c) or max(a,b,c)
-                if func_name == 'min' and z3_min_list_func:
+                if func_name == "min" and z3_min_list_func:
                     return z3_min_list_func(args_z3)
-                elif func_name == 'max' and z3_max_list_func:
+                elif func_name == "max" and z3_max_list_func:
                     return z3_max_list_func(args_z3)
 
         return None
@@ -560,7 +671,17 @@ def enhanced_ast_to_z3(node, var_dict, handle_subscript_func=None, handle_in_not
         return None
 
     if isinstance(node, (ast.Tuple, ast.List)):
-        return [enhanced_ast_to_z3(elt, var_dict, handle_subscript_func, handle_in_notin_func, z3_min_list_func, z3_max_list_func) for elt in node.elts]
+        return [
+            enhanced_ast_to_z3(
+                elt,
+                var_dict,
+                handle_subscript_func,
+                handle_in_notin_func,
+                z3_min_list_func,
+                z3_max_list_func,
+            )
+            for elt in node.elts
+        ]
 
     return None
 
@@ -626,7 +747,7 @@ def _ast_to_z3_recursive(expr: ast.AST, var_dict: Dict[str, Any]) -> Any:
         return var_dict.get(expr, Int(expr))
 
     # Handle Z3 expressions directly
-    if hasattr(expr, 'sort'):  # Z3 expression
+    if hasattr(expr, "sort"):  # Z3 expression
         return expr
 
     if not isinstance(expr, ast.AST):
@@ -710,7 +831,9 @@ def _ast_to_z3_recursive(expr: ast.AST, var_dict: Dict[str, Any]) -> Any:
     return None
 
 
-def simplify_range_cond(k: int, start, stop, step=None, var_dict: Optional[Dict[str, Any]] = None):
+def simplify_range_cond(
+    k: int, start, stop, step=None, var_dict: Optional[Dict[str, Any]] = None
+):
     """
     Generate Z3 constraint for the k-th iteration of a range loop.
 
@@ -779,7 +902,7 @@ def to_z3_expr(expr, var_dict: Optional[Dict[str, Any]] = None):
         var_dict = {}
 
     # Direct Z3 expressions
-    if hasattr(expr, 'sort'):
+    if hasattr(expr, "sort"):
         return expr
 
     # Python primitives
@@ -846,7 +969,9 @@ def create_solver_with_constraints(constraints: List[Any]) -> Optional[Solver]:
     return solver
 
 
-def check_path_satisfiability(conditions: List[str], var_dict: Optional[Dict[str, Any]] = None) -> tuple[bool, Optional[Dict[str, Any]]]:
+def check_path_satisfiability(
+    conditions: List[str], var_dict: Optional[Dict[str, Any]] = None
+) -> tuple[bool, Optional[Dict[str, Any]]]:
     """
     Check if a list of path conditions is satisfiable.
 
@@ -867,7 +992,9 @@ def check_path_satisfiability(conditions: List[str], var_dict: Optional[Dict[str
     for condition_str in conditions:
         try:
             # Simple parsing for basic conditions
-            constraint = parse_condition_string(condition_str, var_dict, program_variables)
+            constraint = parse_condition_string(
+                condition_str, var_dict, program_variables
+            )
             if constraint is not None:
                 solver.add(constraint)
         except Exception:
@@ -895,7 +1022,9 @@ def check_path_satisfiability(conditions: List[str], var_dict: Optional[Dict[str
         return False, None
 
 
-def parse_condition_string(condition: str, var_dict: Dict[str, Any], program_variables: set) -> Optional[Any]:
+def parse_condition_string(
+    condition: str, var_dict: Dict[str, Any], program_variables: set
+) -> Optional[Any]:
     """
     Parse a condition string into a Z3 constraint.
 
@@ -914,7 +1043,7 @@ def parse_condition_string(condition: str, var_dict: Dict[str, Any], program_var
     condition = condition.strip("()")
 
     # Pattern for simple comparisons: left op right
-    pattern = r'(\w+)\s*([><=!]+)\s*(.+)'
+    pattern = r"(\w+)\s*([><=!]+)\s*(.+)"
     match = re.match(pattern, condition)
 
     if not match:
@@ -937,8 +1066,8 @@ def parse_condition_string(condition: str, var_dict: Dict[str, Any], program_var
         try:
             left_value = RealVal(float(left_str))
         except ValueError:
-            if left_str.lower() in ['true', 'false']:
-                left_value = BoolVal(left_str.lower() == 'true')
+            if left_str.lower() in ["true", "false"]:
+                left_value = BoolVal(left_str.lower() == "true")
             else:
                 # It's a variable
                 left_is_var = True
@@ -954,8 +1083,8 @@ def parse_condition_string(condition: str, var_dict: Dict[str, Any], program_var
         try:
             right_value = RealVal(float(right_str))
         except ValueError:
-            if right_str.lower() in ['true', 'false']:
-                right_value = BoolVal(right_str.lower() == 'true')
+            if right_str.lower() in ["true", "false"]:
+                right_value = BoolVal(right_str.lower() == "true")
             else:
                 # It's a variable
                 right_is_var = True
@@ -969,12 +1098,12 @@ def parse_condition_string(condition: str, var_dict: Dict[str, Any], program_var
 
     # Create constraint
     ops = {
-        '>': lambda a, b: a > b,
-        '<': lambda a, b: a < b,
-        '>=': lambda a, b: a >= b,
-        '<=': lambda a, b: a <= b,
-        '==': lambda a, b: a == b,
-        '!=': lambda a, b: a != b,
+        ">": lambda a, b: a > b,
+        "<": lambda a, b: a < b,
+        ">=": lambda a, b: a >= b,
+        "<=": lambda a, b: a <= b,
+        "==": lambda a, b: a == b,
+        "!=": lambda a, b: a != b,
     }
 
     if op not in ops:
@@ -997,7 +1126,9 @@ def parse_operands(operands_str: str) -> List[Any]:
 
         try:
             # Parse the tuple content
-            tuple_parts = [part.strip().strip("'\"") for part in tuple_content.split(',')]
+            tuple_parts = [
+                part.strip().strip("'\"") for part in tuple_content.split(",")
+            ]
             if len(tuple_parts) == 2:
                 operands.append(tuple(tuple_parts))  # ('name', 'x')
 
@@ -1041,7 +1172,7 @@ def operand_to_z3(operand: Any, var_map: Dict[str, Any]) -> Any:
 
     # Handle tuple format like ('name', 'x')
     if isinstance(operand, tuple) and len(operand) == 2:
-        if operand[0] == 'name':
+        if operand[0] == "name":
             var_name = operand[1]
             if var_name not in var_map:
                 var_map[var_name] = Int(var_name)

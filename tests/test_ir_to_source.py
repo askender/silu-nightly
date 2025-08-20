@@ -193,7 +193,12 @@ class TestIRToSourceConverter:
         assert result == expected
 
         # If-else
-        ir_node = ("if", ("<", "x", 0), (("assign", "y", -1, None),), (("assign", "y", 1, None),))
+        ir_node = (
+            "if",
+            ("<", "x", 0),
+            (("assign", "y", -1, None),),
+            (("assign", "y", 1, None),),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "if x < 0:\n    y = -1\nelse:\n    y = 1"
         assert result == expected
@@ -211,7 +216,13 @@ class TestIRToSourceConverter:
         """Test conversion of for loops."""
         converter = IRToSourceConverter()
 
-        ir_node = ("for", "i", ("list", (1, 2, 3)), (("call", "print", ("i",), ()),), ())
+        ir_node = (
+            "for",
+            "i",
+            ("list", (1, 2, 3)),
+            (("call", "print", ("i",), ()),),
+            (),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "for i in [1, 2, 3]:\n    print(i)"
         assert result == expected
@@ -245,11 +256,14 @@ class TestIRToSourceConverter:
         """Test conversion of entire modules."""
         converter = IRToSourceConverter()
 
-        ir_node = ("module", (
-            ("assign", "x", 5, None),
-            ("assign", "y", 10, None),
-            ("assign", "z", ("+", "x", "y"), None)
-        ))
+        ir_node = (
+            "module",
+            (
+                ("assign", "x", 5, None),
+                ("assign", "y", 10, None),
+                ("assign", "z", ("+", "x", "y"), None),
+            ),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "x = 5\ny = 10\nz = x + y"
         assert result == expected
@@ -274,9 +288,7 @@ class TestIRToSourceConverter:
         """Test proper indentation handling."""
         converter = IRToSourceConverter(indent_size=2)
 
-        ir_node = ("if", True, (
-            ("if", False, (("assign", "x", 1, None),), ()),
-        ), ())
+        ir_node = ("if", True, (("if", False, (("assign", "x", 1, None),), ()),), ())
         result = converter.convert_to_source(ir_node)
         expected = "if True:\n  if False:\n    x = 1"
         assert result == expected
@@ -302,9 +314,13 @@ class TestConvenienceFunctions:
     def test_convert_ir_file_to_source(self):
         """Test converting IR file to source code."""
         # Create temporary IR file
-        ir_content = '["module", [["assign", "x", 42, null], ["assign", "y", "hello", null]]]'
+        ir_content = (
+            '["module", [["assign", "x", 42, null], ["assign", "y", "hello", null]]]'
+        )
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.ir.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ir.json", delete=False
+        ) as f:
             f.write(ir_content)
             ir_file_path = f.name
 
@@ -315,14 +331,14 @@ class TestConvenienceFunctions:
             assert result == expected
 
             # Convert with output file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.si', delete=False) as f:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".si", delete=False) as f:
                 output_file_path = f.name
 
             try:
                 result = convert_ir_file_to_source(ir_file_path, output_file_path)
 
                 # Check that file was written
-                with open(output_file_path, 'r') as f:
+                with open(output_file_path, "r") as f:
                     file_content = f.read().strip()
                 assert file_content == expected
 
@@ -352,7 +368,7 @@ class TestConvenienceFunctions:
             convert_ir_string_to_source("invalid ir format")
 
         # Create temporary file with invalid content
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.ir', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".ir", delete=False) as f:
             f.write("invalid content")
             invalid_file_path = f.name
 
@@ -370,20 +386,35 @@ class TestComplexExamples:
         """Test conversion of a Fibonacci function."""
         converter = IRToSourceConverter()
 
-        ir_node = ("module", (
-            ("func_def", "fibonacci", ("n",), (
-                ("if", ("<=", "n", 1), (
-                    ("return", "n"),
-                ), (
-                    ("return", ("+",
-                        ("call", "fibonacci", (("-", "n", 1),), ()),
-                        ("call", "fibonacci", (("-", "n", 2),), ())
-                    )),
-                )),
-            )),
-            ("assign", "result", ("call", "fibonacci", (10,), ()), None),
-            ("call", "print", ("result",), ())
-        ))
+        ir_node = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "fibonacci",
+                    ("n",),
+                    (
+                        (
+                            "if",
+                            ("<=", "n", 1),
+                            (("return", "n"),),
+                            (
+                                (
+                                    "return",
+                                    (
+                                        "+",
+                                        ("call", "fibonacci", (("-", "n", 1),), ()),
+                                        ("call", "fibonacci", (("-", "n", 2),), ()),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+                ("assign", "result", ("call", "fibonacci", (10,), ()), None),
+                ("call", "print", ("result",), ()),
+            ),
+        )
 
         result = converter.convert_to_source(ir_node)
 
@@ -394,7 +425,7 @@ class TestComplexExamples:
             "    else:",
             "        return fibonacci(n - 1) + fibonacci(n - 2)",
             "result = fibonacci(10)",
-            "print(result)"
+            "print(result)",
         ]
         expected = "\n".join(expected_lines)
 
@@ -404,24 +435,46 @@ class TestComplexExamples:
         """Test conversion involving nested data structures."""
         converter = IRToSourceConverter()
 
-        ir_node = ("module", (
-            ("assign", "data", ("dict", (
-                ("users", ("list", (
-                    ("dict", (("name", "Alice"), ("age", 30))),
-                    ("dict", (("name", "Bob"), ("age", 25)))
-                ))),
-                ("settings", ("dict", (("theme", "dark"), ("lang", "en"))))
-            )), None),
-            ("assign", "first_user", ("subscript", ("subscript", "data", "users"), 0), None),
-            ("call", "print", (("subscript", "first_user", "name"),), ())
-        ))
+        ir_node = (
+            "module",
+            (
+                (
+                    "assign",
+                    "data",
+                    (
+                        "dict",
+                        (
+                            (
+                                "users",
+                                (
+                                    "list",
+                                    (
+                                        ("dict", (("name", "Alice"), ("age", 30))),
+                                        ("dict", (("name", "Bob"), ("age", 25))),
+                                    ),
+                                ),
+                            ),
+                            ("settings", ("dict", (("theme", "dark"), ("lang", "en")))),
+                        ),
+                    ),
+                    None,
+                ),
+                (
+                    "assign",
+                    "first_user",
+                    ("subscript", ("subscript", "data", "users"), 0),
+                    None,
+                ),
+                ("call", "print", (("subscript", "first_user", "name"),), ()),
+            ),
+        )
 
         result = converter.convert_to_source(ir_node)
 
         expected_lines = [
             "data = {'users': [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}], 'settings': {'theme': 'dark', 'lang': 'en'}}",
             "first_user = data['users'][0]",
-            "print(first_user['name'])"
+            "print(first_user['name'])",
         ]
         expected = "\n".join(expected_lines)
 

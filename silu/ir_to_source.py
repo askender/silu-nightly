@@ -6,7 +6,7 @@ back to readable source code. It can be used both as a standalone converter and
 by other modules like the symbolic executor for displaying readable expressions.
 """
 
-from typing import Any, List, Tuple, Union
+from typing import Any, Tuple
 import json
 
 
@@ -178,7 +178,9 @@ class IRToSourceConverter:
         lines = []
 
         # Target is always a variable name (identifier)
-        target_str = target if isinstance(target, str) else self.convert_to_source(target)
+        target_str = (
+            target if isinstance(target, str) else self.convert_to_source(target)
+        )
         iter_str = self._convert_identifier_or_value(iter_val)
         indent = self._get_indent(indent_level)
         lines.append(f"{indent}for {target_str} in {iter_str}:")
@@ -243,13 +245,17 @@ class IRToSourceConverter:
     def _convert_list(self, ir_node: Tuple) -> str:
         """Convert list IR to source code."""
         _, elements = ir_node
-        element_strs = [self._convert_value_in_context(elem, "value") for elem in elements]
+        element_strs = [
+            self._convert_value_in_context(elem, "value") for elem in elements
+        ]
         return f"[{', '.join(element_strs)}]"
 
     def _convert_tuple(self, ir_node: Tuple) -> str:
         """Convert tuple IR to source code."""
         _, elements = ir_node
-        element_strs = [self._convert_value_in_context(elem, "value") for elem in elements]
+        element_strs = [
+            self._convert_value_in_context(elem, "value") for elem in elements
+        ]
         if len(elements) == 1:
             return f"({element_strs[0]},)"
         return f"({', '.join(element_strs)})"
@@ -267,7 +273,9 @@ class IRToSourceConverter:
     def _convert_set(self, ir_node: Tuple) -> str:
         """Convert set IR to source code."""
         _, elements = ir_node
-        element_strs = [self._convert_value_in_context(elem, "value") for elem in elements]
+        element_strs = [
+            self._convert_value_in_context(elem, "value") for elem in elements
+        ]
         return f"{{{', '.join(element_strs)}}}"
 
     def _convert_subscript(self, ir_node: Tuple) -> str:
@@ -406,9 +414,18 @@ class IRToSourceConverter:
             "or": 1,
             "and": 2,
             "not": 3,
-            "==": 4, "!=": 4, "<": 4, ">": 4, "<=": 4, ">=": 4,
-            "+": 5, "-": 5,
-            "*": 6, "/": 6, "//": 6, "%": 6,
+            "==": 4,
+            "!=": 4,
+            "<": 4,
+            ">": 4,
+            "<=": 4,
+            ">=": 4,
+            "+": 5,
+            "-": 5,
+            "*": 6,
+            "/": 6,
+            "//": 6,
+            "%": 6,
             "**": 7,
         }
 
@@ -441,11 +458,27 @@ class IRToSourceConverter:
         # Common string literal patterns that should be quoted
         string_literal_indicators = [
             # Contains spaces or punctuation that suggests human-readable text
-            ' ', '.', '!', '?', ',', ';', ':', '"', "'",
+            " ",
+            ".",
+            "!",
+            "?",
+            ",",
+            ";",
+            ":",
+            '"',
+            "'",
             # Common greeting/message patterns
-            'Hello', 'Hi', 'Hey', 'Howdy', 'Welcome',
+            "Hello",
+            "Hi",
+            "Hey",
+            "Howdy",
+            "Welcome",
             # Common words that appear in messages
-            'message', 'error', 'warning', 'info', 'debug',
+            "message",
+            "error",
+            "warning",
+            "info",
+            "debug",
         ]
 
         # If it contains obvious string literal patterns, treat as literal
@@ -460,20 +493,82 @@ class IRToSourceConverter:
 
         # Common string literal words (case sensitive)
         literal_words = {
-            'Alice', 'Bob', 'Charlie', 'Diana', 'John', 'Jane', 'Doe',
-            'Hello', 'Hi', 'Hey', 'Howdy', 'Good', 'Bad', 'Error', 'Success',
-            'positive', 'negative', 'zero', 'large', 'small', 'Excellent',
-            'New York', 'Engineer', 'LOG_', 'text', 'more text'
+            "Alice",
+            "Bob",
+            "Charlie",
+            "Diana",
+            "John",
+            "Jane",
+            "Doe",
+            "Hello",
+            "Hi",
+            "Hey",
+            "Howdy",
+            "Good",
+            "Bad",
+            "Error",
+            "Success",
+            "positive",
+            "negative",
+            "zero",
+            "large",
+            "small",
+            "Excellent",
+            "New York",
+            "Engineer",
+            "LOG_",
+            "text",
+            "more text",
         }
 
         # Common function names that should be treated as identifiers
         common_function_names = {
-            'print', 'len', 'max', 'min', 'sum', 'abs', 'round', 'sorted', 'reversed',
-            'enumerate', 'zip', 'map', 'filter', 'range', 'list', 'dict', 'set', 'tuple',
-            'str', 'int', 'float', 'bool', 'type', 'isinstance', 'hasattr', 'getattr',
-            'setattr', 'open', 'close', 'read', 'write', 'append', 'split', 'join',
-            'strip', 'replace', 'find', 'format', 'upper', 'lower', 'startswith',
-            'endswith', 'isdigit', 'isalpha', 'isalnum', 'isspace'
+            "print",
+            "len",
+            "max",
+            "min",
+            "sum",
+            "abs",
+            "round",
+            "sorted",
+            "reversed",
+            "enumerate",
+            "zip",
+            "map",
+            "filter",
+            "range",
+            "list",
+            "dict",
+            "set",
+            "tuple",
+            "str",
+            "int",
+            "float",
+            "bool",
+            "type",
+            "isinstance",
+            "hasattr",
+            "getattr",
+            "setattr",
+            "open",
+            "close",
+            "read",
+            "write",
+            "append",
+            "split",
+            "join",
+            "strip",
+            "replace",
+            "find",
+            "format",
+            "upper",
+            "lower",
+            "startswith",
+            "endswith",
+            "isdigit",
+            "isalpha",
+            "isalnum",
+            "isspace",
         }
 
         # If it's a common function name, treat as identifier
@@ -482,12 +577,46 @@ class IRToSourceConverter:
 
         # Common dictionary keys that should be treated as string literals
         common_dict_keys = {
-            'name', 'age', 'email', 'id', 'type', 'value', 'config',
-            'settings', 'users', 'items', 'title', 'description', 'content',
-            'status', 'error', 'warning', 'info', 'debug', 'log', 'file', 'path',
-            'url', 'link', 'image', 'html', 'json', 'xml', 'csv',
-            'theme', 'lang', 'language', 'locale', 'timezone', 'format',
-            'width', 'height', 'size', 'length', 'count', 'total'
+            "name",
+            "age",
+            "email",
+            "id",
+            "type",
+            "value",
+            "config",
+            "settings",
+            "users",
+            "items",
+            "title",
+            "description",
+            "content",
+            "status",
+            "error",
+            "warning",
+            "info",
+            "debug",
+            "log",
+            "file",
+            "path",
+            "url",
+            "link",
+            "image",
+            "html",
+            "json",
+            "xml",
+            "csv",
+            "theme",
+            "lang",
+            "language",
+            "locale",
+            "timezone",
+            "format",
+            "width",
+            "height",
+            "size",
+            "length",
+            "count",
+            "total",
         }
 
         if value in literal_words or value in common_dict_keys:
@@ -495,7 +624,7 @@ class IRToSourceConverter:
 
         # Pattern-based checks
         # All caps with underscores (constants that are often string literals in config)
-        if value.isupper() and '_' in value:
+        if value.isupper() and "_" in value:
             return False
 
         # Capitalized words that aren't typical variable names
@@ -527,7 +656,7 @@ class IRToSourceConverter:
 
 def convert_ir_file_to_source(ir_file_path: str, output_file_path: str = None) -> str:
     """Convert an IR file to source code file."""
-    with open(ir_file_path, 'r') as f:
+    with open(ir_file_path, "r") as f:
         content = f.read().strip()
 
     # Parse IR from JSON or Python literal format
@@ -539,7 +668,7 @@ def convert_ir_file_to_source(ir_file_path: str, output_file_path: str = None) -
         # Try to evaluate as Python literal
         try:
             # Handle null values
-            content = content.replace('null', 'None')
+            content = content.replace("null", "None")
             ir_data = eval(content)
         except Exception as e:
             raise ValueError(f"Could not parse IR file: {e}")
@@ -550,9 +679,9 @@ def convert_ir_file_to_source(ir_file_path: str, output_file_path: str = None) -
 
     # Write to output file if specified
     if output_file_path:
-        with open(output_file_path, 'w') as f:
+        with open(output_file_path, "w") as f:
             f.write(source_code)
-            f.write('\n')  # Add final newline
+            f.write("\n")  # Add final newline
 
     return source_code
 
@@ -568,7 +697,7 @@ def convert_ir_string_to_source(ir_string: str) -> str:
         # Try to evaluate as Python literal
         try:
             # Handle null values
-            ir_string = ir_string.replace('null', 'None')
+            ir_string = ir_string.replace("null", "None")
             ir_data = eval(ir_string)
         except Exception as e:
             raise ValueError(f"Could not parse IR string: {e}")

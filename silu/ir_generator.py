@@ -236,9 +236,7 @@ class SiluIRGenerator(BaseASTProcessor):
         finalbody = (
             tuple(self.visit(stmt) for stmt in node.finalbody) if node.finalbody else ()
         )
-        return self._make_node(
-            "try", body, handlers, orelse, finalbody
-        )
+        return self._make_node("try", body, handlers, orelse, finalbody)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> Tuple:
         """Generate exception handler IR."""

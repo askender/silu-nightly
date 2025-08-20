@@ -3,8 +3,6 @@ Unit tests for the Silu interpreter components using pytest.
 """
 
 import ast
-import subprocess
-import sys
 import pytest
 from silu.interpreter import Environment, SiluInterpreter, Function, ReturnException
 
@@ -55,9 +53,16 @@ class TestSiluInterpreter:
         tree = ast.parse("pass")
         interpreter.visit(tree)
 
-    @pytest.mark.parametrize("value,expected_type", [
-        (42, int), ("hello", str), (3.14, float), (True, bool), (False, bool),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected_type",
+        [
+            (42, int),
+            ("hello", str),
+            (3.14, float),
+            (True, bool),
+            (False, bool),
+        ],
+    )
     def test_visit_constant(self, value, expected_type):
         interpreter = SiluInterpreter()
         node = ast.Constant(value=value)
@@ -112,7 +117,9 @@ class TestSiluInterpreter:
         target2 = ast.Name(id="b", ctx=ast.Store())
         value = ast.Constant(value=42)
         assign_node = ast.Assign(targets=[target1, target2], value=value)
-        with pytest.raises(NotImplementedError, match="Only single target assignments supported"):
+        with pytest.raises(
+            NotImplementedError, match="Only single target assignments supported"
+        ):
             interpreter.visit_Assign(assign_node)
 
     def test_subscript_operations(self):
@@ -185,13 +192,23 @@ class TestSiluInterpreter:
             ctx=ast.Store(),
         )
         assign_node = ast.Assign(targets=[target], value=ast.Constant(value=99))
-        with pytest.raises(TypeError, match="'int' object does not support item assignment"):
+        with pytest.raises(
+            TypeError, match="'int' object does not support item assignment"
+        ):
             interpreter.visit_Assign(assign_node)
 
-    @pytest.mark.parametrize("op,expected", [
-        (ast.Add(), 8), (ast.Sub(), 2), (ast.Mult(), 15), (ast.Div(), 1.6666666666666667),
-        (ast.FloorDiv(), 1), (ast.Mod(), 2), (ast.Pow(), 125),
-    ])
+    @pytest.mark.parametrize(
+        "op,expected",
+        [
+            (ast.Add(), 8),
+            (ast.Sub(), 2),
+            (ast.Mult(), 15),
+            (ast.Div(), 1.6666666666666667),
+            (ast.FloorDiv(), 1),
+            (ast.Mod(), 2),
+            (ast.Pow(), 125),
+        ],
+    )
     def test_visit_binop_normal(self, op, expected):
         interpreter = SiluInterpreter()
         left = ast.Constant(value=5)
@@ -199,10 +216,14 @@ class TestSiluInterpreter:
         node = ast.BinOp(left=left, op=op, right=right)
         assert interpreter.visit_BinOp(node) == expected
 
-    @pytest.mark.parametrize("op,error_msg", [
-        (ast.Div(), "Division by zero"), (ast.Mod(), "Modulo by zero"),
-        (ast.FloorDiv(), "Division by zero"),
-    ])
+    @pytest.mark.parametrize(
+        "op,error_msg",
+        [
+            (ast.Div(), "Division by zero"),
+            (ast.Mod(), "Modulo by zero"),
+            (ast.FloorDiv(), "Division by zero"),
+        ],
+    )
     def test_visit_binop_division_by_zero(self, op, error_msg):
         interpreter = SiluInterpreter()
         left = ast.Constant(value=5)
@@ -219,10 +240,15 @@ class TestSiluInterpreter:
         with pytest.raises(NotImplementedError, match="Unsupported operator: LShift"):
             interpreter.visit_BinOp(node)
 
-    @pytest.mark.parametrize("op,operand,expected", [
-        (ast.UAdd(), 5, 5), (ast.USub(), 5, -5),
-        (ast.Not(), True, False), (ast.Not(), False, True),
-    ])
+    @pytest.mark.parametrize(
+        "op,operand,expected",
+        [
+            (ast.UAdd(), 5, 5),
+            (ast.USub(), 5, -5),
+            (ast.Not(), True, False),
+            (ast.Not(), False, True),
+        ],
+    )
     def test_visit_unaryop(self, op, operand, expected):
         interpreter = SiluInterpreter()
         node = ast.UnaryOp(op=op, operand=ast.Constant(value=operand))
@@ -236,12 +262,15 @@ class TestSiluInterpreter:
         with pytest.raises(NotImplementedError, match="Unsupported operator: Invert"):
             interpreter.visit_UnaryOp(node)
 
-    @pytest.mark.parametrize("values,op,expected", [
-        ([ast.Constant(value=True), ast.Constant(value=False)], ast.And(), False),
-        ([ast.Constant(value=True), ast.Constant(value=True)], ast.And(), True),
-        ([ast.Constant(value=False), ast.Constant(value=True)], ast.Or(), True),
-        ([ast.Constant(value=False), ast.Constant(value=False)], ast.Or(), False),
-    ])
+    @pytest.mark.parametrize(
+        "values,op,expected",
+        [
+            ([ast.Constant(value=True), ast.Constant(value=False)], ast.And(), False),
+            ([ast.Constant(value=True), ast.Constant(value=True)], ast.And(), True),
+            ([ast.Constant(value=False), ast.Constant(value=True)], ast.Or(), True),
+            ([ast.Constant(value=False), ast.Constant(value=False)], ast.Or(), False),
+        ],
+    )
     def test_visit_boolop(self, values, op, expected):
         interpreter = SiluInterpreter()
         node = ast.BoolOp(op=op, values=values)
@@ -297,11 +326,11 @@ class TestSiluInterpreter:
         # Test division by zero in comparison
         left = ast.Constant(value=1)
         ops = [ast.Lt()]
-        comparators = [ast.BinOp(
-            left=ast.Constant(value=5),
-            op=ast.Div(),
-            right=ast.Constant(value=0)
-        )]
+        comparators = [
+            ast.BinOp(
+                left=ast.Constant(value=5), op=ast.Div(), right=ast.Constant(value=0)
+            )
+        ]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
         with pytest.raises(ZeroDivisionError, match="Division by zero"):
             interpreter.visit_Compare(node)
@@ -319,20 +348,24 @@ class TestSiluInterpreter:
         # Test simple if statement
         interpreter.env.set("result", 0)
         condition = ast.Constant(value=True)
-        body = [ast.Assign(
-            targets=[ast.Name(id="result", ctx=ast.Store())],
-            value=ast.Constant(value=42)
-        )]
+        body = [
+            ast.Assign(
+                targets=[ast.Name(id="result", ctx=ast.Store())],
+                value=ast.Constant(value=42),
+            )
+        ]
         if_node = ast.If(test=condition, body=body, orelse=[])
         interpreter.visit_If(if_node)
         assert interpreter.env.get("result") == 42
 
         # Test if-else
         condition = ast.Constant(value=False)
-        orelse = [ast.Assign(
-            targets=[ast.Name(id="result", ctx=ast.Store())],
-            value=ast.Constant(value=99)
-        )]
+        orelse = [
+            ast.Assign(
+                targets=[ast.Name(id="result", ctx=ast.Store())],
+                value=ast.Constant(value=99),
+            )
+        ]
         if_node = ast.If(test=condition, body=body, orelse=orelse)
         interpreter.visit_If(if_node)
         assert interpreter.env.get("result") == 99
@@ -359,11 +392,14 @@ while True:
         interpreter2.visit(tree2)
         assert interpreter2.env.get("i") == 2
 
-    @pytest.mark.parametrize("code,var_name,expected", [
-        ("x = 5 + 3", "x", 8),
-        ("y = 2 * 4", "y", 8),
-        ("z = 10 / 2", "z", 5.0),
-    ])
+    @pytest.mark.parametrize(
+        "code,var_name,expected",
+        [
+            ("x = 5 + 3", "x", 8),
+            ("y = 2 * 4", "y", 8),
+            ("z = 10 / 2", "z", 5.0),
+        ],
+    )
     def test_e2e_programs_basic(self, code, var_name, expected):
         interpreter = SiluInterpreter()
         tree = ast.parse(code)
@@ -392,7 +428,7 @@ while True:
         interpreter = SiluInterpreter()
         assert interpreter.env.vars["list"]() == []
         assert interpreter.env.vars["list"]([1, 2, 3]) == [1, 2, 3]
-        assert interpreter.env.vars["list"]("hello") == ['h', 'e', 'l', 'l', 'o']
+        assert interpreter.env.vars["list"]("hello") == ["h", "e", "l", "l", "o"]
 
     def test_print_function(self):
         interpreter = SiluInterpreter()
@@ -406,12 +442,10 @@ while True:
 
         call_node = ast.Call(
             func=ast.Attribute(
-                value=ast.Name(id="lst", ctx=ast.Load()),
-                attr="append",
-                ctx=ast.Load()
+                value=ast.Name(id="lst", ctx=ast.Load()), attr="append", ctx=ast.Load()
             ),
             args=[ast.Constant(value=4)],
-            keywords=[]
+            keywords=[],
         )
         interpreter.visit_Call(call_node)
         assert interpreter.env.get("lst") == [1, 2, 3, 4]
@@ -423,12 +457,27 @@ while True:
         assert interpreter.env.vars["type"]("hello") == str
         assert interpreter.env.vars["type"](True) == bool
 
-    @pytest.mark.parametrize("func_name,input_val,expected", [
-        ("int", 3.14, 3), ("int", "42", 42), ("int", True, 1), ("int", None, 0),
-        ("float", 42, 42.0), ("float", "3.14", 3.14), ("float", True, 1.0), ("float", None, 0.0),
-        ("str", 42, "42"), ("str", 3.14, "3.14"), ("str", True, "True"), ("str", None, ""),
-        ("bool", 1, True), ("bool", 0, False), ("bool", "hello", True), ("bool", None, False),
-    ])
+    @pytest.mark.parametrize(
+        "func_name,input_val,expected",
+        [
+            ("int", 3.14, 3),
+            ("int", "42", 42),
+            ("int", True, 1),
+            ("int", None, 0),
+            ("float", 42, 42.0),
+            ("float", "3.14", 3.14),
+            ("float", True, 1.0),
+            ("float", None, 0.0),
+            ("str", 42, "42"),
+            ("str", 3.14, "3.14"),
+            ("str", True, "True"),
+            ("str", None, ""),
+            ("bool", 1, True),
+            ("bool", 0, False),
+            ("bool", "hello", True),
+            ("bool", None, False),
+        ],
+    )
     def test_conversion_functions(self, func_name, input_val, expected):
         interpreter = SiluInterpreter()
         if input_val is None:
@@ -436,10 +485,19 @@ while True:
         else:
             assert interpreter.env.vars[func_name](input_val) == expected
 
-    @pytest.mark.parametrize("value,type_cls,expected", [
-        (42, int, True), (3.14, float, True), ("hello", str, True), (True, bool, True),
-        (42, float, False), (3.14, int, False), ("hello", bool, False), (True, str, False),
-    ])
+    @pytest.mark.parametrize(
+        "value,type_cls,expected",
+        [
+            (42, int, True),
+            (3.14, float, True),
+            ("hello", str, True),
+            (True, bool, True),
+            (42, float, False),
+            (3.14, int, False),
+            ("hello", bool, False),
+            (True, str, False),
+        ],
+    )
     def test_isinstance_function(self, value, type_cls, expected):
         interpreter = SiluInterpreter()
         assert interpreter.env.vars["isinstance"](value, type_cls) == expected
@@ -447,8 +505,10 @@ while True:
     def test_isinstance_with_type_objects(self):
         interpreter = SiluInterpreter()
         test_cases = [
-            (42, "int_type"), (3.14, "float_type"),
-            ("hello", "str_type"), (True, "bool_type"),
+            (42, "int_type"),
+            (3.14, "float_type"),
+            ("hello", "str_type"),
+            (True, "bool_type"),
         ]
 
         for value, type_name in test_cases:
@@ -468,8 +528,10 @@ while True:
                 self.__name__ = name
 
         custom_types = [
-            (42, CustomType("int")), (3.14, CustomType("float")),
-            ("hello", CustomType("str")), (True, CustomType("bool")),
+            (42, CustomType("int")),
+            (3.14, CustomType("float")),
+            ("hello", CustomType("str")),
+            (True, CustomType("bool")),
         ]
 
         for value, custom_type in custom_types:
@@ -543,6 +605,7 @@ result2 = greet("World")
 def test_main_function():
     """Test that main function exists."""
     from silu.cli import main
+
     assert main is not None
 
 
@@ -626,12 +689,10 @@ for i in range(3):
 
         call_node = ast.Call(
             func=ast.Attribute(
-                value=ast.Name(id="x", ctx=ast.Load()),
-                attr="append",
-                ctx=ast.Load()
+                value=ast.Name(id="x", ctx=ast.Load()), attr="append", ctx=ast.Load()
             ),
             args=[ast.Constant(value=1)],
-            keywords=[]
+            keywords=[],
         )
         with pytest.raises(AttributeError):
             interpreter.visit_Call(call_node)
@@ -645,10 +706,10 @@ for i in range(3):
             func=ast.Attribute(
                 value=ast.Name(id="my_string", ctx=ast.Load()),
                 attr="append",
-                ctx=ast.Load()
+                ctx=ast.Load(),
             ),
             args=[ast.Constant(value="world")],
-            keywords=[]
+            keywords=[],
         )
         with pytest.raises(AttributeError):
             interpreter.visit_Call(call_node)
@@ -677,13 +738,16 @@ else:
         # Create a for loop with tuple target (unsupported)
         target = ast.Tuple(
             elts=[ast.Name(id="a", ctx=ast.Store()), ast.Name(id="b", ctx=ast.Store())],
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         for_node = ast.For(
             target=target,
             iter=ast.List(elts=[ast.Constant(value=1)], ctx=ast.Load()),
             body=[ast.Pass()],
-            orelse=[]
+            orelse=[],
         )
-        with pytest.raises(NotImplementedError, match="Only simple variable targets are supported in for loops"):
+        with pytest.raises(
+            NotImplementedError,
+            match="Only simple variable targets are supported in for loops",
+        ):
             interpreter.visit_For(for_node)

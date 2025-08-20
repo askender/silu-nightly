@@ -6,21 +6,26 @@ This module provides utilities for analyzing and symbolically executing loops,
 particularly range-based loops with support for complex step values and conditions.
 """
 
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from enum import Enum
 import ast
 
 from .z3_utils import (
-    Z3_AVAILABLE, to_z3_expr, simplify_range_cond, is_sat,
-    create_z3_variable, extract_constant_value, get_vars_from_ast
+    Z3_AVAILABLE,
+    to_z3_expr,
+    simplify_range_cond,
+    create_z3_variable,
+    extract_constant_value,
+    get_vars_from_ast,
 )
 
 if Z3_AVAILABLE:
-    from z3 import IntVal, And, Or, Not, simplify
+    pass
 
 
 class LoopType(Enum):
     """Types of loops"""
+
     RANGE = "range"
     WHILE = "while"
     FOR_ITER = "for_iter"
@@ -45,7 +50,9 @@ class LoopBound:
 class LoopIteration:
     """Represents a single loop iteration with constraints"""
 
-    def __init__(self, iteration: int, constraint=None, variable_values: Dict[str, Any] = None):
+    def __init__(
+        self, iteration: int, constraint=None, variable_values: Dict[str, Any] = None
+    ):
         self.iteration = iteration
         self.constraint = constraint
         self.variable_values = variable_values or {}
@@ -62,7 +69,9 @@ class LoopAnalyzer:
         self.max_iterations = max_iterations
         self.variable_dict = {}
 
-    def analyze_range_loop(self, start, stop, step=None, var_name: str = "i") -> List[LoopIteration]:
+    def analyze_range_loop(
+        self, start, stop, step=None, var_name: str = "i"
+    ) -> List[LoopIteration]:
         """
         Analyze a range-based loop and generate symbolic constraints for iterations.
 
@@ -80,7 +89,9 @@ class LoopAnalyzer:
         if not Z3_AVAILABLE:
             # Fallback: create simple iterations without constraints
             for k in range(min(self.max_iterations, 5)):
-                iterations.append(LoopIteration(k, f"{var_name} = {start} + {k} * {step or 1}"))
+                iterations.append(
+                    LoopIteration(k, f"{var_name} = {start} + {k} * {step or 1}")
+                )
             return iterations
 
         # Create Z3 variable for loop variable
@@ -102,7 +113,9 @@ class LoopAnalyzer:
 
         return iterations
 
-    def analyze_while_loop(self, condition_ast: ast.AST, max_unroll: int = 3) -> List[LoopIteration]:
+    def analyze_while_loop(
+        self, condition_ast: ast.AST, max_unroll: int = 3
+    ) -> List[LoopIteration]:
         """
         Analyze a while loop by unrolling a limited number of iterations.
 
@@ -129,6 +142,7 @@ class LoopAnalyzer:
                 # First iteration: condition must be true to enter
                 if Z3_AVAILABLE:
                     from .z3_utils import ast_to_z3_expr
+
                     condition_z3 = ast_to_z3_expr(condition_ast, self.variable_dict)
                     if condition_z3 is not None:
                         iterations.append(LoopIteration(k, condition_z3))
@@ -143,7 +157,7 @@ class LoopAnalyzer:
                 iterations.append(LoopIteration(k, condition_name))
 
         # Add exit condition (condition becomes false)
-        exit_iteration = LoopIteration(-1, f"exit_condition")
+        exit_iteration = LoopIteration(-1, "exit_condition")
         iterations.append(exit_iteration)
 
         return iterations
@@ -215,11 +229,15 @@ class LoopAnalyzer:
         if not isinstance(expr, tuple):
             return False
 
-        return (len(expr) >= 3 and
-                expr[0] == "call" and
-                (expr[1] == "range" if isinstance(expr[1], str) else False))
+        return (
+            len(expr) >= 3
+            and expr[0] == "call"
+            and (expr[1] == "range" if isinstance(expr[1], str) else False)
+        )
 
-    def generate_loop_constraints(self, loop_type: LoopType, loop_data: Dict[str, Any]) -> List[Any]:
+    def generate_loop_constraints(
+        self, loop_type: LoopType, loop_data: Dict[str, Any]
+    ) -> List[Any]:
         """
         Generate Z3 constraints for a loop based on its type and data.
 
@@ -236,9 +254,9 @@ class LoopAnalyzer:
             return constraints
 
         if loop_type == LoopType.RANGE:
-            bounds = loop_data.get('bounds')
-            var_name = loop_data.get('variable', 'i')
-            max_iter = loop_data.get('max_iterations', self.max_iterations)
+            bounds = loop_data.get("bounds")
+            var_name = loop_data.get("variable", "i")
+            max_iter = loop_data.get("max_iterations", self.max_iterations)
 
             if bounds:
                 for k in range(max_iter):
@@ -251,8 +269,8 @@ class LoopAnalyzer:
                         break
 
         elif loop_type == LoopType.WHILE:
-            condition = loop_data.get('condition')
-            max_iter = loop_data.get('max_iterations', 3)
+            condition = loop_data.get("condition")
+            max_iter = loop_data.get("max_iterations", 3)
 
             if condition:
                 # Add constraints for condition being true in each iteration
@@ -324,12 +342,14 @@ class LoopAnalyzer:
         valid_iterations = [it for it in iterations if it.is_valid]
 
         return {
-            'total_iterations': len(iterations),
-            'valid_iterations': len(valid_iterations),
-            'max_iteration': max((it.iteration for it in valid_iterations), default=-1),
-            'has_exit_condition': any(it.iteration == -1 for it in iterations),
-            'constraints': [str(it.constraint) for it in valid_iterations],
-            'variable_updates': [it.variable_values for it in valid_iterations if it.variable_values]
+            "total_iterations": len(iterations),
+            "valid_iterations": len(valid_iterations),
+            "max_iteration": max((it.iteration for it in valid_iterations), default=-1),
+            "has_exit_condition": any(it.iteration == -1 for it in iterations),
+            "constraints": [str(it.constraint) for it in valid_iterations],
+            "variable_updates": [
+                it.variable_values for it in valid_iterations if it.variable_values
+            ],
         }
 
 
@@ -345,31 +365,25 @@ def analyze_nested_loops(loop_nodes: List[Tuple], max_depth: int = 3) -> Dict[st
         Dictionary containing nested loop analysis
     """
     analyzer = LoopAnalyzer()
-    analysis = {
-        'depth': min(len(loop_nodes), max_depth),
-        'loops': [],
-        'total_paths': 1
-    }
+    analysis = {"depth": min(len(loop_nodes), max_depth), "loops": [], "total_paths": 1}
 
     for i, loop_node in enumerate(loop_nodes[:max_depth]):
         loop_type = analyzer.detect_loop_type(loop_node)
 
-        loop_info = {
-            'level': i,
-            'type': loop_type.value,
-            'estimated_iterations': 1
-        }
+        loop_info = {"level": i, "type": loop_type.value, "estimated_iterations": 1}
 
         if loop_type == LoopType.RANGE:
             # Extract range bounds if possible
             if len(loop_node) >= 3:
                 bounds = analyzer.extract_range_bounds(loop_node[2])
                 if bounds:
-                    estimated = analyzer.estimate_loop_bound(bounds.start, bounds.stop, bounds.step)
-                    loop_info['estimated_iterations'] = estimated
-                    loop_info['bounds'] = str(bounds)
+                    estimated = analyzer.estimate_loop_bound(
+                        bounds.start, bounds.stop, bounds.step
+                    )
+                    loop_info["estimated_iterations"] = estimated
+                    loop_info["bounds"] = str(bounds)
 
-        analysis['loops'].append(loop_info)
-        analysis['total_paths'] *= loop_info['estimated_iterations']
+        analysis["loops"].append(loop_info)
+        analysis["total_paths"] *= loop_info["estimated_iterations"]
 
     return analysis

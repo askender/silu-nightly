@@ -25,19 +25,19 @@ class IRInterpreter:
 
         # Built-in functions
         self.builtins = {
-            'print': self._builtin_print,
-            'type': self._builtin_type,
-            'isinstance': self._builtin_isinstance,
-            'int': self._builtin_int,
-            'float': self._builtin_float,
-            'str': self._builtin_str,
-            'bool': self._builtin_bool,
-            'len': self._builtin_len,
-            'range': self._builtin_range,
-            'abs': self._builtin_abs,
-            'min': self._builtin_min,
-            'max': self._builtin_max,
-            'round': self._builtin_round,
+            "print": self._builtin_print,
+            "type": self._builtin_type,
+            "isinstance": self._builtin_isinstance,
+            "int": self._builtin_int,
+            "float": self._builtin_float,
+            "str": self._builtin_str,
+            "bool": self._builtin_bool,
+            "len": self._builtin_len,
+            "range": self._builtin_range,
+            "abs": self._builtin_abs,
+            "min": self._builtin_min,
+            "max": self._builtin_max,
+            "round": self._builtin_round,
         }
 
     # ================== Main Execution Methods ==================
@@ -63,21 +63,37 @@ class IRInterpreter:
         opcode = ir_node[0]
 
         # Reset control flow flags for each statement
-        if opcode not in ('return', 'break', 'continue'):
+        if opcode not in ("return", "break", "continue"):
             self.should_return = False
 
         # Dispatch to appropriate handler
-        handler_name = f'_execute_{opcode}'
+        handler_name = f"_execute_{opcode}"
         if hasattr(self, handler_name):
             return getattr(self, handler_name)(*ir_node[1:])
 
         # Handle unary operators first (they have exactly 2 elements: opcode + operand)
-        unary_ops = {'+', '-', 'not'}
+        unary_ops = {"+", "-", "not"}
         if opcode in unary_ops and len(ir_node) == 2:
             return self._execute_unary_op(opcode, ir_node[1])
 
         # Handle binary operators (they have exactly 3 elements: opcode + left + right)
-        binary_ops = {'+', '-', '*', '/', '//', '%', '**', '==', '!=', '<', '<=', '>', '>=', 'and', 'or'}
+        binary_ops = {
+            "+",
+            "-",
+            "*",
+            "/",
+            "//",
+            "%",
+            "**",
+            "==",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "and",
+            "or",
+        }
         if opcode in binary_ops and len(ir_node) == 3:
             return self._execute_binary_op(opcode, ir_node[1], ir_node[2])
 
@@ -85,7 +101,7 @@ class IRInterpreter:
 
     def execute_program(self, ir_module: Tuple) -> Any:
         """Execute a complete IR module."""
-        if not isinstance(ir_module, tuple) or ir_module[0] != 'module':
+        if not isinstance(ir_module, tuple) or ir_module[0] != "module":
             raise ValueError("Expected IR module tuple")
 
         statements = ir_module[1]
@@ -121,8 +137,16 @@ class IRInterpreter:
 
         # Map augmented operators to binary operators
         op_map = {
-            '+=': '+', '-=': '-', '*=': '*', '/=': '/', '//=': '//',
-            '%=': '%', '**=': '**', '&=': '&', '|=': '|', '^=': '^'
+            "+=": "+",
+            "-=": "-",
+            "*=": "*",
+            "/=": "/",
+            "//=": "//",
+            "%=": "%",
+            "**=": "**",
+            "&=": "&",
+            "|=": "|",
+            "^=": "^",
         }
 
         binary_op = op_map.get(op, op[:-1])  # Remove '=' suffix
@@ -180,7 +204,9 @@ class IRInterpreter:
 
         return result
 
-    def _execute_for(self, target: str, iter_expr: Any, body: Tuple, orelse: Tuple) -> Any:
+    def _execute_for(
+        self, target: str, iter_expr: Any, body: Tuple, orelse: Tuple
+    ) -> Any:
         """Execute for loop."""
         iterable = self.execute(iter_expr)
         result = None
@@ -209,10 +235,7 @@ class IRInterpreter:
 
     def _execute_func_def(self, name: str, args: Tuple, body: Tuple) -> None:
         """Execute function definition."""
-        self.functions[name] = {
-            'args': args,
-            'body': body
-        }
+        self.functions[name] = {"args": args, "body": body}
         # Also store in global environment for function name resolution
         self.global_env[name] = name
 
@@ -248,41 +271,41 @@ class IRInterpreter:
 
     def _apply_binary_operator(self, op: str, left: Any, right: Any) -> Any:
         """Apply binary operator to two values."""
-        if op == '+':
+        if op == "+":
             return left + right
-        elif op == '-':
+        elif op == "-":
             return left - right
-        elif op == '*':
+        elif op == "*":
             return left * right
-        elif op == '/':
+        elif op == "/":
             if right == 0:
                 raise ZeroDivisionError("Division by zero")
             return left / right
-        elif op == '//':
+        elif op == "//":
             if right == 0:
                 raise ZeroDivisionError("Division by zero")
             return left // right
-        elif op == '%':
+        elif op == "%":
             if right == 0:
                 raise ZeroDivisionError("Modulo by zero")
             return left % right
-        elif op == '**':
-            return left ** right
-        elif op == '==':
+        elif op == "**":
+            return left**right
+        elif op == "==":
             return left == right
-        elif op == '!=':
+        elif op == "!=":
             return left != right
-        elif op == '<':
+        elif op == "<":
             return left < right
-        elif op == '<=':
+        elif op == "<=":
             return left <= right
-        elif op == '>':
+        elif op == ">":
             return left > right
-        elif op == '>=':
+        elif op == ">=":
             return left >= right
-        elif op == 'and':
+        elif op == "and":
             return left and right
-        elif op == 'or':
+        elif op == "or":
             return left or right
         else:
             raise NotImplementedError(f"Binary operator '{op}' not implemented")
@@ -291,11 +314,11 @@ class IRInterpreter:
         """Execute unary operation."""
         operand_val = self.execute(operand)
 
-        if op == '+':
+        if op == "+":
             return +operand_val
-        elif op == '-':
+        elif op == "-":
             return -operand_val
-        elif op == 'not':
+        elif op == "not":
             return not operand_val
         else:
             raise NotImplementedError(f"Unary operator '{op}' not implemented")
@@ -345,9 +368,12 @@ class IRInterpreter:
 
     def _execute_lambda(self, params: Tuple, body: Any) -> callable:
         """Execute lambda function creation."""
+
         def lambda_func(*args):
             if len(args) != len(params):
-                raise TypeError(f"Lambda takes {len(params)} arguments but {len(args)} given")
+                raise TypeError(
+                    f"Lambda takes {len(params)} arguments but {len(args)} given"
+                )
 
             # Create new local environment for lambda
             self._push_local_env()
@@ -375,14 +401,18 @@ class IRInterpreter:
                 break
         return result
 
-    def _call_user_function(self, func_name: str, args: List[Any], kwargs: Dict[str, Any]) -> Any:
+    def _call_user_function(
+        self, func_name: str, args: List[Any], kwargs: Dict[str, Any]
+    ) -> Any:
         """Call a user-defined function."""
         func_def = self.functions[func_name]
-        func_args = func_def['args']
-        func_body = func_def['body']
+        func_args = func_def["args"]
+        func_body = func_def["body"]
 
         if len(args) != len(func_args):
-            raise TypeError(f"Function '{func_name}' takes {len(func_args)} arguments but {len(args)} given")
+            raise TypeError(
+                f"Function '{func_name}' takes {len(func_args)} arguments but {len(args)} given"
+            )
 
         # Create new local environment
         self._push_local_env()
@@ -467,8 +497,22 @@ class IRInterpreter:
 
         # Common dictionary keys and values
         common_literals = {
-            'key', 'value', 'name', 'data', 'item', 'result', 'hello', 'world',
-            'num', 'text', 'str', 'message', 'error', 'success', 'yes', 'no'
+            "key",
+            "value",
+            "name",
+            "data",
+            "item",
+            "result",
+            "hello",
+            "world",
+            "num",
+            "text",
+            "str",
+            "message",
+            "error",
+            "success",
+            "yes",
+            "no",
         }
         if value.lower() in common_literals:
             return True
@@ -477,7 +521,7 @@ class IRInterpreter:
 
     # ================== Built-in Functions ==================
 
-    def _builtin_print(self, *args, sep=' ', end='\n', file=None) -> None:
+    def _builtin_print(self, *args, sep=" ", end="\n", file=None) -> None:
         """Built-in print function."""
         if file is None:
             file = sys.stdout
@@ -503,7 +547,7 @@ class IRInterpreter:
         """Built-in float function."""
         return float(value)
 
-    def _builtin_str(self, obj: Any = '') -> str:
+    def _builtin_str(self, obj: Any = "") -> str:
         """Built-in str function."""
         return str(obj)
 
@@ -525,13 +569,13 @@ class IRInterpreter:
 
     def _builtin_min(self, *args) -> Any:
         """Built-in min function."""
-        if len(args) == 1 and hasattr(args[0], '__iter__'):
+        if len(args) == 1 and hasattr(args[0], "__iter__"):
             return min(args[0])
         return min(args)
 
     def _builtin_max(self, *args) -> Any:
         """Built-in max function."""
-        if len(args) == 1 and hasattr(args[0], '__iter__'):
+        if len(args) == 1 and hasattr(args[0], "__iter__"):
             return max(args[0])
         return max(args)
 
@@ -546,7 +590,7 @@ def execute_ir_from_file(filename: str) -> Any:
     """Load and execute IR from a file."""
     import json
 
-    with open(filename, 'r') as f:
+    with open(filename, "r") as f:
         content = f.read().strip()
 
         # Try to parse as JSON first
@@ -573,7 +617,8 @@ def execute_ir_from_string(ir_string: str) -> Any:
     except json.JSONDecodeError:
         # Handle eval with None for null values
         import builtins
-        safe_dict = {'null': None, 'true': True, 'false': False}
+
+        safe_dict = {"null": None, "true": True, "false": False}
         ir_data = eval(ir_string, {"__builtins__": builtins}, safe_dict)
 
     interpreter = IRInterpreter()

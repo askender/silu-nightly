@@ -12,8 +12,16 @@ from typing import Any
 
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
-from silu.ir_interpreter import IRInterpreter, execute_ir_from_file, execute_ir_from_string
-from silu.symbolic_executor import SymbolicExecutor, execute_symbolic_from_file, execute_symbolic_from_string
+from silu.ir_interpreter import (
+    IRInterpreter,
+    execute_ir_from_file,
+    execute_ir_from_string,
+)
+from silu.symbolic_executor import (
+    SymbolicExecutor,
+    execute_symbolic_from_file,
+    execute_symbolic_from_string,
+)
 from silu.symbolic.report_utils import renumber_paths_sequentially
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 
@@ -80,7 +88,7 @@ def run_ir_interpreter(ir_source: str, **kwargs) -> None:
     """Run the IR interpreter on IR code."""
     try:
         interpreter = IRInterpreter()
-        if ir_source.strip().startswith(('[', '(')):
+        if ir_source.strip().startswith(("[", "(")):
             # Direct IR string
             result = execute_ir_from_string(ir_source)
         else:
@@ -103,10 +111,12 @@ def save_ir_to_file(ir_result: Any, output_file: str, output_format: str) -> Non
         sys.exit(1)
 
 
-def run_ir_to_source_converter(ir_source: str, output_file: str = None, **kwargs) -> None:
+def run_ir_to_source_converter(
+    ir_source: str, output_file: str = None, **kwargs
+) -> None:
     """Convert IR to source code."""
     try:
-        if ir_source.strip().startswith(('[', '(')):
+        if ir_source.strip().startswith(("[", "(")):
             # Direct IR string
             source_code = convert_ir_string_to_source(ir_source)
         else:
@@ -126,15 +136,18 @@ def run_ir_to_source_converter(ir_source: str, output_file: str = None, **kwargs
 def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     """Run symbolic execution on source code or IR."""
     try:
-        include_function_paths = kwargs.get('include_function_paths', False)
-        performance_mode = kwargs.get('performance_mode', False)
-        executor = SymbolicExecutor(include_function_paths=include_function_paths, performance_mode=performance_mode)
-        simplify = kwargs.get('simplify', False)
-        solve = kwargs.get('solve', False)
+        include_function_paths = kwargs.get("include_function_paths", False)
+        performance_mode = kwargs.get("performance_mode", False)
+        executor = SymbolicExecutor(
+            include_function_paths=include_function_paths,
+            performance_mode=performance_mode,
+        )
+        simplify = kwargs.get("simplify", False)
+        solve = kwargs.get("solve", False)
 
         if is_file:
             # Execute from file
-            if source.endswith('.si'):
+            if source.endswith(".si"):
                 # Silu source file - need to convert to IR first
                 source_code = read_source_file(source)
                 tree = ast.parse(source_code)
@@ -143,12 +156,20 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 paths = executor.execute_program(ir_result)
             else:
                 # IR file
-                paths = execute_symbolic_from_file(source, include_function_paths=include_function_paths, performance_mode=performance_mode)
+                paths = execute_symbolic_from_file(
+                    source,
+                    include_function_paths=include_function_paths,
+                    performance_mode=performance_mode,
+                )
         else:
             # Execute from string
-            if source.strip().startswith(('[', '(')):
+            if source.strip().startswith(("[", "(")):
                 # IR string
-                paths = execute_symbolic_from_string(source, include_function_paths=include_function_paths, performance_mode=performance_mode)
+                paths = execute_symbolic_from_string(
+                    source,
+                    include_function_paths=include_function_paths,
+                    performance_mode=performance_mode,
+                )
             else:
                 # Silu source string - convert to IR first
                 tree = ast.parse(source)
@@ -162,9 +183,11 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 paths = executor.simplify_path_conditions(paths)
 
             # Also simplify function analysis results
-            if hasattr(executor, 'function_analyses'):
+            if hasattr(executor, "function_analyses"):
                 for func_name, func_paths in executor.function_analyses.items():
-                    executor.function_analyses[func_name] = executor.simplify_path_conditions(func_paths)
+                    executor.function_analyses[func_name] = (
+                        executor.simplify_path_conditions(func_paths)
+                    )
 
         # Generate and display unified report with optional test cases
         if paths:
@@ -173,15 +196,26 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
 
             # Enhance paths with test cases if solve option is enabled
             if solve:
-                renumbered_paths = executor.enhance_paths_with_test_cases(renumbered_paths)
+                renumbered_paths = executor.enhance_paths_with_test_cases(
+                    renumbered_paths
+                )
 
                 # Also enhance function analyses paths
-                if hasattr(executor, 'function_analyses') and executor.function_analyses:
+                if (
+                    hasattr(executor, "function_analyses")
+                    and executor.function_analyses
+                ):
                     for func_name, func_paths in executor.function_analyses.items():
                         if isinstance(func_paths, list) and func_paths:
                             # Renumber and enhance function paths
-                            renumbered_func_paths = renumber_paths_sequentially(func_paths)
-                            enhanced_func_paths = executor.enhance_paths_with_test_cases(renumbered_func_paths)
+                            renumbered_func_paths = renumber_paths_sequentially(
+                                func_paths
+                            )
+                            enhanced_func_paths = (
+                                executor.enhance_paths_with_test_cases(
+                                    renumbered_func_paths
+                                )
+                            )
                             executor.function_analyses[func_name] = enhanced_func_paths
 
             report = executor.generate_report(renumbered_paths)
@@ -236,7 +270,9 @@ Examples:
 """,
     )
 
-    subparsers = parser.add_subparsers(dest="mode", help="Processing mode", required=True)
+    subparsers = parser.add_subparsers(
+        dest="mode", help="Processing mode", required=True
+    )
 
     # Interpreter subcommand
     interpret_parser = subparsers.add_parser(
@@ -284,7 +320,9 @@ Examples:
     )
 
     # IR to source conversion subcommand
-    to_source_parser = subparsers.add_parser("to-source", help="Convert IR to source code")
+    to_source_parser = subparsers.add_parser(
+        "to-source", help="Convert IR to source code"
+    )
     to_source_parser.add_argument("file", nargs="?", help="IR file to convert")
     to_source_parser.add_argument(
         "--source", help="IR string to convert (alternative to file)"
@@ -294,8 +332,12 @@ Examples:
     )
 
     # Symbolic execution subcommand
-    symbolic_parser = subparsers.add_parser("symbolic", help="Perform symbolic execution")
-    symbolic_parser.add_argument("file", nargs="?", help="Silu source file or IR file to analyze")
+    symbolic_parser = subparsers.add_parser(
+        "symbolic", help="Perform symbolic execution"
+    )
+    symbolic_parser.add_argument(
+        "file", nargs="?", help="Silu source file or IR file to analyze"
+    )
     symbolic_parser.add_argument(
         "--source", help="Source code or IR string to analyze (alternative to file)"
     )
@@ -309,18 +351,24 @@ Examples:
         help="Output format for the report (default: json)",
     )
     symbolic_parser.add_argument(
-        "--simplify", action="store_true", help="Simplify and merge path conditions where possible"
+        "--simplify",
+        action="store_true",
+        help="Simplify and merge path conditions where possible",
     )
     symbolic_parser.add_argument(
-        "--solve", action="store_true", help="Use Z3 solver to generate concrete test cases for each execution path"
+        "--solve",
+        action="store_true",
+        help="Use Z3 solver to generate concrete test cases for each execution path",
     )
     symbolic_parser.add_argument(
-        "--include-function-paths", action="store_true",
-        help="Include function internal paths in main path collection (for compatibility with original behavior)"
+        "--include-function-paths",
+        action="store_true",
+        help="Include function internal paths in main path collection (for compatibility with original behavior)",
     )
     symbolic_parser.add_argument(
-        "--performance-mode", action="store_true",
-        help="Enable performance optimizations for faster execution with simplified analysis"
+        "--performance-mode",
+        action="store_true",
+        help="Enable performance optimizations for faster execution with simplified analysis",
     )
 
     return parser
@@ -338,7 +386,8 @@ def validate_arguments(args) -> None:
             else:
                 mode_name = "source file or IR file"
             print(
-                f"Error: Either a {mode_name} or --source must be provided.", file=sys.stderr
+                f"Error: Either a {mode_name} or --source must be provided.",
+                file=sys.stderr,
             )
             sys.exit(1)
         if args.file and args.source:
@@ -351,7 +400,8 @@ def validate_arguments(args) -> None:
         # For interpret/ir modes, either file or --source is required
         if not args.file and not args.source:
             print(
-                "Error: Either a source file or --source must be provided.", file=sys.stderr
+                "Error: Either a source file or --source must be provided.",
+                file=sys.stderr,
             )
             sys.exit(1)
         if args.file and args.source:
@@ -463,10 +513,12 @@ def main() -> None:
         elif args.mode == "symbolic":
             # Symbolic execution
             symbolic_kwargs = {
-                'simplify': getattr(args, 'simplify', False),
-                'solve': getattr(args, 'solve', False),
-                'include_function_paths': getattr(args, 'include_function_paths', False),
-                'performance_mode': getattr(args, 'performance_mode', False)
+                "simplify": getattr(args, "simplify", False),
+                "solve": getattr(args, "solve", False),
+                "include_function_paths": getattr(
+                    args, "include_function_paths", False
+                ),
+                "performance_mode": getattr(args, "performance_mode", False),
             }
 
             if args.source:
@@ -477,7 +529,7 @@ def main() -> None:
                 run_symbolic_executor(args.file, is_file=True, **symbolic_kwargs)
 
             # TODO: Handle output file and format options if needed
-            if hasattr(args, 'output') and args.output:
+            if hasattr(args, "output") and args.output:
                 # Save symbolic execution report to file - to be implemented
                 pass
 

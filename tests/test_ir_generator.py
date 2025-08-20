@@ -199,7 +199,12 @@ class TestSiluIRGenerator:
         assign = ast.Assign(targets=[target], value=add)
 
         result = generator.visit_Assign(assign)
-        expected = ("assign", "x", ("+", ("const", 10), ("*", ("const", 5), ("const", 2))), None)
+        expected = (
+            "assign",
+            "x",
+            ("+", ("const", 10), ("*", ("const", 5), ("const", 2))),
+            None,
+        )
         assert result == expected
 
     def test_chained_comparison(self):
@@ -213,7 +218,10 @@ class TestSiluIRGenerator:
         compare = ast.Compare(left=left, ops=ops, comparators=comparators)
 
         result = generator.visit_Compare(compare)
-        expected = ("chained_compare", (("<", ("const", 1), ("name", "x")), ("<", ("name", "x"), ("const", 10))))
+        expected = (
+            "chained_compare",
+            (("<", ("const", 1), ("name", "x")), ("<", ("name", "x"), ("const", 10))),
+        )
         assert result == expected
 
     def test_nested_operations(self):
@@ -235,7 +243,11 @@ class TestSiluIRGenerator:
         mult = ast.BinOp(left=left_add, op=ast.Mult(), right=right_sub)
 
         result = generator.visit_BinOp(mult)
-        expected = ("*", ("+", ("name", "a"), ("name", "b")), ("-", ("name", "c"), ("name", "d")))
+        expected = (
+            "*",
+            ("+", ("name", "a"), ("name", "b")),
+            ("-", ("name", "c"), ("name", "d")),
+        )
         assert result == expected
 
     def test_subscript_assign(self):
@@ -252,7 +264,12 @@ class TestSiluIRGenerator:
         assign_node = ast.Assign(targets=[target], value=value)
 
         result = generator.visit_Assign(assign_node)
-        expected = ("subscript_assign", ("name", "d"), ("const", "key"), ("const", "value"))
+        expected = (
+            "subscript_assign",
+            ("name", "d"),
+            ("const", "key"),
+            ("const", "value"),
+        )
         assert result == expected
 
         # Test list subscript assignment: arr[1] = 99

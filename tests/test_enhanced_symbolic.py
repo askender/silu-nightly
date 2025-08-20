@@ -5,14 +5,18 @@ loop analysis, and advanced constraint handling.
 """
 
 import pytest
-import json
-from silu.symbolic_executor import SymbolicExecutor, SymbolicValue, SymbolicValueType, ExecutionPath
+from silu.symbolic_executor import (
+    SymbolicExecutor,
+    SymbolicValue,
+    SymbolicValueType,
+)
 
 
 # Check if Z3 is available for testing
 try:
     from silu.symbolic.z3_utils import Z3_AVAILABLE, check_path_satisfiability
     from silu.symbolic.loop_utils import LoopAnalyzer, LoopType, LoopBound
+
     Z3_TESTS_ENABLED = Z3_AVAILABLE
 except ImportError:
     Z3_TESTS_ENABLED = False
@@ -24,52 +28,75 @@ class TestBasicEnhancedExecution:
 
     def test_basic_assignment(self):
         """Test basic variable assignment"""
-        ir = ('module', [
-            ('assign', 'x', ('literal', 10), None),
-            ('assign', 'y', ('binary_op', 'x', '+', ('literal', 5)), None)
-        ])
+        ir = (
+            "module",
+            [
+                ("assign", "x", ("literal", 10), None),
+                ("assign", "y", ("binary_op", "x", "+", ("literal", 5)), None),
+            ],
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
 
         assert len(paths) >= 1
         path = paths[0]
-        assert 'x' in path.variables
-        assert 'y' in path.variables
+        assert "x" in path.variables
+        assert "y" in path.variables
 
     def test_enhanced_if_statement(self):
         """Test if statement with symbolic conditions"""
-        ir = ('module', [
-            ('assign', 'x', ('literal', 10), None),
-            ('if',
-                ('binary_op', 'x', '>', ('literal', 5)),
-                ('block', (('assign', 'result', ('literal', 1), None),)),
-                ('block', (('assign', 'result', ('literal', 0), None),))
-            )
-        ])
+        ir = (
+            "module",
+            [
+                ("assign", "x", ("literal", 10), None),
+                (
+                    "if",
+                    ("binary_op", "x", ">", ("literal", 5)),
+                    ("block", (("assign", "result", ("literal", 1), None),)),
+                    ("block", (("assign", "result", ("literal", 0), None),)),
+                ),
+            ],
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
 
         assert len(paths) >= 1
         for path in paths:
-            assert hasattr(path, 'conditions')
-            assert hasattr(path, 'statements')
-            assert hasattr(path, 'variables')
+            assert hasattr(path, "conditions")
+            assert hasattr(path, "statements")
+            assert hasattr(path, "variables")
 
     def test_nested_conditions(self):
         """Test nested if statements with symbolic conditions"""
-        ir = ('module', [
-            ('if',
-                ('binary_op', 'x', '>', ('literal', 5)),
-                ('block', (('if',
-                    ('binary_op', 'y', '<', ('literal', 25)),
-                    ('block', (('assign', 'result', ('literal', 1), None),)),
-                    ('block', (('assign', 'result', ('literal', 2), None),))
-                ),)),
-                ('block', (('assign', 'result', ('literal', 0), None),))
-            )
-        ])
+        ir = (
+            "module",
+            [
+                (
+                    "if",
+                    ("binary_op", "x", ">", ("literal", 5)),
+                    (
+                        "block",
+                        (
+                            (
+                                "if",
+                                ("binary_op", "y", "<", ("literal", 25)),
+                                (
+                                    "block",
+                                    (("assign", "result", ("literal", 1), None),),
+                                ),
+                                (
+                                    "block",
+                                    (("assign", "result", ("literal", 2), None),),
+                                ),
+                            ),
+                        ),
+                    ),
+                    ("block", (("assign", "result", ("literal", 0), None),)),
+                )
+            ],
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -77,8 +104,8 @@ class TestBasicEnhancedExecution:
         assert len(paths) >= 2  # Should create multiple paths for symbolic conditions
         for path in paths:
             # Each path should have conditions and may have result variable
-            assert hasattr(path, 'conditions')
-            assert hasattr(path, 'statements')
+            assert hasattr(path, "conditions")
+            assert hasattr(path, "statements")
 
 
 class TestLoopAnalysis:
@@ -86,13 +113,27 @@ class TestLoopAnalysis:
 
     def test_while_loop_symbolic(self):
         """Test while loop symbolic execution"""
-        ir = ('module', [
-            ('assign', 'i', ('literal', 0), None),
-            ('while',
-                ('binary_op', 'i', '<', ('literal', 3)),
-                ('block', (('assign', 'i', ('binary_op', 'i', '+', ('literal', 1)), None),))
-            )
-        ])
+        ir = (
+            "module",
+            [
+                ("assign", "i", ("literal", 0), None),
+                (
+                    "while",
+                    ("binary_op", "i", "<", ("literal", 3)),
+                    (
+                        "block",
+                        (
+                            (
+                                "assign",
+                                "i",
+                                ("binary_op", "i", "+", ("literal", 1)),
+                                None,
+                            ),
+                        ),
+                    ),
+                ),
+            ],
+        )
 
         executor = SymbolicExecutor()
         executor.max_loop_iterations = 5  # Set reasonable limit
@@ -100,25 +141,40 @@ class TestLoopAnalysis:
 
         assert len(paths) >= 1
         for path in paths:
-            assert hasattr(path, 'loop_iterations')
+            assert hasattr(path, "loop_iterations")
 
     def test_for_range_loop(self):
         """Test for loop with range"""
-        ir = ('module', [
-            ('assign', 'sum_val', ('literal', 0), None),
-            ('for', 'i',
-                ('call', 'range', [('literal', 0), ('literal', 3), ('literal', 1)]),
-                ('block', (('assign', 'sum_val', ('binary_op', 'sum_val', '+', 'i'), None),))
-            )
-        ])
+        ir = (
+            "module",
+            [
+                ("assign", "sum_val", ("literal", 0), None),
+                (
+                    "for",
+                    "i",
+                    ("call", "range", [("literal", 0), ("literal", 3), ("literal", 1)]),
+                    (
+                        "block",
+                        (
+                            (
+                                "assign",
+                                "sum_val",
+                                ("binary_op", "sum_val", "+", "i"),
+                                None,
+                            ),
+                        ),
+                    ),
+                ),
+            ],
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
 
         assert len(paths) >= 1
         for path in paths:
-            assert 'sum_val' in path.variables
-            assert 'i' in path.variables
+            assert "sum_val" in path.variables
+            assert "i" in path.variables
 
 
 @pytest.mark.skipif(not Z3_TESTS_ENABLED, reason="Z3 not available")
@@ -142,14 +198,18 @@ class TestZ3Integration:
 
     def test_path_with_z3_constraints(self):
         """Test execution path with Z3 constraint generation"""
-        ir = ('module', [
-            ('assign', 'x', ('literal', 5), None),
-            ('if',
-                ('binary_op', 'x', '>', ('literal', 0)),
-                ('block', (('assign', 'result', ('literal', 1), None),)),
-                ('block', (('assign', 'result', ('literal', 0), None),))
-            )
-        ])
+        ir = (
+            "module",
+            [
+                ("assign", "x", ("literal", 5), None),
+                (
+                    "if",
+                    ("binary_op", "x", ">", ("literal", 0)),
+                    ("block", (("assign", "result", ("literal", 1), None),)),
+                    ("block", (("assign", "result", ("literal", 0), None),)),
+                ),
+            ],
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -173,14 +233,14 @@ class TestLoopBoundAnalysis:
     def test_range_loop_analysis_simple(self):
         """Test range loop analysis with simple bounds"""
         analyzer = LoopAnalyzer(max_iterations=5)
-        iterations = analyzer.analyze_range_loop(0, 3, 1, 'i')
+        iterations = analyzer.analyze_range_loop(0, 3, 1, "i")
 
         assert len(iterations) <= 5
         for iteration in iterations:
-            assert hasattr(iteration, 'iteration')
-            assert hasattr(iteration, 'constraint')
-            assert hasattr(iteration, 'variable_values')
-            assert hasattr(iteration, 'is_valid')
+            assert hasattr(iteration, "iteration")
+            assert hasattr(iteration, "constraint")
+            assert hasattr(iteration, "variable_values")
+            assert hasattr(iteration, "is_valid")
 
     def test_range_bounds_extraction(self):
         """Test extraction of range bounds from different expressions"""
@@ -188,19 +248,21 @@ class TestLoopBoundAnalysis:
 
         # Test different range expressions
         range_exprs = [
-            ('call', 'range', [('literal', 5)]),
-            ('call', 'range', [('literal', 1), ('literal', 6)]),
-            ('call', 'range', [('literal', 0), ('literal', 10), ('literal', 2)])
+            ("call", "range", [("literal", 5)]),
+            ("call", "range", [("literal", 1), ("literal", 6)]),
+            ("call", "range", [("literal", 0), ("literal", 10), ("literal", 2)]),
         ]
 
         for expr in range_exprs:
             bounds = analyzer.extract_range_bounds(expr)
             if bounds:
-                assert hasattr(bounds, 'start')
-                assert hasattr(bounds, 'stop')
-                assert hasattr(bounds, 'step')
+                assert hasattr(bounds, "start")
+                assert hasattr(bounds, "stop")
+                assert hasattr(bounds, "step")
 
-                estimated = analyzer.estimate_loop_bound(bounds.start, bounds.stop, bounds.step)
+                estimated = analyzer.estimate_loop_bound(
+                    bounds.start, bounds.stop, bounds.step
+                )
                 assert isinstance(estimated, int)
                 assert estimated >= 0
 
@@ -210,17 +272,38 @@ class TestEnhancedReporting:
 
     def test_enhanced_report_generation(self):
         """Test enhanced report generation with complex program"""
-        ir = ('module', [
-            ('assign', 'x', ('literal', 5), None),
-            ('assign', 'sum_val', ('literal', 0), None),
-            ('if',
-                ('binary_op', 'x', '>', ('literal', 0)),
-                ('block', (('for', 'i',
-                    ('call', 'range', [('literal', 3)]),
-                    ('block', (('assign', 'sum_val', ('binary_op', 'sum_val', '+', 'i'), None),))
-                ),))
-            )
-        ])
+        ir = (
+            "module",
+            [
+                ("assign", "x", ("literal", 5), None),
+                ("assign", "sum_val", ("literal", 0), None),
+                (
+                    "if",
+                    ("binary_op", "x", ">", ("literal", 0)),
+                    (
+                        "block",
+                        (
+                            (
+                                "for",
+                                "i",
+                                ("call", "range", [("literal", 3)]),
+                                (
+                                    "block",
+                                    (
+                                        (
+                                            "assign",
+                                            "sum_val",
+                                            ("binary_op", "sum_val", "+", "i"),
+                                            None,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ],
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -228,34 +311,46 @@ class TestEnhancedReporting:
 
         # Verify report structure
         assert isinstance(report, dict)
-        assert 'total_paths' in report
-        assert 'satisfiable_paths' in report
-        assert 'paths' in report
-        assert 'summary' in report
-        assert report['total_paths'] >= 0
-        assert report['satisfiable_paths'] >= 0
-        assert isinstance(report['paths'], list)
+        assert "total_paths" in report
+        assert "satisfiable_paths" in report
+        assert "paths" in report
+        assert "summary" in report
+        assert report["total_paths"] >= 0
+        assert report["satisfiable_paths"] >= 0
+        assert isinstance(report["paths"], list)
 
     def test_function_analysis_reporting(self):
         """Test function analysis in reports"""
-        ir = ('module', [
-            ('func_def', 'test_func', ['x'],
-                ('block', (('if',
-                    ('binary_op', 'x', '>', ('literal', 0)),
-                    ('block', (('return', ('literal', 1)),)),
-                    ('block', (('return', ('literal', 0)),))
-                ),))
-            ),
-            ('assign', 'result', ('call', 'test_func', [('literal', 5)]), None)
-        ])
+        ir = (
+            "module",
+            [
+                (
+                    "func_def",
+                    "test_func",
+                    ["x"],
+                    (
+                        "block",
+                        (
+                            (
+                                "if",
+                                ("binary_op", "x", ">", ("literal", 0)),
+                                ("block", (("return", ("literal", 1)),)),
+                                ("block", (("return", ("literal", 0)),)),
+                            ),
+                        ),
+                    ),
+                ),
+                ("assign", "result", ("call", "test_func", [("literal", 5)]), None),
+            ],
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
         report = executor.generate_report(paths)
 
         # Check if function analyses are included
-        if 'function_analyses' in report:
-            assert isinstance(report['function_analyses'], dict)
+        if "function_analyses" in report:
+            assert isinstance(report["function_analyses"], dict)
 
 
 class TestSymbolicValueOperations:
@@ -325,7 +420,7 @@ class TestErrorHandling:
         try:
             result = executor._execute_ir(invalid_ir)
             # If it doesn't raise an exception, verify it returns a symbolic value
-            assert hasattr(result, 'type')
+            assert hasattr(result, "type")
         except Exception:
             # If it raises an exception, that's also acceptable
             pass
@@ -340,20 +435,55 @@ class TestErrorHandling:
 
         # Should create a symbolic value for undefined variables
         assert result.type == SymbolicValueType.SYMBOLIC
-        assert hasattr(result, 'name')
+        assert hasattr(result, "name")
 
     def test_recursive_function_analysis(self):
         """Test handling of recursive function definitions"""
-        ir = ('module', [
-            ('func_def', 'factorial', ['n'],
-                ('block', (('if',
-                    ('binary_op', 'n', '<=', ('literal', 1)),
-                    ('block', (('return', ('literal', 1)),)),
-                    ('block', (('return', ('binary_op', 'n', '*',
-                        ('call', 'factorial', [('binary_op', 'n', '-', ('literal', 1))]))),))
-                ),))
-            )
-        ])
+        ir = (
+            "module",
+            [
+                (
+                    "func_def",
+                    "factorial",
+                    ["n"],
+                    (
+                        "block",
+                        (
+                            (
+                                "if",
+                                ("binary_op", "n", "<=", ("literal", 1)),
+                                ("block", (("return", ("literal", 1)),)),
+                                (
+                                    "block",
+                                    (
+                                        (
+                                            "return",
+                                            (
+                                                "binary_op",
+                                                "n",
+                                                "*",
+                                                (
+                                                    "call",
+                                                    "factorial",
+                                                    [
+                                                        (
+                                                            "binary_op",
+                                                            "n",
+                                                            "-",
+                                                            ("literal", 1),
+                                                        )
+                                                    ],
+                                                ),
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            ],
+        )
 
         executor = SymbolicExecutor()
 
@@ -362,7 +492,9 @@ class TestErrorHandling:
             paths = executor.execute_program(ir)
             assert len(paths) >= 0  # Should complete without hanging
         except RecursionError:
-            pytest.skip("Recursion limit reached - expected for deep recursive analysis")
+            pytest.skip(
+                "Recursion limit reached - expected for deep recursive analysis"
+            )
 
 
 if __name__ == "__main__":

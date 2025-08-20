@@ -7,13 +7,13 @@ and managing condition-related operations in symbolic execution.
 """
 
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
-from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 # Z3 availability check
 try:
     import z3
+
     Z3_AVAILABLE = True
 except ImportError:
     Z3_AVAILABLE = False
@@ -22,6 +22,7 @@ except ImportError:
 @dataclass
 class PathCondition:
     """Represents a condition that must be satisfied for a path to be taken"""
+
     expression: str
     is_true: bool
     source_line: Optional[int] = None
@@ -33,18 +34,19 @@ class PathCondition:
         else:
             return f"not ({self.expression})"
 
-    def negate(self) -> 'PathCondition':
+    def negate(self) -> "PathCondition":
         """Return the negated condition"""
         negated_constraint = None
         if self.z3_constraint is not None and Z3_AVAILABLE:
             from z3 import Not
+
             negated_constraint = Not(self.z3_constraint)
 
         return PathCondition(
             expression=self.expression,
             is_true=not self.is_true,
             source_line=self.source_line,
-            z3_constraint=negated_constraint
+            z3_constraint=negated_constraint,
         )
 
 
@@ -61,7 +63,7 @@ def extract_variable_from_condition(condition_str: str) -> Optional[str]:
     condition_str = condition_str.strip()
 
     # Pattern for simple variable comparisons: variable op value
-    pattern = r'^(\w+)\s*([><=!]+)\s*(.+)$'
+    pattern = r"^(\w+)\s*([><=!]+)\s*(.+)$"
     match = re.match(pattern, condition_str)
 
     if match:
@@ -78,7 +80,9 @@ def is_simple_variable_condition(condition_str: str) -> bool:
     return extract_variable_from_condition(condition_str) is not None
 
 
-def group_conditions_by_variable(conditions: List[PathCondition]) -> Dict[str, List[PathCondition]]:
+def group_conditions_by_variable(
+    conditions: List[PathCondition],
+) -> Dict[str, List[PathCondition]]:
     """
     Group conditions by the variable they reference
 
@@ -100,7 +104,9 @@ def group_conditions_by_variable(conditions: List[PathCondition]) -> Dict[str, L
     return groups
 
 
-def merge_conditions_for_variable(variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
+def merge_conditions_for_variable(
+    variable: str, conditions: List[PathCondition]
+) -> List[PathCondition]:
     """
     Merge conditions for a single variable
 
@@ -126,7 +132,9 @@ def merge_conditions_for_variable(variable: str, conditions: List[PathCondition]
     return positive_conditions + merged_negative
 
 
-def merge_negative_conditions(variable: str, negative_conditions: List[PathCondition]) -> List[PathCondition]:
+def merge_negative_conditions(
+    variable: str, negative_conditions: List[PathCondition]
+) -> List[PathCondition]:
     """
     Merge negative conditions for a variable
 
@@ -150,7 +158,7 @@ def merge_negative_conditions(variable: str, negative_conditions: List[PathCondi
         expr = condition.expression.strip()
 
         # Parse "x > value" patterns
-        gt_match = re.match(rf'^{re.escape(variable)}\s*>\s*(.+)$', expr)
+        gt_match = re.match(rf"^{re.escape(variable)}\s*>\s*(.+)$", expr)
         if gt_match:
             try:
                 value = float(gt_match.group(1))
@@ -160,7 +168,7 @@ def merge_negative_conditions(variable: str, negative_conditions: List[PathCondi
                 pass
 
         # Parse "x < value" patterns
-        lt_match = re.match(rf'^{re.escape(variable)}\s*<\s*(.+)$', expr)
+        lt_match = re.match(rf"^{re.escape(variable)}\s*<\s*(.+)$", expr)
         if lt_match:
             try:
                 value = float(lt_match.group(1))
@@ -170,7 +178,7 @@ def merge_negative_conditions(variable: str, negative_conditions: List[PathCondi
                 pass
 
         # Parse "x == value" patterns
-        eq_match = re.match(rf'^{re.escape(variable)}\s*==\s*(.+)$', expr)
+        eq_match = re.match(rf"^{re.escape(variable)}\s*==\s*(.+)$", expr)
         if eq_match:
             eq_conditions.append(condition)
             continue
@@ -209,17 +217,17 @@ def simplify_condition_expression(expression: str) -> str:
         Simplified expression string
     """
     # Remove extra whitespace
-    expr = re.sub(r'\s+', ' ', expression.strip())
+    expr = re.sub(r"\s+", " ", expression.strip())
 
     # Remove redundant parentheses around simple expressions
-    if expr.startswith('(') and expr.endswith(')'):
+    if expr.startswith("(") and expr.endswith(")"):
         # Check if parentheses are actually redundant
         paren_count = 0
         can_remove = True
         for i, char in enumerate(expr[1:-1]):  # Skip outer parentheses
-            if char == '(':
+            if char == "(":
                 paren_count += 1
-            elif char == ')':
+            elif char == ")":
                 paren_count -= 1
                 if paren_count < 0:  # Closing paren that matches outer paren
                     can_remove = False
@@ -229,12 +237,12 @@ def simplify_condition_expression(expression: str) -> str:
             expr = expr[1:-1]
 
     # Normalize comparison operators (use negative lookahead to avoid conflicts)
-    expr = re.sub(r'\s*<=\s*', ' <= ', expr)
-    expr = re.sub(r'\s*>=\s*', ' >= ', expr)
-    expr = re.sub(r'\s*==\s*', ' == ', expr)
-    expr = re.sub(r'\s*!=\s*', ' != ', expr)
-    expr = re.sub(r'\s*(?<!<|>)>\s*(?![=>])', ' > ', expr)
-    expr = re.sub(r'\s*(?<!<|>)<\s*(?![=>])', ' < ', expr)
+    expr = re.sub(r"\s*<=\s*", " <= ", expr)
+    expr = re.sub(r"\s*>=\s*", " >= ", expr)
+    expr = re.sub(r"\s*==\s*", " == ", expr)
+    expr = re.sub(r"\s*!=\s*", " != ", expr)
+    expr = re.sub(r"\s*(?<!<|>)>\s*(?![=>])", " > ", expr)
+    expr = re.sub(r"\s*(?<!<|>)<\s*(?![=>])", " < ", expr)
 
     return expr
 
@@ -250,34 +258,43 @@ def make_condition_readable(condition_str: str) -> str:
         More readable condition string
     """
     # Handle tuple expressions from symbolic execution
-    if condition_str.startswith("(") and "," in condition_str and condition_str.endswith(")"):
+    if (
+        condition_str.startswith("(")
+        and "," in condition_str
+        and condition_str.endswith(")")
+    ):
         try:
             # Try to parse as tuple and make it readable
             import ast
+
             parsed = ast.literal_eval(condition_str)
             if isinstance(parsed, tuple) and len(parsed) >= 2:
                 op = parsed[0]
-                if op in ['>', '<', '>=', '<=', '==', '!=']:
+                if op in [">", "<", ">=", "<=", "==", "!="]:
                     left = parsed[1] if len(parsed) > 1 else "?"
                     right = parsed[2] if len(parsed) > 2 else "?"
                     return f"{left} {op} {right}"
-                elif op == 'And':
-                    conditions = [make_condition_readable(str(cond)) for cond in parsed[1:]]
+                elif op == "And":
+                    conditions = [
+                        make_condition_readable(str(cond)) for cond in parsed[1:]
+                    ]
                     return " and ".join(conditions)
-                elif op == 'Or':
-                    conditions = [make_condition_readable(str(cond)) for cond in parsed[1:]]
+                elif op == "Or":
+                    conditions = [
+                        make_condition_readable(str(cond)) for cond in parsed[1:]
+                    ]
                     return " or ".join(conditions)
         except (ValueError, SyntaxError):
             pass
 
     # Handle Z3-style expressions
-    if any(z3_op in condition_str for z3_op in ['And(', 'Or(', 'Not(']):
+    if any(z3_op in condition_str for z3_op in ["And(", "Or(", "Not("]):
         # Convert Z3-style to readable format
-        condition_str = condition_str.replace('And(', '(').replace('Or(', '(')
-        condition_str = condition_str.replace('Not(', 'not (')
+        condition_str = condition_str.replace("And(", "(").replace("Or(", "(")
+        condition_str = condition_str.replace("Not(", "not (")
 
         # Replace Z3 operators with readable ones
-        condition_str = re.sub(r'\s*,\s*', ' and ', condition_str)
+        condition_str = re.sub(r"\s*,\s*", " and ", condition_str)
 
     return simplify_condition_expression(condition_str)
 
@@ -297,13 +314,13 @@ def split_condition_args(args_str: str) -> List[str]:
     paren_count = 0
 
     for char in args_str:
-        if char == ',' and paren_count == 0:
+        if char == "," and paren_count == 0:
             args.append(current_arg.strip())
             current_arg = ""
         else:
-            if char == '(':
+            if char == "(":
                 paren_count += 1
-            elif char == ')':
+            elif char == ")":
                 paren_count -= 1
             current_arg += char
 
@@ -372,7 +389,9 @@ def conditions_are_contradictory(cond1: PathCondition, cond2: PathCondition) -> 
     return False
 
 
-def check_range_contradiction(cond1: PathCondition, cond2: PathCondition, variable: str) -> bool:
+def check_range_contradiction(
+    cond1: PathCondition, cond2: PathCondition, variable: str
+) -> bool:
     """
     Check if two conditions on the same variable create a contradiction
 
@@ -384,10 +403,11 @@ def check_range_contradiction(cond1: PathCondition, cond2: PathCondition, variab
     Returns:
         True if conditions are contradictory
     """
+
     def parse_range_condition(cond: PathCondition) -> Optional[Tuple[str, float, bool]]:
         """Parse condition like 'x > 5' into (op, value, is_true)"""
         expr = cond.expression.strip()
-        for op in ['>=', '<=', '==', '!=', '>', '<']:
+        for op in [">=", "<=", "==", "!=", ">", "<"]:
             if op in expr:
                 parts = expr.split(op)
                 if len(parts) == 2:
@@ -413,13 +433,13 @@ def check_range_contradiction(cond1: PathCondition, cond2: PathCondition, variab
     # Check some obvious contradictions
     if true1 and true2:
         # Both conditions must be true
-        if op1 == '>' and op2 == '<' and val1 >= val2:
+        if op1 == ">" and op2 == "<" and val1 >= val2:
             return True  # x > 5 and x < 5 (or x < 3)
-        if op1 == '>=' and op2 == '<' and val1 >= val2:
+        if op1 == ">=" and op2 == "<" and val1 >= val2:
             return True  # x >= 5 and x < 5
-        if op1 == '>' and op2 == '<=' and val1 >= val2:
+        if op1 == ">" and op2 == "<=" and val1 >= val2:
             return True  # x > 5 and x <= 5
-        if op1 == '==' and op2 == '!=' and val1 == val2:
+        if op1 == "==" and op2 == "!=" and val1 == val2:
             return True  # x == 5 and x != 5
 
     return False
@@ -455,7 +475,9 @@ def simplify_conditions_list(conditions: List[PathCondition]) -> List[PathCondit
     for var_name, conditions_for_var in grouped_conditions.items():
         if var_name and len(conditions_for_var) > 1:
             # Use the enhanced variable-level merging strategy
-            merged_conditions = merge_conditions_for_variable(var_name, conditions_for_var)
+            merged_conditions = merge_conditions_for_variable(
+                var_name, conditions_for_var
+            )
             simplified_conditions.extend(merged_conditions)
         else:
             simplified_conditions.extend(conditions_for_var)

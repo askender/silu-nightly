@@ -13,12 +13,15 @@ from silu.interpreter import SiluInterpreter
 class TestBreakContinue:
     """Test break and continue statements."""
 
-    @pytest.mark.parametrize("loop_type,control,expected_result", [
-        ("while", "break", [1, 2]),  # while with break
-        ("while", "continue", [1, 2, 4, 5]),  # while with continue
-        ("for", "break", [1, 2, 3]),  # for with break
-        ("for", "continue", [1, 2, 4, 5]),  # for with continue
-    ])
+    @pytest.mark.parametrize(
+        "loop_type,control,expected_result",
+        [
+            ("while", "break", [1, 2]),  # while with break
+            ("while", "continue", [1, 2, 4, 5]),  # while with continue
+            ("for", "break", [1, 2, 3]),  # for with break
+            ("for", "continue", [1, 2, 4, 5]),  # for with continue
+        ],
+    )
     def test_loop_control_statements(self, loop_type, control, expected_result):
         """Test break and continue in different loop types."""
         if loop_type == "while":
@@ -65,10 +68,13 @@ for i in [1, 2, 3, 4, 5]:
         interpreter.visit(tree)
         assert interpreter.env.get("result") == expected_result
 
-    @pytest.mark.parametrize("has_break,expected", [
-        (False, [1, 2, 3, "completed"]),  # no break, else executes
-        (True, [1, 2, 3]),  # break occurs, else skipped
-    ])
+    @pytest.mark.parametrize(
+        "has_break,expected",
+        [
+            (False, [1, 2, 3, "completed"]),  # no break, else executes
+            (True, [1, 2, 3]),  # break occurs, else skipped
+        ],
+    )
     def test_for_loop_with_else(self, has_break, expected):
         """Test for loop with else clause."""
         if has_break:
@@ -114,14 +120,17 @@ for i in [1, 2]:
 class TestAssert:
     """Test assert statements."""
 
-    @pytest.mark.parametrize("assertion,should_pass", [
-        ("assert True", True),
-        ("assert 5 > 3", True),
-        ("assert 1 == 1", True),
-        ("assert False", False),
-        ("assert 3 > 5", False),
-        ("assert 1 == 2", False),
-    ])
+    @pytest.mark.parametrize(
+        "assertion,should_pass",
+        [
+            ("assert True", True),
+            ("assert 5 > 3", True),
+            ("assert 1 == 1", True),
+            ("assert False", False),
+            ("assert 3 > 5", False),
+            ("assert 1 == 2", False),
+        ],
+    )
     def test_basic_assertions(self, assertion, should_pass):
         """Test basic assert statements."""
         interpreter = SiluInterpreter()
@@ -157,12 +166,15 @@ assert len(numbers) == 3 and numbers[0] == 1
 class TestAnnotatedAssignment:
     """Test annotated assignments."""
 
-    @pytest.mark.parametrize("code,var_name,expected_value", [
-        ("x: int = 5", "x", 5),
-        ("name: str = 'Alice'", "name", "Alice"),
-        ("height: float = 5.6", "height", 5.6),
-        ("is_student: bool = True", "is_student", True),
-    ])
+    @pytest.mark.parametrize(
+        "code,var_name,expected_value",
+        [
+            ("x: int = 5", "x", 5),
+            ("name: str = 'Alice'", "name", "Alice"),
+            ("height: float = 5.6", "height", 5.6),
+            ("is_student: bool = True", "is_student", True),
+        ],
+    )
     def test_annotated_assignments(self, code, var_name, expected_value):
         """Test annotated assignments with different types."""
         interpreter = SiluInterpreter()
@@ -197,12 +209,15 @@ mapping: dict = {"key": "value"}
 class TestLambda:
     """Test lambda functions."""
 
-    @pytest.mark.parametrize("code,expected_result", [
-        ("add = lambda a, b: a + b\nresult = add(3, 5)", 8),
-        ("square = lambda x: x * x\nresult = square(4)", 16),
-        ("get_answer = lambda: 42\nresult = get_answer()", 42),
-        ("result = (lambda x: x * 2)(7)", 14),  # immediate call
-    ])
+    @pytest.mark.parametrize(
+        "code,expected_result",
+        [
+            ("add = lambda a, b: a + b\nresult = add(3, 5)", 8),
+            ("square = lambda x: x * x\nresult = square(4)", 16),
+            ("get_answer = lambda: 42\nresult = get_answer()", 42),
+            ("result = (lambda x: x * 2)(7)", 14),  # immediate call
+        ],
+    )
     def test_basic_lambda_functions(self, code, expected_result):
         """Test basic lambda function operations."""
         interpreter = SiluInterpreter()
@@ -253,7 +268,9 @@ result = add(1)  # Missing second argument
 """
         interpreter = SiluInterpreter()
         tree = ast.parse(code)
-        with pytest.raises(TypeError, match="Lambda takes 2 arguments but 1 were given"):
+        with pytest.raises(
+            TypeError, match="Lambda takes 2 arguments but 1 were given"
+        ):
             interpreter.visit(tree)
 
     def test_lambda_complex_expressions(self):

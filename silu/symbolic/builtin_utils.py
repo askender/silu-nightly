@@ -6,12 +6,13 @@ This module provides utilities for handling builtin functions in symbolic execut
 including type conversions and other standard Python builtins.
 """
 
-from typing import Any, Optional
+from typing import Any
 from enum import Enum
 
 
 class SymbolicValueType(Enum):
     """Types of symbolic values"""
+
     SYMBOLIC = "symbolic"
     CONCRETE = "concrete"
     EXPRESSION = "expression"
@@ -56,7 +57,9 @@ def create_expression_value(expression: str) -> SymbolicValue:
     return SymbolicValue(SymbolicValueType.EXPRESSION, expression)
 
 
-def symbolic_type_conversion(func_name: str, value: SymbolicValue, converter_func) -> SymbolicValue:
+def symbolic_type_conversion(
+    func_name: str, value: SymbolicValue, converter_func
+) -> SymbolicValue:
     """
     Generic type conversion handler for symbolic values.
 
@@ -113,7 +116,7 @@ def symbolic_len(value: SymbolicValue) -> SymbolicValue:
     if value.type == SymbolicValueType.CONCRETE:
         try:
             # Try to get length for concrete values
-            if hasattr(value.value, '__len__'):
+            if hasattr(value.value, "__len__"):
                 length = len(value.value)
                 return create_concrete_value(length)
         except (TypeError, AttributeError):
@@ -121,7 +124,9 @@ def symbolic_len(value: SymbolicValue) -> SymbolicValue:
     return create_expression_value(f"len({value})")
 
 
-def symbolic_print(*args, current_path=None, simplify_display_func=None) -> SymbolicValue:
+def symbolic_print(
+    *args, current_path=None, simplify_display_func=None
+) -> SymbolicValue:
     """
     Symbolic version of print function
 
@@ -150,10 +155,10 @@ def symbolic_abs(value: SymbolicValue) -> SymbolicValue:
 
 def symbolic_max(*args) -> SymbolicValue:
     """Symbolic version of max function"""
-    if len(args) == 1 and hasattr(args[0], '__iter__') and not isinstance(args[0], str):
+    if len(args) == 1 and hasattr(args[0], "__iter__") and not isinstance(args[0], str):
         # max(iterable)
         iterable = args[0]
-        if hasattr(iterable, 'type') and iterable.type == SymbolicValueType.CONCRETE:
+        if hasattr(iterable, "type") and iterable.type == SymbolicValueType.CONCRETE:
             try:
                 result = max(iterable.value)
                 return create_concrete_value(result)
@@ -165,7 +170,10 @@ def symbolic_max(*args) -> SymbolicValue:
         args_str = ", ".join(str(arg) for arg in args)
 
         # Try to evaluate if all arguments are concrete
-        if all(hasattr(arg, 'type') and arg.type == SymbolicValueType.CONCRETE for arg in args):
+        if all(
+            hasattr(arg, "type") and arg.type == SymbolicValueType.CONCRETE
+            for arg in args
+        ):
             try:
                 values = [arg.value for arg in args]
                 result = max(values)
@@ -178,10 +186,10 @@ def symbolic_max(*args) -> SymbolicValue:
 
 def symbolic_min(*args) -> SymbolicValue:
     """Symbolic version of min function"""
-    if len(args) == 1 and hasattr(args[0], '__iter__') and not isinstance(args[0], str):
+    if len(args) == 1 and hasattr(args[0], "__iter__") and not isinstance(args[0], str):
         # min(iterable)
         iterable = args[0]
-        if hasattr(iterable, 'type') and iterable.type == SymbolicValueType.CONCRETE:
+        if hasattr(iterable, "type") and iterable.type == SymbolicValueType.CONCRETE:
             try:
                 result = min(iterable.value)
                 return create_concrete_value(result)
@@ -193,7 +201,10 @@ def symbolic_min(*args) -> SymbolicValue:
         args_str = ", ".join(str(arg) for arg in args)
 
         # Try to evaluate if all arguments are concrete
-        if all(hasattr(arg, 'type') and arg.type == SymbolicValueType.CONCRETE for arg in args):
+        if all(
+            hasattr(arg, "type") and arg.type == SymbolicValueType.CONCRETE
+            for arg in args
+        ):
             try:
                 values = [arg.value for arg in args]
                 result = min(values)
@@ -209,8 +220,12 @@ def symbolic_range(*args) -> SymbolicValue:
     args_str = ", ".join(str(arg) for arg in args)
 
     # Try to create concrete range if all arguments are concrete integers
-    if all(hasattr(arg, 'type') and arg.type == SymbolicValueType.CONCRETE
-           and isinstance(arg.value, int) for arg in args):
+    if all(
+        hasattr(arg, "type")
+        and arg.type == SymbolicValueType.CONCRETE
+        and isinstance(arg.value, int)
+        for arg in args
+    ):
         try:
             values = [arg.value for arg in args]
             result = list(range(*values))
@@ -233,11 +248,15 @@ def simplify_args_display(args) -> str:
     """
     simplified_args = []
     for arg in args:
-        if hasattr(arg, 'value') and hasattr(arg, 'type') and arg.type == SymbolicValueType.CONCRETE:
+        if (
+            hasattr(arg, "value")
+            and hasattr(arg, "type")
+            and arg.type == SymbolicValueType.CONCRETE
+        ):
             simplified_args.append(str(arg.value))
         else:
             simplified_args.append(str(arg))
-    return ', '.join(simplified_args)
+    return ", ".join(simplified_args)
 
 
 def create_builtin_functions_dict(current_path=None):
@@ -251,27 +270,40 @@ def create_builtin_functions_dict(current_path=None):
         Dictionary mapping function names to symbolic implementations
     """
     return {
-        'int': symbolic_int,
-        'float': symbolic_float,
-        'str': symbolic_str,
-        'bool': symbolic_bool,
-        'type': symbolic_type,
-        'isinstance': symbolic_isinstance,
-        'len': symbolic_len,
-        'abs': symbolic_abs,
-        'max': symbolic_max,
-        'min': symbolic_min,
-        'range': symbolic_range,
-        'print': lambda *args: symbolic_print(*args, current_path=current_path,
-                                             simplify_display_func=simplify_args_display)
+        "int": symbolic_int,
+        "float": symbolic_float,
+        "str": symbolic_str,
+        "bool": symbolic_bool,
+        "type": symbolic_type,
+        "isinstance": symbolic_isinstance,
+        "len": symbolic_len,
+        "abs": symbolic_abs,
+        "max": symbolic_max,
+        "min": symbolic_min,
+        "range": symbolic_range,
+        "print": lambda *args: symbolic_print(
+            *args,
+            current_path=current_path,
+            simplify_display_func=simplify_args_display,
+        ),
     }
 
 
 def is_builtin_function(name: str) -> bool:
     """Check if a name refers to a builtin function we handle"""
     builtins = {
-        'int', 'float', 'str', 'bool', 'type', 'isinstance', 'len',
-        'abs', 'max', 'min', 'range', 'print'
+        "int",
+        "float",
+        "str",
+        "bool",
+        "type",
+        "isinstance",
+        "len",
+        "abs",
+        "max",
+        "min",
+        "range",
+        "print",
     }
     return name in builtins
 

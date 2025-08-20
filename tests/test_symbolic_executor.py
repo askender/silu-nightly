@@ -12,7 +12,6 @@ from silu.symbolic_executor import (
     PathCondition,
     ExecutionPath,
     SymbolicEnvironment,
-    execute_symbolic_from_file,
     execute_symbolic_from_string,
 )
 from silu.symbolic.condition_utils import (
@@ -106,9 +105,9 @@ class TestExecutionPath:
         path.add_statement("print(x)")
 
         result = path.to_dict()
-        assert result['path_id'] == "path_0"
-        assert len(result['conditions']) == 1
-        assert len(result['statements']) == 1
+        assert result["path_id"] == "path_0"
+        assert len(result["conditions"]) == 1
+        assert len(result["statements"]) == 1
 
 
 class TestSymbolicEnvironment:
@@ -164,13 +163,17 @@ class TestSymbolicExecutor:
     def test_simple_if_statement(self):
         """Test symbolic execution of if statement"""
         # if x > 5: y = 1 else: y = 2
-        ir = ("module", (
-            ("if",
-             ("chained_compare", "x", ">", 5),
-             ("block", (("assign", "y", 1, None),)),
-             ("block", (("assign", "y", 2, None),))
+        ir = (
+            "module",
+            (
+                (
+                    "if",
+                    ("chained_compare", "x", ">", 5),
+                    ("block", (("assign", "y", 1, None),)),
+                    ("block", (("assign", "y", 2, None),)),
+                ),
             ),
-        ))
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -185,11 +188,17 @@ class TestSymbolicExecutor:
 
     def test_function_definition(self):
         """Test symbolic execution of function definition"""
-        ir = ("module", (
-            ("func_def", "test_func", ["x"],
-             ("block", (("return", ("binary_op", "x", "+", 1)),))
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "test_func",
+                    ["x"],
+                    ("block", (("return", ("binary_op", "x", "+", 1)),)),
+                ),
             ),
-        ))
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -199,9 +208,7 @@ class TestSymbolicExecutor:
 
     def test_function_call(self):
         """Test symbolic execution of function call"""
-        ir = ("module", (
-            ("call", "print", ("x",)),
-        ))
+        ir = ("module", (("call", "print", ("x",)),))
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -211,9 +218,7 @@ class TestSymbolicExecutor:
 
     def test_binary_operations(self):
         """Test symbolic execution of binary operations"""
-        ir = ("module", (
-            ("assign", "z", ("binary_op", "x", "+", "y"), None),
-        ))
+        ir = ("module", (("assign", "z", ("binary_op", "x", "+", "y"), None),))
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -225,12 +230,16 @@ class TestSymbolicExecutor:
 
     def test_while_loop(self):
         """Test symbolic execution of while loop"""
-        ir = ("module", (
-            ("while",
-             ("chained_compare", "x", ">", 0),
-             ("block", (("assign", "x", ("binary_op", "x", "-", 1), None),))
+        ir = (
+            "module",
+            (
+                (
+                    "while",
+                    ("chained_compare", "x", ">", 0),
+                    ("block", (("assign", "x", ("binary_op", "x", "-", 1), None),)),
+                ),
             ),
-        ))
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -240,9 +249,7 @@ class TestSymbolicExecutor:
 
     def test_return_statement(self):
         """Test symbolic execution of return statement"""
-        ir = ("module", (
-            ("return", 42),
-        ))
+        ir = ("module", (("return", 42),))
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -252,19 +259,27 @@ class TestSymbolicExecutor:
 
     def test_nested_if_statements(self):
         """Test symbolic execution of nested if statements"""
-        ir = ("module", (
-            ("if",
-             ("chained_compare", "x", ">", 0),
-             ("block", (
-                 ("if",
-                  ("chained_compare", "x", ">", 10),
-                  ("block", (("assign", "y", 1, None),)),
-                  ("block", (("assign", "y", 2, None),))
-                 ),
-             )),
-             ("block", (("assign", "y", 0, None),))
+        ir = (
+            "module",
+            (
+                (
+                    "if",
+                    ("chained_compare", "x", ">", 0),
+                    (
+                        "block",
+                        (
+                            (
+                                "if",
+                                ("chained_compare", "x", ">", 10),
+                                ("block", (("assign", "y", 1, None),)),
+                                ("block", (("assign", "y", 2, None),)),
+                            ),
+                        ),
+                    ),
+                    ("block", (("assign", "y", 0, None),)),
+                ),
             ),
-        ))
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -274,11 +289,14 @@ class TestSymbolicExecutor:
 
     def test_builtin_functions(self):
         """Test symbolic execution with builtin functions"""
-        ir = ("module", (
-            ("call", "int", ("3.14",)),
-            ("call", "str", (42,)),
-            ("call", "len", ("hello",)),
-        ))
+        ir = (
+            "module",
+            (
+                ("call", "int", ("3.14",)),
+                ("call", "str", (42,)),
+                ("call", "len", ("hello",)),
+            ),
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -290,9 +308,10 @@ class TestSymbolicExecutor:
 
     def test_chained_comparisons(self):
         """Test symbolic execution of chained comparisons"""
-        ir = ("module", (
-            ("assign", "result", ("chained_compare", 1, "<", "x", "<", 10), None),
-        ))
+        ir = (
+            "module",
+            (("assign", "result", ("chained_compare", 1, "<", "x", "<", 10), None),),
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -302,14 +321,18 @@ class TestSymbolicExecutor:
 
     def test_report_generation(self):
         """Test symbolic execution report generation"""
-        ir = ("module", (
-            ("assign", "x", 5, None),
-            ("if",
-             ("chained_compare", "x", ">", 0),
-             ("block", (("assign", "y", 1, None),)),
-             ("block", (("assign", "y", 0, None),))
+        ir = (
+            "module",
+            (
+                ("assign", "x", 5, None),
+                (
+                    "if",
+                    ("chained_compare", "x", ">", 0),
+                    ("block", (("assign", "y", 1, None),)),
+                    ("block", (("assign", "y", 0, None),)),
+                ),
             ),
-        ))
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -324,22 +347,37 @@ class TestSymbolicExecutor:
     def test_path_limit(self):
         """Test that path explosion is limited"""
         # Create a deeply nested if structure that would explode paths
-        ir = ("module", (
-            ("if", ("chained_compare", "a", ">", 0),
-             ("block", (
-                 ("if", ("chained_compare", "b", ">", 0),
-                  ("block", (
-                      ("if", ("chained_compare", "c", ">", 0),
-                       ("block", (("assign", "x", 1, None),)),
-                       ("block", (("assign", "x", 2, None),))
-                      ),
-                  )),
-                  ("block", (("assign", "x", 3, None),))
-                 ),
-             )),
-             ("block", (("assign", "x", 4, None),))
+        ir = (
+            "module",
+            (
+                (
+                    "if",
+                    ("chained_compare", "a", ">", 0),
+                    (
+                        "block",
+                        (
+                            (
+                                "if",
+                                ("chained_compare", "b", ">", 0),
+                                (
+                                    "block",
+                                    (
+                                        (
+                                            "if",
+                                            ("chained_compare", "c", ">", 0),
+                                            ("block", (("assign", "x", 1, None),)),
+                                            ("block", (("assign", "x", 2, None),)),
+                                        ),
+                                    ),
+                                ),
+                                ("block", (("assign", "x", 3, None),)),
+                            ),
+                        ),
+                    ),
+                    ("block", (("assign", "x", 4, None),)),
+                ),
             ),
-        ))
+        )
 
         executor = SymbolicExecutor()
         executor.max_paths = 10  # Set a low limit for testing
@@ -380,21 +418,45 @@ class TestIntegration:
 
     def test_factorial_function_symbolic(self):
         """Test symbolic execution of factorial function"""
-        ir = ("module", (
-            ("func_def", "factorial", ["n"],
-             ("block", (
-                 ("if",
-                  ("chained_compare", "n", "<=", 1),
-                  ("block", (("return", 1),)),
-                  ("block", (
-                      ("return", ("binary_op", "n", "*",
-                                  ("call", "factorial", (("binary_op", "n", "-", 1),)))),
-                  ))
-                 ),
-             ))
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "factorial",
+                    ["n"],
+                    (
+                        "block",
+                        (
+                            (
+                                "if",
+                                ("chained_compare", "n", "<=", 1),
+                                ("block", (("return", 1),)),
+                                (
+                                    "block",
+                                    (
+                                        (
+                                            "return",
+                                            (
+                                                "binary_op",
+                                                "n",
+                                                "*",
+                                                (
+                                                    "call",
+                                                    "factorial",
+                                                    (("binary_op", "n", "-", 1),),
+                                                ),
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+                ("assign", "result", ("call", "factorial", (5,)), None),
             ),
-            ("assign", "result", ("call", "factorial", (5,)), None),
-        ))
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -405,20 +467,48 @@ class TestIntegration:
 
     def test_complex_control_flow(self):
         """Test symbolic execution with complex control flow"""
-        ir = ("module", (
-            ("assign", "x", 10, None),
-            ("while",
-             ("chained_compare", "x", ">", 0),
-             ("block", (
-                 ("if",
-                  ("chained_compare", "x", "%", 2, "==", 0),
-                  ("block", (("assign", "x", ("binary_op", "x", "/", 2), None),)),
-                  ("block", (("assign", "x", ("binary_op", "x", "-", 1), None),))
-                 ),
-                 ("call", "print", ("x",)),
-             ))
+        ir = (
+            "module",
+            (
+                ("assign", "x", 10, None),
+                (
+                    "while",
+                    ("chained_compare", "x", ">", 0),
+                    (
+                        "block",
+                        (
+                            (
+                                "if",
+                                ("chained_compare", "x", "%", 2, "==", 0),
+                                (
+                                    "block",
+                                    (
+                                        (
+                                            "assign",
+                                            "x",
+                                            ("binary_op", "x", "/", 2),
+                                            None,
+                                        ),
+                                    ),
+                                ),
+                                (
+                                    "block",
+                                    (
+                                        (
+                                            "assign",
+                                            "x",
+                                            ("binary_op", "x", "-", 1),
+                                            None,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                            ("call", "print", ("x",)),
+                        ),
+                    ),
+                ),
             ),
-        ))
+        )
 
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
@@ -489,7 +579,7 @@ class TestConditionSimplification:
         # Test case: not (x > 10) and not (x > 0) should become x <= 0
         conditions = [
             PathCondition("x > 10", False),  # not (x > 10)
-            PathCondition("x > 0", False),   # not (x > 0)
+            PathCondition("x > 0", False),  # not (x > 0)
         ]
 
         merged = self.executor._merge_negative_conditions("x", conditions)
@@ -541,8 +631,8 @@ class TestConditionSimplification:
         path = ExecutionPath("test_path")
         path.conditions = [
             PathCondition("x > 10", False),  # not (x > 10)
-            PathCondition("x > 0", False),   # not (x > 0)
-            PathCondition("y > 5", True),    # y > 5
+            PathCondition("x > 0", False),  # not (x > 0)
+            PathCondition("y > 5", True),  # y > 5
         ]
         path.statements = ["statement1", "statement2"]
         path.variables = {"x": "symbol_x", "y": "symbol_y"}
@@ -619,10 +709,10 @@ class TestConditionSimplification:
         """Test that complex expressions are preserved during simplification"""
         path = ExecutionPath("complex_path")
         path.conditions = [
-            PathCondition("x > 10", False),      # Can be simplified
-            PathCondition("x > 0", False),       # Can be simplified
+            PathCondition("x > 10", False),  # Can be simplified
+            PathCondition("x > 0", False),  # Can be simplified
             PathCondition("func(x, y) > 0", True),  # Complex - should be preserved
-            PathCondition("x + y <= z", True),   # Complex - should be preserved
+            PathCondition("x + y <= z", True),  # Complex - should be preserved
         ]
 
         simplified_paths = self.executor.simplify_path_conditions([path])
@@ -693,32 +783,34 @@ z = test_function(4, 2)
         result = executor.generate_report(paths)
 
         # Check that function analyses are present
-        assert 'function_analyses' in result
+        assert "function_analyses" in result
 
         # Check that both functions are analyzed
-        assert 'simple_branch' in result['function_analyses']
-        assert 'test_function' in result['function_analyses']
+        assert "simple_branch" in result["function_analyses"]
+        assert "test_function" in result["function_analyses"]
 
         # Check simple_branch analysis
-        simple_branch_analysis = result['function_analyses']['simple_branch']
-        assert simple_branch_analysis['total_paths'] == 2  # Two paths: x > 5 and x <= 5
-        assert simple_branch_analysis['satisfiable_paths'] == 2
-        assert len(simple_branch_analysis['paths']) == 2
+        simple_branch_analysis = result["function_analyses"]["simple_branch"]
+        assert simple_branch_analysis["total_paths"] == 2  # Two paths: x > 5 and x <= 5
+        assert simple_branch_analysis["satisfiable_paths"] == 2
+        assert len(simple_branch_analysis["paths"]) == 2
 
         # Check test_function analysis
-        test_function_analysis = result['function_analyses']['test_function']
-        assert test_function_analysis['total_paths'] == 2  # Two paths: a > b and a <= b
-        assert test_function_analysis['satisfiable_paths'] == 2
-        assert len(test_function_analysis['paths']) == 2
+        test_function_analysis = result["function_analyses"]["test_function"]
+        assert test_function_analysis["total_paths"] == 2  # Two paths: a > b and a <= b
+        assert test_function_analysis["satisfiable_paths"] == 2
+        assert len(test_function_analysis["paths"]) == 2
 
         # Verify that each function path has conditions
-        for path in simple_branch_analysis['paths']:
-            assert len(path['conditions']) >= 1  # Should have at least one condition
-            assert 'x' in path['variables']  # Should have the parameter
+        for path in simple_branch_analysis["paths"]:
+            assert len(path["conditions"]) >= 1  # Should have at least one condition
+            assert "x" in path["variables"]  # Should have the parameter
 
-        for path in test_function_analysis['paths']:
-            assert len(path['conditions']) >= 1  # Should have at least one condition
-            assert 'a' in path['variables'] and 'b' in path['variables']  # Should have parameters
+        for path in test_function_analysis["paths"]:
+            assert len(path["conditions"]) >= 1  # Should have at least one condition
+            assert (
+                "a" in path["variables"] and "b" in path["variables"]
+            )  # Should have parameters
 
     def test_cli_symbolic_solve_command(self):
         """Test that the CLI symbolic solve command works correctly"""
@@ -746,15 +838,18 @@ y = simple_branch(3)
 z = test_function(4, 2)
 """
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.si', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".si", delete=False) as f:
             f.write(test_code)
             temp_file = f.name
 
         try:
             # Run the symbolic solve command
-            result = subprocess.run([
-                'python', '-m', 'silu', 'symbolic', temp_file, '--solve'
-            ], capture_output=True, text=True, cwd='.')
+            result = subprocess.run(
+                ["python", "-m", "silu", "symbolic", temp_file, "--solve"],
+                capture_output=True,
+                text=True,
+                cwd=".",
+            )
 
             assert result.returncode == 0, f"Command failed with error: {result.stderr}"
 
@@ -762,13 +857,13 @@ z = test_function(4, 2)
             output_data = json.loads(result.stdout)
 
             # Verify function analyses are present
-            assert 'function_analyses' in output_data
-            assert 'simple_branch' in output_data['function_analyses']
-            assert 'test_function' in output_data['function_analyses']
+            assert "function_analyses" in output_data
+            assert "simple_branch" in output_data["function_analyses"]
+            assert "test_function" in output_data["function_analyses"]
 
             # Verify the structure is correct
-            assert output_data['function_analyses']['simple_branch']['total_paths'] == 2
-            assert output_data['function_analyses']['test_function']['total_paths'] == 2
+            assert output_data["function_analyses"]["simple_branch"]["total_paths"] == 2
+            assert output_data["function_analyses"]["test_function"]["total_paths"] == 2
 
         finally:
             # Clean up the temporary file
@@ -785,13 +880,13 @@ class TestCaseGeneration:
     def test_simple_condition_test_case_generation(self):
         """Test that simple conditions generate appropriate test cases"""
         # Create path with x > 5 condition
-        path1 = ExecutionPath('path_1')
-        condition1 = PathCondition('x > 5', True)
+        path1 = ExecutionPath("path_1")
+        condition1 = PathCondition("x > 5", True)
         path1.add_condition(condition1)
 
         # Create path with not (x > 5) condition
-        path2 = ExecutionPath('path_2')
-        condition2 = PathCondition('x > 5', False)
+        path2 = ExecutionPath("path_2")
+        condition2 = PathCondition("x > 5", False)
         path2.add_condition(condition2)
 
         # Enhance paths with test cases
@@ -802,21 +897,21 @@ class TestCaseGeneration:
         # Check first path (x > 5)
         path_1 = enhanced_paths[0]
         assert path_1.satisfiable == True
-        assert 'x' in path_1.test_inputs
-        assert path_1.test_inputs['x'] > 5  # Should satisfy x > 5
+        assert "x" in path_1.test_inputs
+        assert path_1.test_inputs["x"] > 5  # Should satisfy x > 5
 
         # Check second path (not (x > 5), i.e., x <= 5)
         path_2 = enhanced_paths[1]
         assert path_2.satisfiable == True
-        assert 'x' in path_2.test_inputs
-        assert path_2.test_inputs['x'] <= 5  # Should satisfy x <= 5
+        assert "x" in path_2.test_inputs
+        assert path_2.test_inputs["x"] <= 5  # Should satisfy x <= 5
 
     def test_multiple_variable_test_case_generation(self):
         """Test test case generation with multiple variables"""
         # Create path with complex condition: a > b and b > 0
-        path = ExecutionPath('path_1')
-        condition1 = PathCondition('a > b', True)
-        condition2 = PathCondition('b > 0', True)
+        path = ExecutionPath("path_1")
+        condition1 = PathCondition("a > b", True)
+        condition2 = PathCondition("b > 0", True)
         path.add_condition(condition1)
         path.add_condition(condition2)
 
@@ -826,21 +921,21 @@ class TestCaseGeneration:
         enhanced_path = enhanced_paths[0]
 
         assert enhanced_path.satisfiable == True
-        assert 'a' in enhanced_path.test_inputs
-        assert 'b' in enhanced_path.test_inputs
+        assert "a" in enhanced_path.test_inputs
+        assert "b" in enhanced_path.test_inputs
 
         # Verify the constraints are satisfied
-        a_val = enhanced_path.test_inputs['a']
-        b_val = enhanced_path.test_inputs['b']
+        a_val = enhanced_path.test_inputs["a"]
+        b_val = enhanced_path.test_inputs["b"]
         assert a_val > b_val  # a > b
-        assert b_val > 0      # b > 0
+        assert b_val > 0  # b > 0
 
     def test_unsatisfiable_condition_handling(self):
         """Test handling of unsatisfiable conditions"""
         # Create path with contradictory conditions: x > 10 and x < 5
-        path = ExecutionPath('path_1')
-        condition1 = PathCondition('x > 10', True)
-        condition2 = PathCondition('x < 5', True)
+        path = ExecutionPath("path_1")
+        condition1 = PathCondition("x > 10", True)
+        condition2 = PathCondition("x < 5", True)
         path.add_condition(condition1)
         path.add_condition(condition2)
 
@@ -855,7 +950,7 @@ class TestCaseGeneration:
 
     def test_no_conditions_path(self):
         """Test path with no conditions gets empty test inputs"""
-        path = ExecutionPath('path_1')
+        path = ExecutionPath("path_1")
         # No conditions added
 
         enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
@@ -869,8 +964,8 @@ class TestCaseGeneration:
     def test_equality_condition_test_case_generation(self):
         """Test test case generation for equality conditions"""
         # Create path with x == 42
-        path = ExecutionPath('path_1')
-        condition = PathCondition('x == 42', True)
+        path = ExecutionPath("path_1")
+        condition = PathCondition("x == 42", True)
         path.add_condition(condition)
 
         enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
@@ -879,14 +974,14 @@ class TestCaseGeneration:
         enhanced_path = enhanced_paths[0]
 
         assert enhanced_path.satisfiable == True
-        assert 'x' in enhanced_path.test_inputs
-        assert enhanced_path.test_inputs['x'] == 42
+        assert "x" in enhanced_path.test_inputs
+        assert enhanced_path.test_inputs["x"] == 42
 
     def test_inequality_condition_test_case_generation(self):
         """Test test case generation for inequality conditions"""
         # Create path with x != 42
-        path = ExecutionPath('path_1')
-        condition = PathCondition('x != 42', True)
+        path = ExecutionPath("path_1")
+        condition = PathCondition("x != 42", True)
         path.add_condition(condition)
 
         enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
@@ -895,19 +990,20 @@ class TestCaseGeneration:
         enhanced_path = enhanced_paths[0]
 
         assert enhanced_path.satisfiable == True
-        assert 'x' in enhanced_path.test_inputs
-        assert enhanced_path.test_inputs['x'] != 42
+        assert "x" in enhanced_path.test_inputs
+        assert enhanced_path.test_inputs["x"] != 42
 
     def test_z3_unavailable_fallback(self):
         """Test graceful handling when Z3 is not available"""
         # Mock Z3_AVAILABLE to False
         import silu.symbolic.report_utils as report_utils
+
         original_z3_available = report_utils.Z3_AVAILABLE
         report_utils.Z3_AVAILABLE = False
 
         try:
-            path = ExecutionPath('path_1')
-            condition = PathCondition('x > 5', True)
+            path = ExecutionPath("path_1")
+            condition = PathCondition("x > 5", True)
             path.add_condition(condition)
 
             enhanced_paths = self.executor.enhance_paths_with_test_cases([path])
@@ -916,9 +1012,9 @@ class TestCaseGeneration:
             enhanced_path = enhanced_paths[0]
 
             # Should have z3_error message
-            assert hasattr(enhanced_path, 'z3_error')
+            assert hasattr(enhanced_path, "z3_error")
             assert enhanced_path.z3_error is not None
-            assert 'Z3 solver not available' in enhanced_path.z3_error
+            assert "Z3 solver not available" in enhanced_path.z3_error
         finally:
             # Restore original value
             report_utils.Z3_AVAILABLE = original_z3_available
@@ -927,14 +1023,16 @@ class TestCaseGeneration:
         """Integration test: full symbolic execution with test case generation"""
         # Test a program that should generate multiple paths with test cases
         ir_program = (
-            "module", [
+            "module",
+            [
                 ("assign", "x", ("name", "x"), 0),  # x is symbolic
-                ("if",
+                (
+                    "if",
                     ("comparison", ">", ("name", "x"), ("const", 0)),
                     ("assign", "result", ("const", 1), 0),
-                    ("assign", "result", ("const", -1), 0)
-                )
-            ]
+                    ("assign", "result", ("const", -1), 0),
+                ),
+            ],
         )
 
         # Execute symbolically
@@ -943,24 +1041,8 @@ class TestCaseGeneration:
         # Should generate 2 paths: x > 0 and x <= 0
         assert len(paths) >= 2
 
-        # Debug: Print path conditions before enhancement
-        print(f"\n=== DEBUG: Original paths ({len(paths)}) ===")
-        for i, path in enumerate(paths):
-            print(f"Path {i}: {path.path_id}")
-            print(f"  Conditions: {[str(c) for c in path.conditions]}")
-            print(f"  Variables: {path.variables}")
-
         # Enhance with test cases
         enhanced_paths = self.executor.enhance_paths_with_test_cases(paths)
-
-        # Debug: Print enhanced paths
-        print(f"\n=== DEBUG: Enhanced paths ({len(enhanced_paths)}) ===")
-        for i, path in enumerate(enhanced_paths):
-            print(f"Path {i}: {path.path_id}")
-            print(f"  Conditions: {[str(c) for c in path.conditions]}")
-            print(f"  Satisfiable: {getattr(path, 'satisfiable', 'N/A')}")
-            print(f"  Test inputs: {getattr(path, 'test_inputs', 'N/A')}")
-            print(f"  Z3 errors: {getattr(path, 'z3_errors', 'N/A')}")
 
         # Find the paths with conditions
         paths_with_conditions = [p for p in enhanced_paths if p.conditions]
@@ -970,15 +1052,17 @@ class TestCaseGeneration:
         has_negative_test = False
 
         for path in paths_with_conditions:
-            if path.test_inputs and 'x' in path.test_inputs:
-                x_val = path.test_inputs['x']
+            if path.test_inputs and "x" in path.test_inputs:
+                x_val = path.test_inputs["x"]
                 if x_val > 0:
                     has_positive_test = True
                 elif x_val <= 0:
                     has_negative_test = True
 
         # We should have both positive and negative test cases
-        assert has_positive_test or has_negative_test, f"Should generate at least one meaningful test case. Paths: {[(p.path_id, getattr(p, 'test_inputs', None)) for p in enhanced_paths]}"
+        assert has_positive_test or has_negative_test, (
+            "Should generate at least one meaningful test case"
+        )
 
 
 if __name__ == "__main__":
