@@ -688,7 +688,10 @@ class SymbolicExecutor:
 
     def _execute_ir(self, ir_node: Tuple) -> SymbolicValue:
         """Execute an IR node and return its symbolic value"""
-        if not isinstance(ir_node, tuple) or not ir_node:
+        if not isinstance(ir_node, (tuple, list)) or not ir_node:
+            # Handle string identifiers as variable references
+            if isinstance(ir_node, str) and ir_node.isidentifier():
+                return self.current_env.get_variable(ir_node)
             return SymbolicValue(SymbolicValueType.CONCRETE, ir_node)
 
         op = ir_node[0]
@@ -1235,12 +1238,22 @@ class SymbolicExecutor:
         # Create symbolic expression with Z3 constraint if possible
         expr = (op, left, right)
 
+        # For symbolic comparisons, always create symbolic expressions
+        if (left.type == SymbolicValueType.SYMBOLIC or right.type == SymbolicValueType.SYMBOLIC) and op in ['==', '!=', '<', '>', '<=', '>=']:
+            # This is a symbolic comparison, always return an expression
+            return SymbolicValue(SymbolicValueType.EXPRESSION, expr)
+
         # Try to create Z3 expression for constraint generation
         if Z3_AVAILABLE:
             try:
                 var_dict = getattr(self.current_env, 'z3_variables', {})
-                left_z3 = to_z3_expr(left.value if hasattr(left, 'value') else left, var_dict)
-                right_z3 = to_z3_expr(right.value if hasattr(right, 'value') else right, var_dict)
+
+                # Fix: For symbolic values, use the name instead of value (which is None)
+                left_z3_input = left.name if left.type == SymbolicValueType.SYMBOLIC else (left.value if hasattr(left, 'value') else left)
+                right_z3_input = right.name if right.type == SymbolicValueType.SYMBOLIC else (right.value if hasattr(right, 'value') else right)
+
+                left_z3 = to_z3_expr(left_z3_input, var_dict)
+                right_z3 = to_z3_expr(right_z3_input, var_dict)
 
                 if left_z3 is not None and right_z3 is not None:
                     # Create Z3 expression based on operator
@@ -1256,7 +1269,8 @@ class SymbolicExecutor:
 
                     if op in z3_ops:
                         z3_expr = z3_ops[op](left_z3, right_z3)
-                        result = SymbolicValue(SymbolicValueType.EXPRESSION, z3_expr)
+                        # Store the tuple representation instead of Z3 expression to avoid conversion issues
+                        result = SymbolicValue(SymbolicValueType.EXPRESSION, expr)
                         result.constraints.append(str(z3_expr))
                         return result
 
@@ -1294,7 +1308,11 @@ class SymbolicExecutor:
         """Convert IR condition to readable format with recursive tuple handling"""
         # Handle SymbolicValue objects first
         if hasattr(condition, 'value') and hasattr(condition, 'type'):
-            return self._make_condition_readable(condition.value)
+            # For EXPRESSION type, use the tuple representation for readability
+            if condition.type == SymbolicValueType.EXPRESSION:
+                return self._make_condition_readable(condition.value)
+            else:
+                return str(condition)
 
         # Use shared conversion function for basic cases
         try:
