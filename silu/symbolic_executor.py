@@ -198,7 +198,7 @@ class SymbolicEnvironment:
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR"""
 
-    def __init__(self):
+    def __init__(self, include_function_paths=False, performance_mode=False):
         self.global_env = SymbolicEnvironment()
         self.current_env = self.global_env
         self.paths: List[ExecutionPath] = []
@@ -208,6 +208,13 @@ class SymbolicExecutor:
         self.max_loop_iterations = 5
         self.loop_analyzer = LoopAnalyzer(max_iterations=self.max_loop_iterations)
         self.function_analyses: Dict[str, List[ExecutionPath]] = {}
+        self.include_function_paths = include_function_paths
+        self.performance_mode = performance_mode
+
+        # Performance optimizations
+        if performance_mode:
+            self.max_loop_iterations = 3
+            self.max_paths = 50
 
         # Initialize built-in functions
         self._init_builtins()
@@ -577,10 +584,14 @@ class SymbolicExecutor:
         self.current_path = None
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
-    def execute_program(self, ir_program: Tuple) -> List[ExecutionPath]:
+    def execute_program(self, ir_program: Tuple, include_function_paths=None) -> List[ExecutionPath]:
         """Execute an IR program symbolically and return all paths"""
         if not ir_program or ir_program[0] != "module":
             raise ValueError("Invalid IR program format")
+
+        # Override instance setting if parameter provided
+        if include_function_paths is not None:
+            self.include_function_paths = include_function_paths
 
         self.paths = []
         self.current_path = ExecutionPath("path_0")
@@ -1122,6 +1133,18 @@ class SymbolicExecutor:
         # Store function paths for reporting
         self.function_analyses[func_name] = function_paths
 
+        # If include_function_paths is enabled, add function paths to main path collection
+        if self.include_function_paths and function_paths:
+            for func_path in function_paths:
+                # Create a unique path ID to avoid conflicts
+                func_path.path_id = f"func_{func_name}_{func_path.path_id}"
+                # Add function context to statements
+                context_stmt = f"# Function: {func_name}({', '.join(params)})"
+                func_path.statements.insert(0, context_stmt)
+                # Add to main paths if not already present
+                if func_path not in self.paths:
+                    self.paths.append(func_path)
+
         return SymbolicValue(SymbolicValueType.CONCRETE, None)
 
     def _execute_call(self, ir_node: Tuple) -> SymbolicValue:
@@ -1327,6 +1350,9 @@ class SymbolicExecutor:
 
     def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
         """Generate a comprehensive report of symbolic execution results with enhanced analysis"""
+        if self.performance_mode:
+            return self._generate_fast_report(paths)
+
         satisfiable_paths = [p for p in paths if p.is_satisfiable()]
 
         # Enhanced loop analysis
@@ -1387,6 +1413,34 @@ class SymbolicExecutor:
 
         return report
 
+    def _generate_fast_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
+        """Generate simplified report for performance mode"""
+        satisfiable_paths = [p for p in paths if p.is_satisfiable()]
+
+        report = {
+            'total_paths': len(paths),
+            'satisfiable_paths': len(satisfiable_paths),
+            'paths': [path.to_dict() for path in paths],
+            'summary': {
+                'functions_analyzed': len(self.global_env.functions),
+                'max_path_length': max((len(p.statements) for p in paths), default=0),
+                'max_conditions': max((len(p.conditions) for p in paths), default=0),
+                'performance_mode': True
+            }
+        }
+
+        # Add function analysis if available
+        if self.function_analyses:
+            report['function_analyses'] = {}
+            for func_name, func_paths in self.function_analyses.items():
+                report['function_analyses'][func_name] = {
+                    'total_paths': len(func_paths),
+                    'satisfiable_paths': len([p for p in func_paths if p.is_satisfiable()]),
+                    'paths': [path.to_dict() for path in func_paths]
+                }
+
+        return report
+
     def renumber_paths_sequentially(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
         """Renumber paths sequentially starting from 1"""
         for i, path in enumerate(paths, 1):
@@ -1409,11 +1463,10 @@ class SymbolicExecutor:
             simplified_conditions = []
             for var_name, conditions in grouped_conditions.items():
                 if var_name and len(conditions) > 1:
-                    # Try to merge negative conditions for this variable
-                    merged_conditions = self._merge_negative_conditions(var_name, conditions)
+                    # Use the enhanced variable-level merging strategy
+                    merged_conditions = self._merge_conditions_for_variable(var_name, conditions)
                     simplified_conditions.extend(merged_conditions)
                 else:
-                    # Keep original conditions if can't simplify
                     simplified_conditions.extend(conditions)
 
             # Add any conditions that couldn't be grouped by variable
@@ -1472,6 +1525,27 @@ class SymbolicExecutor:
                 groups[var_name].append(condition)
 
         return groups
+
+    def _merge_conditions_for_variable(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
+        """Merge conditions for a single variable (from original executor)"""
+        if len(conditions) <= 1:
+            return conditions
+
+        # For now, implement basic merging for common patterns
+        # Example: "not (x > 10)" and "not (x > 0)" -> "x <= 0"
+
+        # Separate positive and negative conditions
+        positive_conditions = [c for c in conditions if c.is_true]
+        negative_conditions = [c for c in conditions if not c.is_true]
+
+        # Try to merge negative conditions (not operators)
+        merged_negative = self._merge_negative_conditions(variable, negative_conditions)
+
+        # For now, keep positive conditions as-is
+        # In a more advanced implementation, we could merge these too
+
+        result = positive_conditions + merged_negative
+        return result if result else conditions
 
     def _merge_negative_conditions(self, var_name: str, conditions: List[PathCondition]) -> List[PathCondition]:
         """Merge negative conditions for the same variable"""
@@ -1918,7 +1992,7 @@ class SymbolicExecutor:
 
 
 # Utility functions
-def execute_symbolic_from_file(file_path: str) -> List[ExecutionPath]:
+def execute_symbolic_from_file(file_path: str, include_function_paths=False, performance_mode=False) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR file"""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -1931,14 +2005,14 @@ def execute_symbolic_from_file(file_path: str) -> List[ExecutionPath]:
             content = content.replace('null', 'None')
             ir_program = ast.literal_eval(content)
 
-        executor = SymbolicExecutor()
+        executor = SymbolicExecutor(include_function_paths=include_function_paths, performance_mode=performance_mode)
         return executor.execute_program(ir_program)
 
     except Exception as e:
         raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
 
 
-def execute_symbolic_from_string(ir_string: str) -> List[ExecutionPath]:
+def execute_symbolic_from_string(ir_string: str, include_function_paths=False, performance_mode=False) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR string"""
     try:
         try:
@@ -1948,7 +2022,7 @@ def execute_symbolic_from_string(ir_string: str) -> List[ExecutionPath]:
             ir_string = ir_string.replace('null', 'None')
             ir_program = ast.literal_eval(ir_string)
 
-        executor = SymbolicExecutor()
+        executor = SymbolicExecutor(include_function_paths=include_function_paths, performance_mode=performance_mode)
         return executor.execute_program(ir_program)
 
     except Exception as e:

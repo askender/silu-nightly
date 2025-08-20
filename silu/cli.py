@@ -125,7 +125,9 @@ def run_ir_to_source_converter(ir_source: str, output_file: str = None, **kwargs
 def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     """Run symbolic execution on source code or IR."""
     try:
-        executor = SymbolicExecutor()
+        include_function_paths = kwargs.get('include_function_paths', False)
+        performance_mode = kwargs.get('performance_mode', False)
+        executor = SymbolicExecutor(include_function_paths=include_function_paths, performance_mode=performance_mode)
         simplify = kwargs.get('simplify', False)
         solve = kwargs.get('solve', False)
 
@@ -140,12 +142,12 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 paths = executor.execute_program(ir_result)
             else:
                 # IR file
-                paths = execute_symbolic_from_file(source)
+                paths = execute_symbolic_from_file(source, include_function_paths=include_function_paths, performance_mode=performance_mode)
         else:
             # Execute from string
             if source.strip().startswith(('[', '(')):
                 # IR string
-                paths = execute_symbolic_from_string(source)
+                paths = execute_symbolic_from_string(source, include_function_paths=include_function_paths, performance_mode=performance_mode)
             else:
                 # Silu source string - convert to IR first
                 tree = ast.parse(source)
@@ -311,6 +313,14 @@ Examples:
     symbolic_parser.add_argument(
         "--solve", action="store_true", help="Use Z3 solver to generate concrete test cases for each execution path"
     )
+    symbolic_parser.add_argument(
+        "--include-function-paths", action="store_true",
+        help="Include function internal paths in main path collection (for compatibility with original behavior)"
+    )
+    symbolic_parser.add_argument(
+        "--performance-mode", action="store_true",
+        help="Enable performance optimizations for faster execution with simplified analysis"
+    )
 
     return parser
 
@@ -453,7 +463,9 @@ def main() -> None:
             # Symbolic execution
             symbolic_kwargs = {
                 'simplify': getattr(args, 'simplify', False),
-                'solve': getattr(args, 'solve', False)
+                'solve': getattr(args, 'solve', False),
+                'include_function_paths': getattr(args, 'include_function_paths', False),
+                'performance_mode': getattr(args, 'performance_mode', False)
             }
 
             if args.source:
