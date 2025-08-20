@@ -641,6 +641,52 @@ class LoopHandler(IRNodeHandler):
         self._execute_loop_body(executor, body_ir)
         return create_concrete_value(None)
 
+    def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
+        """Handle C-style for loop with enhanced analysis"""
+        max_iterations = getattr(executor, 'max_loop_iterations', 10)
+        iterations = 0
+        loop_id = f"c_for_{id(loop_node)}"
+
+        try:
+            while iterations < max_iterations:
+                # Check loop condition
+                if condition:
+                    cond_result = executor._execute_ir(condition)
+                    if hasattr(cond_result, 'value') and not cond_result.value:
+                        break
+
+                    # Generate Z3 constraints for condition if available
+                    if executor.z3_available and executor.generate_z3_constraints:
+                        try:
+                            z3_cond = executor._ast_to_z3(condition)
+                            if z3_cond is not None:
+                                executor.current_constraints.append(z3_cond)
+                        except Exception:
+                            pass  # Continue without Z3 constraint
+
+                # Execute loop body
+                executor._execute_ir(body)
+
+                # Execute update statement
+                if update:
+                    executor._execute_ir(update)
+
+                iterations += 1
+
+                # Track iterations in path
+                if executor.current_path:
+                    executor.current_path.loop_iterations[loop_id] = iterations
+
+        except Exception as e:
+            if executor.current_path:
+                executor.current_path.add_statement(f"Loop error: {str(e)}")
+
+        # Record final iteration count
+        if executor.current_path:
+            executor.current_path.loop_iterations[loop_id] = iterations
+
+        return create_concrete_value(None)
+
 
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
@@ -779,6 +825,12 @@ class SymbolicExecutor:
             "binary_op": self._execute_binary_op,
             "chained_compare": self._execute_chained_compare,
             "comparison": self._execute_comparison,
+            "c_for": self._execute_c_for,
+            "p++": self._execute_post_increment,
+            "p--": self._execute_post_decrement,
+            "++": self._execute_pre_increment,
+            "--": self._execute_pre_decrement,
+            "aug_assign": self._execute_aug_assign,
         }
 
         # Add binary operations to dispatch table
@@ -821,7 +873,15 @@ class SymbolicExecutor:
 
     def _execute_func_def(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function definition"""
-        _, func_name, params, body = ir_node
+        # Handle both Silu format (4 elements) and C format (5-6 elements)
+        if len(ir_node) == 4:
+            # Silu format: ("func_def", name, params, body)
+            _, func_name, params, body = ir_node
+        elif len(ir_node) >= 5:
+            # C format: ("func_def", name, params, body, param_types, [return_type])
+            _, func_name, params, body = ir_node[:4]
+        else:
+            raise ValueError(f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}")
         self.global_env.functions[func_name] = (params, body)
 
         if self.current_path:
@@ -837,6 +897,214 @@ class SymbolicExecutor:
             self._add_function_paths_to_main(func_name, params, function_paths)
 
         return create_concrete_value(None)
+
+    def _execute_c_for(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a C-style for loop: for(init; condition; update) body"""
+        _, init, condition, update, body = ir_node
+
+        # Execute initialization
+        if init:
+            self._execute_ir(init)
+
+        # Create loop context
+        loop_context = {
+            'condition': condition,
+            'update': update,
+            'body': body,
+            'type': 'c_for'
+        }
+
+        if self.current_path:
+            # Add loop entry statement
+            if init and condition and update:
+                init_str = self._ir_to_readable_string(init)
+                cond_str = self._ir_to_readable_string(condition)
+                update_str = self._ir_to_readable_string(update)
+                self.current_path.add_statement(f"for ({init_str}; {cond_str}; {update_str}):")
+            else:
+                self.current_path.add_statement("for loop:")
+
+        # Handle the loop using existing loop handler
+        if self.loop_handler:
+            return self.loop_handler._handle_c_for_loop(self, condition, update, body, ir_node)
+        else:
+            # Simple fallback execution
+            max_iterations = 5  # Limit iterations for symbolic execution
+            iterations = 0
+
+            while iterations < max_iterations:
+                # Check condition
+                if condition:
+                    cond_result = self._execute_ir(condition)
+                    if hasattr(cond_result, 'value') and not cond_result.value:
+                        break
+
+                # Execute body
+                self._execute_ir(body)
+
+                # Execute update
+                if update:
+                    self._execute_ir(update)
+
+                iterations += 1
+
+                # Track loop iterations
+                if self.current_path and hasattr(self.current_path, 'loop_iterations'):
+                    loop_id = f"c_for_{id(ir_node)}"
+                    self.current_path.loop_iterations[loop_id] = iterations
+
+        return create_concrete_value(None)
+
+    def _execute_post_increment(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute post-increment operation (var++)"""
+        _, var_expr = ir_node
+
+        # Get current value
+        current_value = self._execute_ir(var_expr)
+
+        # Increment the variable
+        if isinstance(var_expr, tuple) and len(var_expr) >= 2 and var_expr[0] == "name":
+            var_name = var_expr[1]
+            if var_name in self.current_env.variables:
+                old_val = self.current_env.variables[var_name]
+                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                    new_val = create_concrete_value(old_val.value + 1)
+                    self.current_env.variables[var_name] = new_val
+                else:
+                    # Create symbolic increment
+                    new_val = self.current_env.create_symbol(f"{var_name}_inc")
+                    self.current_env.variables[var_name] = new_val
+
+        if self.current_path:
+            var_str = self._ir_to_readable_string(var_expr)
+            self.current_path.add_statement(f"{var_str}++")
+
+        # Return the original value (post-increment semantics)
+        return current_value
+
+    def _execute_post_decrement(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute post-decrement operation (var--)"""
+        _, var_expr = ir_node
+
+        # Get current value
+        current_value = self._execute_ir(var_expr)
+
+        # Decrement the variable
+        if isinstance(var_expr, tuple) and len(var_expr) >= 2 and var_expr[0] == "name":
+            var_name = var_expr[1]
+            if var_name in self.current_env.variables:
+                old_val = self.current_env.variables[var_name]
+                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                    new_val = create_concrete_value(old_val.value - 1)
+                    self.current_env.variables[var_name] = new_val
+                else:
+                    # Create symbolic decrement
+                    new_val = self.current_env.create_symbol(f"{var_name}_dec")
+                    self.current_env.variables[var_name] = new_val
+
+        if self.current_path:
+            var_str = self._ir_to_readable_string(var_expr)
+            self.current_path.add_statement(f"{var_str}--")
+
+        # Return the original value (post-decrement semantics)
+        return current_value
+
+    def _execute_pre_increment(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute pre-increment operation (++var)"""
+        _, var_expr = ir_node
+
+        # Increment the variable first
+        if isinstance(var_expr, tuple) and len(var_expr) >= 2 and var_expr[0] == "name":
+            var_name = var_expr[1]
+            if var_name in self.current_env.variables:
+                old_val = self.current_env.variables[var_name]
+                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                    new_val = create_concrete_value(old_val.value + 1)
+                    self.current_env.variables[var_name] = new_val
+                else:
+                    # Create symbolic increment
+                    new_val = self.current_env.create_symbol(f"{var_name}_preinc")
+                    self.current_env.variables[var_name] = new_val
+                return new_val
+
+        if self.current_path:
+            var_str = self._ir_to_readable_string(var_expr)
+            self.current_path.add_statement(f"++{var_str}")
+
+        return self._execute_ir(var_expr)
+
+    def _execute_pre_decrement(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute pre-decrement operation (--var)"""
+        _, var_expr = ir_node
+
+        # Decrement the variable first
+        if isinstance(var_expr, tuple) and len(var_expr) >= 2 and var_expr[0] == "name":
+            var_name = var_expr[1]
+            if var_name in self.current_env.variables:
+                old_val = self.current_env.variables[var_name]
+                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                    new_val = create_concrete_value(old_val.value - 1)
+                    self.current_env.variables[var_name] = new_val
+                else:
+                    # Create symbolic decrement
+                    new_val = self.current_env.create_symbol(f"{var_name}_predec")
+                    self.current_env.variables[var_name] = new_val
+                return new_val
+
+        if self.current_path:
+            var_str = self._ir_to_readable_string(var_expr)
+            self.current_path.add_statement(f"--{var_str}")
+
+        return self._execute_ir(var_expr)
+
+    def _execute_aug_assign(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute augmented assignment (+=, -=, *=, etc.)"""
+        _, target, op, value = ir_node
+
+        # Get target variable name
+        if isinstance(target, tuple) and len(target) >= 2 and target[0] == "name":
+            var_name = target[1]
+        else:
+            var_name = str(target)
+
+        # Execute the value expression
+        value_result = self._execute_ir(value)
+
+        # Get current variable value
+        current_val = self.current_env.variables.get(var_name, create_concrete_value(0))
+
+        # Perform the operation
+        if op == "+=":
+            if (hasattr(current_val, 'value') and hasattr(value_result, 'value') and
+                isinstance(current_val.value, (int, float)) and isinstance(value_result.value, (int, float))):
+                new_val = create_concrete_value(current_val.value + value_result.value)
+            else:
+                new_val = self.current_env.create_symbol(f"{var_name}_add")
+        elif op == "-=":
+            if (hasattr(current_val, 'value') and hasattr(value_result, 'value') and
+                isinstance(current_val.value, (int, float)) and isinstance(value_result.value, (int, float))):
+                new_val = create_concrete_value(current_val.value - value_result.value)
+            else:
+                new_val = self.current_env.create_symbol(f"{var_name}_sub")
+        elif op == "*=":
+            if (hasattr(current_val, 'value') and hasattr(value_result, 'value') and
+                isinstance(current_val.value, (int, float)) and isinstance(value_result.value, (int, float))):
+                new_val = create_concrete_value(current_val.value * value_result.value)
+            else:
+                new_val = self.current_env.create_symbol(f"{var_name}_mul")
+        else:
+            # Generic handling for other operators
+            new_val = self.current_env.create_symbol(f"{var_name}_{op.replace('=', '')}")
+
+        # Update variable
+        self.current_env.variables[var_name] = new_val
+
+        if self.current_path:
+            target_str = self._ir_to_readable_string(target)
+            value_str = self._ir_to_readable_string(value)
+            self.current_path.add_statement(f"{target_str} {op} {value_str}")
+
+        return new_val
 
     def _analyze_function_definition(
         self, func_name: str, params: List[str], body_ir: Any

@@ -42,6 +42,12 @@ class IRToSourceConverter:
                 return self._convert_for(ir_node, indent_level)
             elif node_type == "func_def":
                 return self._convert_func_def(ir_node, indent_level)
+            elif node_type == "c_for":
+                return self._convert_c_for(ir_node, indent_level)
+            elif node_type == "aug_assign":
+                return self._convert_aug_assign(ir_node, indent_level)
+            elif node_type in ["p++", "p--", "++", "--"]:
+                return self._convert_increment_decrement(ir_node, indent_level)
             elif node_type == "return":
                 return self._convert_return(ir_node, indent_level)
             elif node_type == "call":
@@ -197,7 +203,15 @@ class IRToSourceConverter:
 
     def _convert_func_def(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert function definition IR to source code."""
-        _, name, args, body = ir_node
+        # Handle both Silu format (4 elements) and C format (5-6 elements)
+        if len(ir_node) == 4:
+            # Silu format: ("func_def", name, args, body)
+            _, name, args, body = ir_node
+        elif len(ir_node) >= 5:
+            # C format: ("func_def", name, args, body, param_types, [return_type])
+            _, name, args, body = ir_node[:4]
+        else:
+            raise ValueError(f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}")
         lines = []
 
         args_str = ", ".join(str(arg) for arg in args)
@@ -208,6 +222,57 @@ class IRToSourceConverter:
             lines.append(self.convert_to_source(stmt, indent_level + 1))
 
         return "\n".join(lines)
+
+    def _convert_c_for(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert C-style for loop IR to source code."""
+        _, init, condition, update, body = ir_node
+
+        indent = self._get_indent(indent_level)
+        lines = []
+
+        # Convert components to string
+        init_str = self.convert_to_source(init, 0).strip() if init else ""
+        cond_str = self.convert_to_source(condition, 0).strip() if condition else ""
+        update_str = self.convert_to_source(update, 0).strip() if update else ""
+
+        lines.append(f"{indent}for {init_str}; {cond_str}; {update_str}:")
+
+        # Convert body
+        if isinstance(body, (list, tuple)):
+            for stmt in body:
+                lines.append(self.convert_to_source(stmt, indent_level + 1))
+        else:
+            lines.append(self.convert_to_source(body, indent_level + 1))
+
+        return "\n".join(lines)
+
+    def _convert_aug_assign(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert augmented assignment IR to source code."""
+        _, target, op, value = ir_node
+
+        indent = self._get_indent(indent_level)
+        target_str = self.convert_to_source(target, 0).strip()
+        value_str = self.convert_to_source(value, 0).strip()
+
+        return f"{indent}{target_str} {op} {value_str}"
+
+    def _convert_increment_decrement(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert increment/decrement operations IR to source code."""
+        op, operand = ir_node
+
+        indent = self._get_indent(indent_level)
+        operand_str = self.convert_to_source(operand, 0).strip()
+
+        if op == "p++":
+            return f"{indent}{operand_str}++"
+        elif op == "p--":
+            return f"{indent}{operand_str}--"
+        elif op == "++":
+            return f"{indent}++{operand_str}"
+        elif op == "--":
+            return f"{indent}--{operand_str}"
+        else:
+            return f"{indent}{op} {operand_str}"
 
     def _convert_return(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert return statement IR to source code."""
