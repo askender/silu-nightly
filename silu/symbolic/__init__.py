@@ -28,6 +28,39 @@ from .loop_utils import (
     analyze_nested_loops
 )
 
+from .builtin_utils import (
+    SymbolicValueType,
+    SymbolicValue,
+    create_concrete_value,
+    create_expression_value,
+    create_builtin_functions_dict,
+    symbolic_print,
+    simplify_args_display,
+    is_builtin_function,
+    get_builtin_function
+)
+
+from .condition_utils import (
+    PathCondition,
+    extract_variable_from_condition,
+    is_simple_variable_condition,
+    group_conditions_by_variable,
+    merge_conditions_for_variable,
+    make_condition_readable,
+    simplify_conditions_list,
+    normalize_condition,
+    conditions_are_contradictory
+)
+
+from .report_utils import (
+    ReportFormat,
+    generate_report,
+    generate_fast_report,
+    extract_test_cases,
+    generate_test_case_report,
+    generate_execution_summary
+)
+
 __all__ = [
     # Z3 utilities
     'Z3_AVAILABLE',
@@ -47,5 +80,35 @@ __all__ = [
     'LoopType',
     'LoopBound',
     'LoopIteration',
-    'analyze_nested_loops'
+    'analyze_nested_loops',
+
+    # Builtin utilities
+    'SymbolicValueType',
+    'SymbolicValue',
+    'create_concrete_value',
+    'create_expression_value',
+    'create_builtin_functions_dict',
+    'symbolic_print',
+    'simplify_args_display',
+    'is_builtin_function',
+    'get_builtin_function',
+
+    # Condition utilities
+    'PathCondition',
+    'extract_variable_from_condition',
+    'is_simple_variable_condition',
+    'group_conditions_by_variable',
+    'merge_conditions_for_variable',
+    'make_condition_readable',
+    'simplify_conditions_list',
+    'normalize_condition',
+    'conditions_are_contradictory',
+
+    # Report utilities
+    'ReportFormat',
+    'generate_report',
+    'generate_fast_report',
+    'extract_test_cases',
+    'generate_test_case_report',
+    'generate_execution_summary'
 ]
