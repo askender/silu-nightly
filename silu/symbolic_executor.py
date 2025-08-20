@@ -29,7 +29,11 @@ from .symbolic.builtin_utils import (
     symbolic_type, symbolic_isinstance, symbolic_len,
     symbolic_print, simplify_args_display
 )
-from .symbolic.condition_utils import PathCondition
+from .symbolic.condition_utils import (
+    PathCondition, extract_variable_from_condition, is_simple_variable_condition,
+    group_conditions_by_variable, merge_conditions_for_variable,
+    simplify_conditions_list
+)
 
 # Removed ir_to_source dependency - implemented simplified versions internally
 
@@ -1444,7 +1448,7 @@ class SymbolicExecutor:
                 continue
 
             # Group conditions by variable for potential simplification
-            grouped_conditions = self._group_conditions_by_variable(path.conditions)
+            grouped_conditions = group_conditions_by_variable(path.conditions)
 
             # Simplify conditions for each variable group
             simplified_conditions = []
@@ -1458,7 +1462,7 @@ class SymbolicExecutor:
 
             # Add any conditions that couldn't be grouped by variable
             for condition in path.conditions:
-                if not self._is_simple_variable_condition(condition.expression):
+                if not is_simple_variable_condition(condition.expression):
                     simplified_conditions.append(condition)
 
             # Create new path with simplified conditions
@@ -1477,41 +1481,7 @@ class SymbolicExecutor:
 
         return simplified_paths
 
-    def _extract_variable_from_condition(self, condition_str: str) -> Optional[str]:
-        """Extract variable name from a simple condition like 'x > 5'"""
-        import re
-
-        # Clean up whitespace
-        condition_str = condition_str.strip()
-
-        # Pattern for simple variable comparisons: variable op value
-        pattern = r'^(\w+)\s*([><=!]+)\s*(.+)$'
-        match = re.match(pattern, condition_str)
-
-        if match:
-            var_name = match.group(1)
-            # Check if this is a simple variable (not a function call or complex expression)
-            if var_name.isidentifier():
-                return var_name
-
-        return None
-
-    def _is_simple_variable_condition(self, condition_str: str) -> bool:
-        """Check if condition is a simple variable comparison"""
-        return self._extract_variable_from_condition(condition_str) is not None
-
-    def _group_conditions_by_variable(self, conditions: List[PathCondition]) -> Dict[str, List[PathCondition]]:
-        """Group conditions by the variable they reference"""
-        groups = {}
-
-        for condition in conditions:
-            var_name = self._extract_variable_from_condition(condition.expression)
-            if var_name:
-                if var_name not in groups:
-                    groups[var_name] = []
-                groups[var_name].append(condition)
-
-        return groups
+    # Removed duplicate condition processing methods - now using condition_utils
 
     def _merge_conditions_for_variable(self, variable: str, conditions: List[PathCondition]) -> List[PathCondition]:
         """Merge conditions for a single variable (from original executor)"""

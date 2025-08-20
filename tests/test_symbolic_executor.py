@@ -12,7 +12,13 @@ from silu.symbolic_executor import (
     PathCondition,
     ExecutionPath,
     SymbolicEnvironment,
+    execute_symbolic_from_file,
     execute_symbolic_from_string,
+)
+from silu.symbolic.condition_utils import (
+    extract_variable_from_condition,
+    is_simple_variable_condition,
+    group_conditions_by_variable,
 )
 
 
@@ -439,24 +445,25 @@ class TestConditionSimplification:
     def test_extract_variable_from_condition(self):
         """Test variable extraction from simple conditions"""
         # Test basic comparisons
-        assert self.executor._extract_variable_from_condition("x > 5") == "x"
-        assert self.executor._extract_variable_from_condition("y <= 10") == "y"
-        assert self.executor._extract_variable_from_condition("z >= 0") == "z"
-        assert self.executor._extract_variable_from_condition("abc < 100") == "abc"
+        assert extract_variable_from_condition("x > 5") == "x"
+        assert extract_variable_from_condition("y <= 10") == "y"
+        assert extract_variable_from_condition("z >= 0") == "z"
+        assert extract_variable_from_condition("abc < 100") == "abc"
 
         # Test with whitespace
-        assert self.executor._extract_variable_from_condition("  x  >  5  ") == "x"
+        assert extract_variable_from_condition("  x  >  5  ") == "x"
 
         # Test complex expressions (should return None for now)
-        assert self.executor._extract_variable_from_condition("x + y > 5") is None
-        assert self.executor._extract_variable_from_condition("func(x) > 0") is None
+        assert extract_variable_from_condition("x + y > 5") is None
+        assert extract_variable_from_condition("func(x) > 5") is None
+        assert extract_variable_from_condition("5 > x") is None  # Reverse order
 
     def test_is_simple_variable_condition(self):
         """Test identification of simple variable conditions"""
-        assert self.executor._is_simple_variable_condition("x > 5") is True
-        assert self.executor._is_simple_variable_condition("y <= 10") is True
-        assert self.executor._is_simple_variable_condition("x + y > 5") is False
-        assert self.executor._is_simple_variable_condition("complex_expr") is False
+        assert is_simple_variable_condition("x > 5") is True
+        assert is_simple_variable_condition("y <= 10") is True
+        assert is_simple_variable_condition("x + y > 5") is False
+        assert is_simple_variable_condition("complex_expr") is False
 
     def test_group_conditions_by_variable(self):
         """Test grouping of conditions by variable"""
@@ -468,7 +475,7 @@ class TestConditionSimplification:
             PathCondition("z >= 1", True),
         ]
 
-        groups = self.executor._group_conditions_by_variable(conditions)
+        groups = group_conditions_by_variable(conditions)
 
         assert "x" in groups
         assert "y" in groups
