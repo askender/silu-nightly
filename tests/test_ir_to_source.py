@@ -87,7 +87,7 @@ class TestIRToSourceConverter:
 
         ir_node = ("and", True, False)
         result = converter.convert_to_source(ir_node)
-        expected = "(True) and (False)"
+        expected = "True and False"
         assert result == expected
 
         ir_node = ("or", ("==", "x", 1), ("==", "x", 2))
