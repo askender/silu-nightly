@@ -144,35 +144,40 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     def visit_Assign(self, node: ast.Assign) -> Any:
         """Visit an assignment node."""
-        if len(node.targets) != 1:
-            raise NotImplementedError("Only single target assignments supported")
-
-        target = node.targets[0]
         value = self.visit(node.value)
 
-        if isinstance(target, ast.Name):
-            # Simple variable assignment: x = value
-            return self.process_assign(target.id, value)
-        elif isinstance(target, ast.Subscript):
-            # Subscript assignment: obj[key] = value
-            obj = self.visit(target.value)
-            key = self.visit(target.slice)
-            return self.process_subscript_assign(obj, key, value)
-        elif isinstance(target, ast.Tuple):
-            # Tuple unpacking assignment: a, b = value
-            target_names = []
-            for elt in target.elts:
-                if isinstance(elt, ast.Name):
-                    target_names.append(elt.id)
-                else:
-                    raise NotImplementedError(
-                        "Only simple names are supported in tuple unpacking"
-                    )
-            return self.process_tuple_assign(target_names, value)
-        else:
-            raise NotImplementedError(
-                f"Assignment to {type(target).__name__} not supported"
-            )
+        # Handle multiple targets (a = b = c = value)
+        results = []
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                # Simple variable assignment: x = value
+                result = self.process_assign(target.id, value)
+                results.append(result)
+            elif isinstance(target, ast.Subscript):
+                # Subscript assignment: obj[key] = value
+                obj = self.visit(target.value)
+                key = self.visit(target.slice)
+                result = self.process_subscript_assign(obj, key, value)
+                results.append(result)
+            elif isinstance(target, ast.Tuple):
+                # Tuple unpacking assignment: a, b = value
+                target_names = []
+                for elt in target.elts:
+                    if isinstance(elt, ast.Name):
+                        target_names.append(elt.id)
+                    else:
+                        raise NotImplementedError(
+                            "Only simple names are supported in tuple unpacking"
+                        )
+                result = self.process_tuple_assign(target_names, value)
+                results.append(result)
+            else:
+                raise NotImplementedError(
+                    f"Assignment to {type(target).__name__} not supported"
+                )
+
+        # Return the last result (consistent with Python behavior)
+        return results[-1] if results else None
 
     def visit_AugAssign(self, node: ast.AugAssign) -> Any:
         """Visit an augmented assignment node."""

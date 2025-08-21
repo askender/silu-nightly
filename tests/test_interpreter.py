@@ -112,15 +112,25 @@ class TestSiluInterpreter:
         interpreter.visit_Assign(assign_node)
         assert interpreter.env.get("z") == 15
 
-        # Test multiple targets error
+        # Test multiple targets assignment
         target1 = ast.Name(id="a", ctx=ast.Store())
         target2 = ast.Name(id="b", ctx=ast.Store())
         value = ast.Constant(value=42)
         assign_node = ast.Assign(targets=[target1, target2], value=value)
-        with pytest.raises(
-            NotImplementedError, match="Only single target assignments supported"
-        ):
-            interpreter.visit_Assign(assign_node)
+        interpreter.visit_Assign(assign_node)
+        assert interpreter.env.get("a") == 42
+        assert interpreter.env.get("b") == 42
+
+        # Test multiple targets with three variables
+        target1 = ast.Name(id="x1", ctx=ast.Store())
+        target2 = ast.Name(id="y1", ctx=ast.Store())
+        target3 = ast.Name(id="z1", ctx=ast.Store())
+        value = ast.Constant(value="hello")
+        assign_node = ast.Assign(targets=[target1, target2, target3], value=value)
+        interpreter.visit_Assign(assign_node)
+        assert interpreter.env.get("x1") == "hello"
+        assert interpreter.env.get("y1") == "hello"
+        assert interpreter.env.get("z1") == "hello"
 
     def test_subscript_operations(self):
         """Test subscript assignment and access operations."""
