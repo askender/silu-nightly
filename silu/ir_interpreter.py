@@ -140,9 +140,17 @@ class IRInterpreter:
         evaluated_value = self.execute(value)
         self._set_variable(target, evaluated_value)
 
-    def _execute_aug_assign(self, target: str, op: str, value: Any) -> None:
+    def _execute_aug_assign(self, target, op: str, value: Any) -> None:
         """Execute augmented assignment: target op= value"""
-        current_value = self._get_variable(target)
+        # Handle name tuples from IR
+        if isinstance(target, tuple) and len(target) == 2 and target[0] == "name":
+            var_name = target[1]
+        elif isinstance(target, str):
+            var_name = target
+        else:
+            raise NotImplementedError(f"Unsupported augmented assignment target: {target}")
+
+        current_value = self._get_variable(var_name)
         new_value = self.execute(value)
 
         # Map augmented operators to binary operators
@@ -161,7 +169,7 @@ class IRInterpreter:
 
         binary_op = op_map.get(op, op[:-1])  # Remove '=' suffix
         result = self._execute_binary_op(binary_op, current_value, new_value)
-        self._set_variable(target, result)
+        self._set_variable(var_name, result)
 
     def _execute_call(self, func: Any, args: Tuple, kwargs: Tuple) -> Any:
         """Execute function call."""
