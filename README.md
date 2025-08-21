@@ -38,6 +38,9 @@ uv sync && uv pip install -e .
 # Run a Silu program
 silu hello.si
 
+# Check if Python code is compatible with Silu
+silu check program.py
+
 # Interactive execution
 silu interpret --source "print('Hello, World!')"
 ```
@@ -70,6 +73,7 @@ silu hello.si
 - **Simple Syntax**: Python-like syntax that's easy to learn
 - **Multiple Execution Modes**: 
   - Direct interpretation
+  - Python compatibility checking
   - IR (Intermediate Representation) generation and execution
   - Symbolic execution for program analysis
 - **Built-in Functions**: `print()`, `type()`, `isinstance()`, type conversions
@@ -78,6 +82,21 @@ silu hello.si
 - **Data Types**: int, float, str, bool, lists
 
 ## Advanced Usage
+
+### Check Python Compatibility
+```bash
+# Check if a Python file can be interpreted by Silu
+silu check program.py
+# Output: program.py ok (or program.py bad: specific error reason)
+
+# Examples of error messages:
+# program.py bad: syntax error: expected ':' at line 4
+# program.py bad: name error: Name 'undefined_var' is not defined  
+# program.py bad: runtime error: division by zero
+# program.py bad: type error: can only concatenate str (not "int") to str
+# program.py bad: empty file
+# program.py bad: file not found
+```
 
 ### Generate Intermediate Representation
 ```bash

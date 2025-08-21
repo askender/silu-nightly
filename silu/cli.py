@@ -68,6 +68,79 @@ def run_interpreter(source_code: str, **kwargs) -> None:
         sys.exit(1)
 
 
+def check_interpreter(source_code: str, **kwargs) -> tuple[bool, str]:
+    """Check if the source code can be interpreted by Silu without errors.
+
+    Returns:
+        tuple[bool, str]: (success, error_reason) where success is True if the code
+        can be interpreted successfully, and error_reason is a description of the failure.
+    """
+    import io
+    import contextlib
+
+    try:
+        tree = ast.parse(source_code)
+        interpreter = SiluInterpreter(**kwargs)
+
+        # Suppress all output during interpretation
+        with contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            interpreter.visit(tree)
+
+        return True, ""
+    except SyntaxError as e:
+        return False, f"syntax error: {e.msg} at line {e.lineno}"
+    except NotImplementedError as e:
+        return False, f"unsupported feature: {str(e)}"
+    except AttributeError as e:
+        error_msg = str(e)
+        if "has no attribute" in error_msg:
+            return False, f"unsupported operation: {error_msg}"
+        return False, f"attribute error: {error_msg}"
+    except NameError as e:
+        return False, f"name error: {str(e)}"
+    except TypeError as e:
+        return False, f"type error: {str(e)}"
+    except ValueError as e:
+        return False, f"value error: {str(e)}"
+    except ZeroDivisionError:
+        return False, "runtime error: division by zero"
+    except IndexError as e:
+        return False, f"index error: {str(e)}"
+    except KeyError as e:
+        return False, f"key error: {str(e)}"
+    except Exception as e:
+        # Generic catch-all for other errors
+        error_type = type(e).__name__
+        return False, f"{error_type.lower()}: {str(e)}"
+
+
+def run_check(filename: str) -> None:
+    """Check if a file can be interpreted by Silu and print result."""
+    try:
+        # Read file directly without using read_source_file to avoid sys.exit
+        with open(filename, "r", encoding="utf-8") as file:
+            source_code = file.read()
+
+        if not source_code.strip():
+            print(f"{filename} bad: empty file")
+            return
+
+        success, error_reason = check_interpreter(source_code)
+        if success:
+            print(f"{filename} ok")
+        else:
+            print(f"{filename} bad: {error_reason}")
+    except FileNotFoundError:
+        print(f"{filename} bad: file not found")
+    except PermissionError:
+        print(f"{filename} bad: permission denied")
+    except UnicodeDecodeError:
+        print(f"{filename} bad: file encoding error")
+    except Exception as e:
+        print(f"{filename} bad: {str(e)}")
+
+
 def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> None:
     """Generate IR from source code and print it."""
     try:
@@ -278,6 +351,10 @@ Examples:
 
   # Process source code directly
   %(prog)s interpret --source "x = 5; print(x)"
+
+  # Check if Python code can be interpreted by Silu
+  %(prog)s check program.py
+  # Output: program.py ok (or program.py bad: reason)
 """,
     )
 
@@ -297,6 +374,14 @@ Examples:
     )
     interpret_parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode with verbose output"
+    )
+
+    # Check subcommand
+    check_parser = subparsers.add_parser(
+        "check", help="Check if Python code can be interpreted by Silu"
+    )
+    check_parser.add_argument(
+        "file", help="Python source file to check"
     )
 
     # IR generation subcommand
@@ -390,7 +475,13 @@ Examples:
 
 def validate_arguments(args) -> None:
     """Validate command line arguments."""
-    if args.mode in ["exec", "symbolic", "to-source"]:
+    if args.mode == "check":
+        # For check mode, only file is required (no --source support)
+        if not args.file:
+            print("Error: A Python source file must be provided for check mode.", file=sys.stderr)
+            sys.exit(1)
+        # Don't check file existence here for check mode - let run_check handle it
+    elif args.mode in ["exec", "symbolic", "to-source"]:
         # For exec/symbolic/to-source modes, either file or --source is required
         if not args.file and not args.source:
             if args.mode == "exec":
@@ -468,7 +559,19 @@ def main() -> None:
     # Validate arguments
     validate_arguments(args)
 
-    # Get source code
+    # Handle check mode separately (doesn't need source code validation)
+    if args.mode == "check":
+        try:
+            run_check(args.file)
+        except KeyboardInterrupt:
+            print("\nInterrupted by user.", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Unexpected error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # Get source code for other modes
     if args.file:
         source_code = read_source_file(args.file)
         source_name = args.file

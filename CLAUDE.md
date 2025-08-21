@@ -54,6 +54,7 @@ make fmt               # Format with ruff
 
 # Running Silu programs
 silu program.si                    # Default interpretation
+silu check program.py             # Check Python compatibility
 silu interpret program.si --debug # Debug mode
 silu ir program.si --format json  # Generate IR
 silu exec program.ir.json         # Execute IR
@@ -89,6 +90,33 @@ silu symbolic program.si          # Symbolic analysis
 - Shared conversion functions between IR-to-source converter and symbolic executor for consistent output
 - Package management with `uv` (recommended) or `pip`
 - Code formatting with `ruff`
+
+## IR to Source Conversion
+
+## Python Compatibility Checking
+
+The toolkit includes a `check` command to verify if Python programs are compatible with Silu's supported features:
+
+### Features
+- **Compatibility verification**: Test if Python code can be interpreted by Silu
+- **Detailed error reporting**: Returns "filename ok" or "filename bad: specific reason" for precise feedback
+- **Silent execution**: No program output during checking, only compatibility status
+- **Comprehensive error handling**: Catches and categorizes syntax errors, runtime errors, and unsupported language features
+
+### Error Message Types
+- **syntax error**: Python syntax violations (missing colons, parentheses, etc.)
+- **name error**: Undefined variables, unsupported imports, classes
+- **runtime error**: Division by zero, execution failures
+- **type error**: Type mismatches and incompatible operations
+- **index error**: List/string index out of bounds
+- **empty file**: No content or whitespace only
+- **file not found**: File doesn't exist or permission denied
+
+### Use Cases
+- **Pre-flight validation**: Check Python files before attempting interpretation
+- **Batch processing**: Validate multiple files for Silu compatibility with specific error reasons
+- **CI/CD integration**: Automated testing of Python code compatibility
+- **Educational tools**: Help users understand Silu's language subset and specific limitations
 
 ## IR to Source Conversion
 
