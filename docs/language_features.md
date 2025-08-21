@@ -177,6 +177,21 @@ for i in range(1, 10, 2):  # start, stop, step
 numbers = [1, 2, 3, 4, 5]
 for num in numbers:
     print("Number:", num)
+
+# Tuple unpacking in for loops
+data = [('Alice', 25), ('Bob', 30), ('Charlie', 35)]
+for name, age in data:
+    print("Name:", name, "Age:", age)
+
+# Dictionary iteration with tuple unpacking
+person = {"name": "Alice", "age": 25, "city": "New York"}
+for key, value in person.items():
+    print(key + ":", value)
+
+# Multiple element unpacking
+records = [('John', 'Doe', 28), ('Jane', 'Smith', 32)]
+for first, last, age in records:
+    print("Full name:", first, last, "Age:", age)
 ```
 
 ## Functions
@@ -301,7 +316,7 @@ x_coord = point[0]
 y_coord = point[1]
 ```
 
-### Dictionaries (if supported)
+### Dictionaries
 ```silu
 # Dictionary creation
 person = {"name": "Alice", "age": 30}
@@ -310,6 +325,24 @@ empty_dict = {}
 # Dictionary access
 name = person["name"]
 age = person["age"]
+
+# Dictionary methods
+keys = person.keys()
+values = person.values()
+items = person.items()
+
+# Dictionary iteration
+for key in person:
+    print(key)
+
+# Dictionary iteration with values
+for key, value in person.items():
+    print(key, value)
+
+# Dictionary operations
+person["city"] = "New York"  # Add/update
+del person["age"]            # Delete
+length = len(person)         # Length
 ```
 
 ## Advanced Features
