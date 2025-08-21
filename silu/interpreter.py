@@ -159,6 +159,7 @@ class SiluInterpreter(BaseASTProcessor):
         """Process augmented assignment operations (+=, -=, etc.)."""
         if isinstance(target, str):
             # Simple variable augmented assignment: x += value
+            # target is variable name string (for interpreter)
             current_value = self.env.get(target)
             new_value = self.process_operation(op, current_value, value)
             self.env.set(target, new_value)

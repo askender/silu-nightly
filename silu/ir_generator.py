@@ -27,6 +27,19 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate subscript assignment IR node."""
         return ("subscript_assign", obj, key, value)
 
+    def process_aug_assign(self, target: Any, op: str, value: Any) -> Tuple:
+        """Generate augmented assignment IR node."""
+        if isinstance(target, tuple) and len(target) == 2 and target[0] == "name":
+            # Simple variable augmented assignment: x += value
+            return ("aug_assign", target, op, value)
+        elif isinstance(target, tuple) and len(target) == 2 and not isinstance(target[0], str):
+            # Subscript augmented assignment: obj[key] += value
+            # target is (obj_ir_node, key_ir_node)
+            obj, key = target
+            return ("subscript_aug_assign", obj, key, op, value)
+        else:
+            raise NotImplementedError(f"Unsupported augmented assignment target: {target}")
+
     def process_name(self, name: str, context: ast.AST) -> Tuple[str, str]:
         """Return identifier with type information for IR."""
         return ("name", name)
