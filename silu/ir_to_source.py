@@ -26,6 +26,8 @@ class IRToSourceConverter:
                 return self._convert_name(ir_node)
             elif node_type == "const":
                 return self._convert_const(ir_node)
+            elif node_type == "const_b":
+                return self._convert_const_b(ir_node)
             elif node_type == "module":
                 return self._convert_module(ir_node, indent_level)
             elif node_type == "assign":
@@ -60,6 +62,8 @@ class IRToSourceConverter:
                 return self._convert_dict(ir_node)
             elif node_type == "set":
                 return self._convert_set(ir_node)
+            elif node_type == "attribute":
+                return self._convert_attribute(ir_node)
             elif node_type == "subscript":
                 return self._convert_subscript(ir_node)
             elif node_type == "slice":
@@ -116,6 +120,13 @@ class IRToSourceConverter:
         """Convert constant IR node to literal value."""
         _, value = ir_node
         return self._convert_literal(value)
+
+    def _convert_const_b(self, ir_node: Tuple) -> str:
+        """Convert bytes constant IR node to bytes literal."""
+        _, string_value = ir_node
+        # Convert string back to bytes representation
+        bytes_value = string_value.encode('latin-1')
+        return repr(bytes_value)
 
     def _convert_assign(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert assignment IR to source code."""
@@ -342,6 +353,12 @@ class IRToSourceConverter:
             self._convert_value_in_context(elem, "value") for elem in elements
         ]
         return f"{{{', '.join(element_strs)}}}"
+
+    def _convert_attribute(self, ir_node: Tuple) -> str:
+        """Convert attribute access IR to source code."""
+        _, obj, attr = ir_node
+        obj_str = self._convert_identifier_or_value(obj)
+        return f"{obj_str}.{attr}"
 
     def _convert_subscript(self, ir_node: Tuple) -> str:
         """Convert subscript IR to source code."""

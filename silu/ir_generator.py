@@ -46,6 +46,9 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def process_constant(self, value: Any) -> Tuple[str, Any]:
         """Return constant value with type information for IR."""
+        if isinstance(value, bytes):
+            # Handle bytes objects specially for JSON serialization
+            return ("const_b", value.decode('latin-1'))
         return ("const", value)
 
     def process_operation(self, op: str, *operands) -> Tuple:
@@ -129,9 +132,9 @@ class SiluIRGenerator(BaseASTProcessor):
         """Process expression statements."""
         return value
 
-    def process_attribute(self, obj: Any, attr: str) -> str:
+    def process_attribute(self, obj: Any, attr: str) -> Tuple:
         """Process attribute access."""
-        return f"{obj}.{attr}"
+        return ("attribute", obj, attr)
 
     def process_subscript(self, obj: Any, index: Any) -> Tuple:
         """Process subscript operation."""
