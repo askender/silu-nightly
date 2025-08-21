@@ -234,26 +234,54 @@ class IRInterpreter:
         result = None
         loop_completed = True
 
-        # Handle target - it might be a name node or a string
-        if isinstance(target, tuple) and target[0] == "name":
-            target_name = target[1]
+        # Handle tuple unpacking
+        if isinstance(target, tuple) and target[0] == "tuple_unpack":
+            _, target_names = target
+            for item in iterable:
+                # Perform tuple unpacking
+                if not isinstance(item, (tuple, list)):
+                    raise ValueError(f"Cannot unpack non-sequence {type(item).__name__}")
+                if len(item) != len(target_names):
+                    raise ValueError(f"Too many values to unpack (expected {len(target_names)}, got {len(item)})")
+
+                # Assign each unpacked value to corresponding variable
+                for name, value in zip(target_names, item):
+                    self._set_variable(name, value)
+
+                result = self._execute_block(body)
+
+                if self.should_return:
+                    loop_completed = False
+                    break
+                if self.should_break:
+                    self.should_break = False
+                    loop_completed = False
+                    break
+                if self.should_continue:
+                    self.should_continue = False
+                    continue
+
         else:
-            target_name = target
+            # Handle simple variable targets - it might be a name node or a string
+            if isinstance(target, tuple) and target[0] == "name":
+                target_name = target[1]
+            else:
+                target_name = target
 
-        for item in iterable:
-            self._set_variable(target_name, item)
-            result = self._execute_block(body)
+            for item in iterable:
+                self._set_variable(target_name, item)
+                result = self._execute_block(body)
 
-            if self.should_return:
-                loop_completed = False
-                break
-            if self.should_break:
-                self.should_break = False
-                loop_completed = False
-                break
-            if self.should_continue:
-                self.should_continue = False
-                continue
+                if self.should_return:
+                    loop_completed = False
+                    break
+                if self.should_break:
+                    self.should_break = False
+                    loop_completed = False
+                    break
+                if self.should_continue:
+                    self.should_continue = False
+                    continue
 
         # Execute else block if loop completed normally
         if loop_completed and orelse:

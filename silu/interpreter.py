@@ -319,27 +319,62 @@ class SiluInterpreter(BaseASTProcessor):
             except BreakException:
                 pass
         elif node_type == "for":
-            if not isinstance(kwargs["target"], str):
+            target = kwargs["target"]
+
+            # Handle tuple unpacking
+            if isinstance(target, tuple) and target[0] == "tuple_unpack":
+                _, target_names = target
+                try:
+                    for item in kwargs["iter"]:
+                        # Perform tuple unpacking
+                        if not isinstance(item, (tuple, list)):
+                            raise ValueError(f"Cannot unpack non-sequence {type(item).__name__}")
+                        if len(item) != len(target_names):
+                            raise ValueError(f"Too many values to unpack (expected {len(target_names)}, got {len(item)})")
+
+                        # Assign each unpacked value to corresponding variable
+                        for name, value in zip(target_names, item):
+                            self.env.set(name, value)
+
+                        try:
+                            for stmt in kwargs["body"]:
+                                self.visit(stmt)
+                        except ContinueException:
+                            continue
+                        except BreakException:
+                            break
+                    else:
+                        # Execute else clause if loop completed normally (no break)
+                        if kwargs.get("orelse"):
+                            for stmt in kwargs["orelse"]:
+                                self.visit(stmt)
+                except BreakException:
+                    pass
+
+            # Handle simple variable targets
+            elif isinstance(target, str):
+                try:
+                    for item in kwargs["iter"]:
+                        self.env.set(target, item)
+                        try:
+                            for stmt in kwargs["body"]:
+                                self.visit(stmt)
+                        except ContinueException:
+                            continue
+                        except BreakException:
+                            break
+                    else:
+                        # Execute else clause if loop completed normally (no break)
+                        if kwargs.get("orelse"):
+                            for stmt in kwargs["orelse"]:
+                                self.visit(stmt)
+                except BreakException:
+                    pass
+
+            else:
                 raise NotImplementedError(
-                    "Only simple variable targets are supported in for loops"
+                    f"Unsupported for loop target type: {type(target)}"
                 )
-            try:
-                for item in kwargs["iter"]:
-                    self.env.set(kwargs["target"], item)
-                    try:
-                        for stmt in kwargs["body"]:
-                            self.visit(stmt)
-                    except ContinueException:
-                        continue
-                    except BreakException:
-                        break
-                else:
-                    # Execute else clause if loop completed normally (no break)
-                    if kwargs.get("orelse"):
-                        for stmt in kwargs["orelse"]:
-                            self.visit(stmt)
-            except BreakException:
-                pass
 
     def process_container(self, container_type: str, elements: List[Any]) -> Any:
         """Handle containers."""

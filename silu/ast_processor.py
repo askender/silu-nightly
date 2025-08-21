@@ -251,7 +251,21 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     def visit_For(self, node: ast.For) -> Any:
         """Visit a for loop node."""
-        target = self.visit(node.target)
+        # Handle tuple unpacking targets
+        if isinstance(node.target, ast.Tuple):
+            # Extract variable names from tuple elements
+            target_names = []
+            for elt in node.target.elts:
+                if isinstance(elt, ast.Name):
+                    target_names.append(elt.id)
+                else:
+                    raise NotImplementedError(
+                        "Only simple names are supported in tuple unpacking"
+                    )
+            target = ("tuple_unpack", target_names)
+        else:
+            target = self.visit(node.target)
+
         iter_ = self.visit(node.iter)
         body = node.body
         orelse = node.orelse if node.orelse else []
