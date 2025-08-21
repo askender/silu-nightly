@@ -18,6 +18,10 @@ class TestASTProcessor(BaseASTProcessor):
         """Test implementation of process_assign."""
         return f"assign_{target}={value}"
 
+    def process_aug_assign(self, target, op: str, value):
+        """Test implementation of process_aug_assign."""
+        return f"aug_assign_{target}{op}{value}"
+
     def process_name(self, name: str, context: ast.AST):
         """Test implementation of process_name."""
         if isinstance(context, ast.Load):
@@ -365,3 +369,53 @@ class TestBaseASTProcessor:
 
         result = processor.visit_Return(return_stmt)
         assert result == "control_return"
+
+    def test_visit_aug_assign_simple(self):
+        """Test visiting a simple augmented assignment node."""
+        processor = TestASTProcessor()
+
+        # Create an augmented assignment: x += 5
+        aug_assign = ast.AugAssign(
+            target=ast.Name(id="x", ctx=ast.Store()),
+            op=ast.Add(),
+            value=ast.Constant(value=5)
+        )
+
+        result = processor.visit_AugAssign(aug_assign)
+        assert result == "aug_assign_store_x+5"
+
+    def test_visit_aug_assign_subscript(self):
+        """Test visiting a subscript augmented assignment node."""
+        processor = TestASTProcessor()
+
+        # Create an augmented assignment: arr[0] -= 3
+        aug_assign = ast.AugAssign(
+            target=ast.Subscript(
+                value=ast.Name(id="arr", ctx=ast.Load()),
+                slice=ast.Constant(value=0),
+                ctx=ast.Store()
+            ),
+            op=ast.Sub(),
+            value=ast.Constant(value=3)
+        )
+
+        result = processor.visit_AugAssign(aug_assign)
+        assert result == "aug_assign_('load_arr', 0)-3"
+
+    def test_visit_aug_assign_unsupported_target(self):
+        """Test visiting an augmented assignment with unsupported target."""
+        processor = TestASTProcessor()
+
+        # Create an augmented assignment with unsupported target (attribute)
+        aug_assign = ast.AugAssign(
+            target=ast.Attribute(
+                value=ast.Name(id="obj", ctx=ast.Load()),
+                attr="attr",
+                ctx=ast.Store()
+            ),
+            op=ast.Add(),
+            value=ast.Constant(value=1)
+        )
+
+        with pytest.raises(NotImplementedError, match="Augmented assignment to Attribute not supported"):
+            processor.visit_AugAssign(aug_assign)

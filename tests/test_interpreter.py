@@ -751,3 +751,152 @@ else:
             match="Only simple variable targets are supported in for loops",
         ):
             interpreter.visit_For(for_node)
+
+
+class TestAugmentedAssignment:
+    """Tests for augmented assignment operations (+=, -=, etc.)."""
+
+    def test_aug_assign_addition(self):
+        """Test += operator."""
+        code = """
+x = 10
+x += 5
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("x") == 15
+
+    def test_aug_assign_subtraction(self):
+        """Test -= operator."""
+        code = """
+y = 20
+y -= 8
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("y") == 12
+
+    def test_aug_assign_multiplication(self):
+        """Test *= operator."""
+        code = """
+z = 3
+z *= 4
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("z") == 12
+
+    def test_aug_assign_division(self):
+        """Test /= operator."""
+        code = """
+w = 20
+w /= 4
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("w") == 5.0
+
+    def test_aug_assign_floor_division(self):
+        """Test //= operator."""
+        code = """
+a = 17
+a //= 3
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 5
+
+    def test_aug_assign_modulo(self):
+        """Test %= operator."""
+        code = """
+b = 17
+b %= 5
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("b") == 2
+
+    def test_aug_assign_power(self):
+        """Test **= operator."""
+        code = """
+c = 2
+c **= 3
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("c") == 8
+
+    def test_aug_assign_in_while_loop(self):
+        """Test augmented assignment in while loop (original bug case)."""
+        code = """
+def countdown(n):
+    while n > 0:
+        n -= 1
+    return n
+
+result = countdown(3)
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("result") == 0
+
+    def test_aug_assign_list_element(self):
+        """Test augmented assignment on list elements."""
+        code = """
+numbers = [1, 2, 3]
+numbers[0] += 10
+numbers[1] *= 5
+numbers[2] -= 1
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        numbers = interpreter.env.get("numbers")
+        assert numbers == [11, 10, 2]
+
+    def test_aug_assign_nested_loops(self):
+        """Test augmented assignment in nested loops."""
+        code = """
+total = 0
+for i in [1, 2, 3]:
+    j = 2
+    while j > 0:
+        total += i
+        j -= 1
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("total") == 12  # (1+1) + (2+2) + (3+3) = 12
+
+    def test_aug_assign_with_function_call(self):
+        """Test augmented assignment with function call as value."""
+        code = """
+def get_value():
+    return 5
+
+x = 10
+x += get_value()
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("x") == 15
+
+    def test_aug_assign_variable_not_defined(self):
+        """Test augmented assignment on undefined variable."""
+        code = """
+undefined_var += 5
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        with pytest.raises(NameError, match="Name 'undefined_var' is not defined"):
+            interpreter.visit(tree)
