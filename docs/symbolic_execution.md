@@ -23,6 +23,11 @@ Symbolic execution is a program analysis technique that explores all possible ex
 - **Path Information**: Conditions, statements, variables, and return values for each path
 - **Satisfiability**: Automatic detection of contradictory path conditions
 
+### Debugging and Exception Handling
+- **Debug Mode**: Enhanced diagnostic output for troubleshooting analysis issues
+- **Robust Error Handling**: Graceful fallbacks when complex operations fail
+- **Specific Exception Catching**: Targeted exception handling for improved reliability
+
 ## Usage
 
 ### Basic Usage
@@ -45,6 +50,32 @@ silu symbolic program.si --performance-mode
 
 # Include function paths (compatibility mode)
 silu symbolic program.si --include-function-paths
+
+# Enable debug mode for diagnostic output
+silu symbolic program.si --debug
+```
+
+### Debug Mode
+
+Debug mode provides detailed diagnostic information when analysis encounters issues:
+
+```bash
+# Enable debug mode
+silu symbolic program.si --debug
+
+# Debug mode with Z3 solver
+silu symbolic program.si --solve --debug
+```
+
+When debug mode is enabled, you'll see informative messages about:
+- Z3 constraint generation failures
+- Expression conversion issues
+- Fallback behaviors being used
+
+Example debug output:
+```
+Debug: Z3 expression creation failed for +: unsupported operand type(s) for +: 'str' and 'int'
+Debug: Condition readability conversion failed: 'dict' object has no attribute 'op'
 ```
 
 ### Example Analysis
@@ -174,6 +205,7 @@ The `--simplify` option reduces complex conditions:
 | `--simplify` | Simplify and merge path conditions |
 | `--performance-mode` | Enable faster analysis with reduced depth |
 | `--include-function-paths` | Include function internal paths |
+| `--debug` | Enable diagnostic output for troubleshooting |
 | `--format json\|pretty` | Output format selection |
 | `--output FILE` | Save results to file |
 
@@ -186,6 +218,25 @@ The `--simplify` option reduces complex conditions:
 - ✅ Built-in functions (print, type conversions, etc.)
 - ✅ Variable assignments and references
 - ✅ Nested control structures
+
+## Error Handling and Robustness
+
+The symbolic executor includes robust exception handling to ensure reliable analysis:
+
+### Exception Handling Strategy
+- **Specific Exception Types**: Catches only expected exceptions (TypeError, AttributeError, ValueError)
+- **Graceful Fallbacks**: Continues analysis when complex operations fail
+- **Debug Information**: Optional diagnostic output to help identify issues
+
+### Common Fallback Scenarios
+- **Z3 Expression Failures**: Falls back to symbolic representation when Z3 constraint generation fails
+- **Type Conversion Issues**: Uses string representation when complex expression conversion fails
+- **Attribute Access Errors**: Continues with alternative display formats
+
+### Best Practices
+- Use `--debug` flag when analysis produces unexpected results
+- Complex programs may have some paths approximated due to expression complexity
+- The executor prioritizes completeness over perfect precision for robustness
 
 ## Limitations
 
