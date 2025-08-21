@@ -145,6 +145,30 @@ class IRInterpreter:
         evaluated_value = self.execute(value)
         self._set_variable(target, evaluated_value)
 
+    def _execute_tuple_assign(self, targets: Tuple[str, ...], value: Any) -> None:
+        """Execute tuple unpacking assignment: a, b = value"""
+        evaluated_value = self.execute(value)
+
+        # Convert value to list/tuple if it's iterable
+        try:
+            if isinstance(evaluated_value, (list, tuple)):
+                values = evaluated_value
+            else:
+                # Handle other iterables
+                values = list(evaluated_value)
+        except TypeError:
+            raise TypeError(f"cannot unpack non-sequence {type(evaluated_value).__name__}")
+
+        # Check that the number of targets matches the number of values
+        if len(targets) != len(values):
+            raise ValueError(f"too many values to unpack (expected {len(targets)})"
+                           if len(values) > len(targets)
+                           else f"not enough values to unpack (expected {len(targets)}, got {len(values)})")
+
+        # Assign each value to its corresponding target
+        for target, val in zip(targets, values):
+            self._set_variable(target, val)
+
     def _execute_aug_assign(self, target, op: str, value: Any) -> None:
         """Execute augmented assignment: target op= value"""
         # Handle name tuples from IR

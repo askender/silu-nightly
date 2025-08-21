@@ -52,6 +52,11 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         pass
 
     @abstractmethod
+    def process_tuple_assign(self, targets: List[str], value: Any) -> Any:
+        """Process a tuple unpacking assignment operation."""
+        pass
+
+    @abstractmethod
     def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> Any:
         """Process a subscript assignment operation (e.g., obj[key] = value)."""
         pass
@@ -153,6 +158,17 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             obj = self.visit(target.value)
             key = self.visit(target.slice)
             return self.process_subscript_assign(obj, key, value)
+        elif isinstance(target, ast.Tuple):
+            # Tuple unpacking assignment: a, b = value
+            target_names = []
+            for elt in target.elts:
+                if isinstance(elt, ast.Name):
+                    target_names.append(elt.id)
+                else:
+                    raise NotImplementedError(
+                        "Only simple names are supported in tuple unpacking"
+                    )
+            return self.process_tuple_assign(target_names, value)
         else:
             raise NotImplementedError(
                 f"Assignment to {type(target).__name__} not supported"

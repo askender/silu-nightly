@@ -868,3 +868,131 @@ class TestClosureFunctionality:
         assert self.interpreter._get_variable("result1a") == 15  # 10 + 5
         assert self.interpreter._get_variable("result1b") == 13  # 10 + 3 (not 18!)
         assert self.interpreter._get_variable("result2a") == 27  # 20 + 7
+
+
+class TestTupleUnpackingIR:
+    """Tests for tuple unpacking assignment in IR interpreter."""
+
+    def setup_method(self):
+        """Setup for each test method."""
+        self.interpreter = IRInterpreter()
+
+    def test_basic_tuple_unpacking(self):
+        """Test basic tuple unpacking assignment."""
+        ir = (
+            "module",
+            (
+                ("tuple_assign", ("a", "b"), ("tuple", (("const", 1), ("const", 2)))),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("a") == 1
+        assert self.interpreter._get_variable("b") == 2
+
+    def test_variable_swap(self):
+        """Test variable swapping with tuple unpacking."""
+        ir = (
+            "module",
+            (
+                ("assign", "x", ("const", 10), None),
+                ("assign", "y", ("const", 20), None),
+                ("tuple_assign", ("x", "y"), ("tuple", (("name", "y"), ("name", "x")))),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("x") == 20
+        assert self.interpreter._get_variable("y") == 10
+
+    def test_list_unpacking(self):
+        """Test unpacking from a list."""
+        ir = (
+            "module",
+            (
+                ("assign", "nums", ("list", (("const", 100), ("const", 200), ("const", 300))), None),
+                ("tuple_assign", ("a", "b", "c"), ("name", "nums")),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("a") == 100
+        assert self.interpreter._get_variable("b") == 200
+        assert self.interpreter._get_variable("c") == 300
+
+    def test_string_unpacking(self):
+        """Test unpacking from a string."""
+        ir = (
+            "module",
+            (
+                ("assign", "s", ("const", "hi"), None),
+                ("tuple_assign", ("c1", "c2"), ("name", "s")),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("c1") == "h"
+        assert self.interpreter._get_variable("c2") == "i"
+
+    def test_tuple_unpacking_too_many_values(self):
+        """Test error when too many values to unpack."""
+        ir = (
+            "module",
+            (
+                ("tuple_assign", ("a", "b"), ("tuple", (("const", 1), ("const", 2), ("const", 3)))),
+            )
+        )
+        with pytest.raises(ValueError, match="too many values to unpack \\(expected 2\\)"):
+            self.interpreter.execute_program(ir)
+
+    def test_tuple_unpacking_not_enough_values(self):
+        """Test error when not enough values to unpack."""
+        ir = (
+            "module",
+            (
+                ("tuple_assign", ("a", "b", "c"), ("tuple", (("const", 1), ("const", 2)))),
+            )
+        )
+        with pytest.raises(ValueError, match="not enough values to unpack \\(expected 3, got 2\\)"):
+            self.interpreter.execute_program(ir)
+
+    def test_tuple_unpacking_non_sequence(self):
+        """Test error when trying to unpack a non-sequence."""
+        ir = (
+            "module",
+            (
+                ("tuple_assign", ("a", "b"), ("const", 42)),
+            )
+        )
+        with pytest.raises(TypeError, match="cannot unpack non-sequence int"):
+            self.interpreter.execute_program(ir)
+
+    def test_fibonacci_with_tuple_unpacking(self):
+        """Test Fibonacci function using tuple unpacking."""
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "fibonacci",
+                    ("n",),
+                    (
+                        (
+                            "if",
+                            ("<=", ("name", "n"), ("const", 1)),
+                            (("return", ("name", "n")),),
+                            (
+                                ("tuple_assign", ("a", "b"), ("tuple", (("const", 0), ("const", 1)))),
+                                (
+                                    "for",
+                                    ("name", "i"),
+                                    ("call", ("name", "range"), (("const", 2), ("+", ("name", "n"), ("const", 1))), ()),
+                                    (("tuple_assign", ("a", "b"), ("tuple", (("name", "b"), ("+", ("name", "a"), ("name", "b"))))),),
+                                    ()
+                                ),
+                                ("return", ("name", "b"))
+                            )
+                        ),
+                    )
+                ),
+                ("assign", "result", ("call", ("name", "fibonacci"), (("const", 5),), ()), None)
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("result") == 5

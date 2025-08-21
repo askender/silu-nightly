@@ -23,6 +23,10 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate assignment IR node."""
         return ("assign", target, value, None)
 
+    def process_tuple_assign(self, targets: List[str], value: Any) -> Tuple:
+        """Generate tuple unpacking assignment IR node."""
+        return ("tuple_assign", tuple(targets), value)
+
     def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> Tuple:
         """Generate subscript assignment IR node."""
         return ("subscript_assign", obj, key, value)

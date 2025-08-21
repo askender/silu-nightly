@@ -900,3 +900,131 @@ undefined_var += 5
         tree = ast.parse(code)
         with pytest.raises(NameError, match="Name 'undefined_var' is not defined"):
             interpreter.visit(tree)
+
+
+class TestTupleUnpacking:
+    """Tests for tuple unpacking assignment operations."""
+
+    def test_basic_tuple_unpacking(self):
+        """Test basic tuple unpacking assignment."""
+        code = """
+a, b = 1, 2
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 1
+        assert interpreter.env.get("b") == 2
+
+    def test_variable_swap(self):
+        """Test variable swapping with tuple unpacking."""
+        code = """
+x = 10
+y = 20
+x, y = y, x
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("x") == 20
+        assert interpreter.env.get("y") == 10
+
+    def test_list_unpacking(self):
+        """Test unpacking from a list."""
+        code = """
+nums = [100, 200, 300]
+a, b, c = nums
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 100
+        assert interpreter.env.get("b") == 200
+        assert interpreter.env.get("c") == 300
+
+    def test_string_unpacking(self):
+        """Test unpacking from a string."""
+        code = """
+s = "hi"
+c1, c2 = s
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("c1") == "h"
+        assert interpreter.env.get("c2") == "i"
+
+    def test_tuple_unpacking_too_many_values(self):
+        """Test error when too many values to unpack."""
+        code = """
+a, b = 1, 2, 3
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        with pytest.raises(ValueError, match="too many values to unpack \\(expected 2\\)"):
+            interpreter.visit(tree)
+
+    def test_tuple_unpacking_not_enough_values(self):
+        """Test error when not enough values to unpack."""
+        code = """
+a, b, c = 1, 2
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        with pytest.raises(ValueError, match="not enough values to unpack \\(expected 3, got 2\\)"):
+            interpreter.visit(tree)
+
+    def test_tuple_unpacking_non_sequence(self):
+        """Test error when trying to unpack a non-sequence."""
+        code = """
+a, b = 42
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        with pytest.raises(TypeError, match="cannot unpack non-sequence int"):
+            interpreter.visit(tree)
+
+    def test_nested_function_with_tuple_unpacking(self):
+        """Test tuple unpacking inside function calls."""
+        code = """
+def fibonacci(n):
+    if n <= 1:
+        return n
+    a, b = 0, 1
+    for i in range(2, n + 1):
+        a, b = b, a + b
+    return b
+
+result = fibonacci(5)
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("result") == 5
+
+    def test_tuple_unpacking_with_expression(self):
+        """Test tuple unpacking with expressions on right side."""
+        code = """
+x = 10
+y = 20
+a, b = x + 5, y * 2
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 15
+        assert interpreter.env.get("b") == 40
+
+    def test_tuple_unpacking_in_for_loop(self):
+        """Test tuple unpacking already supported in for loops."""
+        code = """
+pairs = [(1, 2), (3, 4), (5, 6)]
+result = []
+for a, b in pairs:
+    result.append(a + b)
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        result = interpreter.env.get("result")
+        assert result == [3, 7, 11]

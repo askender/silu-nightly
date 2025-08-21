@@ -156,6 +156,28 @@ class SiluInterpreter(BaseASTProcessor):
         """Set variable in environment."""
         self.env.set(target, value)
 
+    def process_tuple_assign(self, targets: List[str], value: Any) -> None:
+        """Process tuple unpacking assignment (e.g., a, b = 1, 2)."""
+        # Convert value to list/tuple if it's iterable
+        try:
+            if isinstance(value, (list, tuple)):
+                values = value
+            else:
+                # Handle other iterables
+                values = list(value)
+        except TypeError:
+            raise TypeError(f"cannot unpack non-sequence {type(value).__name__}")
+
+        # Check that the number of targets matches the number of values
+        if len(targets) != len(values):
+            raise ValueError(f"too many values to unpack (expected {len(targets)})"
+                           if len(values) > len(targets)
+                           else f"not enough values to unpack (expected {len(targets)}, got {len(values)})")
+
+        # Assign each value to its corresponding target
+        for target, val in zip(targets, values):
+            self.env.set(target, val)
+
     def process_aug_assign(self, target: Any, op: str, value: Any) -> None:
         """Process augmented assignment operations (+=, -=, etc.)."""
         if isinstance(target, str):

@@ -22,6 +22,10 @@ class TestASTProcessor(BaseASTProcessor):
         """Test implementation of process_aug_assign."""
         return f"aug_assign_{target}{op}{value}"
 
+    def process_tuple_assign(self, targets, value):
+        """Test implementation of process_tuple_assign."""
+        return f"tuple_assign_{targets}={value}"
+
     def process_name(self, name: str, context: ast.AST):
         """Test implementation of process_name."""
         if isinstance(context, ast.Load):
@@ -419,3 +423,52 @@ class TestBaseASTProcessor:
 
         with pytest.raises(NotImplementedError, match="Augmented assignment to Attribute not supported"):
             processor.visit_AugAssign(aug_assign)
+
+    def test_visit_assign_tuple_unpacking(self):
+        """Test visiting a tuple unpacking assignment."""
+        processor = TestASTProcessor()
+
+        # Create tuple unpacking assignment: a, b = 1, 2
+        targets = ast.Tuple(
+            elts=[
+                ast.Name(id="a", ctx=ast.Store()),
+                ast.Name(id="b", ctx=ast.Store())
+            ],
+            ctx=ast.Store()
+        )
+        value = ast.Tuple(
+            elts=[ast.Constant(value=1), ast.Constant(value=2)],
+            ctx=ast.Load()
+        )
+        assign = ast.Assign(targets=[targets], value=value)
+
+        result = processor.visit_Assign(assign)
+        assert result == "tuple_assign_['a', 'b']=tuple((1, 2))"
+
+    def test_visit_assign_tuple_unpacking_non_name_target(self):
+        """Test visiting tuple unpacking with non-name target."""
+        processor = TestASTProcessor()
+
+        # Create tuple unpacking with non-name target
+        targets = ast.Tuple(
+            elts=[
+                ast.Name(id="a", ctx=ast.Store()),
+                ast.Attribute(
+                    value=ast.Name(id="obj", ctx=ast.Load()),
+                    attr="attr",
+                    ctx=ast.Store()
+                )
+            ],
+            ctx=ast.Store()
+        )
+        value = ast.Tuple(
+            elts=[ast.Constant(value=1), ast.Constant(value=2)],
+            ctx=ast.Load()
+        )
+        assign = ast.Assign(targets=[targets], value=value)
+
+        with pytest.raises(
+            NotImplementedError,
+            match="Only simple names are supported in tuple unpacking"
+        ):
+            processor.visit_Assign(assign)
