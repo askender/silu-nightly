@@ -435,12 +435,25 @@ class IRToSourceConverter:
         op, left, right = ir_node
         left_str = self.convert_to_source(left)
         right_str = self.convert_to_source(right)
-        return f"({left_str}) {op} ({right_str})"
+
+        # Add parentheses only if operands need them based on precedence
+        if self._needs_parentheses(left, op):
+            left_str = f"({left_str})"
+        if self._needs_parentheses(right, op):
+            right_str = f"({right_str})"
+
+        return f"{left_str} {op} {right_str}"
 
     def _convert_unary_op(self, ir_node: Tuple) -> str:
         """Convert unary operation IR to source code."""
         op, operand = ir_node
         operand_str = self.convert_to_source(operand)
+
+        # For 'not' operator, add parentheses if operand is a boolean operation
+        # that has lower precedence than 'not'
+        if op == "not" and self._needs_parentheses(operand, op):
+            operand_str = f"({operand_str})"
+
         if op == "-":
             return f"-{operand_str}"
         elif op == "+":
