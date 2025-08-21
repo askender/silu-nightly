@@ -54,6 +54,10 @@ class IRToSourceConverter:
                 return self._convert_return(ir_node, indent_level)
             elif node_type == "call":
                 return self._convert_call(ir_node, indent_level)
+            elif node_type == "lambda":
+                return self._convert_lambda(ir_node)
+            elif node_type == "if_expr":
+                return self._convert_if_expr(ir_node)
             elif node_type == "list":
                 return self._convert_list(ir_node)
             elif node_type == "tuple":
@@ -317,6 +321,31 @@ class IRToSourceConverter:
             return self._get_indent(indent_level) + call_str
         else:
             return call_str
+
+    def _convert_lambda(self, ir_node: Tuple) -> str:
+        """Convert lambda expression IR to source code."""
+        _, args, body = ir_node
+
+        # Convert arguments
+        if isinstance(args, tuple):
+            args_str = ", ".join(args)
+        else:
+            args_str = str(args)
+
+        # Convert body expression
+        body_str = self.convert_to_source(body)
+
+        return f"lambda {args_str}: {body_str}"
+
+    def _convert_if_expr(self, ir_node: Tuple) -> str:
+        """Convert if expression (ternary operator) IR to source code."""
+        _, condition, true_val, false_val = ir_node
+
+        condition_str = self.convert_to_source(condition)
+        true_str = self.convert_to_source(true_val)
+        false_str = self.convert_to_source(false_val)
+
+        return f"{true_str} if {condition_str} else {false_str}"
 
     def _convert_list(self, ir_node: Tuple) -> str:
         """Convert list IR to source code."""
