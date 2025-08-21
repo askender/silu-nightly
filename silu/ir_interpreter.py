@@ -125,6 +125,14 @@ class IRInterpreter:
                 break
         return result
 
+    def _execute_const(self, value: Any) -> Any:
+        """Execute constant value."""
+        return value
+
+    def _execute_name(self, name: str) -> Any:
+        """Execute variable name reference."""
+        return self._get_variable(name)
+
     def _execute_assign(self, target: str, value: Any, annotation: Any) -> None:
         """Execute assignment: target = value"""
         evaluated_value = self.execute(value)
@@ -205,15 +213,21 @@ class IRInterpreter:
         return result
 
     def _execute_for(
-        self, target: str, iter_expr: Any, body: Tuple, orelse: Tuple
+        self, target: Any, iter_expr: Any, body: Tuple, orelse: Tuple
     ) -> Any:
         """Execute for loop."""
         iterable = self.execute(iter_expr)
         result = None
         loop_completed = True
 
+        # Handle target - it might be a name node or a string
+        if isinstance(target, tuple) and target[0] == "name":
+            target_name = target[1]
+        else:
+            target_name = target
+
         for item in iterable:
-            self._set_variable(target, item)
+            self._set_variable(target_name, item)
             result = self._execute_block(body)
 
             if self.should_return:
@@ -350,6 +364,11 @@ class IRInterpreter:
                 key, value = item
                 result[self.execute(key)] = self.execute(value)
         return result
+
+    def _execute_attribute(self, obj: Any, attr: str) -> Any:
+        """Execute attribute access obj.attr."""
+        obj_val = self.execute(obj)
+        return getattr(obj_val, attr)
 
     def _execute_subscript(self, obj: Any, index: Any) -> Any:
         """Execute subscript operation obj[index]."""
