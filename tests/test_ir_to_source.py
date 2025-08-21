@@ -92,7 +92,7 @@ class TestIRToSourceConverter:
 
         ir_node = ("or", ("==", "x", 1), ("==", "x", 2))
         result = converter.convert_to_source(ir_node)
-        expected = "(x == 1) or (x == 2)"
+        expected = "x == 1 or x == 2"
         assert result == expected
 
     def test_convert_unary_operations(self):
