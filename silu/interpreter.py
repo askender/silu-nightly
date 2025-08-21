@@ -108,6 +108,7 @@ class Environment:
                 "float_type": float,
                 "str_type": str,
                 "bool_type": bool,
+                "MemoryError": MemoryError,
             }
         )
 
@@ -255,6 +256,40 @@ class SiluInterpreter(BaseASTProcessor):
         """Execute function calls."""
         if not callable(func):
             raise TypeError(f"'{type(func).__name__}' object is not callable")
+
+        # Memory protection for potentially dangerous function calls
+        if hasattr(func, '__name__'):
+            func_name = func.__name__
+        elif hasattr(func, '__class__') and hasattr(func.__class__, '__name__'):
+            func_name = func.__class__.__name__
+        else:
+            func_name = str(func)
+
+        # Protect against large range() calls
+        if func_name == 'range' and args:
+            if len(args) >= 1 and isinstance(args[0], int) and args[0] > 10000000:
+                raise MemoryError(f"Memory protection: range({args[0]}) exceeds limit (10,000,000)")
+            elif len(args) >= 2 and isinstance(args[1], int) and args[1] > 10000000:
+                raise MemoryError(f"Memory protection: range(..., {args[1]}) exceeds limit (10,000,000)")
+
+        # Protect against extend() with large iterables
+        if func_name == 'extend' and args:
+            # Check if the argument is a range or large iterable
+            if len(args) >= 1:
+                arg = args[0]
+                if hasattr(arg, '__len__'):
+                    try:
+                        length = len(arg)
+                        if length > 10000000:
+                            raise MemoryError(f"Memory protection: extend() with {length} elements exceeds limit (10,000,000)")
+                    except (TypeError, OverflowError):
+                        # Some iterables like range might not have a reliable len()
+                        # Check if it's a range with large values
+                        if hasattr(arg, 'start') and hasattr(arg, 'stop'):
+                            size = abs(arg.stop - arg.start)
+                            if size > 10000000:
+                                raise MemoryError(f"Memory protection: extend() with range of {size} elements exceeds limit (10,000,000)")
+
         return func(*args, **keywords)
 
     def process_control_flow(self, node_type: str, **kwargs) -> Any:

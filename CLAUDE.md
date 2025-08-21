@@ -84,10 +84,11 @@ silu symbolic program.si          # Symbolic analysis
 ## Development Notes
 
 - Uses unified AST processing architecture to avoid code duplication
-- Comprehensive test suite with 200+ tests using pytest
+- Comprehensive test suite with 340+ tests using pytest
 - Supports multiple execution modes (interpret, IR generation/execution, IR-to-source conversion, symbolic analysis)
 - Enhanced symbolic execution with Z3 constraint generation and precise loop analysis
 - Shared conversion functions between IR-to-source converter and symbolic executor for consistent output
+- Built-in memory protection mechanisms to prevent out-of-memory attacks
 - Package management with `uv` (recommended) or `pip`
 - Code formatting with `ruff`
 
@@ -152,3 +153,49 @@ The symbolic executor has been significantly enhanced with advanced capabilities
 - **Binary Operation Enhancement**: Z3-aware binary operation processing with constraint propagation
 - **Improved Path Management**: Unified path handling with automatic constraint validation
 - **Graceful Degradation**: Full functionality with or without Z3 solver installed
+
+## Memory Protection
+
+The Silu interpreter includes built-in memory protection mechanisms to prevent out-of-memory conditions that could crash the system or consume excessive resources.
+
+### Protection Mechanisms
+
+1. **Sequence Multiplication Limits**
+   - Prevents multiplication of lists, tuples, or strings by numbers larger than 1,000,000
+   - Prevents operations that would result in more than 10,000,000 total elements
+   - Examples that are blocked: `[1, 2, 3] * 1000001`, `"x" * 2000000`
+
+2. **Range Function Limits**
+   - Prevents `range()` calls with arguments larger than 10,000,000
+   - Applies to both single argument (`range(n)`) and multi-argument (`range(start, stop)`) forms
+   - Examples that are blocked: `range(10000001)`, `range(0, 10000001)`
+
+3. **Container Extension Limits**
+   - Prevents `extend()` operations with iterables containing more than 10,000,000 elements
+   - Automatically detects and blocks extension with large ranges
+   - Example that is blocked: `[].extend(range(10000001))`
+
+### Error Messages
+
+When memory protection is triggered, the interpreter raises a `MemoryError` with descriptive messages:
+- `"Memory protection: Cannot multiply sequence by X (limit: 1,000,000)"`
+- `"Memory protection: Result would have X elements (limit: 10,000,000)"`  
+- `"Memory protection: range(X) exceeds limit (10,000,000)"`
+- `"Memory protection: extend() with X elements exceeds limit (10,000,000)"`
+
+### Normal Operations
+
+The protection mechanisms are designed to allow normal programming operations while preventing abuse:
+- Small list/string multiplications work normally: `[1, 2] * 100`
+- Reasonable range operations work: `range(1000000)` 
+- Normal container operations work: `list.extend(range(10000))`
+
+### Testing
+
+Memory protection is thoroughly tested with dedicated test cases in `tests/test_memory_protection.py` covering:
+- Boundary value testing at exact limits
+- Different sequence types (lists, tuples, strings)
+- Both directions of multiplication operations
+- Range function protection
+- Container extension protection
+- Verification that normal operations still work
