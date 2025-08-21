@@ -67,7 +67,7 @@ silu symbolic program.si          # Symbolic analysis
 - **Data Types**: int, float, str, bool, list
 - **Operations**: Arithmetic, boolean, comparison (including chained)
 - **Control Flow**: if/elif/else, while/for loops
-- **Functions**: User-defined with parameters and return values
+- **Functions**: User-defined with parameters and return values, closures
 - **Built-ins**: print, type, isinstance, type conversions
 
 ## Documentation Structure
@@ -89,6 +89,7 @@ silu symbolic program.si          # Symbolic analysis
 - Enhanced symbolic execution with Z3 constraint generation and precise loop analysis
 - Shared conversion functions between IR-to-source converter and symbolic executor for consistent output
 - Built-in memory protection mechanisms to prevent out-of-memory attacks
+- Full closure support in IR interpreter with environment capture and nested closures
 - Package management with `uv` (recommended) or `pip`
 - Code formatting with `ruff`
 
@@ -118,6 +119,38 @@ The toolkit includes a `check` command to verify if Python programs are compatib
 - **Batch processing**: Validate multiple files for Silu compatibility with specific error reasons
 - **CI/CD integration**: Automated testing of Python code compatibility
 - **Educational tools**: Help users understand Silu's language subset and specific limitations
+
+## Closure Support
+
+The Silu interpreter now provides full closure support, allowing functions to capture and access variables from their defining scope:
+
+### Features
+- **Environment Capture**: Functions automatically capture variables from their enclosing scope
+- **Multiple Closures**: Independent closure instances with separate captured environments
+- **Nested Closures**: Support for multiple levels of nested function definitions
+- **Variable Access**: Captured variables remain accessible even after the outer function returns
+
+### Examples
+```python
+def make_adder(n):
+    def adder(x):
+        return x + n  # 'n' captured from outer scope
+    return adder
+
+add5 = make_adder(5)
+result = add5(3)  # Returns 8
+```
+
+### Implementation Details
+- **IR Interpreter**: Enhanced with closure-aware function calling and environment management
+- **Environment Capture**: Functions store their defining environment alongside their definition
+- **Closure IDs**: Unique identifiers generated for each closure instance
+- **Memory Management**: Proper cleanup of closure environments when no longer referenced
+
+### Testing
+- Comprehensive test suite including basic closures, multiple variables, and nested scenarios
+- All closure functionality verified through both unit tests and integration tests
+- Compatible with existing IR generation and execution workflows
 
 ## IR to Source Conversion
 

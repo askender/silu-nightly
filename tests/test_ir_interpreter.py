@@ -521,3 +521,227 @@ class TestComplexPrograms:
         interpreter = IRInterpreter()
         interpreter.execute_program(ir)
         assert interpreter._get_variable("squares") == [0, 1, 4, 9, 16]
+
+
+class TestClosureFunctionality:
+    """Test closure support in IR interpreter."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.interpreter = IRInterpreter()
+
+    def test_basic_closure(self):
+        """Test basic closure functionality."""
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "make_adder",
+                    ("n",),
+                    (
+                        (
+                            "func_def",
+                            "adder",
+                            ("x",),
+                            (
+                                (
+                                    "return",
+                                    ("+", ("name", "x"), ("name", "n"))
+                                ),
+                            )
+                        ),
+                        ("return", ("name", "adder"))
+                    )
+                ),
+                (
+                    "assign",
+                    "add5",
+                    ("call", ("name", "make_adder"), (("const", 5),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result",
+                    ("call", ("name", "add5"), (("const", 3),), ()),
+                    None
+                )
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("result") == 8
+
+    def test_multiple_closures(self):
+        """Test multiple independent closures."""
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "make_multiplier",
+                    ("factor",),
+                    (
+                        (
+                            "func_def",
+                            "multiply",
+                            ("x",),
+                            (
+                                (
+                                    "return",
+                                    ("*", ("name", "x"), ("name", "factor"))
+                                ),
+                            )
+                        ),
+                        ("return", ("name", "multiply"))
+                    )
+                ),
+                (
+                    "assign",
+                    "double",
+                    ("call", ("name", "make_multiplier"), (("const", 2),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "triple",
+                    ("call", ("name", "make_multiplier"), (("const", 3),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result1",
+                    ("call", ("name", "double"), (("const", 4),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result2",
+                    ("call", ("name", "triple"), (("const", 4),), ()),
+                    None
+                )
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("result1") == 8
+        assert self.interpreter._get_variable("result2") == 12
+
+    def test_closure_with_multiple_variables(self):
+        """Test closure capturing multiple variables."""
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "make_polynomial",
+                    ("a", "b", "c"),
+                    (
+                        (
+                            "func_def",
+                            "poly",
+                            ("x",),
+                            (
+                                (
+                                    "return",
+                                    (
+                                        "+",
+                                        (
+                                            "+",
+                                            (
+                                                "*",
+                                                ("name", "a"),
+                                                ("**", ("name", "x"), ("const", 2))
+                                            ),
+                                            ("*", ("name", "b"), ("name", "x"))
+                                        ),
+                                        ("name", "c")
+                                    )
+                                ),
+                            )
+                        ),
+                        ("return", ("name", "poly"))
+                    )
+                ),
+                (
+                    "assign",
+                    "f1",
+                    ("call", ("name", "make_polynomial"), (("const", 1), ("const", 0), ("const", 0)), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "f2",
+                    ("call", ("name", "make_polynomial"), (("const", 2), ("const", 3), ("const", 1)), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result1",
+                    ("call", ("name", "f1"), (("const", 5),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result2",
+                    ("call", ("name", "f2"), (("const", 5),), ()),
+                    None
+                )
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("result1") == 25  # 1*5^2 + 0*5 + 0
+        assert self.interpreter._get_variable("result2") == 66  # 2*5^2 + 3*5 + 1
+
+    def test_nested_closure(self):
+        """Test nested closures."""
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "make_outer",
+                    ("x",),
+                    (
+                        (
+                            "func_def",
+                            "make_inner",
+                            ("y",),
+                            (
+                                (
+                                    "func_def",
+                                    "innermost",
+                                    ("z",),
+                                    (
+                                        (
+                                            "return",
+                                            ("+", ("+", ("name", "x"), ("name", "y")), ("name", "z"))
+                                        ),
+                                    )
+                                ),
+                                ("return", ("name", "innermost"))
+                            )
+                        ),
+                        ("return", ("name", "make_inner"))
+                    )
+                ),
+                (
+                    "assign",
+                    "outer_func",
+                    ("call", ("name", "make_outer"), (("const", 10),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "inner_func",
+                    ("call", ("name", "outer_func"), (("const", 20),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result",
+                    ("call", ("name", "inner_func"), (("const", 30),), ()),
+                    None
+                )
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("result") == 60  # 10 + 20 + 30
