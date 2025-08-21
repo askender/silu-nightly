@@ -453,3 +453,185 @@ class TestExtractedDebugFeatures:
         assert "formatted_ir" in analysis_report
         assert "execution_paths" in analysis_report
         assert "path_details" in analysis_report
+
+
+class TestComplexElseIfChain:
+    """Test complex else-if chain scenarios that were previously failing"""
+
+    def setup_method(self):
+        """Setup test environment"""
+        self.executor = SymbolicExecutor()
+
+    def test_grade_assignment_else_if_chain(self):
+        """Test complex grade assignment with nested else-if chain"""
+        # This was the failing case that needed string literal handling fix
+        ir = (
+            "module",
+            (
+                (
+                    "if",
+                    ("chained_compare", "score", "<", 60),
+                    ("block", (("assign", "grade", "F", None),)),
+                    (
+                        (
+                            "if",
+                            ("chained_compare", "score", "<", 70),
+                            ("block", (("assign", "grade", "D", None),)),
+                            (
+                                (
+                                    "if",
+                                    ("chained_compare", "score", "<", 80),
+                                    ("block", (("assign", "grade", "C", None),)),
+                                    (
+                                        (
+                                            "if",
+                                            ("chained_compare", "score", "<", 90),
+                                            ("block", (("assign", "grade", "B", None),)),
+                                            ("block", (("assign", "grade", "A", None),)),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        paths = self.executor.execute_program(ir)
+
+        # Should generate 5 paths for different score ranges
+        assert len(paths) == 5, f"Expected 5 paths, got {len(paths)}"
+
+        # Extract grades assigned in each path
+        grades_found = set()
+        for path in paths:
+            if "grade" in path.variables:
+                grade_val = path.variables["grade"]
+                if hasattr(grade_val, 'value'):
+                    grades_found.add(grade_val.value)
+                else:
+                    grades_found.add(grade_val)
+
+        expected_grades = {"F", "D", "C", "B", "A"}
+        assert grades_found == expected_grades, f"Expected {expected_grades}, got {grades_found}"
+
+        # Verify path conditions are logically correct
+        condition_patterns = []
+        for path in paths:
+            conditions = [str(c) for c in path.conditions]
+            condition_patterns.append(conditions)
+
+        # Should have different condition combinations
+        assert len(condition_patterns) == 5
+        assert len(set(tuple(sorted(cp)) for cp in condition_patterns)) >= 4
+
+    def test_string_literal_vs_variable_distinction(self):
+        """Test that string literals are properly distinguished from variables"""
+        ir = (
+            "module",
+            (
+                (
+                    "if",
+                    ("chained_compare", "category", "==", "low"),
+                    ("block", (("assign", "result", "Low", None),)),
+                    ("block", (("assign", "result", "High", None),)),
+                ),
+            ),
+        )
+
+        paths = self.executor.execute_program(ir)
+
+        # Should generate 2 paths
+        assert len(paths) == 2, f"Expected 2 paths, got {len(paths)}"
+
+        # Extract results
+        results = set()
+        for path in paths:
+            if "result" in path.variables:
+                result_val = path.variables["result"]
+                if hasattr(result_val, 'value'):
+                    results.add(result_val.value)
+                else:
+                    results.add(result_val)
+
+        expected_results = {"Low", "High"}
+        assert results == expected_results, f"Expected {expected_results}, got {results}"
+
+    def test_single_letter_grade_assignments(self):
+        """Test that single uppercase letters are treated as string literals"""
+        ir = (
+            "module",
+            (
+                ("assign", "grade1", "A", None),
+                ("assign", "grade2", "B", None),
+                ("assign", "grade3", "F", None),
+            ),
+        )
+
+        paths = self.executor.execute_program(ir)
+
+        # Should generate 1 path with all assignments
+        assert len(paths) == 1, f"Expected 1 path, got {len(paths)}"
+
+        path = paths[0]
+        assert "grade1" in path.variables
+        assert "grade2" in path.variables
+        assert "grade3" in path.variables
+
+        # Check that grades are properly assigned as string values
+        grade1_val = path.variables["grade1"]
+        grade2_val = path.variables["grade2"]
+        grade3_val = path.variables["grade3"]
+
+        assert (hasattr(grade1_val, 'value') and grade1_val.value == "A") or grade1_val == "A"
+        assert (hasattr(grade2_val, 'value') and grade2_val.value == "B") or grade2_val == "B"
+        assert (hasattr(grade3_val, 'value') and grade3_val.value == "F") or grade3_val == "F"
+
+    def test_mixed_variable_and_literal_handling(self):
+        """Test handling of both variables and string literals in the same program"""
+        ir = (
+            "module",
+            (
+                ("assign", "status", "Active", None),    # String literal (capitalized)
+                ("assign", "temp", "status", None),      # Variable reference
+                (
+                    "if",
+                    ("chained_compare", "temp", "==", "Inactive"),  # Compare with different literal
+                    ("block", (("assign", "result", "N", None),)),    # Single letter literal
+                    ("block", (("assign", "result", "Y", None),)),    # Single letter literal
+                ),
+            ),
+        )
+
+        paths = self.executor.execute_program(ir)
+
+        # Should generate 2 paths (temp == "Inactive" is false, so we get symbolic execution)
+        assert len(paths) == 2, f"Expected 2 paths, got {len(paths)}"
+
+        # Both paths should have status = "Active" and temp = "Active"
+        results_found = set()
+        for path in paths:
+            assert "status" in path.variables
+            assert "temp" in path.variables
+            assert "result" in path.variables
+
+            status_val = path.variables["status"]
+            temp_val = path.variables["temp"]
+            result_val = path.variables["result"]
+
+            # Status should be the literal "Active"
+            assert (hasattr(status_val, 'value') and status_val.value == "Active") or status_val == "Active"
+
+            # temp should reference the variable status, so should also be "Active"
+            assert (hasattr(temp_val, 'value') and temp_val.value == "Active") or temp_val == "Active"
+
+            # Collect result values
+            if hasattr(result_val, 'value'):
+                results_found.add(result_val.value)
+            else:
+                results_found.add(result_val)
+
+        # Should have both Y and N results
+        expected_results = {"Y", "N"}
+        assert results_found == expected_results, f"Expected {expected_results}, got {results_found}"

@@ -841,8 +841,23 @@ class SymbolicExecutor:
 
     def _handle_non_tuple_node(self, ir_node: Any) -> SymbolicValue:
         """Handle non-tuple IR nodes"""
-        if isinstance(ir_node, str) and ir_node.isidentifier():
-            return self.current_env.get_variable(ir_node)
+        if isinstance(ir_node, str):
+            # Distinguish between variable references and string literals
+            # String literals are typically:
+            # 1. Single uppercase letters (grades: A, B, C, D, F)
+            # 2. Capitalized words (Low, High, Medium)
+            # 3. Common string values that are not typical variable names
+
+            # Check if it's likely a string literal rather than a variable
+            if (len(ir_node) == 1 and ir_node.isupper()) or \
+               ir_node.istitle() or \
+               not ir_node.isidentifier() or \
+               ir_node in {'True', 'False', 'None'}:
+                # Treat as string literal
+                return create_concrete_value(ir_node)
+            else:
+                # Treat as variable reference
+                return self.current_env.get_variable(ir_node)
         return create_concrete_value(ir_node)
 
     def _dispatch_ir_node(self, ir_node: Tuple) -> SymbolicValue:
