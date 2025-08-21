@@ -76,7 +76,7 @@ silu hello.si
   - Python compatibility checking
   - IR (Intermediate Representation) generation and execution
   - Symbolic execution for program analysis
-- **Rich Data Types**: int, float, str, bool, lists, dictionaries
+- **Rich Data Types**: int, float, str, bool, bytes, lists, dictionaries
 - **Control Flow**: if/elif/else, while loops, for loops with range()
 - **Advanced For Loops**: Support for tuple unpacking (`for key, value in dict.items()`)
 - **Functions**: User-defined functions with parameters, return values, and closures

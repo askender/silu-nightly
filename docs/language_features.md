@@ -38,6 +38,28 @@ is_done = False
 result = 5 > 3  # True
 ```
 
+### Bytes
+```silu
+# Bytes literals
+data = b"hello"
+empty_bytes = b""
+
+# Bytes with escape sequences
+newline = b"line1\nline2"
+null_byte = b"\x00"
+high_byte = b"\xff"
+mixed = b"Hello\x00World\xff"
+
+# Bytes operations
+concatenation = b"hello" + b"world"
+repetition = b"abc" * 3
+
+# Bytes comparisons
+equal = b"test" == b"test"
+not_equal = b"test" != b"other"
+mixed_type = b"1" == 1  # False - different types
+```
+
 ## Variables and Assignment
 
 ### Simple Assignment

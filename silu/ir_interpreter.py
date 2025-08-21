@@ -131,6 +131,11 @@ class IRInterpreter:
         """Execute constant value."""
         return value
 
+    def _execute_const_b(self, value: str) -> bytes:
+        """Execute bytes constant value."""
+        # Convert string back to bytes using latin-1 encoding
+        return value.encode('latin-1')
+
     def _execute_name(self, name: str) -> Any:
         """Execute variable name reference."""
         return self._get_variable(name)

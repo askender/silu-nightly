@@ -64,7 +64,7 @@ silu symbolic program.si          # Symbolic analysis
 
 ## Language Features Summary
 
-- **Data Types**: int, float, str, bool, list
+- **Data Types**: int, float, str, bool, bytes, list
 - **Operations**: Arithmetic, boolean, comparison (including chained)
 - **Control Flow**: if/elif/else, while/for loops
 - **Functions**: User-defined with parameters and return values, closures
