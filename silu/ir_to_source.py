@@ -36,6 +36,8 @@ class IRToSourceConverter:
                 return self._convert_subscript_assign(ir_node, indent_level)
             elif node_type == "aug_assign":
                 return self._convert_aug_assign(ir_node, indent_level)
+            elif node_type == "tuple_assign":
+                return self._convert_tuple_assign(ir_node, indent_level)
             elif node_type == "if":
                 return self._convert_if(ir_node, indent_level)
             elif node_type == "while":
@@ -156,6 +158,16 @@ class IRToSourceConverter:
         indent = self._get_indent(indent_level)
         value_str = self.convert_to_source(value)
         return f"{indent}{target} {op} {value_str}"
+
+    def _convert_tuple_assign(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert tuple assignment IR to source code."""
+        _, targets, value = ir_node
+        indent = self._get_indent(indent_level)
+        # Convert targets tuple to comma-separated string
+        targets_str = ", ".join(targets)
+        # Convert value to source code
+        value_str = self._convert_value_in_context(value, "value")
+        return f"{indent}{targets_str} = {value_str}"
 
     def _convert_if(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert if statement IR to source code."""

@@ -36,6 +36,28 @@ class TestIRToSourceConverter:
         expected = "x = 42"
         assert result == expected
 
+    def test_convert_tuple_assignment(self):
+        """Test conversion of tuple assignment."""
+        converter = IRToSourceConverter()
+
+        # Simple tuple assignment
+        ir_node = ("tuple_assign", ("a", "b"), ("tuple", (("const", 1), ("const", 2))))
+        result = converter.convert_to_source(ir_node)
+        expected = "a, b = (1, 2)"
+        assert result == expected
+
+        # Three variable tuple assignment
+        ir_node = ("tuple_assign", ("x", "y", "z"), ("tuple", (("const", 10), ("const", 20), ("const", 30))))
+        result = converter.convert_to_source(ir_node)
+        expected = "x, y, z = (10, 20, 30)"
+        assert result == expected
+
+        # Tuple assignment with variables
+        ir_node = ("tuple_assign", ("a", "b"), ("tuple", (("name", "b"), ("+", ("name", "a"), ("name", "b")))))
+        result = converter.convert_to_source(ir_node)
+        expected = "a, b = (b, a + b)"
+        assert result == expected
+
     def test_convert_binary_operations(self):
         """Test conversion of binary operations."""
         converter = IRToSourceConverter()
