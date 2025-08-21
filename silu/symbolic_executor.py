@@ -127,7 +127,7 @@ class ExecutionPath:
             "conditions": [str(c) for c in self.conditions],
             "statements": self.statements,
             "return_value": str(self.return_value) if self.return_value else None,
-            "variables": {k: str(v) for k, v in self.variables.items()},
+            "variables": {str(k): str(v) for k, v in self.variables.items()},
             "satisfiable": self.is_satisfiable(),
             "loop_iterations": self.loop_iterations,
             "state": self.state.value,
@@ -414,7 +414,12 @@ class ConditionalHandler(IRNodeHandler):
 
         if block:
             try:
-                executor._execute_ir(block)
+                # Handle block execution - if block is a list/tuple of statements, execute each one
+                if isinstance(block, (list, tuple)):
+                    for stmt in block:
+                        executor._execute_ir(stmt)
+                else:
+                    executor._execute_ir(block)
             except Exception as e:
                 if executor.current_path:
                     executor.current_path.add_statement(
@@ -1573,6 +1578,32 @@ def execute_symbolic_from_file(
         raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
 
 
+def execute_symbolic_from_file_with_executor(
+    file_path: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
+) -> Dict[str, Any]:
+    """Execute symbolic analysis from an IR file and return paths with function analyses"""
+    try:
+        with open(file_path, "r", encoding=Config.DEFAULT_ENCODING) as f:
+            content = f.read().strip()
+
+        ir_program = _parse_ir_content(content)
+        executor = SymbolicExecutor(
+            include_function_paths=include_function_paths,
+            performance_mode=performance_mode,
+            debug=debug,
+        )
+        paths = executor.execute_program(ir_program)
+
+        result = {"paths": paths}
+        if hasattr(executor, "function_analyses") and executor.function_analyses:
+            result["function_analyses"] = executor.function_analyses
+
+        return result
+
+    except Exception as e:
+        raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
+
+
 def execute_symbolic_from_string(
     ir_string: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
 ) -> List[ExecutionPath]:
@@ -1585,6 +1616,29 @@ def execute_symbolic_from_string(
             debug=debug,
         )
         return executor.execute_program(ir_program)
+
+    except Exception as e:
+        raise RuntimeError(f"Error in symbolic execution from string: {e}")
+
+
+def execute_symbolic_from_string_with_executor(
+    ir_string: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
+) -> Dict[str, Any]:
+    """Execute symbolic analysis from an IR string and return paths with function analyses"""
+    try:
+        ir_program = _parse_ir_content(ir_string)
+        executor = SymbolicExecutor(
+            include_function_paths=include_function_paths,
+            performance_mode=performance_mode,
+            debug=debug,
+        )
+        paths = executor.execute_program(ir_program)
+
+        result = {"paths": paths}
+        if hasattr(executor, "function_analyses") and executor.function_analyses:
+            result["function_analyses"] = executor.function_analyses
+
+        return result
 
     except Exception as e:
         raise RuntimeError(f"Error in symbolic execution from string: {e}")

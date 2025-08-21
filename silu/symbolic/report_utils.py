@@ -765,7 +765,7 @@ def path_to_dict(path: Any) -> Dict[str, Any]:
         "return_value": str(getattr(path, "return_value", None))
         if getattr(path, "return_value", None) is not None
         else None,
-        "variables": {k: str(v) for k, v in getattr(path, "variables", {}).items()},
+        "variables": {str(k): str(v) for k, v in getattr(path, "variables", {}).items()},
         "satisfiable": getattr(path, "satisfiable", True),
         "loop_iterations": getattr(path, "loop_iterations", {}),
         "test_inputs": getattr(path, "test_inputs", {}),
@@ -911,7 +911,7 @@ def extract_outputs_from_path(path: Any) -> Dict[str, Any]:
 
     variables = getattr(path, "variables", {})
     if variables:
-        outputs["final_variables"] = {k: str(v) for k, v in variables.items()}
+        outputs["final_variables"] = {str(k): str(v) for k, v in variables.items()}
 
     loop_iterations = getattr(path, "loop_iterations", {})
     if loop_iterations:
