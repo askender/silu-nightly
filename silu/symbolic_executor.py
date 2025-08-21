@@ -239,11 +239,22 @@ class PathManager:
 
     def finalize_paths(self) -> List[ExecutionPath]:
         """Finalize and return processed paths"""
-        # Filter out empty paths
-        valid_paths = [
-            p for p in self.paths if p.statements or p.conditions or p.variables
-        ]
-        return renumber_paths_sequentially(valid_paths)
+        # Remove duplicates and filter out empty paths
+        seen_paths = set()
+        unique_paths = []
+
+        for path in self.paths:
+            # Create a signature for the path based on conditions and final variables
+            path_signature = (
+                tuple(str(c) for c in path.conditions),
+                tuple(sorted((k, str(v)) for k, v in path.variables.items()))
+            )
+
+            if path_signature not in seen_paths and (path.statements or path.conditions or path.variables):
+                seen_paths.add(path_signature)
+                unique_paths.append(path)
+
+        return renumber_paths_sequentially(unique_paths)
 
 
 class IRNodeHandler(ABC):
@@ -300,8 +311,12 @@ class ConditionalHandler(IRNodeHandler):
             _, condition_ir, then_block = ir_node
             else_block = None
 
+
+
         condition = executor._execute_ir(condition_ir)
         readable_condition = executor._make_condition_readable(condition)
+
+
 
         # Handle concrete conditions directly
         if condition.type == SymbolicValueType.CONCRETE:
@@ -347,6 +362,11 @@ class ConditionalHandler(IRNodeHandler):
         # Generate Z3 constraint
         z3_constraint = executor._generate_z3_constraint(condition)
 
+
+
+        # Store all paths that are created from this if statement
+        created_paths = []
+
         # Execute true path
         true_path = self._execute_if_branch(
             executor,
@@ -358,6 +378,8 @@ class ConditionalHandler(IRNodeHandler):
             z3_constraint,
             "if",
         )
+        if true_path:
+            created_paths.append(true_path)
 
         # Execute false path
         false_path = self._execute_if_branch(
@@ -370,12 +392,13 @@ class ConditionalHandler(IRNodeHandler):
             z3_constraint,
             "else",
         )
+        if false_path:
+            created_paths.append(false_path)
 
-        # Continue with first satisfiable path
-        satisfiable_paths = [
-            p for p in [true_path, false_path] if p and p.is_satisfiable()
-        ]
-        executor.current_path = satisfiable_paths[0] if satisfiable_paths else None
+        # Don't reset current_path to None - this breaks nested if statements
+        # Instead, continue with one of the created paths for further execution
+        if created_paths:
+            executor.current_path = created_paths[0]
 
         return create_concrete_value(None)
 
@@ -408,9 +431,12 @@ class ConditionalHandler(IRNodeHandler):
         )
         branch_path.add_statement(statement)
 
-        # Execute block
+        # Execute block with proper path context
         executor.current_path = branch_path
         executor.current_env = original_env.copy()
+
+        # Store the current path count before executing the block
+        initial_path_count = len(executor.path_manager.paths)
 
         if block:
             try:
@@ -427,11 +453,13 @@ class ConditionalHandler(IRNodeHandler):
                     )
                     executor.current_path.state = ExecutionPathState.ERROR
 
-        # Store result if satisfiable
+        # Always add the current path to the path manager if it's satisfiable
+        # This ensures that leaf paths (those without further nested conditions) are captured
         if executor.current_path and executor.current_path.is_satisfiable():
-            executor.path_manager.add_path(executor.current_path)
-            return executor.current_path
-        return None
+            if executor.current_path not in executor.path_manager.paths:
+                executor.path_manager.add_path(executor.current_path)
+
+        return executor.current_path
 
 
 class LoopHandler(IRNodeHandler):
@@ -792,6 +820,16 @@ class SymbolicExecutor:
         """Execute an IR node and return its symbolic value"""
         if not isinstance(ir_node, (tuple, list)) or not ir_node:
             return self._handle_non_tuple_node(ir_node)
+
+        # Handle wrapped statements - if we have a single-element tuple containing a statement
+        # unwrap it to the actual statement
+        if (isinstance(ir_node, tuple) and len(ir_node) == 1 and
+            isinstance(ir_node[0], tuple) and len(ir_node[0]) > 0 and
+            isinstance(ir_node[0][0], str)):
+            unwrapped = ir_node[0]
+            return self._execute_ir(unwrapped)
+
+
 
         # Try handlers first
         for handler in self.handlers:
@@ -1230,11 +1268,14 @@ class SymbolicExecutor:
         """Execute a block of statements"""
         result = create_concrete_value(None)
         if len(ir_node) > 1:
-            statements = (
-                ir_node[1] if isinstance(ir_node[1], (tuple, list)) else ir_node[1:]
-            )
-            for stmt in statements:
-                result = self._execute_ir(stmt)
+            statements = ir_node[1]
+            # If statements is a tuple/list, iterate through it
+            if isinstance(statements, (tuple, list)):
+                for stmt in statements:
+                    result = self._execute_ir(stmt)
+            else:
+                # Single statement
+                result = self._execute_ir(statements)
         return result
 
     def _execute_binary_op(self, ir_node: Tuple) -> SymbolicValue:
