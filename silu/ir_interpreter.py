@@ -200,6 +200,12 @@ class IRInterpreter:
         result = self._execute_binary_op(binary_op, current_value, new_value)
         self._set_variable(var_name, result)
 
+    def _execute_multi_assign(self, assignments: Tuple) -> None:
+        """Execute multiple assignment: a = b = c = value"""
+        # Execute each assignment in sequence
+        for assignment in assignments:
+            self.execute(assignment)
+
     def _execute_call(self, func: Any, args: Tuple, kwargs: Tuple) -> Any:
         """Execute function call."""
         func_name = self.execute(func)

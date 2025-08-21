@@ -1038,3 +1038,167 @@ for a, b in pairs:
         interpreter.visit(tree)
         result = interpreter.env.get("result")
         assert result == [3, 7, 11]
+
+
+class TestMultipleTargetAssignment:
+    """Tests for multiple target assignment operations (a = b = c = value)."""
+
+    def test_simple_multiple_assignment(self):
+        """Test basic multiple target assignment with two variables."""
+        code = """
+a = b = 42
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 42
+        assert interpreter.env.get("b") == 42
+
+    def test_three_target_assignment(self):
+        """Test multiple target assignment with three variables."""
+        code = """
+x = y = z = "hello"
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("x") == "hello"
+        assert interpreter.env.get("y") == "hello"
+        assert interpreter.env.get("z") == "hello"
+
+    def test_many_target_assignment(self):
+        """Test assignment with many targets."""
+        code = """
+a = b = c = d = e = f = 123
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 123
+        assert interpreter.env.get("b") == 123
+        assert interpreter.env.get("c") == 123
+        assert interpreter.env.get("d") == 123
+        assert interpreter.env.get("e") == 123
+        assert interpreter.env.get("f") == 123
+
+    def test_multiple_assignment_with_expression(self):
+        """Test multiple assignment with complex expression."""
+        code = """
+base = 10
+x = y = z = base * 2 + 5
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("x") == 25
+        assert interpreter.env.get("y") == 25
+        assert interpreter.env.get("z") == 25
+
+    def test_multiple_assignment_independence(self):
+        """Test that variables assigned together are independent for immutable types."""
+        code = """
+a = b = c = 100
+a = 200
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 200
+        assert interpreter.env.get("b") == 100
+        assert interpreter.env.get("c") == 100
+
+    def test_multiple_assignment_with_list(self):
+        """Test multiple assignment with mutable objects (list)."""
+        code = """
+list1 = list2 = [1, 2, 3]
+list1[0] = 999
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        list1 = interpreter.env.get("list1")
+        list2 = interpreter.env.get("list2")
+        assert list1 == [999, 2, 3]
+        assert list2 == [999, 2, 3]  # Same reference, so both are modified
+
+    def test_multiple_assignment_with_subscript(self):
+        """Test multiple assignment combined with subscript assignment."""
+        code = """
+arr1 = [0, 0, 0]
+arr2 = [0, 0, 0]
+arr1[0] = arr2[1] = 99
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        arr1 = interpreter.env.get("arr1")
+        arr2 = interpreter.env.get("arr2")
+        assert arr1 == [99, 0, 0]
+        assert arr2 == [0, 99, 0]
+
+    def test_multiple_assignment_with_tuple_unpacking(self):
+        """Test multiple assignment combined with tuple unpacking."""
+        code = """
+a, b = c, d = [10, 20]
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("a") == 10
+        assert interpreter.env.get("b") == 20
+        assert interpreter.env.get("c") == 10
+        assert interpreter.env.get("d") == 20
+
+    def test_mixed_simple_and_tuple_assignment(self):
+        """Test mixing simple and tuple assignment targets."""
+        code = """
+x = y, z = [100, 200]
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("x") == [100, 200]
+        assert interpreter.env.get("y") == 100
+        assert interpreter.env.get("z") == 200
+
+    def test_multiple_assignment_different_types(self):
+        """Test multiple assignment with different data types."""
+        code = """
+# Numbers
+num1 = num2 = 42
+
+# Strings
+str1 = str2 = "test"
+
+# Lists
+list1 = list2 = [1, 2, 3]
+
+# Booleans
+bool1 = bool2 = True
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+
+        assert interpreter.env.get("num1") == 42
+        assert interpreter.env.get("num2") == 42
+        assert interpreter.env.get("str1") == "test"
+        assert interpreter.env.get("str2") == "test"
+        assert interpreter.env.get("list1") == [1, 2, 3]
+        assert interpreter.env.get("list2") == [1, 2, 3]
+        assert interpreter.env.get("bool1") == True
+        assert interpreter.env.get("bool2") == True
+
+    def test_multiple_assignment_in_function(self):
+        """Test multiple assignment inside a function."""
+        code = """
+def test_func():
+    a = b = c = 42
+    return a + b + c
+
+result = test_func()
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("result") == 126

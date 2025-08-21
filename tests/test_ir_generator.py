@@ -284,3 +284,160 @@ class TestSiluIRGenerator:
         result = generator.visit_Assign(assign_node)
         expected = ("subscript_assign", ("name", "arr"), ("const", 1), ("const", 99))
         assert result == expected
+
+
+class TestMultipleTargetAssignmentIR:
+    """Tests for multiple target assignment IR generation."""
+
+    def test_simple_multiple_assignment(self):
+        """Test IR generation for simple multiple assignment: a = b = 1"""
+        generator = SiluIRGenerator()
+
+        target1 = ast.Name(id="a", ctx=ast.Store())
+        target2 = ast.Name(id="b", ctx=ast.Store())
+        value = ast.Constant(value=1)
+        assign_node = ast.Assign(targets=[target1, target2], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = (
+            "multi_assign",
+            (
+                ("assign", "a", ("const", 1), None),
+                ("assign", "b", ("const", 1), None)
+            )
+        )
+        assert result == expected
+
+    def test_three_target_assignment(self):
+        """Test IR generation for three target assignment: x = y = z = 'hello'"""
+        generator = SiluIRGenerator()
+
+        target1 = ast.Name(id="x", ctx=ast.Store())
+        target2 = ast.Name(id="y", ctx=ast.Store())
+        target3 = ast.Name(id="z", ctx=ast.Store())
+        value = ast.Constant(value="hello")
+        assign_node = ast.Assign(targets=[target1, target2, target3], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = (
+            "multi_assign",
+            (
+                ("assign", "x", ("const", "hello"), None),
+                ("assign", "y", ("const", "hello"), None),
+                ("assign", "z", ("const", "hello"), None)
+            )
+        )
+        assert result == expected
+
+    def test_multiple_assignment_with_expression(self):
+        """Test IR generation for multiple assignment with expression: a = b = 2 + 3"""
+        generator = SiluIRGenerator()
+
+        target1 = ast.Name(id="a", ctx=ast.Store())
+        target2 = ast.Name(id="b", ctx=ast.Store())
+        left = ast.Constant(value=2)
+        right = ast.Constant(value=3)
+        value = ast.BinOp(left=left, op=ast.Add(), right=right)
+        assign_node = ast.Assign(targets=[target1, target2], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = (
+            "multi_assign",
+            (
+                ("assign", "a", ("+", ("const", 2), ("const", 3)), None),
+                ("assign", "b", ("+", ("const", 2), ("const", 3)), None)
+            )
+        )
+        assert result == expected
+
+    def test_multiple_assignment_with_subscript(self):
+        """Test IR generation for multiple assignment with subscript: arr1[0] = arr2[1] = 99"""
+        generator = SiluIRGenerator()
+
+        target1 = ast.Subscript(
+            value=ast.Name(id="arr1", ctx=ast.Load()),
+            slice=ast.Constant(value=0),
+            ctx=ast.Store(),
+        )
+        target2 = ast.Subscript(
+            value=ast.Name(id="arr2", ctx=ast.Load()),
+            slice=ast.Constant(value=1),
+            ctx=ast.Store(),
+        )
+        value = ast.Constant(value=99)
+        assign_node = ast.Assign(targets=[target1, target2], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = (
+            "multi_assign",
+            (
+                ("subscript_assign", ("name", "arr1"), ("const", 0), ("const", 99)),
+                ("subscript_assign", ("name", "arr2"), ("const", 1), ("const", 99))
+            )
+        )
+        assert result == expected
+
+    def test_multiple_assignment_with_tuple_unpacking(self):
+        """Test IR generation for multiple assignment with tuple unpacking: a, b = c, d = [1, 2]"""
+        generator = SiluIRGenerator()
+
+        target1 = ast.Tuple(elts=[
+            ast.Name(id="a", ctx=ast.Store()),
+            ast.Name(id="b", ctx=ast.Store())
+        ], ctx=ast.Store())
+        target2 = ast.Tuple(elts=[
+            ast.Name(id="c", ctx=ast.Store()),
+            ast.Name(id="d", ctx=ast.Store())
+        ], ctx=ast.Store())
+        value = ast.List(elts=[
+            ast.Constant(value=1),
+            ast.Constant(value=2)
+        ], ctx=ast.Load())
+        assign_node = ast.Assign(targets=[target1, target2], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = (
+            "multi_assign",
+            (
+                ("tuple_assign", ("a", "b"), ("list", (("const", 1), ("const", 2)))),
+                ("tuple_assign", ("c", "d"), ("list", (("const", 1), ("const", 2))))
+            )
+        )
+        assert result == expected
+
+    def test_mixed_simple_and_tuple_assignment(self):
+        """Test IR generation for mixed assignment: x = y, z = [100, 200]"""
+        generator = SiluIRGenerator()
+
+        target1 = ast.Name(id="x", ctx=ast.Store())
+        target2 = ast.Tuple(elts=[
+            ast.Name(id="y", ctx=ast.Store()),
+            ast.Name(id="z", ctx=ast.Store())
+        ], ctx=ast.Store())
+        value = ast.List(elts=[
+            ast.Constant(value=100),
+            ast.Constant(value=200)
+        ], ctx=ast.Load())
+        assign_node = ast.Assign(targets=[target1, target2], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = (
+            "multi_assign",
+            (
+                ("assign", "x", ("list", (("const", 100), ("const", 200))), None),
+                ("tuple_assign", ("y", "z"), ("list", (("const", 100), ("const", 200))))
+            )
+        )
+        assert result == expected
+
+    def test_single_target_assignment_unchanged(self):
+        """Test that single target assignment still works as before."""
+        generator = SiluIRGenerator()
+
+        target = ast.Name(id="x", ctx=ast.Store())
+        value = ast.Constant(value=42)
+        assign_node = ast.Assign(targets=[target], value=value)
+
+        result = generator.visit_Assign(assign_node)
+        expected = ("assign", "x", ("const", 42), None)
+        assert result == expected

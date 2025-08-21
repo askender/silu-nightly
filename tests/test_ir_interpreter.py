@@ -996,3 +996,274 @@ class TestTupleUnpackingIR:
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result") == 5
+
+
+class TestMultipleTargetAssignmentIRInterpreter:
+    """Tests for multiple target assignment IR execution."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.interpreter = IRInterpreter()
+
+    def test_simple_multiple_assignment(self):
+        """Test execution of simple multiple assignment: a = b = 1"""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "a", ("const", 1), None),
+                        ("assign", "b", ("const", 1), None)
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("a") == 1
+        assert self.interpreter._get_variable("b") == 1
+
+    def test_three_target_assignment(self):
+        """Test execution of three target assignment: x = y = z = 'hello'"""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "x", ("const", "hello"), None),
+                        ("assign", "y", ("const", "hello"), None),
+                        ("assign", "z", ("const", "hello"), None)
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("x") == "hello"
+        assert self.interpreter._get_variable("y") == "hello"
+        assert self.interpreter._get_variable("z") == "hello"
+
+    def test_multiple_assignment_with_expression(self):
+        """Test execution of multiple assignment with expression: a = b = 2 + 3"""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "a", ("+", ("const", 2), ("const", 3)), None),
+                        ("assign", "b", ("+", ("const", 2), ("const", 3)), None)
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("a") == 5
+        assert self.interpreter._get_variable("b") == 5
+
+    def test_multiple_assignment_independence(self):
+        """Test that variables assigned together are independent for immutable types."""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "a", ("const", 100), None),
+                        ("assign", "b", ("const", 100), None),
+                        ("assign", "c", ("const", 100), None)
+                    )
+                ),
+                ("assign", "a", ("const", 200), None)
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("a") == 200
+        assert self.interpreter._get_variable("b") == 100
+        assert self.interpreter._get_variable("c") == 100
+
+    def test_multiple_assignment_with_list(self):
+        """Test multiple assignment with mutable objects (list)."""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "list1", ("list", (("const", 1), ("const", 2), ("const", 3))), None),
+                        ("assign", "list2", ("list", (("const", 1), ("const", 2), ("const", 3))), None)
+                    )
+                ),
+                ("subscript_assign", ("name", "list1"), ("const", 0), ("const", 999))
+            )
+        )
+        self.interpreter.execute_program(ir)
+        list1 = self.interpreter._get_variable("list1")
+        list2 = self.interpreter._get_variable("list2")
+        # Lists are separate objects, so modifying one doesn't affect the other
+        assert list1 == [999, 2, 3]
+        assert list2 == [1, 2, 3]
+
+    def test_multiple_assignment_with_subscript(self):
+        """Test multiple assignment combined with subscript assignment."""
+        ir = (
+            "module",
+            (
+                ("assign", "arr1", ("list", (("const", 0), ("const", 0), ("const", 0))), None),
+                ("assign", "arr2", ("list", (("const", 0), ("const", 0), ("const", 0))), None),
+                (
+                    "multi_assign",
+                    (
+                        ("subscript_assign", ("name", "arr1"), ("const", 0), ("const", 99)),
+                        ("subscript_assign", ("name", "arr2"), ("const", 1), ("const", 99))
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        arr1 = self.interpreter._get_variable("arr1")
+        arr2 = self.interpreter._get_variable("arr2")
+        assert arr1 == [99, 0, 0]
+        assert arr2 == [0, 99, 0]
+
+    def test_multiple_assignment_with_tuple_unpacking(self):
+        """Test multiple assignment combined with tuple unpacking."""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("tuple_assign", ("a", "b"), ("list", (("const", 10), ("const", 20)))),
+                        ("tuple_assign", ("c", "d"), ("list", (("const", 10), ("const", 20))))
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("a") == 10
+        assert self.interpreter._get_variable("b") == 20
+        assert self.interpreter._get_variable("c") == 10
+        assert self.interpreter._get_variable("d") == 20
+
+    def test_mixed_simple_and_tuple_assignment(self):
+        """Test mixing simple and tuple assignment targets."""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "x", ("list", (("const", 100), ("const", 200))), None),
+                        ("tuple_assign", ("y", "z"), ("list", (("const", 100), ("const", 200))))
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("x") == [100, 200]
+        assert self.interpreter._get_variable("y") == 100
+        assert self.interpreter._get_variable("z") == 200
+
+    def test_many_target_assignment(self):
+        """Test assignment with many targets."""
+        ir = (
+            "module",
+            (
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "a", ("const", 123), None),
+                        ("assign", "b", ("const", 123), None),
+                        ("assign", "c", ("const", 123), None),
+                        ("assign", "d", ("const", 123), None),
+                        ("assign", "e", ("const", 123), None),
+                        ("assign", "f", ("const", 123), None)
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("a") == 123
+        assert self.interpreter._get_variable("b") == 123
+        assert self.interpreter._get_variable("c") == 123
+        assert self.interpreter._get_variable("d") == 123
+        assert self.interpreter._get_variable("e") == 123
+        assert self.interpreter._get_variable("f") == 123
+
+    def test_multiple_assignment_in_function(self):
+        """Test multiple assignment inside a function."""
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "test_func",
+                    (),
+                    (
+                        (
+                            "multi_assign",
+                            (
+                                ("assign", "a", ("const", 42), None),
+                                ("assign", "b", ("const", 42), None),
+                                ("assign", "c", ("const", 42), None)
+                            )
+                        ),
+                        ("return", ("+", ("+", ("name", "a"), ("name", "b")), ("name", "c")))
+                    )
+                ),
+                ("assign", "result", ("call", ("name", "test_func"), (), ()), None)
+            )
+        )
+        self.interpreter.execute_program(ir)
+        assert self.interpreter._get_variable("result") == 126
+
+    def test_multiple_assignment_different_types(self):
+        """Test multiple assignment with different data types."""
+        ir = (
+            "module",
+            (
+                # Numbers
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "num1", ("const", 42), None),
+                        ("assign", "num2", ("const", 42), None)
+                    )
+                ),
+                # Strings
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "str1", ("const", "test"), None),
+                        ("assign", "str2", ("const", "test"), None)
+                    )
+                ),
+                # Lists
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "list1", ("list", (("const", 1), ("const", 2), ("const", 3))), None),
+                        ("assign", "list2", ("list", (("const", 1), ("const", 2), ("const", 3))), None)
+                    )
+                ),
+                # Booleans
+                (
+                    "multi_assign",
+                    (
+                        ("assign", "bool1", ("const", True), None),
+                        ("assign", "bool2", ("const", True), None)
+                    )
+                ),
+            )
+        )
+        self.interpreter.execute_program(ir)
+
+        assert self.interpreter._get_variable("num1") == 42
+        assert self.interpreter._get_variable("num2") == 42
+        assert self.interpreter._get_variable("str1") == "test"
+        assert self.interpreter._get_variable("str2") == "test"
+        assert self.interpreter._get_variable("list1") == [1, 2, 3]
+        assert self.interpreter._get_variable("list2") == [1, 2, 3]
+        assert self.interpreter._get_variable("bool1") == True
+        assert self.interpreter._get_variable("bool2") == True

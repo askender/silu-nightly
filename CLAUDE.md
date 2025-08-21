@@ -67,6 +67,7 @@ silu symbolic program.si          # Symbolic analysis
 - **Data Types**: int, float, str, bool, bytes, list
 - **Operations**: Arithmetic, boolean, comparison (including chained)
 - **Control Flow**: if/elif/else, while/for loops
+- **Assignment**: Simple assignment, multiple target assignment (a = b = 1), tuple unpacking
 - **Functions**: User-defined with parameters and return values, closures
 - **Built-ins**: print, type, isinstance, type conversions
 

@@ -161,6 +161,44 @@ class SiluIRGenerator(BaseASTProcessor):
         body = self.visit(body_node)
         return self._make_node("lambda", tuple(params), body)
 
+    # ================== Assignment Overrides for IR Generation ==================
+
+    def visit_Assign(self, node: ast.Assign) -> Any:
+        """Override assignment to handle multiple targets for IR generation."""
+        value = self.visit(node.value)
+
+        # For multiple targets, we need to generate separate assign nodes
+        if len(node.targets) > 1:
+            # Generate a list of assignment IR nodes
+            assignments = []
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assignments.append(self.process_assign(target.id, value))
+                elif isinstance(target, ast.Subscript):
+                    obj = self.visit(target.value)
+                    key = self.visit(target.slice)
+                    assignments.append(self.process_subscript_assign(obj, key, value))
+                elif isinstance(target, ast.Tuple):
+                    target_names = []
+                    for elt in target.elts:
+                        if isinstance(elt, ast.Name):
+                            target_names.append(elt.id)
+                        else:
+                            raise NotImplementedError(
+                                "Only simple names are supported in tuple unpacking"
+                            )
+                    assignments.append(self.process_tuple_assign(target_names, value))
+                else:
+                    raise NotImplementedError(
+                        f"Assignment to {type(target).__name__} not supported"
+                    )
+
+            # Return a multi-assign node containing all assignments
+            return ("multi_assign", tuple(assignments))
+        else:
+            # Single target - use the base class implementation
+            return super().visit_Assign(node)
+
     # ================== Additional IR Generation Methods ==================
 
     def visit_AugAssign(self, node: ast.AugAssign) -> Tuple:

@@ -137,11 +137,9 @@ class TestBaseASTProcessor:
         value = ast.Constant(value=42)
         assign = ast.Assign(targets=[target1, target2], value=value)
 
-        with pytest.raises(
-            NotImplementedError,
-            match="Only single target assignments supported",
-        ):
-            processor.visit_Assign(assign)
+        # Multiple assignment should now work and return the last assignment result
+        result = processor.visit_Assign(assign)
+        assert result == "assign_y=42"  # Should return the last assignment
 
     def test_visit_assign_non_name_target(self):
         """Test visiting an assignment with non-name target."""

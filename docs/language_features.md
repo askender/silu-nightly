@@ -69,11 +69,22 @@ name = "Alice"
 flag = True
 ```
 
-### Multiple Assignment (if supported)
+### Multiple Assignment
 ```silu
-# Note: Check current implementation for multiple assignment support
+# Multiple target assignment - all variables get the same value
 a = b = c = 5
+x = y = "hello"
+list1 = list2 = [1, 2, 3]
+
+# Works with expressions
+p = q = r = 2 + 3 * 4
+
+# Can mix with other assignment types
+arr1[0] = arr2[1] = 99
+a, b = c, d = [10, 20]
 ```
+
+**Note**: For mutable objects (like lists), multiple assignment creates references to the same object. Modifying one variable will affect all others that reference the same object.
 
 ## Arithmetic Operations
 
