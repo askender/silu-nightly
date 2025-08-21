@@ -745,3 +745,126 @@ class TestClosureFunctionality:
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result") == 60  # 10 + 20 + 30
+
+    def test_pure_closure_behavior(self):
+        """Test that closures are pure (don't modify captured variables)."""
+        # This is a regression test to ensure we maintain pure closure behavior
+        # and don't accidentally implement non-pure closures
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "make_counter",
+                    (),
+                    (
+                        ("assign", "count", ("const", 0), None),
+                        (
+                            "func_def",
+                            "increment",
+                            (),
+                            (
+                                ("assign", "count", ("+", ("name", "count"), ("const", 1)), None),
+                                ("return", ("name", "count"))
+                            )
+                        ),
+                        ("return", ("name", "increment"))
+                    )
+                ),
+                (
+                    "assign",
+                    "counter",
+                    ("call", ("name", "make_counter"), (), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result1",
+                    ("call", ("name", "counter"), (), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result2",
+                    ("call", ("name", "counter"), (), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result3",
+                    ("call", ("name", "counter"), (), ()),
+                    None
+                )
+            )
+        )
+        self.interpreter.execute_program(ir)
+
+        # In pure closures, each call should return 1 (count starts at 0 each time)
+        # In non-pure closures, it would return 1, 2, 3
+        assert self.interpreter._get_variable("result1") == 1
+        assert self.interpreter._get_variable("result2") == 1
+        assert self.interpreter._get_variable("result3") == 1
+
+    def test_closure_variable_isolation(self):
+        """Test that closure variables are isolated (copied, not referenced)."""
+        ir = (
+            "module",
+            (
+                (
+                    "func_def",
+                    "make_accumulator",
+                    ("initial",),
+                    (
+                        ("assign", "total", ("name", "initial"), None),
+                        (
+                            "func_def",
+                            "add",
+                            ("value",),
+                            (
+                                ("assign", "total", ("+", ("name", "total"), ("name", "value")), None),
+                                ("return", ("name", "total"))
+                            )
+                        ),
+                        ("return", ("name", "add"))
+                    )
+                ),
+                (
+                    "assign",
+                    "acc1",
+                    ("call", ("name", "make_accumulator"), (("const", 10),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "acc2",
+                    ("call", ("name", "make_accumulator"), (("const", 20),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result1a",
+                    ("call", ("name", "acc1"), (("const", 5),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result1b",
+                    ("call", ("name", "acc1"), (("const", 3),), ()),
+                    None
+                ),
+                (
+                    "assign",
+                    "result2a",
+                    ("call", ("name", "acc2"), (("const", 7),), ()),
+                    None
+                )
+            )
+        )
+        self.interpreter.execute_program(ir)
+
+        # In pure closures, each accumulator starts fresh each time
+        # acc1 with initial=10: add(5) = 15, add(3) = 13 (not 18!)
+        # acc2 with initial=20: add(7) = 27
+        assert self.interpreter._get_variable("result1a") == 15  # 10 + 5
+        assert self.interpreter._get_variable("result1b") == 13  # 10 + 3 (not 18!)
+        assert self.interpreter._get_variable("result2a") == 27  # 20 + 7

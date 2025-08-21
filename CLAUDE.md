@@ -122,13 +122,14 @@ The toolkit includes a `check` command to verify if Python programs are compatib
 
 ## Closure Support
 
-The Silu interpreter now provides full closure support, allowing functions to capture and access variables from their defining scope:
+The Silu interpreter now provides **pure closure** support, allowing functions to capture and read variables from their defining scope:
 
 ### Features
-- **Environment Capture**: Functions automatically capture variables from their enclosing scope
+- **Environment Capture**: Functions automatically capture variable values from their enclosing scope
+- **Pure Closures Only**: Closures can read but cannot modify captured variables (value copying, not reference sharing)
 - **Multiple Closures**: Independent closure instances with separate captured environments
 - **Nested Closures**: Support for multiple levels of nested function definitions
-- **Variable Access**: Captured variables remain accessible even after the outer function returns
+- **Variable Isolation**: Each closure call operates on its own copy of captured variables
 
 ### Examples
 ```python
@@ -143,12 +144,19 @@ result = add5(3)  # Returns 8
 
 ### Implementation Details
 - **IR Interpreter**: Enhanced with closure-aware function calling and environment management
-- **Environment Capture**: Functions store their defining environment alongside their definition
+- **Value Copying**: Functions store copies of captured variable values (not references)
 - **Closure IDs**: Unique identifiers generated for each closure instance
-- **Memory Management**: Proper cleanup of closure environments when no longer referenced
+- **Memory Safety**: No shared mutable state between closures and their defining scope
+
+### Design Philosophy
+- **Pure Functional**: Encourages functional programming practices by preventing side effects
+- **Predictable Behavior**: No hidden state mutations make code easier to reason about
+- **Thread Safety**: Pure closures are inherently thread-safe
+- **Simplicity**: Avoids complex memory management and variable aliasing issues
 
 ### Testing
 - Comprehensive test suite including basic closures, multiple variables, and nested scenarios
+- Regression tests to ensure pure closure behavior is maintained (no accidental non-pure support)
 - All closure functionality verified through both unit tests and integration tests
 - Compatible with existing IR generation and execution workflows
 
