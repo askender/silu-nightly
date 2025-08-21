@@ -158,8 +158,9 @@ class IRToSourceConverter:
         """Convert augmented assignment IR to source code."""
         _, target, op, value = ir_node
         indent = self._get_indent(indent_level)
-        value_str = self.convert_to_source(value)
-        return f"{indent}{target} {op} {value_str}"
+        target_str = self.convert_to_source(target, 0).strip()
+        value_str = self.convert_to_source(value, 0).strip()
+        return f"{indent}{target_str} {op} {value_str}"
 
     def _convert_tuple_assign(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert tuple assignment IR to source code."""
@@ -296,15 +297,7 @@ class IRToSourceConverter:
 
         return "\n".join(lines)
 
-    def _convert_aug_assign(self, ir_node: Tuple, indent_level: int) -> str:
-        """Convert augmented assignment IR to source code."""
-        _, target, op, value = ir_node
 
-        indent = self._get_indent(indent_level)
-        target_str = self.convert_to_source(target, 0).strip()
-        value_str = self.convert_to_source(value, 0).strip()
-
-        return f"{indent}{target_str} {op} {value_str}"
 
     def _convert_increment_decrement(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert increment/decrement operations IR to source code."""
