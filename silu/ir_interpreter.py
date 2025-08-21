@@ -433,6 +433,14 @@ class IRInterpreter:
 
         return lambda_func
 
+    def _execute_if_expr(self, test: Any, body: Any, orelse: Any) -> Any:
+        """Execute conditional expression (ternary operator): body if test else orelse"""
+        test_result = self.execute(test)
+        if test_result:
+            return self.execute(body)
+        else:
+            return self.execute(orelse)
+
     # ================== Helper Methods ==================
 
     def _execute_block(self, statements: Tuple) -> Any:

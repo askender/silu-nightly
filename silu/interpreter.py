@@ -410,3 +410,11 @@ class SiluInterpreter(BaseASTProcessor):
         else:
             # Regular function call
             return super().visit_Call(node)
+
+    def visit_IfExp(self, node: ast.IfExp) -> Any:
+        """Handle conditional expressions (ternary operator): value if test else other_value"""
+        test_result = self.visit(node.test)
+        if test_result:
+            return self.visit(node.body)
+        else:
+            return self.visit(node.orelse)
