@@ -155,6 +155,22 @@ class SiluInterpreter(BaseASTProcessor):
         """Set variable in environment."""
         self.env.set(target, value)
 
+    def process_aug_assign(self, target: Any, op: str, value: Any) -> None:
+        """Process augmented assignment operations (+=, -=, etc.)."""
+        if isinstance(target, str):
+            # Simple variable augmented assignment: x += value
+            current_value = self.env.get(target)
+            new_value = self.process_operation(op, current_value, value)
+            self.env.set(target, new_value)
+        elif isinstance(target, tuple) and len(target) == 2:
+            # Subscript augmented assignment: obj[key] += value
+            obj, key = target
+            current_value = obj[key]
+            new_value = self.process_operation(op, current_value, value)
+            self.process_subscript_assign(obj, key, new_value)
+        else:
+            raise NotImplementedError(f"Unsupported augmented assignment target: {target}")
+
     def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> None:
         """Handle subscript assignment (e.g., dict[key] = value)."""
         if isinstance(obj, dict):

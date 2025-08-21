@@ -117,6 +117,11 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         pass
 
     @abstractmethod
+    def process_aug_assign(self, target: Any, op: str, value: Any) -> Any:
+        """Process augmented assignment (e.g., +=, -=, *=)."""
+        pass
+
+    @abstractmethod
     def process_lambda(self, params: List[str], body_node: ast.AST) -> Any:
         """Process lambda function."""
         pass
@@ -151,6 +156,26 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         else:
             raise NotImplementedError(
                 f"Assignment to {type(target).__name__} not supported"
+            )
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> Any:
+        """Visit an augmented assignment node."""
+        target = node.target
+        op = self._get_operator(node.op)
+        value = self.visit(node.value)
+
+        if isinstance(target, ast.Name):
+            # Simple variable augmented assignment: x += value
+            target_processed = self.visit(target)
+            return self.process_aug_assign(target_processed, op, value)
+        elif isinstance(target, ast.Subscript):
+            # Subscript augmented assignment: obj[key] += value
+            obj = self.visit(target.value)
+            key = self.visit(target.slice)
+            return self.process_aug_assign((obj, key), op, value)
+        else:
+            raise NotImplementedError(
+                f"Augmented assignment to {type(target).__name__} not supported"
             )
 
     def visit_Name(self, node: ast.Name) -> Any:
