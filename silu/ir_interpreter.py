@@ -18,6 +18,8 @@ class IRInterpreter:
         self.global_env = {}
         self.local_env_stack = []
         self.functions = {}
+        self.closures = {}  # Store closure functions with captured environments
+        self.closure_counter = 0  # Counter for unique closure IDs
         self.return_value = None
         self.should_return = False
         self.should_break = False
@@ -173,6 +175,10 @@ class IRInterpreter:
         if func_name in self.builtins:
             return self.builtins[func_name](*evaluated_args, **evaluated_kwargs)
 
+        # Check closure functions
+        if func_name in self.closures:
+            return self._call_closure_function(func_name, evaluated_args, evaluated_kwargs)
+
         # Check user-defined functions
         if func_name in self.functions:
             return self._call_user_function(func_name, evaluated_args, evaluated_kwargs)
@@ -249,7 +255,17 @@ class IRInterpreter:
 
     def _execute_func_def(self, name: str, args: Tuple, body: Tuple) -> None:
         """Execute function definition."""
-        self.functions[name] = {"args": args, "body": body}
+        # Capture current environment for closure support
+        current_env = {}
+        if self.local_env_stack:
+            current_env = self.local_env_stack[-1].copy()
+
+        self.functions[name] = {
+            "args": args,
+            "body": body,
+            "closure_env": current_env  # Capture environment
+        }
+
         # Also store in global environment for function name resolution
         self.global_env[name] = name
 
@@ -423,7 +439,72 @@ class IRInterpreter:
     def _call_user_function(
         self, func_name: str, args: List[Any], kwargs: Dict[str, Any]
     ) -> Any:
-        """Call a user-defined function."""
+        """Call a user-defined function with closure support."""
+        # Handle closure functions
+        if func_name in self.closures:
+            return self._call_closure_function(func_name, args, kwargs)
+
+        func_def = self.functions[func_name]
+        func_args = func_def["args"]
+        func_body = func_def["body"]
+        closure_env = func_def.get("closure_env", {})
+
+        if len(args) != len(func_args):
+            raise TypeError(
+                f"Function '{func_name}' takes {len(func_args)} arguments but {len(args)} given"
+            )
+
+        # Create new local environment with closure environment as base
+        self._push_local_env()
+
+        # First add closure variables
+        for var_name, var_value in closure_env.items():
+            self._set_variable(var_name, var_value)
+
+        old_return_value = self.return_value
+        old_should_return = self.should_return
+
+        try:
+            self.return_value = None
+            self.should_return = False
+
+            # Bind parameters (these can override closure variables)
+            for param, arg in zip(func_args, args):
+                self._set_variable(param, arg)
+
+            # Execute function body
+            self._execute_block(func_body)
+
+            # Handle case where function returns another function
+            if isinstance(self.return_value, str) and self.return_value in self.functions:
+                # Create a closure for the returned function
+                returned_func_name = self.return_value
+                self.closure_counter += 1
+                closure_id = f"closure_{returned_func_name}_{self.closure_counter}"
+
+                # Store the closure with current environment
+                self.closures[closure_id] = {
+                    "func_name": returned_func_name,
+                    "closure_env": self.local_env_stack[-1].copy()
+                }
+
+                return closure_id
+
+            return self.return_value
+
+        finally:
+            self.return_value = old_return_value
+            self.should_return = old_should_return
+            self._pop_local_env()
+
+    def _call_closure_function(
+        self, closure_id: str, args: List[Any], kwargs: Dict[str, Any]
+    ) -> Any:
+        """Call a closure function with its captured environment."""
+        closure_def = self.closures[closure_id]
+        func_name = closure_def["func_name"]
+        closure_env = closure_def["closure_env"]
+
         func_def = self.functions[func_name]
         func_args = func_def["args"]
         func_body = func_def["body"]
@@ -435,6 +516,11 @@ class IRInterpreter:
 
         # Create new local environment
         self._push_local_env()
+
+        # First add closure variables
+        for var_name, var_value in closure_env.items():
+            self._set_variable(var_name, var_value)
+
         old_return_value = self.return_value
         old_should_return = self.should_return
 
@@ -442,7 +528,7 @@ class IRInterpreter:
             self.return_value = None
             self.should_return = False
 
-            # Bind parameters
+            # Bind parameters (these can override closure variables)
             for param, arg in zip(func_args, args):
                 self._set_variable(param, arg)
 
