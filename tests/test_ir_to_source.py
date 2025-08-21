@@ -58,6 +58,38 @@ class TestIRToSourceConverter:
         expected = "a, b = (b, a + b)"
         assert result == expected
 
+    def test_convert_multiple_assignment(self):
+        """Test conversion of multiple assignment."""
+        converter = IRToSourceConverter()
+
+        # Simple multiple assignment: a = b = 1
+        ir_node = ("multi_assign", (
+            ("assign", "a", ("const", 1), None),
+            ("assign", "b", ("const", 1), None)
+        ))
+        result = converter.convert_to_source(ir_node)
+        expected = "a = b = 1"
+        assert result == expected
+
+        # Three variable multiple assignment: x = y = z = 42
+        ir_node = ("multi_assign", (
+            ("assign", "x", ("const", 42), None),
+            ("assign", "y", ("const", 42), None),
+            ("assign", "z", ("const", 42), None)
+        ))
+        result = converter.convert_to_source(ir_node)
+        expected = "x = y = z = 42"
+        assert result == expected
+
+        # Multiple assignment with expression: a = b = 2 + 3
+        ir_node = ("multi_assign", (
+            ("assign", "a", ("+", ("const", 2), ("const", 3)), None),
+            ("assign", "b", ("+", ("const", 2), ("const", 3)), None)
+        ))
+        result = converter.convert_to_source(ir_node)
+        expected = "a = b = 2 + 3"
+        assert result == expected
+
     def test_convert_binary_operations(self):
         """Test conversion of binary operations."""
         converter = IRToSourceConverter()

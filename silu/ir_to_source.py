@@ -38,6 +38,8 @@ class IRToSourceConverter:
                 return self._convert_aug_assign(ir_node, indent_level)
             elif node_type == "tuple_assign":
                 return self._convert_tuple_assign(ir_node, indent_level)
+            elif node_type == "multi_assign":
+                return self._convert_multi_assign(ir_node, indent_level)
             elif node_type == "if":
                 return self._convert_if(ir_node, indent_level)
             elif node_type == "while":
@@ -167,6 +169,27 @@ class IRToSourceConverter:
         targets_str = ", ".join(targets)
         # Convert value to source code
         value_str = self._convert_value_in_context(value, "value")
+        return f"{indent}{targets_str} = {value_str}"
+
+    def _convert_multi_assign(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert multiple assignment IR to source code."""
+        _, assignments = ir_node
+
+        # Extract the value from the first assignment
+        first_assign = assignments[0]
+        _, _, value, _ = first_assign  # (assign, target, value, type_info)
+        value_str = self.convert_to_source(value)
+
+        # Extract all target names
+        targets = []
+        for assign in assignments:
+            _, target, _, _ = assign
+            targets.append(target)
+
+        # Create the multiple assignment string: a = b = c = value
+        targets_str = " = ".join(targets)
+        indent = self._get_indent(indent_level)
+
         return f"{indent}{targets_str} = {value_str}"
 
     def _convert_if(self, ir_node: Tuple, indent_level: int) -> str:
