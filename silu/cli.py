@@ -26,6 +26,12 @@ from silu.symbolic_executor import (
 from silu.symbolic.report_utils import renumber_paths_sequentially
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 
+try:
+    from silu_ir_to_llvm import SiluToLLVMConverter
+    LLVM_AVAILABLE = True
+except ImportError:
+    LLVM_AVAILABLE = False
+
 
 def read_source_file(file_path: str) -> str:
     """Read source code from a file."""
@@ -181,6 +187,38 @@ def save_ir_to_file(ir_result: Any, output_file: str, output_format: str) -> Non
         print(f"IR saved to: {output_file}")
     except IOError as e:
         print(f"Error writing to file '{output_file}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_llvm_ir_generator(
+    source: str, output_file: str = None, is_file: bool = True, **kwargs
+) -> None:
+    """Generate LLVM IR from Silu IR."""
+    if not LLVM_AVAILABLE:
+        print("Error: LLVM IR generation not available. Please install llvmlite.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        if is_file:
+            # Read IR from file
+            with open(source, 'r', encoding='utf-8') as f:
+                ir_json = f.read()
+        else:
+            # Use IR string directly
+            ir_json = source
+
+        # Convert to LLVM IR
+        converter = SiluToLLVMConverter()
+        llvm_ir = converter.convert(ir_json)
+
+        if output_file:
+            converter.save_to_file(llvm_ir, output_file)
+            print(f"LLVM IR saved to: {output_file}")
+        else:
+            print(llvm_ir)
+
+    except Exception as e:
+        print(f"Error generating LLVM IR: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -427,6 +465,19 @@ Examples:
         "--output", "-o", help="Output file to save source code (default: stdout)"
     )
 
+    # LLVM IR generation subcommand
+    if LLVM_AVAILABLE:
+        llvm_parser = subparsers.add_parser(
+            "llvm", help="Generate LLVM IR from Silu IR"
+        )
+        llvm_parser.add_argument("file", nargs="?", help="Silu IR file to convert")
+        llvm_parser.add_argument(
+            "--source", help="IR string to convert (alternative to file)"
+        )
+        llvm_parser.add_argument(
+            "--output", "-o", help="Output file to save LLVM IR (default: stdout)"
+        )
+
     # Symbolic execution subcommand
     symbolic_parser = subparsers.add_parser(
         "symbolic", help="Perform symbolic execution"
@@ -481,12 +532,14 @@ def validate_arguments(args) -> None:
             print("Error: A Python source file must be provided for check mode.", file=sys.stderr)
             sys.exit(1)
         # Don't check file existence here for check mode - let run_check handle it
-    elif args.mode in ["exec", "symbolic", "to-source"]:
-        # For exec/symbolic/to-source modes, either file or --source is required
+    elif args.mode in ["exec", "symbolic", "to-source", "llvm"]:
+        # For exec/symbolic/to-source/llvm modes, either file or --source is required
         if not args.file and not args.source:
             if args.mode == "exec":
                 mode_name = "IR file"
             elif args.mode == "to-source":
+                mode_name = "IR file"
+            elif args.mode == "llvm":
                 mode_name = "IR file"
             else:
                 mode_name = "source file or IR file"
@@ -626,6 +679,17 @@ def main() -> None:
             else:
                 # Convert IR from file
                 run_ir_to_source_converter(args.file, **to_source_kwargs)
+
+        elif args.mode == "llvm":
+            # LLVM IR generation
+            llvm_kwargs = {"output_file": getattr(args, "output", None)}
+
+            if args.source:
+                # Generate LLVM IR from command line IR source
+                run_llvm_ir_generator(args.source, is_file=False, **llvm_kwargs)
+            else:
+                # Generate LLVM IR from IR file
+                run_llvm_ir_generator(args.file, is_file=True, **llvm_kwargs)
 
         elif args.mode == "symbolic":
             # Symbolic execution

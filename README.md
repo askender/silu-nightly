@@ -43,6 +43,23 @@ silu check program.py
 
 # Interactive execution
 silu interpret --source "print('Hello, World!')"
+
+# Generate LLVM IR for native compilation
+silu ir hello.si --output hello.ir.json
+silu llvm hello.ir.json --output hello.ll
+```
+
+### Compilation to Native Code
+
+Silu now supports compilation to native machine code via LLVM IR:
+
+```bash
+# Complete compilation workflow
+silu ir program.si --output program.ir.json  # Generate Silu IR
+silu llvm program.ir.json --output program.ll # Convert to LLVM IR
+llc program.ll -o program.s                   # Compile to assembly
+clang program.s -o program                    # Link to executable
+./program                                     # Run native executable
 ```
 
 ### Hello World Example
@@ -115,6 +132,21 @@ silu symbolic program.si
 silu exec program.ir
 ```
 
+### LLVM IR Generation and Native Compilation
+```bash
+# Generate LLVM IR from Silu IR
+silu llvm program.ir.json --output program.ll
+
+# Complete compilation pipeline
+silu ir program.si --output program.ir.json    # Generate Silu IR
+silu llvm program.ir.json --output program.ll  # Convert to LLVM IR
+llc program.ll -o program.s                    # Compile to assembly
+clang program.s -o program                     # Link to executable
+
+# Run demo workflow
+python demo_silu_to_llvm.py --save-files
+```
+
 ## Documentation
 
 - **[AI Development Plan](docs/plan.md)** - Long-term AI reasoning roadmap and benchmarks
@@ -123,6 +155,7 @@ silu exec program.ir
 - **[Development Guide](docs/development.md)** - Setup, testing, and contributing
 - **[Symbolic Execution](docs/symbolic_execution.md)** - Program analysis capabilities
 - **[IR Design](docs/simple_ir_design.md)** - Intermediate representation format
+- **[LLVM IR Generation](docs/llvm_ir_generation.md)** - Native code compilation via LLVM
 - **[Interpreter Specification](docs/interpreter_spec.md)** - Core implementation details
 
 ## Examples
