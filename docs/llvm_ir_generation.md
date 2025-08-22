@@ -91,7 +91,7 @@ clang program.s -o program       # Link to executable
 ### Programmatic API
 
 ```python
-from silu_ir_to_llvm import SiluToLLVMConverter
+from silu.silu_ir_to_llvm import SiluToLLVMConverter
 import json
 
 # Load Silu IR
@@ -322,7 +322,7 @@ The LLVM IR converter is included with Silu and automatically available when `ll
 uv add llvmlite
 
 # Verify installation
-python -c "from silu_ir_to_llvm import SiluToLLVMConverter; print('LLVM converter available')"
+python -c "from silu.silu_ir_to_llvm import SiluToLLVMConverter; print('LLVM converter available')"
 ```
 
 ## Troubleshooting

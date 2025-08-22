@@ -27,7 +27,7 @@ from silu.symbolic.report_utils import renumber_paths_sequentially
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 
 try:
-    from silu_ir_to_llvm import SiluToLLVMConverter
+    from .silu_ir_to_llvm import SiluToLLVMConverter
     LLVM_AVAILABLE = True
 except ImportError:
     LLVM_AVAILABLE = False
