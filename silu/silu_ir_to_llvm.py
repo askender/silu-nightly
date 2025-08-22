@@ -82,6 +82,7 @@ class SiluToLLVMConverter:
         self.free = ir.Function(self.module, free_ty, name="free")
 
         # PyObject creation functions
+        self._create_overflow_intrinsics()
         self._create_pyobj_constructors()
         self._create_pyobj_operations()
         self._create_comparison_operations()
@@ -191,9 +192,32 @@ class SiluToLLVMConverter:
         left_val = builder.load(left_i64_ptr)
         right_val = builder.load(right_i64_ptr)
 
-        # Add values
-        result_val = builder.add(left_val, right_val)
-        result_obj = builder.call(self.create_int, [result_val])
+        # Add values with overflow detection
+        overflow_result = builder.call(self.sadd_overflow, [left_val, right_val])
+
+        # Extract sum and overflow flag
+        sum_val = builder.extract_value(overflow_result, 0)
+        overflow_flag = builder.extract_value(overflow_result, 1)
+
+        # Check for overflow
+        overflow_block = self.pyobj_add.append_basic_block("overflow")
+        success_block = self.pyobj_add.append_basic_block("success")
+        builder.cbranch(overflow_flag, overflow_block, success_block)
+
+        # Overflow case - print error and exit
+        builder.position_at_end(overflow_block)
+        error_msg = self._create_global_string_with_builder("Error: Integer overflow in addition\n", builder)
+        builder.call(self.printf, [error_msg])
+
+        # Exit with error code 1
+        exit_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(32)])
+        exit_func = ir.Function(self.module, exit_ty, name="exit")
+        builder.call(exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.unreachable()
+
+        # Success case - return result
+        builder.position_at_end(success_block)
+        result_obj = builder.call(self.create_int, [sum_val])
         builder.ret(result_obj)
 
         # Error case - return null for now
@@ -234,7 +258,7 @@ class SiluToLLVMConverter:
         i64_ptr = builder.bitcast(data, ir.PointerType(ir.IntType(64)))
         val = builder.load(i64_ptr)
 
-        # Create format string for integer
+        # Create format string for integer (use %ld for signed)
         int_fmt = self._create_global_string_with_builder("%ld", builder)
         builder.call(self.printf, [int_fmt, val])
         builder.ret_void()
@@ -328,6 +352,55 @@ class SiluToLLVMConverter:
         result_bool = self.current_builder.icmp_signed('<', left_val, right_val)
         result_int = self.current_builder.zext(result_bool, ir.IntType(64))
         return self.current_builder.call(self.create_int, [result_int])
+
+    def _create_unary_minus(self, operand: ir.Value) -> ir.Value:
+        """Create unary minus operation for PyObject."""
+        # Check if operand is an integer
+        tag_ptr = self.current_builder.gep(operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        tag = self.current_builder.load(tag_ptr)
+
+        # Check if it's an integer (tag == 0)
+        is_int_cond = self.current_builder.icmp_signed('==', tag, ir.Constant(ir.IntType(32), 0))
+
+        int_block = self.current_function.append_basic_block("unary_minus_int")
+        error_block = self.current_function.append_basic_block("unary_minus_error")
+        self.current_builder.cbranch(is_int_cond, int_block, error_block)
+
+        # Integer negation
+        self.current_builder.position_at_end(int_block)
+        data_ptr = self.current_builder.gep(operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        data = self.current_builder.load(data_ptr)
+        i64_ptr = self.current_builder.bitcast(data, ir.PointerType(ir.IntType(64)))
+        val = self.current_builder.load(i64_ptr)
+
+        # Negate the value
+        neg_val = self.current_builder.sub(ir.Constant(ir.IntType(64), 0), val)
+        result_obj = self.current_builder.call(self.create_int, [neg_val])
+
+        # We need to merge the blocks
+        merge_block = self.current_function.append_basic_block("unary_minus_merge")
+        self.current_builder.branch(merge_block)
+
+        # Error case
+        self.current_builder.position_at_end(error_block)
+        null_result = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
+        self.current_builder.branch(merge_block)
+
+        # Merge block with PHI node
+        self.current_builder.position_at_end(merge_block)
+        phi = self.current_builder.phi(ir.PointerType(self.pyobj.pyobj_type))
+        phi.add_incoming(result_obj, int_block)
+        phi.add_incoming(null_result, error_block)
+
+        return phi
+
+    def _create_overflow_intrinsics(self):
+        """Create LLVM overflow detection intrinsics."""
+
+        # llvm.sadd.with.overflow.i64 - signed add with overflow detection
+        overflow_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(1)])  # {i64, i1}
+        sadd_overflow_ty = ir.FunctionType(overflow_ty, [ir.IntType(64), ir.IntType(64)])
+        self.sadd_overflow = ir.Function(self.module, sadd_overflow_ty, name="llvm.sadd.with.overflow.i64")
 
     def _create_global_string(self, string_content: str) -> ir.Value:
         """Create a global string constant."""
@@ -470,6 +543,18 @@ class SiluToLLVMConverter:
                 right = self._convert_node(node[2])
                 if left and right:
                     return self.current_builder.call(self.pyobj_add, [left, right])
+            return None
+
+        elif op == "-":
+            if len(node) == 2:
+                # Unary minus: -operand
+                operand = self._convert_node(node[1])
+                if operand:
+                    return self._create_unary_minus(operand)
+            elif len(node) >= 3:
+                # Binary minus: left - right (not implemented yet)
+                # For now, just ignore binary subtraction
+                pass
             return None
 
         elif op == "<=":
