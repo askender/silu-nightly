@@ -371,13 +371,18 @@ class CIRGenerator(c_ast.NodeVisitor):
     def generic_visit(self, node: c_ast.Node) -> Optional[str]:
         """Handle unsupported AST nodes."""
         node_name = type(node).__name__
-        print(f"Warning: Unsupported C construct: {node_name}", file=sys.stderr)
+        print(f"Warning: Unsupported C construct: {node_name}") # , file=sys.stderr
         return f"<unsupported:{node_name}>"
 
 
+def clean_comment(astr):
+    if '//' in astr:
+        return astr.split('//')[0].strip()
+    return astr
+
 # ================== Main Functions ==================
 
-def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple:
+def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple|None:
     """
     Generate IR from C source code.
 
@@ -390,11 +395,21 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple:
     """
     try:
         parser = c_parser.CParser()
+        c_code = c_code.replace("#include <stdlib.h>", "")
+        c_code = c_code.replace('__signed', 'signed')
         c_code = re.sub(pattern_comment, '', c_code)
         c_code = [j for j in c_code.split('\n') if not j.strip().startswith('#')]
         c_code = [j for j in c_code if not j.strip().startswith('//')]
+
+        c_code = [j for j in c_code if "__darwin_" not in j.strip()]
+        c_code = [clean_comment(j) for j in c_code ]
         c_code = '\n'.join(c_code)
-        ast = parser.parse(c_code)
+
+        try:
+            ast = parser.parse(c_code)
+        except Exception as e:
+            print(f"Error2 parsing C code: {e}") # , file=sys.stderr
+            return
 
         generator = CIRGenerator(record_types=record_types)
         ir = generator.visit(ast)
@@ -419,7 +434,30 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             c_code = f.read()
+            # c_code = re.sub(r'#include\s+<[^>]+>', '', c_code)
+            with open(f"{file_path}.v2.c", 'w', encoding='utf-8') as f:
+                f.write(c_code)
+
+        import os
+        if os.path.isfile(f"{file_path}.i"):
+            with open(f"{file_path}.i", 'r', encoding='utf-8') as f:
+                c_code = f.read()
+        else:
+            import subprocess
+            # "-nostdinc",
+            result = subprocess.run(["cpp", "-E", "-nostdlib","-nostdinc","-Imystdint", "-Iutils/fake_libc_include", f"{file_path}.v2.c"], capture_output=True, text=True)
+
+            if result.returncode != 0:
+                print(f"[Error1] cpp failed on {file_path}.v2.c with return code {result.returncode}")
+                # print(f"stderr output:\n{result.stderr}")
+                return
+
+            c_code = result.stdout
+            with open(f"{file_path}.i", 'w', encoding='utf-8') as f:
+                f.write(c_code)
+
         return generate_ir_from_c_code(c_code, record_types)
+
     except FileNotFoundError:
         print(f"Error: C file '{file_path}' not found.", file=sys.stderr)
         raise
@@ -485,7 +523,7 @@ def main():
 
     try:
         # Generate IR
-        print(f"Generating IR from {args.input_file}...")
+        # print(f"Generating IR from {args.input_file}...")
         ir = generate_ir_from_c_file(args.input_file, record_types=not args.no_types)
 
         # Save IR
