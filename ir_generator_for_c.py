@@ -9,6 +9,10 @@ and analysis of C code.
 import json
 import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
+import re
+
+pattern_comment = re.compile(r'/\*.*?\*/', re.DOTALL)  # re.DOTALL 让 . 可以匹配换行符
+
 
 try:
     from pycparser import c_parser, c_ast
@@ -386,6 +390,10 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple:
     """
     try:
         parser = c_parser.CParser()
+        c_code = re.sub(pattern_comment, '', c_code)
+        c_code = [j for j in c_code.split('\n') if not j.strip().startswith('#')]
+        c_code = [j for j in c_code if not j.strip().startswith('//')]
+        c_code = '\n'.join(c_code)
         ast = parser.parse(c_code)
 
         generator = CIRGenerator(record_types=record_types)
