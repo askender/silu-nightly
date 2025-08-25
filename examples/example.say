@@ -1,0 +1,22 @@
+// Example Say Language Program
+// This demonstrates a simple DSL that compiles to LLVM IR
+
+fn main() {
+    // Print a greeting in Chinese and English
+    say "你好 Say Language!"
+
+    // Define some variables
+    let answer = 42
+    let year = 2024
+
+    // Print the variables
+    say "The answer is:"
+    say answer
+
+    say "Current year:"
+    say year
+
+    // More messages
+    say "Say Language is simple but powerful!"
+    say "It compiles directly to LLVM IR without C++!"
+}
