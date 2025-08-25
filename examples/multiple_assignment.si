@@ -1,0 +1,101 @@
+# Multiple Assignment Examples
+# This file demonstrates the multiple assignment feature in Silu
+
+print("=== Basic Multiple Assignment ===")
+# Simple multiple assignment with numbers
+a = b = c = 42
+print("a =", a)
+print("b =", b)
+print("c =", c)
+
+# Multiple assignment with strings
+name1 = name2 = "Silu"
+print("name1 =", name1)
+print("name2 =", name2)
+
+print("\n=== Multiple Assignment with Expressions ===")
+# Assignment with arithmetic expressions
+x = y = z = 2 + 3 * 4
+print("x =", x)
+print("y =", y)
+print("z =", z)
+
+# Assignment with boolean expressions
+flag1 = flag2 = 10 > 5
+print("flag1 =", flag1)
+print("flag2 =", flag2)
+
+print("\n=== Independence of Variables ===")
+# For immutable types, variables are independent after assignment
+num1 = num2 = 100
+print("Before: num1 =", num1, ", num2 =", num2)
+num1 = 200
+print("After num1 = 200: num1 =", num1, ", num2 =", num2)
+
+print("\n=== Mutable Objects (Shared References) ===")
+# For mutable types like lists, variables share the same object
+list1 = list2 = [1, 2, 3]
+print("Before: list1 =", list1, ", list2 =", list2)
+list1[0] = 999
+print("After list1[0] = 999: list1 =", list1, ", list2 =", list2)
+
+print("\n=== Mixed Assignment Types ===")
+# Multiple assignment with subscript assignment
+arr1 = [0, 0, 0]
+arr2 = [0, 0, 0]
+arr1[0] = arr2[1] = 99
+print("arr1 =", arr1)
+print("arr2 =", arr2)
+
+# Multiple assignment with tuple unpacking
+a, b = c, d = [10, 20]
+print("a =", a, ", b =", b)
+print("c =", c, ", d =", d)
+
+# Mix simple and tuple assignment
+val = x, y = [100, 200]
+print("val =", val)
+print("x =", x, ", y =", y)
+
+print("\n=== Many Targets ===")
+# Assignment with many variables
+v1 = v2 = v3 = v4 = v5 = "hello world"
+print("All variables:", v1, v2, v3, v4, v5)
+
+print("\n=== Multiple Assignment in Control Flow ===")
+# Multiple assignment in loops and conditionals
+for i in range(3):
+    temp1 = temp2 = i * 2
+    print("Loop", i, ": temp1 =", temp1, ", temp2 =", temp2)
+
+if True:
+    result1 = result2 = "conditional assignment"
+    print("Conditional:", result1, result2)
+
+print("\n=== Function with Multiple Assignment ===")
+def demo_function():
+    local1 = local2 = local3 = "local variables"
+    return local1 + " " + local2 + " " + local3
+
+output = demo_function()
+print("Function output:", output)
+
+print("\n=== Different Data Types ===")
+# Numbers
+int1 = int2 = 42
+float1 = float2 = 3.14
+
+# Strings
+str1 = str2 = "test string"
+
+# Booleans
+bool1 = bool2 = True
+
+# Lists
+list_a = list_b = [1, 2, 3]
+
+print("Integers:", int1, int2)
+print("Floats:", float1, float2)
+print("Strings:", str1, str2)
+print("Booleans:", bool1, bool2)
+print("Lists:", list_a, list_b)
