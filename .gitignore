@@ -123,3 +123,11 @@ dmypy.json
 
 # Claude Code settings
 .claude/
+
+xc/
+xmd/
+xmlir/
+xpy/
+xrs/
+xsh/
+xsi/
