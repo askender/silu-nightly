@@ -86,3 +86,21 @@ string_fstring.py bad: unsupported feature: Assignment to Tuple not supported
 x, y = y, x
 
 del_name.py bad: unsupported feature: Unsupported name context: <class 'ast.Del'>
+
+
+
+python test_ir_roundtrip.py aok/decorator.py
+python test_ir_roundtrip.py aok/del_subscr.py
+python test_ir_roundtrip.py aok/int_bytes_optional_args_cp311.py
+python test_ir_roundtrip.py aok/scope.py
+python test_ir_roundtrip.py aok/while_cond.py
+python test_ir_roundtrip.py aok/while_nest_exc.py
+
+silu ir aok/decorator.py
+silu ir aok/del_subscr.py
+silu ir aok/scope.py
+
+try
+silu ir aok/while_nest_exc.py
+err
+silu ir aok/int_bytes_optional_args_cp311.py
