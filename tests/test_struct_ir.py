@@ -153,12 +153,22 @@ class TestStructIR:
             "active": False
         }
 
-    def test_struct_undefined_type_error(self):
-        """Test error when using undefined struct type."""
+    def test_struct_undefined_type_auto_creation(self):
+        """Test auto-creation of undefined struct types."""
         interpreter = IRInterpreter()
 
-        with pytest.raises(NameError, match="Struct type 'UndefinedStruct' is not defined"):
-            interpreter.execute(("assign", "x", None, "struct_UndefinedStruct"))
+        # Execute assignment with undefined struct type
+        interpreter.execute(("assign", "x", None, "struct_UndefinedStruct"))
+
+        # Verify the struct type was auto-created
+        assert "UndefinedStruct" in interpreter.struct_types
+        assert interpreter.struct_types["UndefinedStruct"] == []  # Empty field list
+
+        # Verify the variable was created as an empty struct
+        x = interpreter.global_env["x"]
+        assert isinstance(x, dict)
+        assert x == {}  # Empty struct instance
+        assert id(x) in interpreter.struct_instances  # Tracked as struct instance
 
     def test_struct_attribute_error(self):
         """Test error when accessing non-existent struct attribute."""

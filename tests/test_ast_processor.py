@@ -7,8 +7,8 @@ import pytest
 from silu.ast_processor import BaseASTProcessor
 
 
-class TestASTProcessor(BaseASTProcessor):
-    """Test implementation of BaseASTProcessor for testing purposes."""
+class MockASTProcessor(BaseASTProcessor):
+    """Mock implementation of BaseASTProcessor for testing purposes."""
 
     def __init__(self):
         super().__init__()
@@ -93,7 +93,7 @@ class TestBaseASTProcessor:
 
     def test_visit_module(self):
         """Test visiting a module node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create a simple module with an assignment
         assign_target = ast.Name(id="x", ctx=ast.Store())
@@ -106,7 +106,7 @@ class TestBaseASTProcessor:
 
     def test_visit_expr(self):
         """Test visiting an expression node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create an expression node
         value = ast.Constant(value=42)
@@ -117,7 +117,7 @@ class TestBaseASTProcessor:
 
     def test_visit_assign_simple(self):
         """Test visiting a simple assignment node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create a simple assignment
         target = ast.Name(id="x", ctx=ast.Store())
@@ -129,7 +129,7 @@ class TestBaseASTProcessor:
 
     def test_visit_assign_multiple_targets(self):
         """Test visiting an assignment with multiple targets."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create assignment with multiple targets
         target1 = ast.Name(id="x", ctx=ast.Store())
@@ -143,7 +143,7 @@ class TestBaseASTProcessor:
 
     def test_visit_assign_non_name_target(self):
         """Test visiting an assignment with non-name target."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create assignment with non-name target (e.g., attribute)
         target = ast.Attribute(
@@ -160,7 +160,7 @@ class TestBaseASTProcessor:
 
     def test_visit_assign_subscript(self):
         """Test visiting a subscript assignment."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create subscript assignment: arr[0] = 42
         target = ast.Subscript(
@@ -176,7 +176,7 @@ class TestBaseASTProcessor:
 
     def test_visit_name_load(self):
         """Test visiting a name node with load context."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         name = ast.Name(id="x", ctx=ast.Load())
         result = processor.visit_Name(name)
@@ -184,7 +184,7 @@ class TestBaseASTProcessor:
 
     def test_visit_name_store(self):
         """Test visiting a name node with store context."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         name = ast.Name(id="x", ctx=ast.Store())
         result = processor.visit_Name(name)
@@ -192,7 +192,7 @@ class TestBaseASTProcessor:
 
     def test_visit_constant(self):
         """Test visiting a constant node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Test various constant types
         const_int = ast.Constant(value=42)
@@ -209,7 +209,7 @@ class TestBaseASTProcessor:
 
     def test_visit_binop(self):
         """Test visiting a binary operation node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         left = ast.Constant(value=5)
         right = ast.Constant(value=3)
@@ -220,7 +220,7 @@ class TestBaseASTProcessor:
 
     def test_visit_unaryop(self):
         """Test visiting a unary operation node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         operand = ast.Constant(value=5)
         unaryop = ast.UnaryOp(op=ast.USub(), operand=operand)
@@ -230,7 +230,7 @@ class TestBaseASTProcessor:
 
     def test_visit_boolop(self):
         """Test visiting a boolean operation node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         values = [ast.Constant(value=True), ast.Constant(value=False)]
         boolop = ast.BoolOp(op=ast.And(), values=values)
@@ -240,7 +240,7 @@ class TestBaseASTProcessor:
 
     def test_visit_compare(self):
         """Test visiting a comparison node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         left = ast.Constant(value=5)
         comparators = [ast.Constant(value=3)]
@@ -252,7 +252,7 @@ class TestBaseASTProcessor:
 
     def test_get_operator_supported(self):
         """Test getting supported operators."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Test arithmetic operators
         assert processor._get_operator(ast.Add()) == "+"
@@ -282,7 +282,7 @@ class TestBaseASTProcessor:
 
     def test_get_operator_unsupported(self):
         """Test getting unsupported operators."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Test unsupported operator
         with pytest.raises(NotImplementedError, match="Unsupported operator: LShift"):
@@ -290,7 +290,7 @@ class TestBaseASTProcessor:
 
     def test_visit_call_builtin(self):
         """Test visiting a function call node with built-in function."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create a call to print function
         func = ast.Name(id="print", ctx=ast.Load())
@@ -302,7 +302,7 @@ class TestBaseASTProcessor:
 
     def test_visit_if(self):
         """Test visiting an if statement."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create an if statement
         test = ast.Constant(value=True)
@@ -315,7 +315,7 @@ class TestBaseASTProcessor:
 
     def test_visit_while(self):
         """Test visiting a while statement."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create a while statement
         test = ast.Constant(value=True)
@@ -327,7 +327,7 @@ class TestBaseASTProcessor:
 
     def test_visit_for(self):
         """Test visiting a for statement."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create a for statement
         target = ast.Name(id="i", ctx=ast.Store())
@@ -342,7 +342,7 @@ class TestBaseASTProcessor:
 
     def test_visit_functiondef(self):
         """Test visiting a function definition."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create a function definition
         args = ast.arguments(
@@ -364,7 +364,7 @@ class TestBaseASTProcessor:
 
     def test_visit_return(self):
         """Test visiting a return statement."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create a return statement
         return_stmt = ast.Return(value=ast.Constant(value=42))
@@ -374,7 +374,7 @@ class TestBaseASTProcessor:
 
     def test_visit_aug_assign_simple(self):
         """Test visiting a simple augmented assignment node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create an augmented assignment: x += 5
         aug_assign = ast.AugAssign(
@@ -388,7 +388,7 @@ class TestBaseASTProcessor:
 
     def test_visit_aug_assign_subscript(self):
         """Test visiting a subscript augmented assignment node."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create an augmented assignment: arr[0] -= 3
         aug_assign = ast.AugAssign(
@@ -406,7 +406,7 @@ class TestBaseASTProcessor:
 
     def test_visit_aug_assign_unsupported_target(self):
         """Test visiting an augmented assignment with unsupported target."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create an augmented assignment with unsupported target (attribute)
         aug_assign = ast.AugAssign(
@@ -424,7 +424,7 @@ class TestBaseASTProcessor:
 
     def test_visit_assign_tuple_unpacking(self):
         """Test visiting a tuple unpacking assignment."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create tuple unpacking assignment: a, b = 1, 2
         targets = ast.Tuple(
@@ -445,7 +445,7 @@ class TestBaseASTProcessor:
 
     def test_visit_assign_tuple_unpacking_non_name_target(self):
         """Test visiting tuple unpacking with non-name target."""
-        processor = TestASTProcessor()
+        processor = MockASTProcessor()
 
         # Create tuple unpacking with non-name target
         targets = ast.Tuple(
