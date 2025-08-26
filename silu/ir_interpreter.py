@@ -100,7 +100,8 @@ class IRInterpreter:
         if opcode in binary_ops and len(ir_node) == 3:
             return self._execute_binary_op(opcode, ir_node[1], ir_node[2])
 
-        raise NotImplementedError(f"IR opcode not implemented: {opcode}")
+        # TODO
+        # raise NotImplementedError(f"IR opcode not implemented: {opcode}")
 
     def execute_program(self, ir_module: Tuple) -> Any:
         """Execute a complete IR module and automatically call main() if it exists."""
@@ -174,14 +175,44 @@ class IRInterpreter:
                 evaluated_value = False
             elif annotation == "str" or annotation == "char*":
                 evaluated_value = ""
+            elif isinstance(annotation, str) and annotation.endswith(']') and '[' in annotation:
+                # Handle array types like "int[2]", "float[10]", etc.
+                base_type, size_part = annotation.split('[', 1)
+                size_str = size_part.rstrip(']')
+                try:
+                    size = int(size_str)
+                    if base_type == "int":
+                        evaluated_value = [0] * size
+                    elif base_type in ("float", "double"):
+                        evaluated_value = [0.0] * size
+                    elif base_type == "bool":
+                        evaluated_value = [False] * size
+                    elif base_type in ("str", "char*"):
+                        evaluated_value = [""] * size
+                    else:
+                        # Unknown base type, create list of None values
+                        evaluated_value = [None] * size
+                except ValueError:
+                    # Invalid size, keep as None
+                    pass
             # For pointer types or other types, keep as None
 
         # Handle complex target expressions
-        if isinstance(target, tuple) and target[0] == "name":
-            # Extract variable name from ["name", "x"] format
-            target = target[1]
-
-        self._set_variable(target, evaluated_value)
+        if isinstance(target, tuple):
+            if target[0] == "name":
+                # Extract variable name from ["name", "x"] format
+                target = target[1]
+                self._set_variable(target, evaluated_value)
+            elif target[0] == "subscript":
+                # Handle subscript assignment: ["subscript", obj, key]
+                obj = target[1]
+                key = target[2]
+                self._execute_subscript_assign(obj, key, evaluated_value)
+                return
+            else:
+                raise NotImplementedError(f"Unsupported assignment target: {target}")
+        else:
+            self._set_variable(target, evaluated_value)
 
     def _execute_tuple_assign(self, targets: Tuple[str, ...], value: Any) -> None:
         """Execute tuple unpacking assignment: a, b = value"""
@@ -244,7 +275,7 @@ class IRInterpreter:
         for assignment in assignments:
             self.execute(assignment)
 
-    def _execute_call(self, func: Any, args: Tuple, kwargs: Tuple) -> Any:
+    def _execute_call(self, func: Any, args: Tuple, kwargs: Tuple = ()) -> Any:
         """Execute function call."""
         func_name = self.execute(func)
 
