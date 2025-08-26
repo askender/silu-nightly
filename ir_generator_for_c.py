@@ -512,13 +512,13 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple|Non
         c_code = [j for j in c_code if "__darwin_" not in j.strip()]
         c_code = [clean_comment(j) for j in c_code ]
         c_code = '\n'.join(c_code)
-        print(f"c_code:\n{c_code}")
+        # print(f"c_code:\n{c_code}")
 
-        # try:
-        ast = parser.parse(c_code)
-        # except Exception as e:
-        #     print(f"Error2 parsing C code: {e}") # , file=sys.stderr
-        #     return
+        try:
+            ast = parser.parse(c_code)
+        except Exception as e:
+            print(f"Error2 parsing C code: {e}") # , file=sys.stderr
+            return
 
         generator = CIRGenerator(record_types=record_types)
         ir = generator.visit(ast)
@@ -556,11 +556,10 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
 
         import subprocess
         # "-nostdinc", "-nostdlib", cpp gcc clang
-        print(f'env: {env}')
         # "-nostdinc","-Imystdint", "-Iutils/fake_libc_include",
         # r'-I/path/to/pycparser/utils/fake_libc_include'
         cmd = ["clang", "-E", "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include", tmp_file]
-        print(' '.join(cmd))
+        # print(' '.join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
         if result.returncode != 0:
