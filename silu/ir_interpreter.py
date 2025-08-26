@@ -160,9 +160,27 @@ class IRInterpreter:
         """Execute variable name reference."""
         return self._get_variable(name)
 
-    def _execute_assign(self, target: str, value: Any, annotation: Any) -> None:
+    def _execute_assign(self, target: Union[str, Tuple], value: Any, annotation: Any) -> None:
         """Execute assignment: target = value"""
         evaluated_value = self.execute(value)
+
+        # Handle null values with type annotations (C-style default initialization)
+        if evaluated_value is None and annotation is not None:
+            if annotation == "int":
+                evaluated_value = 0
+            elif annotation == "float" or annotation == "double":
+                evaluated_value = 0.0
+            elif annotation == "bool":
+                evaluated_value = False
+            elif annotation == "str" or annotation == "char*":
+                evaluated_value = ""
+            # For pointer types or other types, keep as None
+
+        # Handle complex target expressions
+        if isinstance(target, tuple) and target[0] == "name":
+            # Extract variable name from ["name", "x"] format
+            target = target[1]
+
         self._set_variable(target, evaluated_value)
 
     def _execute_tuple_assign(self, targets: Tuple[str, ...], value: Any) -> None:
