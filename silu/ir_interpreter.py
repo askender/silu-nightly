@@ -43,13 +43,14 @@ class IRInterpreter:
             "min": self._builtin_min,
             "max": self._builtin_max,
             "round": self._builtin_round,
+            "strlen": self._builtin_strlen,
         }
 
     # ================== Main Execution Methods ==================
 
     def execute(self, ir_node: Union[Tuple, Any]) -> Any:
         """Execute an IR node and return its value."""
-        if not isinstance(ir_node, tuple):
+        if not isinstance(ir_node, (tuple, list)) or (isinstance(ir_node, list) and (not ir_node or not isinstance(ir_node[0], str))):
             # Leaf values (constants, variables)
             if isinstance(ir_node, str) and self._is_identifier(ir_node):
                 try:
@@ -101,6 +102,10 @@ class IRInterpreter:
         }
         if opcode in binary_ops and len(ir_node) == 3:
             return self._execute_binary_op(opcode, ir_node[1], ir_node[2])
+
+        # Handle post-increment operation
+        if opcode == "p++":
+            return self._execute_post_increment(ir_node[1])
 
         # TODO
         # raise NotImplementedError(f"IR opcode not implemented: {opcode}")
@@ -955,6 +960,23 @@ class IRInterpreter:
         if ndigits is None:
             return round(number)
         return round(number, ndigits)
+
+    def _builtin_strlen(self, s: str) -> int:
+        """Built-in strlen function - returns length of string."""
+        return len(s)
+
+    def _execute_post_increment(self, operand: Any) -> int:
+        """Execute post-increment operation (var++). Returns old value, increments variable."""
+        if isinstance(operand, (tuple, list)) and operand[0] == "name":
+            var_name = operand[1]
+            old_value = self._get_variable(var_name)
+            if not isinstance(old_value, (int, float)):
+                raise TypeError(f"Cannot increment non-numeric variable: {var_name}")
+            new_value = old_value + 1
+            self._set_variable(var_name, new_value)
+            return old_value
+        else:
+            raise ValueError("Post-increment only supports variable names")
 
 
 def execute_ir_from_file(filename: str) -> Any:
