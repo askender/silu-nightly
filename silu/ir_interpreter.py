@@ -175,6 +175,8 @@ class IRInterpreter:
                 evaluated_value = False
             elif annotation == "str" or annotation == "char*":
                 evaluated_value = ""
+            elif annotation == "struct":
+                evaluated_value = {}
             elif isinstance(annotation, str) and annotation.endswith(']') and '[' in annotation:
                 # Handle array types like "int[2]", "float[10]", etc.
                 base_type, size_part = annotation.split('[', 1)
@@ -208,6 +210,12 @@ class IRInterpreter:
                 obj = target[1]
                 key = target[2]
                 self._execute_subscript_assign(obj, key, evaluated_value)
+                return
+            elif target[0] == "attribute":
+                # Handle attribute assignment: ["attribute", obj, attr]
+                obj = target[1]
+                attr = target[2]
+                self._execute_attribute_assign(obj, attr, evaluated_value)
                 return
             else:
                 raise NotImplementedError(f"Unsupported assignment target: {target}")
@@ -523,7 +531,16 @@ class IRInterpreter:
     def _execute_attribute(self, obj: Any, attr: str) -> Any:
         """Execute attribute access obj.attr."""
         obj_val = self.execute(obj)
-        return getattr(obj_val, attr)
+
+        # If obj_val is a dictionary (our struct representation), get the attribute
+        if isinstance(obj_val, dict):
+            if attr in obj_val:
+                return obj_val[attr]
+            else:
+                raise AttributeError(f"'{type(obj_val).__name__}' object has no attribute '{attr}'")
+        else:
+            # For other objects, use getattr
+            return getattr(obj_val, attr)
 
     def _execute_subscript(self, obj: Any, index: Any) -> Any:
         """Execute subscript operation obj[index]."""
@@ -537,6 +554,18 @@ class IRInterpreter:
         key_val = self.execute(key)
         value_val = self.execute(value)
         obj_val[key_val] = value_val
+
+    def _execute_attribute_assign(self, obj: Any, attr: str, value: Any) -> None:
+        """Execute attribute assignment obj.attr = value."""
+        obj_val = self.execute(obj)
+        value_val = self.execute(value)
+
+        # If obj_val is a dictionary (our struct representation), set the attribute
+        if isinstance(obj_val, dict):
+            obj_val[attr] = value_val
+        else:
+            # For other objects, use setattr
+            setattr(obj_val, attr, value_val)
 
     # ================== Lambda and Advanced Features ==================
 
