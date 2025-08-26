@@ -1267,3 +1267,84 @@ class TestMultipleTargetAssignmentIRInterpreter:
         assert self.interpreter._get_variable("list2") == [1, 2, 3]
         assert self.interpreter._get_variable("bool1") == True
         assert self.interpreter._get_variable("bool2") == True
+
+
+class TestEnumTypedef:
+    """Tests for enum typedef handling in IR interpreter."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.interpreter = IRInterpreter()
+
+    def test_enum_typedef_defines_constants(self):
+        """Test that enum typedef automatically defines enum constants."""
+        # Execute enum typedef
+        ir = ("module", (("typedef", "PS_enum_CarModes", "Enum"),))
+        self.interpreter.execute_program(ir)
+
+        # Check that all enum constants are defined with correct values
+        assert self.interpreter._get_variable("PS_enum_CarModes_Factory") == 0
+        assert self.interpreter._get_variable("PS_enum_CarModes_Normal") == 1
+        assert self.interpreter._get_variable("PS_enum_CarModes_Exihibition") == 2
+        assert self.interpreter._get_variable("PS_enum_CarModes_Crash") == 3
+        assert self.interpreter._get_variable("PS_enum_CarModes_Transport") == 4
+
+    def test_enum_constants_in_program(self):
+        """Test using enum constants in a complete program."""
+        ir = (
+            "module",
+            (
+                ("typedef", "PS_enum_CarModes", "Enum"),
+                (
+                    "func_def",
+                    "main",
+                    (),
+                    (
+                        ("assign", "mode", ("name", "PS_enum_CarModes_Normal"), "int"),
+                        ("return", ("name", "mode")),
+                    ),
+                    (),
+                    "int",
+                ),
+            ),
+        )
+
+        result = self.interpreter.execute_program(ir)
+        assert result == 1  # PS_enum_CarModes_Normal should be 1
+
+    def test_multiple_enum_constants_usage(self):
+        """Test using multiple enum constants in calculations."""
+        ir = (
+            "module",
+            (
+                ("typedef", "PS_enum_CarModes", "Enum"),
+                (
+                    "func_def",
+                    "test",
+                    (),
+                    (
+                        ("assign", "factory", ("name", "PS_enum_CarModes_Factory"), "int"),
+                        ("assign", "normal", ("name", "PS_enum_CarModes_Normal"), "int"),
+                        ("assign", "crash", ("name", "PS_enum_CarModes_Crash"), "int"),
+                        ("assign", "sum", ("+", ("name", "factory"), ("+", ("name", "normal"), ("name", "crash"))), "int"),
+                        ("return", ("name", "sum")),
+                    ),
+                    (),
+                    "int",
+                ),
+            ),
+        )
+
+        # Execute the program and call the test function
+        self.interpreter.execute_program(ir)
+        result = self.interpreter._call_user_function("test", [], {})
+        assert result == 4  # 0 + 1 + 3 = 4
+
+    def test_enum_storage_in_enum_types(self):
+        """Test that enum types are properly stored."""
+        ir = ("module", (("typedef", "PS_enum_CarModes", "Enum"),))
+        self.interpreter.execute_program(ir)
+
+        # Check that the enum type is stored
+        assert "PS_enum_CarModes" in self.interpreter.enum_types
+        assert self.interpreter.enum_types["PS_enum_CarModes"] == "Enum"
