@@ -28,6 +28,7 @@ class IRInterpreter:
         # Built-in functions
         self.builtins = {
             "print": self._builtin_print,
+            "printf": self._builtin_printf,
             "type": self._builtin_type,
             "isinstance": self._builtin_isinstance,
             "int": self._builtin_int,
@@ -730,6 +731,34 @@ class IRInterpreter:
 
         output = sep.join(str(arg) for arg in args)
         print(output, end=end, file=file)
+
+    def _builtin_printf(self, format_str: str, *args) -> None:
+        """Built-in printf function - C-style formatted printing."""
+        try:
+            # Convert arguments to appropriate types for formatting
+            converted_args = []
+            for arg in args:
+                if isinstance(arg, str):
+                    # Try to convert string numbers to appropriate types
+                    try:
+                        # Check if it looks like a float
+                        if '.' in arg:
+                            converted_args.append(float(arg))
+                        else:
+                            converted_args.append(int(arg))
+                    except ValueError:
+                        # Keep as string if conversion fails
+                        converted_args.append(arg)
+                else:
+                    converted_args.append(arg)
+
+            # Use Python's % formatting which is similar to C printf
+            formatted = format_str % tuple(converted_args)
+            print(formatted, end="")
+        except (TypeError, ValueError) as e:
+            # If formatting fails, fall back to simple concatenation
+            parts = [str(format_str)] + [str(arg) for arg in args]
+            print(" ".join(parts), end="")
 
     def _builtin_type(self, obj: Any) -> type:
         """Built-in type function."""
