@@ -131,3 +131,7 @@ xpy/
 xrs/
 xsh/
 xsi/
+
+# Generated IR and binary files
+*.ir.json
+*.bin
