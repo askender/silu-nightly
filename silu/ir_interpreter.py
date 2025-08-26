@@ -71,7 +71,7 @@ class IRInterpreter:
         # Dispatch to appropriate handler
         handler_name = f"_execute_{opcode}"
         if hasattr(self, handler_name):
-            return getattr(self, handler_name)(*ir_node[1:])
+            return getattr(self, handler_name)(*ir_node[1:4])
 
         # Handle unary operators first (they have exactly 2 elements: opcode + operand)
         unary_ops = {"+", "-", "not"}
@@ -102,17 +102,36 @@ class IRInterpreter:
         raise NotImplementedError(f"IR opcode not implemented: {opcode}")
 
     def execute_program(self, ir_module: Tuple) -> Any:
-        """Execute a complete IR module."""
+        """Execute a complete IR module and automatically call main() if it exists."""
         if not isinstance(ir_module, tuple) or ir_module[0] != "module":
             raise ValueError("Expected IR module tuple")
 
         statements = ir_module[1]
         result = None
+        main_called_explicitly = False
 
+        # First pass: execute all statements to define functions and variables
         for stmt in statements:
             result = self.execute(stmt)
             if self.should_return:
                 break
+
+            # Check if main was called explicitly
+            if (isinstance(stmt, tuple) and len(stmt) >= 2 and
+                stmt[0] == "call" and isinstance(stmt[1], tuple) and
+                len(stmt[1]) >= 2 and stmt[1][0] == "name" and stmt[1][1] == "main"):
+                main_called_explicitly = True
+
+        # Second pass: automatically call main() if it exists and wasn't called explicitly
+        if "main" in self.functions and not self.should_return and not main_called_explicitly:
+            # Reset return state before calling main
+            self.should_return = False
+            self.return_value = None
+
+            # Call main function with no arguments
+            main_result = self._call_user_function("main", [], {})
+            if main_result is not None:
+                result = main_result
 
         return result
 
@@ -330,7 +349,6 @@ class IRInterpreter:
         current_env = {}
         if self.local_env_stack:
             current_env = self.local_env_stack[-1].copy()
-
         self.functions[name] = {
             "args": args,
             "body": body,
@@ -817,3 +835,29 @@ def _json_to_tuples(obj):
         return {key: _json_to_tuples(value) for key, value in obj.items()}
     else:
         return obj
+
+
+def main():
+    """Main function for direct execution of IR files."""
+    import sys
+
+    if len(sys.argv) != 2:
+        print("Usage: python ir_interpreter.py <ir_file>", file=sys.stderr)
+        sys.exit(1)
+
+    ir_file = sys.argv[1]
+    try:
+        result = execute_ir_from_file(ir_file)
+        # Only print result if it's not None (similar to REPL behavior)
+        if result is not None:
+            print(result)
+    except FileNotFoundError:
+        print(f"Error: File '{ir_file}' not found", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error executing IR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
