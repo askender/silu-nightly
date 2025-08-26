@@ -1,0 +1,13 @@
+# 1 "aokc/00117.c.v2.c"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 464 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "aokc/00117.c.v2.c" 2
+int main()
+{
+	int x[] = { 1, 0 };
+	return x[1];
+}
+

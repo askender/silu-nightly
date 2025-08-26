@@ -66,10 +66,11 @@ silu symbolic program.si          # Symbolic analysis
 
 - **Data Types**: int, float, str, bool, bytes, list
 - **Operations**: Arithmetic, boolean, comparison (including chained)
-- **Control Flow**: if/elif/else, while/for loops
+- **Control Flow**: if/elif/else, while/for loops, match/case statements
 - **Assignment**: Simple assignment, multiple target assignment (a = b = 1), tuple unpacking
 - **Functions**: User-defined with parameters and return values, closures
 - **Built-ins**: print, type, isinstance, type conversions
+- **Pattern Matching**: Full match/case support with value, sequence, mapping, or, guard, capture, and star patterns
 
 ## Documentation Structure
 
@@ -87,10 +88,11 @@ silu symbolic program.si          # Symbolic analysis
 - Uses unified AST processing architecture to avoid code duplication
 - Comprehensive test suite with 340+ tests using pytest
 - Supports multiple execution modes (interpret, IR generation/execution, IR-to-source conversion, symbolic analysis)
-- Enhanced symbolic execution with Z3 constraint generation and precise loop analysis
+- Enhanced symbolic execution with Z3 constraint generation and precise loop handling
 - Shared conversion functions between IR-to-source converter and symbolic executor for consistent output
 - Built-in memory protection mechanisms to prevent out-of-memory attacks
 - Full closure support in IR interpreter with environment capture and nested closures
+- Complete match/case statement support for structural pattern matching (Python 3.10+ syntax)
 - Package management with `uv` (recommended) or `pip`
 - Code formatting with `ruff`
 
@@ -241,3 +243,66 @@ Memory protection is thoroughly tested with dedicated test cases in `tests/test_
 - Range function protection
 - Container extension protection
 - Verification that normal operations still work
+
+## Match Statement Support
+
+The Silu IR generator now provides comprehensive support for Python's match/case statements (structural pattern matching) introduced in Python 3.10.
+
+### Supported Pattern Types
+
+1. **Value Patterns**: `case 42:`, `case "hello":`, `case 3.14:`
+2. **Singleton Patterns**: `case True:`, `case False:`, `case None:`
+3. **Sequence Patterns**: `case [1, 2, x]:`, `case [first, *rest]:`
+4. **Mapping Patterns**: `case {"key": value}:`, `case {"name": n, **extra}:`
+5. **Or Patterns**: `case 1 | 2 | 3:`
+6. **Capture Patterns**: `case x:` (captures value)
+7. **Wildcard Patterns**: `case _:` (matches anything)
+8. **Guard Patterns**: `case x if x > 10:`
+9. **Star Patterns**: `case [*items]`, `case [first, *rest]`
+
+### IR Structure
+
+Match statements are converted to IR with the following structure:
+```python
+("match", subject_ir, (case1_ir, case2_ir, ...))
+```
+
+Each case is represented as:
+```python
+("match_case", pattern_ir, guard_ir_or_None, (body_stmt1, body_stmt2, ...))
+```
+
+Patterns have specific IR representations:
+- Value: `("match_value", value_ir)`
+- Singleton: `("match_singleton", True|False|None)`
+- Sequence: `("match_sequence", (pattern1, pattern2, ...))`
+- Mapping: `("match_mapping", (key1, key2, ...), (pattern1, pattern2, ...), rest_name_or_None)`
+- Or: `("match_or", (pattern1, pattern2, ...))`
+- As/Capture: `("match_as", nested_pattern_or_None, capture_name_or_None)`
+- Star: `("match_star", capture_name_or_None)`
+
+### Example Usage
+
+```python
+# Input Silu code
+def handle_data(data):
+    match data:
+        case {"type": "user", "name": name}:
+            return f"User: {name}"
+        case [first, *rest] if len(rest) > 0:
+            return f"List: {first} + {len(rest)} more"
+        case _:
+            return "Unknown"
+
+# Generates comprehensive IR for all pattern types
+silu ir example.py --format json
+```
+
+### Testing
+
+Match statement support is thoroughly tested in `tests/test_match_ir.py` with comprehensive coverage of:
+- All pattern types and combinations
+- Nested patterns and complex structures
+- Guard conditions and multiple cases
+- Integration with functions and other language features
+- Edge cases like empty bodies and multiple statements per case

@@ -1,0 +1,18 @@
+# 1 "aokc/00006.c.v2.c"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 464 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "aokc/00006.c.v2.c" 2
+int
+main()
+{
+	int x;
+
+	x = 50;
+	while (x)
+		x = x - 1;
+	return x;
+}
+

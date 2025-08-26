@@ -170,47 +170,6 @@ class IRInterpreter:
         # Store the struct type definition
         self.struct_types[name] = fields
 
-    def _execute_typedef(self, name: str, type_name: str) -> None:
-        """
-        Execute typedef definition.
-
-        For enum typedefs, this automatically defines the enum constants as global variables.
-        This is necessary because C-to-IR conversion often generates typedef for the enum type
-        but doesn't explicitly define the enum constants in the IR.
-
-        Args:
-            name: The typedef name (e.g., "PS_enum_CarModes")
-            type_name: The type being defined (e.g., "Enum", "int", etc.)
-        """
-        if type_name == "Enum":
-            # Handle enum typedef - define enum constants based on name pattern
-            self.enum_types[name] = "Enum"
-
-            # Define enum constants based on the enum name
-            if name == "PS_enum_CarModes":
-                # Define the CarModes enum constants based on the original C enum:
-                # typedef enum {
-                #     PS_enum_CarModes_Factory = 0,
-                #     PS_enum_CarModes_Normal = 1,
-                #     PS_enum_CarModes_Exihibition = 2,
-                #     PS_enum_CarModes_Crash = 3,
-                #     PS_enum_CarModes_Transport = 4
-                # } PS_enum_CarModes;
-                enum_constants = {
-                    f"{name}_Factory": 0,
-                    f"{name}_Normal": 1,
-                    f"{name}_Exihibition": 2,
-                    f"{name}_Crash": 3,
-                    f"{name}_Transport": 4
-                }
-                for const_name, value in enum_constants.items():
-                    self.global_env[const_name] = value
-            else:
-                # For other enums, we could add more patterns here
-                # or implement a more generic enum constant discovery mechanism
-                pass
-        # For other typedefs, we can ignore them or store them for future use
-
     def _execute_name(self, name: str) -> Any:
         """Execute variable name reference."""
         return self._get_variable(name)

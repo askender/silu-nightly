@@ -1,0 +1,39 @@
+[
+  "module",
+  [
+    [
+      "func_def",
+      "main",
+      [],
+      [
+        ["assign", "arr", null, "int[2]"],
+        [
+          "assign",
+          ["subscript", ["name", "arr"], ["const", 0]],
+          ["const", 1],
+          null
+        ],
+        [
+          "assign",
+          ["subscript", ["name", "arr"], ["const", 1]],
+          ["const", 2],
+          null
+        ],
+        [
+          "return",
+          [
+            "-",
+            [
+              "+",
+              ["subscript", ["name", "arr"], ["const", 0]],
+              ["subscript", ["name", "arr"], ["const", 1]]
+            ],
+            ["const", 3]
+          ]
+        ]
+      ],
+      [],
+      "int"
+    ]
+  ]
+]

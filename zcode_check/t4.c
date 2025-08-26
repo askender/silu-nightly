@@ -1,0 +1,5 @@
+#include <stdio.h>
+int main() {
+  printf("%08d %.2f", 42, 3.14159);
+  return 0;
+}

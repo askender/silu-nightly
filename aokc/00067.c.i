@@ -1,0 +1,19 @@
+# 1 "aokc/00067.c.v2.c"
+# 1 "<built-in>" 1
+# 1 "<built-in>" 3
+# 464 "<built-in>" 3
+# 1 "<command line>" 1
+# 1 "<built-in>" 2
+# 1 "aokc/00067.c.v2.c" 2
+
+int x = 0;
+
+
+
+# 14 "aokc/00067.c.v2.c"
+
+int main()
+{
+	return x;
+}
+

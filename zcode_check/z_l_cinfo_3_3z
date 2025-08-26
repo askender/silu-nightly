@@ -1,0 +1,70 @@
+Error2 parsing C code: :7:6: before: #
+Error2 parsing C code: :7:17: before: (
+Error2 parsing C code: :7:16: before: static
+Error2 parsing C code: :18:7: before: s
+Error2 parsing C code: :17:9: before: {
+Error2 parsing C code: :11:6: before: #
+[Error1] cpp failed on aokc/00220.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00219.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00216.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00212.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00208.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00207.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00206.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00205.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00204.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00203.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00202.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00201.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00200.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00199.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00198.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00197.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00196.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00195.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00194.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00193.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00192.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00191.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00190.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00189.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00188.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00187.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00186.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00185.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00184.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00183.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00182.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00181.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00180.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00179.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00178.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00177.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00176.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00175.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00174.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00173.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00172.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00171.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00170.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00169.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00168.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00167.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00166.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00165.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00164.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00163.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00161.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00160.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00159.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00158.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00157.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00156.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00154.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00136.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00132.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00131.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00125.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00063.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00056.c.v2.c with return code 1
+[Error1] cpp failed on aokc/00040.c.v2.c with return code 1

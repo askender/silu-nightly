@@ -7,7 +7,7 @@ rm:
 	rm -rf __pycache__
 
 test:
-	pytest tests/
+	pytest tests/ -q --tb=short
 
 cov:
-	pytest tests/ --cov=silu --cov-report=term-missing
+	pytest tests/ -q --tb=short --cov=silu --cov-report=term-missing

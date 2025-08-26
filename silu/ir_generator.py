@@ -336,6 +336,69 @@ class SiluIRGenerator(BaseASTProcessor):
         body = tuple(self.visit(stmt) for stmt in node.body)
         return self._make_node("with", tuple(items), body)
 
+    # ================== Match Statements ==================
+
+    def visit_Match(self, node: ast.Match) -> Tuple:
+        """Generate match statement IR."""
+        subject = self.visit(node.subject)
+        cases = tuple(self.visit(case) for case in node.cases)
+        return self._make_node("match", subject, cases)
+
+    def visit_match_case(self, node: ast.match_case) -> Tuple:
+        """Generate match case IR."""
+        pattern = self.visit(node.pattern)
+        guard = self.visit(node.guard) if node.guard else None
+        body = tuple(self.visit(stmt) for stmt in node.body)
+        return self._make_node("match_case", pattern, guard, body)
+
+    # ================== Match Patterns ==================
+
+    def visit_MatchValue(self, node: ast.MatchValue) -> Tuple:
+        """Generate match value pattern IR."""
+        value = self.visit(node.value)
+        return self._make_node("match_value", value)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> Tuple:
+        """Generate match as pattern IR (wildcard or capture)."""
+        pattern = self.visit(node.pattern) if node.pattern else None
+        name = node.name if node.name else None
+        return self._make_node("match_as", pattern, name)
+
+    def visit_MatchOr(self, node: ast.MatchOr) -> Tuple:
+        """Generate match or pattern IR."""
+        patterns = tuple(self.visit(pattern) for pattern in node.patterns)
+        return self._make_node("match_or", patterns)
+
+    def visit_MatchSequence(self, node: ast.MatchSequence) -> Tuple:
+        """Generate match sequence pattern IR."""
+        patterns = tuple(self.visit(pattern) for pattern in node.patterns)
+        return self._make_node("match_sequence", patterns)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> Tuple:
+        """Generate match mapping pattern IR."""
+        keys = tuple(self.visit(key) for key in node.keys)
+        patterns = tuple(self.visit(pattern) for pattern in node.patterns)
+        rest = node.rest if node.rest else None
+        return self._make_node("match_mapping", keys, patterns, rest)
+
+    def visit_MatchClass(self, node: ast.MatchClass) -> Tuple:
+        """Generate match class pattern IR."""
+        cls = self.visit(node.cls)
+        patterns = tuple(self.visit(pattern) for pattern in node.patterns)
+        kwd_attrs = tuple(node.kwd_attrs) if node.kwd_attrs else ()
+        kwd_patterns = tuple(self.visit(pattern) for pattern in node.kwd_patterns)
+        return self._make_node("match_class", cls, patterns, kwd_attrs, kwd_patterns)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> Tuple:
+        """Generate match star pattern IR."""
+        name = node.name if node.name else None
+        return self._make_node("match_star", name)
+
+    def visit_MatchSingleton(self, node: ast.MatchSingleton) -> Tuple:
+        """Generate match singleton pattern IR (True, False, None)."""
+        value = node.value
+        return self._make_node("match_singleton", value)
+
     # ================== Error Handling ==================
 
     def generic_visit(self, node: ast.AST) -> None:
