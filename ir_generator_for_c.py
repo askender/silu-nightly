@@ -10,6 +10,10 @@ import json
 import sys
 from typing import Any, Dict, List, Optional, Tuple, Union
 import re
+import os
+
+# 继承当前环境
+env = os.environ.copy()
 
 pattern_comment = re.compile(r'/\*.*?\*/', re.DOTALL)  # re.DOTALL 让 . 可以匹配换行符
 
@@ -39,6 +43,8 @@ class CIRGenerator(c_ast.NodeVisitor):
         """
         self.record_types = record_types
         self.current_function = None
+        self.typedefs = {}  # Maps typedef names to their underlying types
+        self.struct_definitions = {}  # Maps struct names to their field information
 
     # ================== Top-level Constructs ==================
 
@@ -103,6 +109,37 @@ class CIRGenerator(c_ast.NodeVisitor):
             value = self.visit(node.init)
 
         return ("assign", name, value, type_info)
+
+    def visit_Typedef(self, node: c_ast.Typedef) -> Optional[Tuple]:
+        """Convert typedef declaration to IR."""
+        if not node.name:
+            return None
+
+        # Check if this is a struct typedef
+        if isinstance(node.type, c_ast.TypeDecl) and isinstance(node.type.type, c_ast.Struct):
+            struct_node = node.type.type
+            struct_name = node.name
+
+            # Extract struct fields
+            fields = self._extract_struct_fields(struct_node)
+
+            # Store struct definition
+            self.struct_definitions[struct_name] = fields
+
+            # Store the typedef mapping
+            self.typedefs[struct_name] = f"struct_{struct_name}"
+
+            # Return IR representation for struct typedef
+            return ("typedef_struct", struct_name, fields)
+        else:
+            # Extract the underlying type for regular typedefs
+            underlying_type = self._get_type_string(node.type)
+
+            # Store the mapping
+            self.typedefs[node.name] = underlying_type
+
+            # Return IR representation for typedef
+            return ("typedef", node.name, underlying_type)
 
     def visit_Assignment(self, node: c_ast.Assignment) -> Tuple:
         """Convert assignment to IR."""
@@ -344,34 +381,104 @@ class CIRGenerator(c_ast.NodeVisitor):
         """Convert expression list to list of IR expressions."""
         return [self.visit(expr) for expr in node.exprs]
 
+    # ================== Struct Handling ==================
+
+    def _extract_struct_fields(self, struct_node: c_ast.Struct) -> List[Tuple[str, str]]:
+        """Extract field information from a struct node."""
+        fields = []
+        if struct_node.decls:
+            for decl in struct_node.decls:
+                if isinstance(decl, c_ast.Decl) and decl.name:
+                    field_name = decl.name
+                    field_type = self._get_type_string(decl.type)
+                    fields.append((field_name, field_type))
+        return fields
+
     # ================== Type Handling ==================
+
+    def _resolve_typedef(self, type_name: str) -> str:
+        """Recursively resolve typedef aliases to their base types."""
+        resolved = type_name
+        visited = set()
+
+        while resolved in self.typedefs and resolved not in visited:
+            visited.add(resolved)
+            resolved = self.typedefs[resolved]
+
+        return resolved
 
     def _get_type_string(self, type_node) -> str:
         """Extract type information as a string."""
         if isinstance(type_node, c_ast.TypeDecl):
             if isinstance(type_node.type, c_ast.IdentifierType):
-                return ' '.join(type_node.type.names)
+                type_name = ' '.join(type_node.type.names)
+                # Recursively resolve typedef aliases
+                return self._resolve_typedef(type_name)
             else:
                 return self._get_type_string(type_node.type)
         elif isinstance(type_node, c_ast.PtrDecl):
             base_type = self._get_type_string(type_node.type)
             return f"{base_type}*"
         elif isinstance(type_node, c_ast.ArrayDecl):
-            base_type = self._get_type_string(type_node.type)
-            return f"{base_type}[]"
+            # For multi-dimensional arrays, we need to collect all dimensions first
+            dimensions = []
+            current_node = type_node
+
+            # Traverse nested ArrayDecl nodes to collect dimensions in correct order
+            while isinstance(current_node, c_ast.ArrayDecl):
+                if current_node.dim:
+                    dim_value = self._extract_array_dimension(current_node.dim)
+                    dimensions.append(f"[{dim_value}]")
+                else:
+                    dimensions.append("[]")
+                current_node = current_node.type
+
+            # Get the base type
+            base_type = self._get_type_string(current_node)
+
+            # Build the type string with dimensions in correct order
+            return base_type + ''.join(dimensions)
         elif isinstance(type_node, c_ast.FuncDecl):
             return "function"
         elif isinstance(type_node, c_ast.IdentifierType):
-            return ' '.join(type_node.names)
+            type_name = ' '.join(type_node.names)
+            # Recursively resolve typedef aliases
+            return self._resolve_typedef(type_name)
+        elif isinstance(type_node, c_ast.Struct):
+            # Handle anonymous structs or named structs
+            if type_node.name:
+                return f"struct_{type_node.name}"
+            else:
+                # For anonymous structs, return a generic struct type
+                return "struct"
         else:
             return str(type(type_node).__name__)
+
+    def _extract_array_dimension(self, dim_node) -> str:
+        """Extract array dimension from dimension node."""
+        if isinstance(dim_node, c_ast.Constant):
+            return dim_node.value
+        elif isinstance(dim_node, c_ast.ID):
+            return dim_node.name
+        elif isinstance(dim_node, c_ast.BinaryOp):
+            # Handle expressions like n+1, etc.
+            left = self._extract_array_dimension(dim_node.left)
+            right = self._extract_array_dimension(dim_node.right)
+            return f"{left}{dim_node.op}{right}"
+        else:
+            # For other complex expressions, visit the node
+            result = self.visit(dim_node)
+            if isinstance(result, tuple) and len(result) >= 2:
+                return str(result[1]) if result[1] is not None else "?"
+            return "?"
 
     # ================== Error Handling ==================
 
     def generic_visit(self, node: c_ast.Node) -> Optional[str]:
         """Handle unsupported AST nodes."""
         node_name = type(node).__name__
-        print(f"Warning: Unsupported C construct: {node_name}") # , file=sys.stderr
+        # TODO
+        # print(f"Warning: Unsupported C construct: {node_name}") # , file=sys.stderr
         return f"<unsupported:{node_name}>"
 
 
@@ -395,7 +502,8 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple|Non
     """
     try:
         parser = c_parser.CParser()
-        c_code = c_code.replace("#include <stdlib.h>", "")
+        # c_code = c_code.replace("#include <stdlib.h>", "")
+        c_code = c_code.replace("#include <stdio.h>", "")
         c_code = c_code.replace('__signed', 'signed')
         c_code = re.sub(pattern_comment, '', c_code)
         c_code = [j for j in c_code.split('\n') if not j.strip().startswith('#')]
@@ -404,12 +512,13 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple|Non
         c_code = [j for j in c_code if "__darwin_" not in j.strip()]
         c_code = [clean_comment(j) for j in c_code ]
         c_code = '\n'.join(c_code)
+        print(f"c_code:\n{c_code}")
 
-        try:
-            ast = parser.parse(c_code)
-        except Exception as e:
-            print(f"Error2 parsing C code: {e}") # , file=sys.stderr
-            return
+        # try:
+        ast = parser.parse(c_code)
+        # except Exception as e:
+        #     print(f"Error2 parsing C code: {e}") # , file=sys.stderr
+        #     return
 
         generator = CIRGenerator(record_types=record_types)
         ir = generator.visit(ast)
@@ -432,29 +541,40 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
         IR tuple representing the C program
     """
     try:
+        tmp_file = f"{file_path}.v2.c"
         with open(file_path, 'r', encoding='utf-8') as f:
             c_code = f.read()
+            c_code = c_code.replace("#include <stdio.h>", "")
             # c_code = re.sub(r'#include\s+<[^>]+>', '', c_code)
-            with open(f"{file_path}.v2.c", 'w', encoding='utf-8') as f:
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 f.write(c_code)
 
         import os
-        if os.path.isfile(f"{file_path}.i"):
-            with open(f"{file_path}.i", 'r', encoding='utf-8') as f:
-                c_code = f.read()
-        else:
-            import subprocess
-            # "-nostdinc",
-            result = subprocess.run(["cpp", "-E", "-nostdlib","-nostdinc","-Imystdint", "-Iutils/fake_libc_include", f"{file_path}.v2.c"], capture_output=True, text=True)
+        # if os.path.isfile(f"{file_path}.i"):
+        #     with open(f"{file_path}.i", 'r', encoding='utf-8') as f:
+        #         c_code = f.read()
 
-            if result.returncode != 0:
-                print(f"[Error1] cpp failed on {file_path}.v2.c with return code {result.returncode}")
-                # print(f"stderr output:\n{result.stderr}")
-                return
+        import subprocess
+        # "-nostdinc", "-nostdlib", cpp gcc clang
+        print(f'env: {env}')
+        # "-nostdinc","-Imystdint", "-Iutils/fake_libc_include",
+        # r'-I/path/to/pycparser/utils/fake_libc_include'
+        cmd = ["clang", "-E", "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include", tmp_file]
+        print(' '.join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
-            c_code = result.stdout
-            with open(f"{file_path}.i", 'w', encoding='utf-8') as f:
-                f.write(c_code)
+        if result.returncode != 0:
+            # TODO
+            print(f"[Error1] cpp failed on {file_path}.v2.c with return code {result.returncode}")
+            print(f"stderr output:\n{result.stderr}")
+            return
+
+        c_code = result.stdout
+        # with open(f"{file_path}.i", 'w', encoding='utf-8') as f:
+        #     f.write(c_code)
+
+        if os.path.exists(tmp_file):
+            os.remove(tmp_file)
 
         return generate_ir_from_c_code(c_code, record_types)
 
