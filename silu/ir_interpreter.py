@@ -112,7 +112,7 @@ class IRInterpreter:
 
     def execute_program(self, ir_module: Tuple) -> Any:
         """Execute a complete IR module and automatically call main() if it exists."""
-        if not isinstance(ir_module, tuple) or ir_module[0] != "module":
+        if not isinstance(ir_module, (tuple, list)) or ir_module[0] != "module":
             raise ValueError("Expected IR module tuple")
 
         statements = ir_module[1]
@@ -215,7 +215,12 @@ class IRInterpreter:
                         # Mark this dictionary as a struct instance
                         self.struct_instances.add(id(evaluated_value))
                     else:
-                        raise NameError(f"Struct type '{struct_name}' is not defined")
+                        # Auto-create undefined struct types as empty structs
+                        # Fields will be added dynamically as they are accessed
+                        self.struct_types[struct_name] = []
+                        evaluated_value = {}
+                        # Mark this dictionary as a struct instance
+                        self.struct_instances.add(id(evaluated_value))
                 elif isinstance(annotation, str) and annotation.endswith(']') and '[' in annotation:
                     # Handle array types like "int[2]", "float[10]", etc.
                     base_type, size_part = annotation.split('[', 1)
@@ -267,7 +272,7 @@ class IRInterpreter:
                         pass  # Keep original value if conversion fails
 
         # Handle complex target expressions
-        if isinstance(target, tuple):
+        if isinstance(target, (tuple, list)):
             if target[0] == "name":
                 # Extract variable name from ["name", "x"] format
                 target = target[1]
