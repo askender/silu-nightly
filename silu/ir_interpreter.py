@@ -28,6 +28,9 @@ class IRInterpreter:
         self.struct_instances = set()  # Track which objects are struct instances
         self.enum_types = {}  # Store enum type definitions
 
+        # Set up built-in variables
+        self.global_env["__name__"] = "__main__"
+
         # Built-in functions
         self.builtins = {
             "print": self._builtin_print,
@@ -509,6 +512,225 @@ class IRInterpreter:
     def _execute_pass(self) -> None:
         """Execute pass statement (no-op)."""
         pass
+
+    # ================== Match Statements ==================
+
+    def _execute_match(self, subject: Any, cases: Tuple) -> Any:
+        """Execute match statement."""
+        subject_val = self.execute(subject)
+
+        for case in cases:
+            if self._execute_match_case(case, subject_val):
+                return None  # Match case handles execution
+
+        # No case matched - this shouldn't happen with proper wildcard cases
+        return None
+
+    def _execute_match_case(self, case: Tuple, subject_val: Any) -> bool:
+        """Execute a match case and return True if it matched."""
+        if len(case) < 4 or case[0] != "match_case":
+            return False
+
+        pattern = case[1]
+        guard = case[2]
+        body = case[3]
+
+        # Try to match the pattern
+        match_result = self._match_pattern(pattern, subject_val)
+
+        if match_result is None:
+            return False  # Pattern didn't match
+
+        # If we have captured variables, add them to local environment
+        if isinstance(match_result, dict):
+            # Push new local environment with captured variables
+            self.local_env_stack.append(match_result)
+
+        try:
+            # Evaluate guard condition if present
+            if guard is not None:
+                guard_result = self.execute(guard)
+                if not guard_result:
+                    return False  # Guard failed
+
+            # Pattern matched and guard passed, execute body
+            self._execute_block(body)
+            return True
+
+        finally:
+            # Pop local environment if we pushed captured variables
+            if isinstance(match_result, dict):
+                self.local_env_stack.pop()
+
+    def _match_pattern(self, pattern: Tuple, value: Any) -> Union[dict, bool, None]:
+        """
+        Match a pattern against a value.
+        Returns:
+        - dict: Captured variables if pattern matches
+        - True: Pattern matches but no captures
+        - None: Pattern doesn't match
+        """
+        if not isinstance(pattern, (tuple, list)) or not pattern:
+            return None
+
+        pattern_type = pattern[0]
+
+        if pattern_type == "match_value":
+            # Match exact value
+            expected = self.execute(pattern[1])
+            return {} if value == expected else None
+
+        elif pattern_type == "match_singleton":
+            # Match singleton (True, False, None)
+            expected = pattern[1]
+            return {} if value is expected else None
+
+        elif pattern_type == "match_as":
+            # Capture pattern or wildcard
+            nested_pattern = pattern[1] if len(pattern) > 1 else None
+            capture_name = pattern[2] if len(pattern) > 2 else None
+
+            # If there's a nested pattern, match it first
+            if nested_pattern is not None:
+                result = self._match_pattern(nested_pattern, value)
+                if result is None:
+                    return None
+                # Add our capture to the result
+                if capture_name:
+                    if isinstance(result, dict):
+                        result[capture_name] = value
+                    else:
+                        result = {capture_name: value}
+                return result
+            else:
+                # Simple capture or wildcard
+                if capture_name:
+                    return {capture_name: value}
+                else:
+                    return {}  # Wildcard pattern (_)
+
+        elif pattern_type == "match_or":
+            # Try each alternative pattern
+            patterns = pattern[1]
+            for alt_pattern in patterns:
+                result = self._match_pattern(alt_pattern, value)
+                if result is not None:
+                    return result
+            return None
+
+        elif pattern_type == "match_sequence":
+            # Match sequence (list/tuple)
+            if not isinstance(value, (list, tuple)):
+                return None
+
+            patterns = pattern[1]
+            if not patterns:
+                return {} if len(value) == 0 else None
+
+            # Handle star patterns
+            star_index = None
+            for i, pat in enumerate(patterns):
+                if isinstance(pat, (tuple, list)) and pat[0] == "match_star":
+                    star_index = i
+                    break
+
+            if star_index is not None:
+                # Has star pattern
+                before_patterns = patterns[:star_index]
+                star_pattern = patterns[star_index]
+                after_patterns = patterns[star_index + 1:]
+
+                if len(value) < len(before_patterns) + len(after_patterns):
+                    return None
+
+                captures = {}
+
+                # Match before patterns
+                for i, pat in enumerate(before_patterns):
+                    result = self._match_pattern(pat, value[i])
+                    if result is None:
+                        return None
+                    if isinstance(result, dict):
+                        captures.update(result)
+
+                # Match after patterns
+                for i, pat in enumerate(after_patterns):
+                    val_index = len(value) - len(after_patterns) + i
+                    result = self._match_pattern(pat, value[val_index])
+                    if result is None:
+                        return None
+                    if isinstance(result, dict):
+                        captures.update(result)
+
+                # Handle star capture
+                if len(star_pattern) > 1 and star_pattern[1]:  # has capture name
+                    star_start = len(before_patterns)
+                    star_end = len(value) - len(after_patterns)
+                    star_values = value[star_start:star_end]
+                    captures[star_pattern[1]] = list(star_values)
+
+                return captures
+            else:
+                # No star pattern - must match exactly
+                if len(value) != len(patterns):
+                    return None
+
+                captures = {}
+                for i, pat in enumerate(patterns):
+                    result = self._match_pattern(pat, value[i])
+                    if result is None:
+                        return None
+                    if isinstance(result, dict):
+                        captures.update(result)
+
+                return captures
+
+        elif pattern_type == "match_mapping":
+            # Match mapping (dict)
+            if not isinstance(value, dict):
+                return None
+
+            keys = pattern[1]
+            patterns_tuple = pattern[2]
+            rest_name = pattern[3] if len(pattern) > 3 else None
+
+            # Handle empty dict pattern
+            if not keys and not patterns_tuple:
+                return {} if len(value) == 0 else None
+
+            captures = {}
+            matched_keys = set()
+
+            # Match specified keys
+            for i, key_pattern in enumerate(keys):
+                key = self.execute(key_pattern)
+                if key not in value:
+                    return None  # Required key missing
+
+                if i < len(patterns_tuple):
+                    val_pattern = patterns_tuple[i]
+                    result = self._match_pattern(val_pattern, value[key])
+                    if result is None:
+                        return None
+                    if isinstance(result, dict):
+                        captures.update(result)
+
+                matched_keys.add(key)
+
+            # For patterns without rest capture, ensure no extra keys
+            if rest_name is None:
+                if len(matched_keys) != len(value):
+                    return None  # Extra keys present
+
+            # Handle rest capture (**rest)
+            if rest_name:
+                rest_dict = {k: v for k, v in value.items() if k not in matched_keys}
+                captures[rest_name] = rest_dict
+
+            return captures
+
+        # Unsupported pattern type
+        return None
 
     # ================== Operators ==================
 
