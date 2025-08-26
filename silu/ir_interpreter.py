@@ -72,7 +72,7 @@ class IRInterpreter:
         # Dispatch to appropriate handler
         handler_name = f"_execute_{opcode}"
         if hasattr(self, handler_name):
-            return getattr(self, handler_name)(*ir_node[1:4])
+            return getattr(self, handler_name)(*ir_node[1:])
 
         # Handle unary operators first (they have exactly 2 elements: opcode + operand)
         unary_ops = {"+", "-", "not"}
@@ -362,7 +362,7 @@ class IRInterpreter:
 
         return result
 
-    def _execute_func_def(self, name: str, args: Tuple, body: Tuple) -> None:
+    def _execute_func_def(self, name: str, args: Tuple, body: Tuple, decorators: Tuple = (), return_type: Any = None) -> None:
         """Execute function definition."""
         # Capture current environment for closure support
         current_env = {}
