@@ -24,6 +24,8 @@ class IRInterpreter:
         self.should_return = False
         self.should_break = False
         self.should_continue = False
+        self.struct_types = {}  # Store struct type definitions
+        self.struct_instances = set()  # Track which objects are struct instances
 
         # Built-in functions
         self.builtins = {
@@ -157,6 +159,11 @@ class IRInterpreter:
         # Convert string back to bytes using latin-1 encoding
         return value.encode('latin-1')
 
+    def _execute_typedef_struct(self, name: str, fields: Tuple) -> None:
+        """Execute struct type definition."""
+        # Store the struct type definition
+        self.struct_types[name] = fields
+
     def _execute_name(self, name: str) -> Any:
         """Execute variable name reference."""
         return self._get_variable(name)
@@ -165,39 +172,94 @@ class IRInterpreter:
         """Execute assignment: target = value"""
         evaluated_value = self.execute(value)
 
-        # Handle null values with type annotations (C-style default initialization)
-        if evaluated_value is None and annotation is not None:
-            if annotation == "int":
-                evaluated_value = 0
-            elif annotation == "float" or annotation == "double":
-                evaluated_value = 0.0
-            elif annotation == "bool":
-                evaluated_value = False
-            elif annotation == "str" or annotation == "char*":
-                evaluated_value = ""
-            elif annotation == "struct":
-                evaluated_value = {}
-            elif isinstance(annotation, str) and annotation.endswith(']') and '[' in annotation:
-                # Handle array types like "int[2]", "float[10]", etc.
-                base_type, size_part = annotation.split('[', 1)
-                size_str = size_part.rstrip(']')
-                try:
-                    size = int(size_str)
-                    if base_type == "int":
-                        evaluated_value = [0] * size
-                    elif base_type in ("float", "double"):
-                        evaluated_value = [0.0] * size
-                    elif base_type == "bool":
-                        evaluated_value = [False] * size
-                    elif base_type in ("str", "char*"):
-                        evaluated_value = [""] * size
+        # Handle type annotations for both null and non-null values
+        if annotation is not None:
+            if evaluated_value is None:
+                # C-style default initialization for null values
+                if annotation == "int":
+                    evaluated_value = 0
+                elif annotation == "float" or annotation == "double":
+                    evaluated_value = 0.0
+                elif annotation == "bool":
+                    evaluated_value = False
+                elif annotation == "str" or annotation == "char*":
+                    evaluated_value = ""
+                elif annotation == "struct":
+                    evaluated_value = {}
+                    # Mark this dictionary as a struct instance
+                    self.struct_instances.add(id(evaluated_value))
+                elif isinstance(annotation, str) and annotation.startswith("struct_"):
+                    # Handle struct constructor like "struct_s"
+                    struct_name = annotation[7:]  # Remove "struct_" prefix
+                    if struct_name in self.struct_types:
+                        # Create a new struct instance with default values
+                        struct_fields = self.struct_types[struct_name]
+                        evaluated_value = {}
+                        # Initialize fields with default values
+                        for field_name, field_type in struct_fields:
+                            if field_type == "int":
+                                evaluated_value[field_name] = 0
+                            elif field_type == "float" or field_type == "double":
+                                evaluated_value[field_name] = 0.0
+                            elif field_type == "bool":
+                                evaluated_value[field_name] = False
+                            elif field_type == "str" or field_type == "char*":
+                                evaluated_value[field_name] = ""
+                            else:
+                                evaluated_value[field_name] = None
+                        # Mark this dictionary as a struct instance
+                        self.struct_instances.add(id(evaluated_value))
                     else:
-                        # Unknown base type, create list of None values
-                        evaluated_value = [None] * size
-                except ValueError:
-                    # Invalid size, keep as None
-                    pass
-            # For pointer types or other types, keep as None
+                        raise NameError(f"Struct type '{struct_name}' is not defined")
+                elif isinstance(annotation, str) and annotation.endswith(']') and '[' in annotation:
+                    # Handle array types like "int[2]", "float[10]", etc.
+                    base_type, size_part = annotation.split('[', 1)
+                    size_str = size_part.rstrip(']')
+                    try:
+                        size = int(size_str)
+                        if base_type == "int":
+                            evaluated_value = [0] * size
+                        elif base_type in ("float", "double"):
+                            evaluated_value = [0.0] * size
+                        elif base_type == "bool":
+                            evaluated_value = [False] * size
+                        elif base_type in ("str", "char*"):
+                            evaluated_value = [""] * size
+                        else:
+                            # Unknown base type, create list of None values
+                            evaluated_value = [None] * size
+                    except ValueError:
+                        # Invalid size, keep as None
+                        pass
+                # For pointer types or other types, keep as None
+            else:
+                # Type conversion for non-null values
+                if annotation == "int":
+                    try:
+                        if isinstance(evaluated_value, str):
+                            evaluated_value = int(float(evaluated_value))  # Handle "123.0" strings
+                        else:
+                            evaluated_value = int(evaluated_value)
+                    except (ValueError, TypeError):
+                        pass  # Keep original value if conversion fails
+                elif annotation == "float" or annotation == "double":
+                    try:
+                        evaluated_value = float(evaluated_value)
+                    except (ValueError, TypeError):
+                        pass  # Keep original value if conversion fails
+                elif annotation == "bool":
+                    try:
+                        if isinstance(evaluated_value, str):
+                            evaluated_value = evaluated_value.lower() in ("true", "1", "yes")
+                        else:
+                            evaluated_value = bool(evaluated_value)
+                    except (ValueError, TypeError):
+                        pass  # Keep original value if conversion fails
+                elif annotation == "str" or annotation == "char*":
+                    try:
+                        evaluated_value = str(evaluated_value)
+                    except (ValueError, TypeError):
+                        pass  # Keep original value if conversion fails
 
         # Handle complex target expressions
         if isinstance(target, tuple):
@@ -532,14 +594,14 @@ class IRInterpreter:
         """Execute attribute access obj.attr."""
         obj_val = self.execute(obj)
 
-        # If obj_val is a dictionary (our struct representation), get the attribute
-        if isinstance(obj_val, dict):
+        # If obj_val is a struct instance (tracked dictionary), get the attribute
+        if isinstance(obj_val, dict) and id(obj_val) in self.struct_instances:
             if attr in obj_val:
                 return obj_val[attr]
             else:
-                raise AttributeError(f"'{type(obj_val).__name__}' object has no attribute '{attr}'")
+                raise AttributeError(f"struct object has no attribute '{attr}'")
         else:
-            # For other objects, use getattr
+            # For other objects (including regular dicts), use getattr
             return getattr(obj_val, attr)
 
     def _execute_subscript(self, obj: Any, index: Any) -> Any:
@@ -560,11 +622,11 @@ class IRInterpreter:
         obj_val = self.execute(obj)
         value_val = self.execute(value)
 
-        # If obj_val is a dictionary (our struct representation), set the attribute
-        if isinstance(obj_val, dict):
+        # If obj_val is a struct instance (tracked dictionary), set the attribute
+        if isinstance(obj_val, dict) and id(obj_val) in self.struct_instances:
             obj_val[attr] = value_val
         else:
-            # For other objects, use setattr
+            # For other objects (including regular dicts), use setattr
             setattr(obj_val, attr, value_val)
 
     # ================== Lambda and Advanced Features ==================
