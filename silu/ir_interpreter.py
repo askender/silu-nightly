@@ -192,6 +192,17 @@ class IRInterpreter:
             if isinstance(type_spec, str) and hasattr(self, f'_execute_typedef_{type_spec.lower()}'):
                 getattr(self, f'_execute_typedef_{type_spec.lower()}')(name, type_spec)
 
+    def _execute_typedef_enum(self, enum_name: str, constants: List[Tuple]) -> None:
+        """Execute enum type definition with constants."""
+        # Store the enum type
+        self.enum_types[enum_name] = "enum"
+
+        # Define each enum constant as a variable
+        for constant_name, value_ir in constants:
+            # Execute the value IR (typically ["const", value])
+            value = self.execute(value_ir)
+            self._set_variable(constant_name, value)
+
     def _execute_name(self, name: str) -> Any:
         """Execute variable name reference."""
         return self._get_variable(name)

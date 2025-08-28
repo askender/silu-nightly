@@ -131,6 +131,37 @@ class CIRGenerator(c_ast.NodeVisitor):
 
             # Return IR representation for struct typedef
             return ("typedef_struct", struct_name, fields)
+        # Check if this is an enum typedef
+        elif isinstance(node.type, c_ast.TypeDecl) and isinstance(node.type.type, c_ast.Enum):
+            enum_node = node.type.type
+            enum_name = node.name
+
+            # Extract enum values
+            enum_values = []
+            if enum_node.values:
+                for enumerator in enum_node.values.enumerators:
+                    if enumerator.value:
+                        # If explicit value is provided
+                        value = self.visit(enumerator.value)
+                        enum_values.append((enumerator.name, value))
+                    else:
+                        # If no explicit value, use auto-incrementing
+                        if enum_values:
+                            # Get the last value and increment
+                            last_value = enum_values[-1][1]
+                            if isinstance(last_value, tuple) and last_value[0] == "constant" and isinstance(last_value[1], int):
+                                next_value = last_value[1] + 1
+                            else:
+                                next_value = len(enum_values)
+                        else:
+                            next_value = 0
+                        enum_values.append((enumerator.name, ("constant", next_value)))
+
+            # Store the typedef mapping
+            self.typedefs[enum_name] = "enum"
+
+            # Return IR representation for enum typedef
+            return ("typedef_enum", enum_name, enum_values)
         else:
             # Extract the underlying type for regular typedefs
             underlying_type = self._get_type_string(node.type)
@@ -492,6 +523,13 @@ class CIRGenerator(c_ast.NodeVisitor):
             else:
                 # For anonymous structs, return a generic struct type
                 return "struct"
+        elif isinstance(type_node, c_ast.Enum):
+            # Handle enum types
+            if type_node.name:
+                return f"enum_{type_node.name}"
+            else:
+                # For anonymous enums, return a generic enum type
+                return "enum"
         else:
             return str(type(type_node).__name__)
 
