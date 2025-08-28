@@ -7,7 +7,7 @@ by other modules like the symbolic executor for displaying readable expressions.
 """
 
 from typing import Any, Tuple
-import json
+from .ir_utils import parse_ir_from_file, parse_ir_from_json_string, IRParseError
 
 
 class IRToSourceConverter:
@@ -808,22 +808,10 @@ class IRToSourceConverter:
 
 def convert_ir_file_to_source(ir_file_path: str, output_file_path: str = None) -> str:
     """Convert an IR file to source code file."""
-    with open(ir_file_path, "r") as f:
-        content = f.read().strip()
-
-    # Parse IR from JSON or Python literal format
     try:
-        ir_data = json.loads(content)
-        # Convert JSON lists to tuples
-        ir_data = _json_to_tuples(ir_data)
-    except json.JSONDecodeError:
-        # Try to evaluate as Python literal
-        try:
-            # Handle null values
-            content = content.replace("null", "None")
-            ir_data = eval(content)
-        except Exception as e:
-            raise ValueError(f"Could not parse IR file: {e}")
+        ir_data = parse_ir_from_file(ir_file_path)
+    except (IRParseError, FileNotFoundError) as e:
+        raise ValueError(f"Could not parse IR file: {e}")
 
     # Convert to source
     converter = IRToSourceConverter()
@@ -840,33 +828,15 @@ def convert_ir_file_to_source(ir_file_path: str, output_file_path: str = None) -
 
 def convert_ir_string_to_source(ir_string: str) -> str:
     """Convert an IR string to source code."""
-    # Parse IR from JSON or Python literal format
     try:
-        ir_data = json.loads(ir_string)
-        # Convert JSON lists to tuples
-        ir_data = _json_to_tuples(ir_data)
-    except json.JSONDecodeError:
-        # Try to evaluate as Python literal
-        try:
-            # Handle null values
-            ir_string = ir_string.replace("null", "None")
-            ir_data = eval(ir_string)
-        except Exception as e:
-            raise ValueError(f"Could not parse IR string: {e}")
+        ir_data = parse_ir_from_json_string(ir_string)
+    except IRParseError as e:
+        raise ValueError(f"Could not parse IR string: {e}")
 
     # Convert to source
     converter = IRToSourceConverter()
     return converter.convert_to_source(ir_data)
 
-
-def _json_to_tuples(obj: Any) -> Any:
-    """Recursively convert JSON lists to tuples for IR processing."""
-    if isinstance(obj, list):
-        return tuple(_json_to_tuples(item) for item in obj)
-    elif isinstance(obj, dict):
-        return {key: _json_to_tuples(value) for key, value in obj.items()}
-    else:
-        return obj
 
 
 # Convenience functions for shared use with symbolic_executor

@@ -8,6 +8,7 @@ and modularity compared to directly interpreting the AST.
 
 from typing import Any, Dict, List, Tuple, Union, Optional
 import sys
+from .ir_utils import parse_ir_from_file, parse_ir_from_json_string, IRParseError
 
 
 class IRInterpreter:
@@ -1294,51 +1295,24 @@ class IRInterpreter:
 
 def execute_ir_from_file(filename: str) -> Any:
     """Load and execute IR from a file."""
-    import json
-
-    with open(filename, "r") as f:
-        content = f.read().strip()
-
-        # Try to parse as JSON first
-        try:
-            ir_data = json.loads(content)
-            # Convert JSON lists to tuples
-            ir_data = _json_to_tuples(ir_data)
-        except json.JSONDecodeError:
-            # Fall back to eval for tuple format
-            ir_data = eval(content)
+    try:
+        ir_data = parse_ir_from_file(filename)
+    except (IRParseError, FileNotFoundError) as e:
+        raise RuntimeError(f"Failed to load IR from file {filename}: {e}")
 
     interpreter = IRInterpreter()
     return interpreter.execute_program(ir_data)
 
 
 def execute_ir_from_string(ir_string: str) -> Any:
-    """Parse and execute IR from a string."""
-    import json
-
+    """Execute IR from a JSON string."""
     try:
-        ir_data = json.loads(ir_string)
-        # Convert JSON lists to tuples
-        ir_data = _json_to_tuples(ir_data)
-    except json.JSONDecodeError:
-        # Handle eval with None for null values
-        import builtins
-
-        safe_dict = {"null": None, "true": True, "false": False}
-        ir_data = eval(ir_string, {"__builtins__": builtins}, safe_dict)
+        ir_data = parse_ir_from_json_string(ir_string)
+    except IRParseError as e:
+        raise RuntimeError(f"Failed to parse IR string: {e}")
 
     interpreter = IRInterpreter()
     return interpreter.execute_program(ir_data)
-
-
-def _json_to_tuples(obj):
-    """Recursively convert JSON lists to tuples for IR execution."""
-    if isinstance(obj, list):
-        return tuple(_json_to_tuples(item) for item in obj)
-    elif isinstance(obj, dict):
-        return {key: _json_to_tuples(value) for key, value in obj.items()}
-    else:
-        return obj
 
 
 def main():

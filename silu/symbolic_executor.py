@@ -11,9 +11,8 @@ from typing import Any, Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 from enum import Enum
-import json
-import ast
 from copy import deepcopy
+from .ir_utils import parse_ir_from_file, parse_ir_from_json_string, IRParseError
 
 # Import enhanced symbolic execution utilities
 from .symbolic.z3_utils import (
@@ -1775,10 +1774,7 @@ def execute_symbolic_from_file(
 ) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR file"""
     try:
-        with open(file_path, "r", encoding=Config.DEFAULT_ENCODING) as f:
-            content = f.read().strip()
-
-        ir_program = _parse_ir_content(content)
+        ir_program = parse_ir_from_file(file_path, encoding=Config.DEFAULT_ENCODING)
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
@@ -1795,10 +1791,7 @@ def execute_symbolic_from_file_with_executor(
 ) -> Dict[str, Any]:
     """Execute symbolic analysis from an IR file and return paths with function analyses"""
     try:
-        with open(file_path, "r", encoding=Config.DEFAULT_ENCODING) as f:
-            content = f.read().strip()
-
-        ir_program = _parse_ir_content(content)
+        ir_program = parse_ir_from_file(file_path, encoding=Config.DEFAULT_ENCODING)
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
@@ -1821,7 +1814,7 @@ def execute_symbolic_from_string(
 ) -> List[ExecutionPath]:
     """Execute symbolic analysis from an IR string"""
     try:
-        ir_program = _parse_ir_content(ir_string)
+        ir_program = parse_ir_from_json_string(ir_string)
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
@@ -1838,7 +1831,7 @@ def execute_symbolic_from_string_with_executor(
 ) -> Dict[str, Any]:
     """Execute symbolic analysis from an IR string and return paths with function analyses"""
     try:
-        ir_program = _parse_ir_content(ir_string)
+        ir_program = parse_ir_from_json_string(ir_string)
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
@@ -1854,23 +1847,3 @@ def execute_symbolic_from_string_with_executor(
 
     except Exception as e:
         raise RuntimeError(f"Error in symbolic execution from string: {e}")
-
-
-def _parse_ir_content(content: str) -> Tuple:
-    """Parse IR content from string"""
-    try:
-        ir_program = json.loads(content)
-        return _json_to_tuples(ir_program)
-    except json.JSONDecodeError:
-        content = content.replace("null", "None")
-        return ast.literal_eval(content)
-
-
-def _json_to_tuples(json_obj: Any) -> Any:
-    """Convert JSON objects back to tuples for IR processing"""
-    if isinstance(json_obj, list):
-        return tuple(_json_to_tuples(item) for item in json_obj)
-    elif isinstance(json_obj, dict):
-        return {key: _json_to_tuples(value) for key, value in json_obj.items()}
-    else:
-        return json_obj

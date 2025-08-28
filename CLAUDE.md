@@ -26,7 +26,10 @@ silu/
 ├── ast_processor.py    # Abstract base class for AST processing
 ├── interpreter.py      # Core interpreter (extends BaseASTProcessor)
 ├── ir_generator.py     # IR generator (extends BaseASTProcessor)
+├── ir_interpreter.py   # IR interpreter for executing IR directly
 ├── ir_to_source.py     # IR to source code converter
+├── ir_utils.py         # Shared IR utilities (parsing, validation, analysis)
+├── silu_ir_to_llvm.py  # IR to LLVM-IR converter
 └── symbolic_executor.py # Symbolic execution engine
 ```
 
@@ -36,8 +39,11 @@ silu/
 2. **BaseASTProcessor (`ast_processor.py`)**: Abstract base class with shared AST traversal logic
 3. **SiluInterpreter (`interpreter.py`)**: Main interpreter with Environment and Function classes
 4. **SiluIRGenerator (`ir_generator.py`)**: Converts AST to intermediate representation
-5. **IRToSourceConverter (`ir_to_source.py`)**: Converts IR back to readable source code with shared conversion utilities
-6. **SymbolicExecutor (`symbolic_executor.py`)**: Enhanced symbolic program analysis with Z3 constraint generation and precise loop handling
+5. **IRInterpreter (`ir_interpreter.py`)**: Directly executes IR without AST conversion
+6. **IRToSourceConverter (`ir_to_source.py`)**: Converts IR back to readable source code with shared conversion utilities
+7. **SymbolicExecutor (`symbolic_executor.py`)**: Enhanced symbolic program analysis with Z3 constraint generation and precise loop handling
+8. **IRUtils (`ir_utils.py`)**: Shared utilities for IR processing (JSON parsing, validation, analysis)
+9. **SiluToLLVMConverter (`silu_ir_to_llvm.py`)**: Converts Silu IR to LLVM-IR format
 
 ## Common Development Commands
 
@@ -306,3 +312,27 @@ Match statement support is thoroughly tested in `tests/test_match_ir.py` with co
 - Guard conditions and multiple cases
 - Integration with functions and other language features
 - Edge cases like empty bodies and multiple statements per case
+
+## IR Refactoring Progress (2024-08-28)
+
+### Completed
+1. **Fixed Symbolic Executor Bug**: Resolved tuple/string comparison error in `PathManager.finalize_paths()` that prevented symbolic execution of C-generated IR files
+2. **Created IR Utilities Module** (`ir_utils.py`):
+   - JSON to tuple conversion utilities
+   - IR parsing from files and strings (supports both JSON and Python literal formats)
+   - IR validation functions (node format, program structure)
+   - IR analysis tools (opcode extraction, node counting, node searching)
+   - File I/O operations with format detection
+   - Comprehensive error handling
+   - Full test coverage (42 tests in `test_ir_utils.py`)
+
+### Next Steps
+1. **Create BaseIRProcessor Abstract Class**: Extract common IR traversal and dispatch logic from the 4 IR processing modules
+2. **Refactor Existing Modules**: Migrate `ir_interpreter.py`, `symbolic_executor.py`, `ir_to_source.py`, and `silu_ir_to_llvm.py` to inherit from BaseIRProcessor
+3. **Integrate ir_utils**: Replace duplicate JSON parsing and validation code across modules with shared utilities
+
+### Benefits of Refactoring
+- Reduces 80%+ of duplicate IR node traversal code
+- Provides unified error handling and validation
+- Makes adding new IR node types easier (single point of change)
+- Improves maintainability and testability

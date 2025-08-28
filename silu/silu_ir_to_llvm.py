@@ -8,11 +8,11 @@ The converter handles the dynamic typing of Silu by creating a runtime system
 with tagged unions for Python-like objects.
 """
 
-import json
 import sys
 from typing import Any, Dict, List, Optional, Union
 from llvmlite import ir
 import llvmlite.binding as llvm
+from .ir_utils import parse_ir_from_json_string, IRParseError
 
 
 class PyObject:
@@ -425,9 +425,9 @@ class SiluToLLVMConverter:
 
         # Parse JSON
         try:
-            ir_data = json.loads(ir_json)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON: {e}")
+            ir_data = parse_ir_from_json_string(ir_json)
+        except IRParseError as e:
+            raise ValueError(f"Failed to parse IR: {e}")
 
         # First pass: collect function definitions
         self._collect_function_defs(ir_data)
