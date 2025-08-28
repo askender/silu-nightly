@@ -1,5 +1,5 @@
-#include <stdint.h> // int16_t, uint16_t, uint8_t 等
-
+// #include <stdint.h> // int16_t, uint16_t, uint8_t 等
+#include "mystdint/stdint.h"
 
 typedef enum {
     CarModeSuccess = 0,
