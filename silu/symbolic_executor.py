@@ -248,9 +248,23 @@ class PathManager:
 
         for path in self.paths:
             # Create a signature for the path based on conditions and final variables
+            # Convert keys to strings and sort to avoid tuple comparison issues
+            variable_items = []
+            for k, v in path.variables.items():
+                # Ensure the key is a string to avoid comparison issues
+                key_str = str(k) if not isinstance(k, str) else k
+                try:
+                    variable_items.append((key_str, str(v)))
+                except:
+                    # Handle cases where str(v) might fail
+                    variable_items.append((key_str, repr(v)))
+
+            # Sort by string keys only
+            sorted_variables = sorted(variable_items, key=lambda x: x[0])
+
             path_signature = (
                 tuple(str(c) for c in path.conditions),
-                tuple(sorted((k, str(v)) for k, v in path.variables.items()))
+                tuple(sorted_variables)
             )
 
             if path_signature not in seen_paths and (path.statements or path.conditions or path.variables):
@@ -1496,6 +1510,12 @@ class SymbolicExecutor:
     ) -> Optional[Any]:
         """Try to perform concrete operation"""
         try:
+            # Skip operations with tuples (expression values) or None values
+            if isinstance(left_val, tuple) or isinstance(right_val, tuple):
+                return None
+            if left_val is None or right_val is None:
+                return None
+
             operations = {
                 "+": lambda a, b: a + b,
                 "-": lambda a, b: a - b,
