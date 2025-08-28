@@ -1,5 +1,5 @@
 // #include <stdbool.h>
-#include "mystdint/stdint.h"
+#include "../mystdint/stdint.h"
 #include <stdio.h>
 
 typedef enum {
