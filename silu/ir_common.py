@@ -90,7 +90,7 @@ def log_ir_processing(
     args: List[Any],
     level: str = "INFO",
     extra_info: Optional[Dict] = None,
-    output_stream=sys.stderr
+    output_stream=None
 ) -> None:
     """
     Log information about IR node processing.
@@ -100,8 +100,11 @@ def log_ir_processing(
         args: Node arguments
         level: Log level (DEBUG, INFO, WARNING, ERROR)
         extra_info: Additional information to log
-        output_stream: Stream to write log to
+        output_stream: Stream to write log to. Defaults to sys.stderr.
     """
+    if output_stream is None:
+        output_stream = sys.stderr
+
     if extra_info is None:
         extra_info = {}
 

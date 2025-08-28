@@ -87,40 +87,28 @@ class TestIRNodeDispatching(unittest.TestCase):
         self.assertEqual(handlers["name"](("name", "x")), "var:x")
 
 
-class TestDebugAndLogging(unittest.TestCase):
-    """Test debug and logging functionality."""
+def test_log_ir_processing(capsys):
+    """Test logging IR node processing."""
+    # Test basic logging
+    log_ir_processing("const", [42], "INFO")
+    captured = capsys.readouterr()
+    assert "[INFO] Processing const: 42" in captured.err
 
-    def test_log_ir_processing(self):
-        """Test logging IR node processing."""
-        # Capture stdout
-        captured_output = StringIO()
-        sys.stderr = captured_output
+    # Test with multiple arguments
+    log_ir_processing("binary_op", ["a", "+", "b"], "DEBUG")
+    captured = capsys.readouterr()
+    assert "[DEBUG] Processing binary_op: 'a', '+', 'b'" in captured.err
 
-        try:
-            # Test basic logging
-            log_ir_processing("const", [42], "INFO")
-            self.assertIn("[INFO] Processing const: 42", captured_output.getvalue())
+    # Test with extra info
+    log_ir_processing("call", ["print", ["Hello"]], "WARNING", {"line": 10})
+    captured = capsys.readouterr()
+    assert "[WARNING] Processing call:" in captured.err
+    assert "| {'line': 10}" in captured.err
 
-            # Test with multiple arguments
-            captured_output.truncate(0)
-            captured_output.seek(0)
-            log_ir_processing("binary_op", ["a", "+", "b"], "DEBUG")
-            self.assertIn("[DEBUG] Processing binary_op: 'a', '+', 'b'", captured_output.getvalue())
-
-            # Test with extra info
-            captured_output.truncate(0)
-            captured_output.seek(0)
-            log_ir_processing("call", ["print", ["Hello"]], "WARNING", {"line": 10})
-            self.assertIn("[WARNING] Processing call:", captured_output.getvalue())
-            self.assertIn("| {'line': 10}", captured_output.getvalue())
-
-            # Test with long lists that get summarized
-            captured_output.truncate(0)
-            captured_output.seek(0)
-            log_ir_processing("module", [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]], "INFO")
-            self.assertIn("list[10 items]", captured_output.getvalue())
-        finally:
-            sys.stderr = sys.__stderr__
+    # Test with long lists that get summarized
+    log_ir_processing("module", [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]], "INFO")
+    captured = capsys.readouterr()
+    assert "list[10 items]" in captured.err
 
 
 class TestErrorHandling(unittest.TestCase):
