@@ -600,9 +600,9 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
 
         import subprocess
         # "-nostdinc", "-nostdlib", cpp gcc clang
-        # "-nostdinc","-Imystdint", "-Iutils/fake_libc_include",
+        # "-nostdinc", "-Iutils/fake_libc_include",
         # r'-I/path/to/pycparser/utils/fake_libc_include'
-        cmd = ["clang", "-E", "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include", tmp_file]
+        cmd = ["clang", "-E", "-Imystdint", "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include", tmp_file]
         # print(' '.join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
