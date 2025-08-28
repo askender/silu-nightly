@@ -101,9 +101,12 @@ class ExecutionPath:
         # Use Z3-based satisfiability checking if available
         if Z3_AVAILABLE:
             condition_strs = [str(c) for c in self.conditions]
-            is_sat_result, _ = check_path_satisfiability(condition_strs)
+            is_sat_result, model_values = check_path_satisfiability(condition_strs)
             if not is_sat_result:
                 self.state = ExecutionPathState.UNSATISFIABLE
+            elif model_values:
+                # Store test inputs from Z3 model
+                self.test_inputs = model_values
             return is_sat_result
 
         # Fallback to basic logical contradiction checking

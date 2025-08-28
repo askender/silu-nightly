@@ -732,6 +732,61 @@ class IRInterpreter:
         # Unsupported pattern type
         return None
 
+    # ================== Switch Statements ==================
+
+    def _execute_switch(self, condition: Any, cases: Tuple) -> Any:
+        """Execute switch statement."""
+        condition_val = self.execute(condition)
+
+        matched = False
+        result = None
+
+        for case in cases:
+            if not isinstance(case, (tuple, list)) or len(case) < 2:
+                continue
+
+            case_type = case[0]
+
+            if case_type == "case":
+                # case: ("case", value, statements)
+                if len(case) != 3:
+                    continue
+                case_value = self.execute(case[1])
+                statements = case[2]
+
+                # Check if this case matches or we're in fallthrough mode
+                if not matched and condition_val == case_value:
+                    matched = True
+
+                # Execute statements if matched or falling through
+                if matched:
+                    result = self._execute_block(statements)
+                    # Check for break or return
+                    if self.should_break:
+                        self.should_break = False
+                        break
+                    if self.should_return:
+                        break
+
+            elif case_type == "default":
+                # default: ("default", statements)
+                if len(case) != 2:
+                    continue
+                statements = case[1]
+
+                # Execute default if no case matched yet or we're falling through
+                if not matched or matched:
+                    matched = True
+                    result = self._execute_block(statements)
+                    # Check for break or return
+                    if self.should_break:
+                        self.should_break = False
+                        break
+                    if self.should_return:
+                        break
+
+        return result
+
     # ================== Operators ==================
 
     def _execute_binary_op(self, op: str, left: Any, right: Any) -> Any:

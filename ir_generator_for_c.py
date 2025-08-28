@@ -255,6 +255,47 @@ class CIRGenerator(c_ast.NodeVisitor):
         """Convert continue statement to IR."""
         return ("continue",)
 
+    def visit_Switch(self, node: c_ast.Switch) -> Tuple:
+        """Convert switch statement to IR."""
+        condition = self.visit(node.cond)
+
+        # Process switch body
+        cases = []
+        if node.stmt and hasattr(node.stmt, 'block_items') and node.stmt.block_items:
+            for stmt in node.stmt.block_items:
+                result = self.visit(stmt)
+                if result is not None:
+                    cases.append(result)
+
+        return ("switch", condition, tuple(cases))
+
+    def visit_Case(self, node: c_ast.Case) -> Tuple:
+        """Convert case label to IR."""
+        # Get the case value
+        value = self.visit(node.expr)
+
+        # Collect statements in this case
+        statements = []
+        if hasattr(node, 'stmts') and node.stmts:
+            for stmt in node.stmts:
+                result = self.visit(stmt)
+                if result is not None:
+                    statements.append(result)
+
+        return ("case", value, tuple(statements))
+
+    def visit_Default(self, node: c_ast.Default) -> Tuple:
+        """Convert default label to IR."""
+        # Collect statements in this default case
+        statements = []
+        if hasattr(node, 'stmts') and node.stmts:
+            for stmt in node.stmts:
+                result = self.visit(stmt)
+                if result is not None:
+                    statements.append(result)
+
+        return ("default", tuple(statements))
+
     # ================== Expressions ==================
 
     def visit_BinaryOp(self, node: c_ast.BinaryOp) -> Tuple:
@@ -519,6 +560,9 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple|Non
         except Exception as e:
             print(f"Error2 parsing C code: {e}") # , file=sys.stderr
             return
+
+        print("ast.show:")
+        ast.show()
 
         generator = CIRGenerator(record_types=record_types)
         ir = generator.visit(ast)
