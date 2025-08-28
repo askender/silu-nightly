@@ -173,6 +173,25 @@ class IRInterpreter:
         # Store the struct type definition
         self.struct_types[name] = fields
 
+    def _execute_typedef(self, name: str, type_spec) -> None:
+        """Execute type definition."""
+        if type_spec == "Enum":
+            # Store the enum type
+            self.enum_types[name] = type_spec
+        elif isinstance(type_spec, tuple) and len(type_spec) >= 2 and type_spec[0] == "Enum":
+            # Future extensibility: Handle enum with constants list
+            # Format: ("Enum", [constant_names])
+            self.enum_types[name] = type_spec[0]
+
+            # Future implementation could define constants here:
+            # constants = type_spec[1] if len(type_spec) > 1 else []
+            # for i, constant in enumerate(constants):
+            #     self._set_variable(f"{name}_{constant}", i)
+        else:
+            # Handle other typedef cases (like struct)
+            if isinstance(type_spec, str) and hasattr(self, f'_execute_typedef_{type_spec.lower()}'):
+                getattr(self, f'_execute_typedef_{type_spec.lower()}')(name, type_spec)
+
     def _execute_name(self, name: str) -> Any:
         """Execute variable name reference."""
         return self._get_variable(name)
