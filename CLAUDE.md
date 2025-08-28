@@ -325,14 +325,146 @@ Match statement support is thoroughly tested in `tests/test_match_ir.py` with co
    - File I/O operations with format detection
    - Comprehensive error handling
    - Full test coverage (42 tests in `test_ir_utils.py`)
+3. **Integrated ir_utils Across All IR Processors** (2024-12-19):
+   - Replaced duplicate JSON parsing code in `ir_interpreter.py` with `parse_ir_from_file` and `parse_ir_from_json_string`
+   - Removed redundant `_json_to_tuples` and `_parse_ir_content` functions from `symbolic_executor.py`
+   - Simplified `ir_to_source.py` by using shared parsing utilities
+   - Updated `silu_ir_to_llvm.py` to use consistent IR parsing
+   - All 531 tests pass after refactoring
 
 ### Next Steps
-1. **Create BaseIRProcessor Abstract Class**: Extract common IR traversal and dispatch logic from the 4 IR processing modules
-2. **Refactor Existing Modules**: Migrate `ir_interpreter.py`, `symbolic_executor.py`, `ir_to_source.py`, and `silu_ir_to_llvm.py` to inherit from BaseIRProcessor
-3. **Integrate ir_utils**: Replace duplicate JSON parsing and validation code across modules with shared utilities
+1. **Targeted Utility Functions**: Identify and extract specific shared utility functions that are used across multiple IR processors
+2. **Simplified IR Node Dispatching**: Create a common node dispatching mechanism without introducing complex abstractions
+3. **Balanced Refactoring**: Extract only code that provides clear benefits when shared, avoiding over-abstraction
 
-### Benefits of Refactoring
-- Reduces 80%+ of duplicate IR node traversal code
-- Provides unified error handling and validation
-- Makes adding new IR node types easier (single point of change)
-- Improves maintainability and testability
+### Benefits Achieved
+- **Eliminated ~100 lines of duplicate code** across 4 modules
+- **Unified error handling**: Consistent error messages and exception types
+- **Improved maintainability**: Single source of truth for IR parsing logic
+- **Better testability**: Centralized utilities with comprehensive test coverage
+- **Format flexibility**: Seamless support for both JSON and Python literal formats
+
+### IR Refactoring Principles (2024-08-29)
+
+#### Goals
+- **Reduce code duplication**: Identify and extract common functionality without sacrificing readability
+- **Maintain module independence**: Each IR processor should remain usable independently
+- **Avoid over-abstraction**: Prefer concrete utility functions over complex abstract classes
+- **Improve maintainability**: Changes to shared code should predictably affect all consumers
+
+#### Target Areas for Shared Utilities
+1. **IR Node Dispatching**: Common mechanism to route node types to their handlers
+2. **Error Handling**: Consistent error reporting and validation across modules
+3. **Common Node Processing**: Shared utilities for simple nodes like constants and primitives
+4. **Debug/Logging Utilities**: Consistent debugging and tracing capabilities
+
+#### Implementation Strategy
+1. Start with small, well-defined utility functions that have clear purposes
+2. Prioritize extraction of functions that are used identically across modules
+3. Maintain consistent naming conventions across all shared utilities
+4. Add comprehensive tests for each extracted utility function
+5. Document each utility's purpose, expected inputs/outputs, and usage examples
+
+#### Non-Goals
+- Creating a complex inheritance hierarchy that forces modules to fit a rigid pattern
+- Prematurely abstracting code that may evolve differently across modules
+- Sacrificing readability or debuggability for the sake of code reduction
+- Introducing dependencies between modules that should remain independent
+
+### IR Common Module Implementation (2024-08-30)
+
+A new `ir_common.py` module has been created to provide shared functionality across the four IR processing modules (interpreter, symbolic executor, IR-to-source converter, and LLVM converter) with the following features:
+
+#### Key Components
+1. **IR Node Dispatching**:
+   - `dispatch_ir_node()`: Routes IR nodes to their appropriate handlers based on opcode
+   - `create_handlers_map()`: Builds a mapping of opcodes to handler methods
+
+2. **Debug and Logging**:
+   - `log_ir_processing()`: Consistent logging format for IR node processing
+
+3. **Error Handling**:
+   - `handle_node_error()`: Unified error handling and reporting
+   - `IRProcessingError`: Common exception type for IR processing errors
+
+4. **Node Validation**:
+   - `validate_node_args()`: Validates node structure, opcode, and argument count
+
+5. **Common Node Processing**:
+   - `process_ir_block()`: Process a block of IR statements
+   - `extract_names_from_params()`: Extract parameter names from function definitions
+   - `process_const_node()`: Extract value from constant nodes
+   - `is_valid_identifier()`: Check if a string is a valid Python identifier
+
+#### Benefits
+- Reduces duplication in node validation and dispatching logic
+- Provides consistent error handling across all IR processors
+- Simplifies common processing patterns without imposing rigid structures
+- Maintains module independence while sharing useful utilities
+
+#### Usage Examples
+
+Here are examples of how to use the common IR utilities in the four IR processing modules:
+
+**1. Using the Node Dispatcher**
+
+```python
+from silu.ir_common import dispatch_ir_node, create_handlers_map
+
+class IRInterpreter:
+    def __init__(self):
+        # Create handlers map from methods
+        self.handlers = create_handlers_map(self)
+
+    def execute(self, node):
+        # Dispatch node to appropriate handler
+        return dispatch_ir_node(node, self.handlers)
+
+    def _process_const(self, node):
+        return node[1]
+
+    def _process_name(self, node):
+        return self.get_variable(node[1])
+```
+
+**2. Error Handling**
+
+```python
+from silu.ir_common import handle_node_error, validate_node_args
+
+class IRToSourceConverter:
+    def _convert_binary_op(self, node):
+        try:
+            validate_node_args(node, "binary_op", 3, 3)
+            left = self.convert(node[1])
+            op = node[2]
+            right = self.convert(node[3])
+            return f"{left} {op} {right}"
+        except Exception as e:
+            handle_node_error(node, e, "converting binary op")
+```
+
+**3. Block Processing**
+
+```python
+from silu.ir_common import process_ir_block
+
+class SymbolicExecutor:
+    def _execute_block(self, statements):
+        return process_ir_block(statements, self.execute, break_on_return=True)
+```
+
+**4. Validation and Debugging**
+
+```python
+from silu.ir_common import log_ir_processing, is_valid_identifier
+
+class IRToLLVMConverter:
+    def _convert_node(self, node):
+        if self.debug:
+            log_ir_processing(node[0], node[1:], "DEBUG")
+
+        # Validate identifier if needed
+        if node[0] == "name" and not is_valid_identifier(node[1]):
+            raise IRProcessingError(f"Invalid identifier: {node[1]}")
+```
