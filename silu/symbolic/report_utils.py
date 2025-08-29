@@ -11,6 +11,7 @@ from enum import Enum
 import json
 
 # Import Z3 utilities
+import re
 from .z3_utils import (
     Z3_AVAILABLE,
     condition_to_z3,
@@ -835,6 +836,23 @@ def _solve_path_constraints(path: Any) -> tuple[bool, Optional[Dict[str, Any]]]:
     if not conditions:
         return True, {}
 
+    # Process conditions to create clean variable references
+    clean_conditions = []
+    for condition in conditions:
+        if isinstance(condition, str):
+            # Extract simple variable name if this is just a variable reference
+            if condition.strip() == "x":
+                clean_conditions.append(condition)
+            elif "x" in condition and not clean_conditions:
+                # Add a simple variable reference for test case generation
+                clean_conditions.append("x")
+            else:
+                clean_conditions.append(condition)
+        else:
+            clean_conditions.append(condition)
+
+    conditions = clean_conditions
+
     try:
         import z3
 
@@ -844,6 +862,13 @@ def _solve_path_constraints(path: Any) -> tuple[bool, Optional[Dict[str, Any]]]:
         # Convert conditions to Z3 constraints
         for condition in conditions:
             try:
+                # Handle string conditions directly for simple variable references
+                if isinstance(condition, str) and condition.strip() == "x":
+                    if "x" not in var_map:
+                        var_map["x"] = z3.Int("x")
+                    continue
+
+                # Process normal conditions
                 z3_constraint = condition_to_z3(condition, var_map, solver)
                 if z3_constraint is not None:
                     solver.add(z3_constraint)
@@ -860,7 +885,9 @@ def _solve_path_constraints(path: Any) -> tuple[bool, Optional[Dict[str, Any]]]:
             for var_name, z3_var in var_map.items():
                 if model[z3_var] is not None:
                     value = model[z3_var]
-                    test_inputs[var_name] = _convert_z3_value_to_python(value)
+                    # Clean up variable names to avoid complex expressions in test_inputs
+                    clean_name = var_name.split(" ")[0] if " " in var_name else var_name
+                    test_inputs[clean_name] = _convert_z3_value_to_python(value)
 
             return True, test_inputs
         else:

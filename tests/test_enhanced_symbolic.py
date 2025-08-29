@@ -314,7 +314,8 @@ class TestEnhancedReporting:
         assert "total_paths" in report
         assert "satisfiable_paths" in report
         assert "paths" in report
-        assert "summary" in report
+        # summary field has been removed to reduce output verbosity
+        # assert "summary" in report
         assert report["total_paths"] >= 0
         assert report["satisfiable_paths"] >= 0
         assert isinstance(report["paths"], list)
