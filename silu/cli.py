@@ -250,6 +250,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         include_function_paths = kwargs.get("include_function_paths", False)
         performance_mode = kwargs.get("performance_mode", False)
         debug = kwargs.get("debug", False)
+
         executor = SymbolicExecutor(
             include_function_paths=include_function_paths,
             performance_mode=performance_mode,
@@ -287,6 +288,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                     source,
                     include_function_paths=include_function_paths,
                     performance_mode=performance_mode,
+                    debug=debug,
                 )
                 paths = ir_executor_result["paths"]
                 # Transfer function analyses from IR executor to main executor
