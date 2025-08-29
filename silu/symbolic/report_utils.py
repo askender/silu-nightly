@@ -863,10 +863,20 @@ def _solve_path_constraints(path: Any) -> tuple[bool, Optional[Dict[str, Any]]]:
         for condition in conditions:
             try:
                 # Handle string conditions directly for simple variable references
-                if isinstance(condition, str) and condition.strip() == "x":
-                    if "x" not in var_map:
-                        var_map["x"] = z3.Int("x")
-                    continue
+                if isinstance(condition, str):
+                    # Handle pure variable references
+                    if condition.strip() == "x":
+                        if "x" not in var_map:
+                            var_map["x"] = z3.Int("x")
+                        continue
+
+                    # Extract main variable from compound conditions
+                    if " and " in condition:
+                        parts = condition.split(" and ")
+                        for part in parts:
+                            if "x" in part and "x" not in var_map:
+                                var_map["x"] = z3.Int("x")
+                                break
 
                 # Process normal conditions
                 z3_constraint = condition_to_z3(condition, var_map, solver)
@@ -885,9 +895,13 @@ def _solve_path_constraints(path: Any) -> tuple[bool, Optional[Dict[str, Any]]]:
             for var_name, z3_var in var_map.items():
                 if model[z3_var] is not None:
                     value = model[z3_var]
-                    # Clean up variable names to avoid complex expressions in test_inputs
-                    clean_name = var_name.split(" ")[0] if " " in var_name else var_name
-                    test_inputs[clean_name] = _convert_z3_value_to_python(value)
+                    # Always use simple variable names for test inputs
+                    # This ensures we don't get complex expressions as keys
+                    if var_name == "x" or var_name.startswith("x ") or " x " in var_name or var_name.endswith(" x"):
+                        test_inputs["x"] = _convert_z3_value_to_python(value)
+                    else:
+                        # For any other variables, use them as-is
+                        test_inputs[var_name] = _convert_z3_value_to_python(value)
 
             return True, test_inputs
         else:
