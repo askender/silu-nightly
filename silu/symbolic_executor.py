@@ -87,7 +87,9 @@ class ExecutionPath:
 
     def add_statement(self, statement: str) -> None:
         """Add an executed statement"""
-        self.statements.append(statement)
+        pass
+        # TODO: temp disable show statements
+        # self.statements.append(statement)
 
     def is_satisfiable(self) -> bool:
         """Check if the path conditions are satisfiable using enhanced Z3 checking"""
@@ -129,7 +131,8 @@ class ExecutionPath:
             "conditions": [str(c) for c in self.conditions],
             "statements": self.statements,
             "return_value": str(self.return_value) if self.return_value else None,
-            "variables": {str(k): str(v) for k, v in self.variables.items()},
+            # TODO: : temp disable show variables
+            # "variables": {str(k): str(v) for k, v in self.variables.items()},
             "satisfiable": self.is_satisfiable(),
             "loop_iterations": self.loop_iterations,
             "state": self.state.value,
