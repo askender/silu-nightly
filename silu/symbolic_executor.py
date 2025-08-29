@@ -85,6 +85,47 @@ class ExecutionPath:
         """Add a path condition"""
         self.conditions.append(condition)
 
+    def clean_test_inputs(self) -> None:
+        """Clean test inputs to ensure valid variable names as keys"""
+        if not hasattr(self, "test_inputs") or not self.test_inputs:
+            return
+
+        import re
+        cleaned_inputs = {}
+        var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
+        keywords = {'and', 'or', 'not', 'True', 'False', 'None'}
+        operators = {'<', '>', '<=', '>=', '==', '!=', '+', '-', '*', '/', '%'}
+
+        # Get all variable names from the test_inputs
+        all_vars = set()
+        compound_keys = []
+        for key in list(self.test_inputs.keys()):  # Use list to avoid dict change during iteration
+            # Handle compound conditions (containing operators or logical operators)
+            if ' and ' in key or ' or ' in key or any(op in key for op in operators):
+                compound_keys.append(key)
+                # Extract variables from the compound condition
+                matches = var_pattern.findall(key)
+                for var in matches:
+                    if var not in keywords and var not in operators and not var.isdigit():
+                        all_vars.add(var)
+            # Clean normal variable keys
+            elif key not in keywords and not key.isdigit() and not any(op in key for op in operators):
+                cleaned_inputs[key] = self.test_inputs[key]
+                all_vars.add(key)
+
+        # Extract variable values from compound keys
+        for var in all_vars:
+            if var not in cleaned_inputs:
+                # Look for a compound key containing this variable
+                for key in compound_keys:
+                    if var in key and var in var_pattern.findall(key):
+                        cleaned_inputs[var] = self.test_inputs[key]
+                        break
+
+        # Replace test_inputs with cleaned version if we have valid entries
+        if cleaned_inputs:
+            self.test_inputs = cleaned_inputs
+
     def add_statement(self, statement: str) -> None:
         """Add an executed statement"""
         pass
@@ -125,18 +166,24 @@ class ExecutionPath:
         return True
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization"""
+        """Convert execution path to dictionary"""
+        # Clean test inputs before serialization
+        if hasattr(self, "clean_test_inputs") and hasattr(self, "test_inputs") and self.test_inputs:
+            self.clean_test_inputs()
+
         result = {
             "path_id": self.path_id,
             "conditions": [str(c) for c in self.conditions],
             "statements": self.statements,
-            "return_value": str(self.return_value) if self.return_value else None,
-            # TODO: : temp disable show variables
-            # "variables": {str(k): str(v) for k, v in self.variables.items()},
+            "return_value": self.return_value.value if hasattr(self.return_value, "value") else self.return_value,
             "satisfiable": self.is_satisfiable(),
             "loop_iterations": self.loop_iterations,
             "state": self.state.value,
         }
+
+        # Add test_inputs directly to result to ensure they're included in serialization
+        if hasattr(self, "test_inputs") and self.test_inputs:
+            result["test_inputs"] = self.test_inputs
 
         # Add optional attributes if present
         for attr in ["test_inputs", "expected_outputs", "z3_error"]:
@@ -175,6 +222,14 @@ class SymbolicEnvironment:
         from .symbolic.z3_utils import create_z3_variable
 
         return create_z3_variable(name, var_type)
+
+    def has_variable(self, name: str) -> bool:
+        """Check if a variable exists in the current or parent scope"""
+        if name in self.variables:
+            return True
+        elif self.parent:
+            return self.parent.has_variable(name)
+        return False
 
     def get_variable(self, name: str) -> SymbolicValue:
         """Get a variable value with proper scoping"""
@@ -273,6 +328,16 @@ class PathManager:
                 seen_paths.add(path_signature)
                 unique_paths.append(path)
 
+        # 确保至少返回一个路径
+        if not unique_paths and self.paths:
+            # 如果有原始路径但都被过滤掉了，返回第一个
+            unique_paths = [self.paths[0]]
+        elif not unique_paths:
+            # 如果原始路径也是空的，创建一个默认路径
+            default_path = self.create_path("default_")
+            default_path.add_statement("# Default path")
+            unique_paths = [default_path]
+
         return renumber_paths_sequentially(unique_paths)
 
 
@@ -330,10 +395,39 @@ class ConditionalHandler(IRNodeHandler):
             _, condition_ir, then_block = ir_node
             else_block = None
 
+        # 从IR中直接提取变量名，用于改进条件生成
+        if isinstance(condition_ir, tuple) and len(condition_ir) > 0:
+            # 处理and操作
+            if condition_ir[0] == "and" and len(condition_ir) >= 3:
+                # 提取左右操作数
+                left_ir = condition_ir[1]
+                right_ir = condition_ir[2]
 
+                # 处理比较操作如 "<", "=="
+                if isinstance(left_ir, tuple) and len(left_ir) >= 3 and left_ir[0] in ["<", "==", ">", "<=", ">=", "!="]:
+                    left_var = executor._extract_variable_name(left_ir[1])
+                    left_op = left_ir[0]
+                    left_val = left_ir[2]
+                    if isinstance(left_val, tuple) and left_val[0] == "const":
+                        left_val = left_val[1]
 
+                if isinstance(right_ir, tuple) and len(right_ir) >= 3 and right_ir[0] in ["<", "==", ">", "<=", ">=", "!="]:
+                    right_var = executor._extract_variable_name(right_ir[1])
+                    right_op = right_ir[0]
+                    right_val = right_ir[2]
+                    if isinstance(right_val, tuple) and right_val[0] == "const":
+                        right_val = right_val[1]
+
+                # 构建更准确的条件字符串
+                if 'left_var' in locals() and 'right_var' in locals():
+                    readable_condition = f"{left_var} {left_op} {left_val} and {right_var} {right_op} {right_val}"
+
+        # 执行条件求值
         condition = executor._execute_ir(condition_ir)
-        readable_condition = executor._make_condition_readable(condition)
+
+        # 如果上面没有生成readable_condition，使用默认方法
+        if 'readable_condition' not in locals():
+            readable_condition = executor._make_condition_readable(condition)
 
 
 
@@ -811,6 +905,7 @@ class SymbolicExecutor:
             self.include_function_paths = include_function_paths
 
         self.current_path = self.path_manager.create_path()
+        self.current_path._function_params = []  # 添加函数参数列表
 
         try:
             self._execute_ir(ir_program)
@@ -822,13 +917,26 @@ class SymbolicExecutor:
         if self.current_path:
             self.path_manager.add_path(self.current_path)
 
-        return self.path_manager.finalize_paths()
+        paths = self.path_manager.finalize_paths()
+
+        # Clean test inputs for all paths - no need to check attribute existence
+        for path in paths:
+            path.clean_test_inputs()
+
+        # Clean test inputs for function paths
+        if hasattr(self, "function_analyses"):
+            for func_name, func_paths in self.function_analyses.items():
+                for path in func_paths:
+                    path.clean_test_inputs()
+
+        return paths
 
     def analyze_function(
         self, func_name: str, param_names: List[str], ir_program: Tuple
     ) -> List[ExecutionPath]:
         """Analyze a specific function with symbolic parameters"""
         self.current_path = self.path_manager.create_path()
+        self.current_path._function_params = param_names  # 存储函数参数列表
 
         # Create symbolic parameters
         for param in param_names:
@@ -845,7 +953,8 @@ class SymbolicExecutor:
         if self.current_path:
             self.path_manager.add_path(self.current_path)
 
-        return self.path_manager.finalize_paths()
+        paths = self.path_manager.finalize_paths()
+        return paths
 
     def _execute_ir(self, ir_node: Union[Tuple, str, Any]) -> SymbolicValue:
         """Execute an IR node and return its symbolic value"""
@@ -946,7 +1055,14 @@ class SymbolicExecutor:
     def _execute_name(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a name (variable reference) IR node"""
         _, var_name = ir_node
-        return self.current_env.get_variable(var_name)
+        # 检查变量是否在当前环境中
+        if self.current_env.has_variable(var_name):
+            return self.current_env.get_variable(var_name)
+        # 如果变量不存在，创建一个符号变量
+        # 这样可以确保即使变量尚未定义，我们也能得到一个有效的符号名
+        symbol = self.current_env.create_symbol(var_name)
+        self.current_env.set_variable(var_name, symbol)
+        return symbol
 
     def _execute_const(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a constant IR node"""
@@ -1269,14 +1385,16 @@ class SymbolicExecutor:
 
         args = [self._execute_ir(arg) for arg in args_ir]
 
+        # 记录函数调用语句，不管是否为内置函数
+        if self.current_path:
+            args_str = ", ".join(self._convert_value_display(arg) for arg in args)
+            self.current_path.add_statement(f"{func_name}({args_str})")
+
         if func_name in self.global_env.functions:
             func_handler = self.global_env.functions[func_name]
             if callable(func_handler):
                 # Built-in function
                 result = func_handler(*args)
-                if self.current_path:
-                    args_str = ", ".join(str(arg) for arg in args)
-                    self.current_path.add_statement(f"{func_name}({args_str})")
                 return result
             else:
                 # User-defined function - create symbolic return value
@@ -1460,6 +1578,9 @@ class SymbolicExecutor:
     def _execute_binary_op(self, ir_node: Tuple) -> SymbolicValue:
         """Execute binary operations with enhanced Z3 constraint generation"""
         try:
+            # 解析二元操作的左右操作数
+            left_ir = None
+            right_ir = None
             if len(ir_node) == 4:
                 _, left_ir, op, right_ir = ir_node
                 left = self._execute_ir(left_ir)
@@ -1475,6 +1596,21 @@ class SymbolicExecutor:
             else:
                 return create_concrete_value(None)
 
+            # 特别处理 "and" 操作，确保变量名被正确提取
+            if op == "and" and self.current_path:
+                # 从原始IR中提取变量名
+                left_name = self._extract_variable_name(left_ir)
+                right_name = self._extract_variable_name(right_ir)
+
+                # 如果成功提取了变量名，使用这些名称创建可读的条件
+                if left_name or right_name:
+                    left_str = left_name if left_name else self._convert_expression_readable(left)
+                    right_str = right_name if right_name else self._convert_expression_readable(right)
+                    readable_condition = f"{left_str} {op} {right_str}"
+
+                    # 添加条件到当前路径
+                    self.current_path.add_condition(readable_condition)
+
             # Always create symbolic expressions for operations involving symbolic variables
             # This prevents boolean casting errors
             if (
@@ -1483,6 +1619,7 @@ class SymbolicExecutor:
                 or left.type == SymbolicValueType.EXPRESSION
                 or right.type == SymbolicValueType.EXPRESSION
             ):
+                # 对于and操作，我们已经单独处理了条件添加
                 expr = (op, left, right)
                 return create_expression_value(expr)
 
@@ -1578,8 +1715,17 @@ class SymbolicExecutor:
                         left = self._execute_ir(left_ir)
                         right = self._execute_ir(right_ir)
 
-                        # Create readable condition for tracking
-                        readable_condition = f"{self._convert_expression_readable(left)} {op} {self._convert_expression_readable(right)}"
+                        # 创建可读条件用于跟踪，确保变量名正确
+                        left_str = self._convert_expression_readable(left)
+                        right_str = self._convert_expression_readable(right)
+
+                        # 从原始IR中提取变量名，避免出现None
+                        if left_str == "None" and isinstance(left_ir, tuple) and left_ir[0] == "name":
+                            left_str = left_ir[1]
+                        if right_str == "None" and isinstance(right_ir, tuple) and right_ir[0] == "name":
+                            right_str = right_ir[1]
+
+                        readable_condition = f"{left_str} {op} {right_str}"
                         all_conditions.append(readable_condition)
 
                         # Create expression value with the operator and operands
@@ -1627,22 +1773,48 @@ class SymbolicExecutor:
                     print(f"Debug: Z3 constraint generation failed: {e}")
         return None
 
+    def _extract_variable_name(self, ir_node: Any) -> Optional[str]:
+        """从IR节点中提取变量名"""
+        if isinstance(ir_node, tuple) and len(ir_node) >= 2:
+            if ir_node[0] == "name":
+                return ir_node[1]  # 返回变量名
+            elif len(ir_node) >= 3 and ir_node[0] in ["<", "==", ">", "<=", ">=", "!="]:
+                # 递归处理比较操作的左右操作数
+                left_name = self._extract_variable_name(ir_node[1])
+                right_name = self._extract_variable_name(ir_node[2])
+                if left_name:
+                    return left_name
+                return right_name
+        return None
+
     def _make_condition_readable(self, condition: Any) -> str:
         """Convert IR condition to readable format with recursive tuple handling"""
+        # 处理IR节点的特殊情况 - 直接提取变量名
+        if isinstance(condition, tuple) and len(condition) >= 2 and condition[0] == "name":
+            return condition[1]  # 直接返回变量名
+
+        if condition is None:
+            return "None"
         if hasattr(condition, "value") and hasattr(condition, "type"):
             if condition.type == SymbolicValueType.EXPRESSION:
                 return self._make_condition_readable(condition.value)
             elif condition.type == SymbolicValueType.SYMBOLIC:
                 return condition.name or str(condition.value)
             elif condition.type == SymbolicValueType.CONCRETE:
-                return str(condition.value)
+                return "None" if condition.value is None else str(condition.value)
             else:
                 return str(condition)
 
-        if isinstance(condition, tuple) and len(condition) >= 3:
+        elif isinstance(condition, tuple) and len(condition) >= 3:
             op, left, right = condition[0], condition[1], condition[2]
             left_readable = self._make_condition_readable(left)
             right_readable = self._make_condition_readable(right)
+
+            # 确保变量名不是 "None"
+            if left_readable == "None" and isinstance(left, tuple) and left[0] == "name":
+                left_readable = left[1]
+            if right_readable == "None" and isinstance(right, tuple) and right[0] == "name":
+                right_readable = right[1]
 
             # Special handling for 'and' operator in chained comparisons
             if op == "and":
@@ -1685,10 +1857,20 @@ class SymbolicExecutor:
 
     def _convert_expression_readable(self, expr: Any) -> str:
         """Internal simplified expression to readable format converter"""
+        if expr is None:
+            return "None"  # 明确处理 None 值
         if isinstance(expr, str):
             return expr
         elif isinstance(expr, (int, float, bool)):
             return str(expr)
+        elif hasattr(expr, "type") and hasattr(expr, "value"):
+            # 处理符号值
+            if expr.type == SymbolicValueType.SYMBOLIC:
+                return expr.name or str(expr.value)
+            elif expr.type == SymbolicValueType.CONCRETE:
+                return "None" if expr.value is None else str(expr.value)
+            elif expr.type == SymbolicValueType.EXPRESSION:
+                return self._convert_expression_readable(expr.value)
         elif isinstance(expr, tuple) and len(expr) >= 1:
             if len(expr) == 3 and isinstance(expr[0], str):
                 op, left, right = expr

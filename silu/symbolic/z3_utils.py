@@ -248,6 +248,13 @@ class ExpressionParser:
                     left = parts[0].strip()
                     right = parts[1].strip()
 
+                    # 确保变量在 var_map 中
+                    if left not in var_map and not left.isdigit() and left not in {'True', 'False', 'None'}:
+                        var_map[left] = Int(left)
+
+                    if right not in var_map and not right.isdigit() and right not in {'True', 'False', 'None'}:
+                        var_map[right] = Int(right)
+
                     left_z3 = self._expr_to_z3_simple(left, var_map)
                     right_z3 = self._expr_to_z3_simple(right, var_map)
 
@@ -414,6 +421,9 @@ class ConditionProcessor:
         if not Z3_AVAILABLE:
             return None
 
+        # 确保条件中的变量存在于变量映射中
+        self._ensure_variables_in_map(condition_str, var_map)
+
         # Try operand format parsing
         constraint = self.parser.parse_operand_format(condition_str, var_map)
         if constraint is not None:
@@ -431,22 +441,54 @@ class ConditionProcessor:
 
         return None
 
-    def tuple_expr_to_z3_simple(self, expr: tuple, var_map: Dict[str, Any]) -> Any:
+    def _ensure_variables_in_map(self, condition_str: str, var_map: Dict[str, Any]) -> None:
+        """确保条件字符串中的所有变量都在变量映射中"""
+        if not Z3_AVAILABLE:
+            return
+
+        import re
+        # 匹配变量名的正则表达式
+        var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
+        # 用于识别比较表达式的模式
+        comparison_pattern = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*([<>=!]+)\s*(\d+|\w+)')
+        keywords = {'and', 'or', 'not', 'True', 'False', 'None'}
+        operators = {'<', '>', '<=', '>=', '==', '!=', '+', '-', '*', '/', '%'}
+
+        variables = []
+
+        # 优先处理复合条件中的比较表达式
+        if ' and ' in condition_str or ' or ' in condition_str:
+            comp_matches = comparison_pattern.findall(condition_str)
+            for var_name, op, value in comp_matches:
+                if var_name not in keywords and not var_name.isdigit():
+                    variables.append(var_name)
+
+        # 提取所有变量名
+        matches = var_pattern.findall(condition_str)
+        # 过滤掉关键字、操作符和数字
+        variables.extend([var for var in matches if var not in keywords and var not in operators and not var.isdigit() and var not in variables])
+
+        # 为每个变量创建Z3变量
+        for var_name in variables:
+            if var_name not in var_map:
+                var_map[var_name] = Int(var_name)
+
+    def tuple_expr_to_z3_simple(self, expr_tuple: tuple, var_map: Dict[str, Any]) -> Any:
         """Simple tuple expression processing"""
-        if not Z3_AVAILABLE or not isinstance(expr, tuple) or len(expr) < 2:
+        if not Z3_AVAILABLE or not isinstance(expr_tuple, tuple) or len(expr_tuple) < 2:
             return None
 
-        op = expr[0]
+        op = expr_tuple[0]
 
-        if op == "and" and len(expr) >= 3:
-            left = self._convert_expr_recursive(expr[1], var_map)
-            right = self._convert_expr_recursive(expr[2], var_map)
+        if op == "and" and len(expr_tuple) >= 3:
+            left = self._convert_expr_recursive(expr_tuple[1], var_map)
+            right = self._convert_expr_recursive(expr_tuple[2], var_map)
             if left is not None and right is not None:
                 return And(left, right)
 
-        elif op == "or" and len(expr) >= 3:
-            left = self._convert_expr_recursive(expr[1], var_map)
-            right = self._convert_expr_recursive(expr[2], var_map)
+        elif op == "or" and len(expr_tuple) >= 3:
+            left = self._convert_expr_recursive(expr_tuple[1], var_map)
+            right = self._convert_expr_recursive(expr_tuple[2], var_map)
             if left is not None and right is not None:
                 return Or(left, right)
 
@@ -484,23 +526,57 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
     if not Z3_AVAILABLE:
         return None
 
+
+
     processor = ConditionProcessor()
-    expr = condition.expression.strip()
 
-    # Try operand format first
-    constraint = processor.parser.parse_operand_format(expr, var_map)
-    if constraint is not None:
-        return constraint if condition.is_true else Not(constraint)
+    # 处理字符串条件
+    if isinstance(condition, str):
+        expr = condition.strip()
 
-    # Try tuple expression parsing
-    try:
-        if expr.startswith("(") and expr.endswith(")"):
-            parsed_expr = ast.literal_eval(expr)
-            z3_constraint = processor.tuple_expr_to_z3_simple(parsed_expr, var_map)
-            if z3_constraint is not None:
-                return z3_constraint if condition.is_true else Not(z3_constraint)
-    except (ValueError, SyntaxError):
-        pass
+        # 为所有变量名创建Z3变量
+        import re
+        var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
+        keywords = {'and', 'or', 'not', 'True', 'False', 'None'}
+        operators = {'<', '>', '<=', '>=', '==', '!=', '+', '-', '*', '/', '%'}
+        matches = var_pattern.findall(expr)
+        for var in matches:
+            if var not in keywords and var not in operators and not var.isdigit() and var not in var_map:
+                var_map[var] = Int(var)
+
+        # 处理 "and" 条件
+        if " and " in expr:
+            parts = expr.split(" and ")
+            constraints = []
+            for part in parts:
+                part = part.strip()
+                part_constraint = processor.condition_to_z3_simple(part, var_map)
+                if part_constraint is not None:
+                    constraints.append(part_constraint)
+            if constraints:
+                return And(*constraints) if Z3_AVAILABLE else None
+        else:
+            # 尝试解析单个条件
+            return processor.condition_to_z3_simple(expr, var_map)
+
+    # 处理 PathCondition 对象
+    if hasattr(condition, "expression"):
+        expr = condition.expression.strip()
+
+        # Try operand format first
+        constraint = processor.parser.parse_operand_format(expr, var_map)
+        if constraint is not None:
+            return constraint if condition.is_true else Not(constraint)
+
+        # Try tuple expression parsing
+        try:
+            if expr.startswith("(") and expr.endswith(")"):
+                parsed_expr = ast.literal_eval(expr)
+                z3_constraint = processor.tuple_expr_to_z3_simple(parsed_expr, var_map)
+                if z3_constraint is not None:
+                    return z3_constraint if condition.is_true else Not(z3_constraint)
+        except (ValueError, SyntaxError):
+            pass
 
     # Handle Z3-like expressions
     if any(z3_op in expr for z3_op in ["And(", "Or(", "Not("]):
@@ -510,6 +586,18 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
                 return z3_constraint if condition.is_true else Not(z3_constraint)
         except Exception:
             pass
+
+    # 处理 "and" 条件 - 支持复合条件解析
+    if " and " in expr:
+        parts = expr.split(" and ")
+        constraints = []
+        for part in parts:
+            part_constraint = processor.condition_to_z3_simple(part.strip(), var_map)
+            if part_constraint is not None:
+                constraints.append(part_constraint)
+        if constraints and Z3_AVAILABLE:
+            combined = And(*constraints)
+            return combined if getattr(condition, "is_true", True) else Not(combined)
 
     # Try basic comparison
     constraint = processor.parser._parse_basic_comparison(expr, var_map)
