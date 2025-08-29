@@ -669,31 +669,30 @@ def generate_comprehensive_report(
     # Path complexity metrics
     path_metrics = _build_path_metrics(paths)
 
+    summary = {
+        "functions_analyzed": len(global_env_functions) if global_env_functions else 0,
+        "max_path_length": max(
+            (len(getattr(p, "statements", [])) for p in paths), default=0
+        ),
+        "max_conditions": max(
+            (len(getattr(p, "conditions", [])) for p in paths), default=0
+        ),
+        "z3_available": Z3_AVAILABLE,
+        "loop_analysis": loop_info,
+        "constraint_analysis": constraint_analysis,
+        "path_metrics": path_metrics,
+        "enhanced_features": {
+            "z3_constraint_generation": Z3_AVAILABLE,
+            "range_loop_precision": True,
+            "enhanced_ast_conversion": True,
+            "path_satisfiability_checking": Z3_AVAILABLE,
+        },
+    }
+    print(f"len of summary: {len(summary)}")
     report = {
         "total_paths": len(paths),
         "satisfiable_paths": len(satisfiable_paths),
         "paths": [path_to_dict(path) for path in paths],
-        "summary": {
-            "functions_analyzed": len(global_env_functions)
-            if global_env_functions
-            else 0,
-            "max_path_length": max(
-                (len(getattr(p, "statements", [])) for p in paths), default=0
-            ),
-            "max_conditions": max(
-                (len(getattr(p, "conditions", [])) for p in paths), default=0
-            ),
-            "z3_available": Z3_AVAILABLE,
-            "loop_analysis": loop_info,
-            "constraint_analysis": constraint_analysis,
-            "path_metrics": path_metrics,
-            "enhanced_features": {
-                "z3_constraint_generation": Z3_AVAILABLE,
-                "range_loop_precision": True,
-                "enhanced_ast_conversion": True,
-                "path_satisfiability_checking": Z3_AVAILABLE,
-            },
-        },
     }
 
     # Add function analysis details if available

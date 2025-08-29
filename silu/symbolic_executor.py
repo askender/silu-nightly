@@ -1657,7 +1657,8 @@ class SymbolicExecutor:
         )
 
         # Update symbolic variables count if available
-        if hasattr(self.current_env, "z3_variables"):
+        # TODO:
+        if 0 and hasattr(self.current_env, "z3_variables"):
             report["summary"]["constraint_analysis"]["symbolic_variables"] = len(
                 self.current_env.z3_variables
             )
