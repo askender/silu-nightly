@@ -8,38 +8,22 @@ path constraints for functions with improved Z3 integration and loop handling.
 """
 from typing import Any, Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass, field
-from enum import Enum
-from abc import ABC, abstractmethod
-from copy import deepcopy
 from loguru import logger
-import copy
-import sys
+import re
 from .ir_utils import parse_ir_from_file
 from .ir_utils import parse_ir_from_json_string
-logger.remove()  # 移除默认的 handler
-# logger.add(
-#     sink=lambda msg: print(msg, end=""),  # 或者直接输出到文件
-#     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {file.path}:{line}:{function} - {message}"
-# )
-
-logger.add(
-    sink=sys.stderr,   # 或 sys.stdout
-    format=(
-        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-        "<level>{level: <8}</level> | "
-        "<cyan>{file.path}</cyan>:<cyan>{line}</cyan>:<cyan>{function}</cyan>: - "
-        "<level>{message}</level>"
-    ),
-    colorize=True
-)
 
 # Import symbolic execution utilities
+from .symbolic_utils import Config, ExecutionPathState, logger, SymbolicEnvironment, IRNodeHandler
+from .symbolic.loop_utils import LoopAnalyzer
+from .symbolic.condition_utils import PathCondition
+
 from .symbolic.z3_utils import (
     Z3_AVAILABLE,
     to_z3_expr,
     check_path_satisfiability,
 )
-from .symbolic.loop_utils import LoopAnalyzer
+
 from .symbolic.builtin_utils import (
     SymbolicValueType,
     SymbolicValue,
@@ -49,42 +33,11 @@ from .symbolic.builtin_utils import (
     create_builtin_functions_dict,
 )
 
-from .symbolic.condition_utils import (
-    PathCondition,
-    # is_simple_variable_condition,
-    # group_conditions_by_variable,
-)
-
 from .symbolic.report_utils import (
     generate_comprehensive_report,
-    # enhance_paths_with_z3_test_cases,
     renumber_paths_sequentially,
+    # enhance_paths_with_z3_test_cases,
 )
-
-# Import Z3 for enhanced symbolic execution
-# if Z3_AVAILABLE:
-#     from z3 import And, Or
-
-
-# Configuration Constants
-
-class Config:
-    """Configuration constants for symbolic execution"""
-
-    DEFAULT_MAX_PATHS = 100
-    DEFAULT_MAX_LOOP_ITERATIONS = 5
-    PERFORMANCE_MAX_PATHS = 50
-    PERFORMANCE_MAX_LOOP_ITERATIONS = 3
-    DEFAULT_PATH_PREFIX = "path_"
-    DEFAULT_ENCODING = "utf-8"
-
-class ExecutionPathState(Enum):
-    """Enumeration of execution path states"""
-
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    ERROR = "error"
-    UNSATISFIABLE = "unsatisfiable"
 
 @dataclass
 class ExecutionPath:
@@ -110,7 +63,6 @@ class ExecutionPath:
         if not hasattr(self, "test_inputs") or not self.test_inputs:
             return
 
-        import re
         cleaned_inputs = {}
         var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
         keywords = {'and', 'or', 'not', 'True', 'False', 'None'}
@@ -216,69 +168,6 @@ class ExecutionPath:
                 result[attr] = getattr(self, attr)
 
         return result
-
-class SymbolicEnvironment:
-    """Environment for symbolic execution with improved encapsulation"""
-
-    def __init__(self, parent: Optional["SymbolicEnvironment"] = None):
-        self.parent = parent
-        self.variables: Dict[str, SymbolicValue] = {}
-        self.functions: Dict[str, Any] = {}
-        self.symbol_counter = 0
-        self.z3_variables: Dict[str, Any] = {}
-
-    def create_symbol(
-        self, name: Optional[str] = None, var_type: str = "int"
-    ) -> SymbolicValue:
-        """Create a new symbolic value with optional Z3 variable"""
-        if not name:
-            name = f"sym_{self.symbol_counter}"
-            self.symbol_counter += 1
-
-        # Create Z3 variable if available
-        if Z3_AVAILABLE and name not in self.z3_variables:
-            self.z3_variables[name] = self._create_z3_variable(name, var_type)
-
-        return create_symbolic_value(name)
-
-    def _create_z3_variable(self, name: str, var_type: str) -> Any:
-        """Create Z3 variable based on type"""
-        from .symbolic.z3_utils import create_z3_variable
-
-        return create_z3_variable(name, var_type)
-
-    def has_variable(self, name: str) -> bool:
-        """Check if a variable exists in the current or parent scope"""
-        if name in self.variables:
-            return True
-        elif self.parent:
-            return self.parent.has_variable(name)
-        return False
-
-    def get_variable(self, name: str) -> SymbolicValue:
-        """Get a variable value with proper scoping"""
-        if name in self.variables:
-            return self.variables[name]
-        elif self.parent:
-            return self.parent.get_variable(name)
-        else:
-            # Create a symbolic variable for undefined variables
-            symbol = self.create_symbol(name)
-            self.variables[name] = symbol
-            return symbol
-
-    def set_variable(self, name: str, value: SymbolicValue) -> None:
-        """Set a variable value"""
-        self.variables[name] = value
-
-    def copy(self) -> "SymbolicEnvironment":
-        """Create a deep copy of the environment"""
-        new_env = SymbolicEnvironment(self.parent)
-        new_env.variables = deepcopy(self.variables)
-        new_env.functions = deepcopy(self.functions)
-        new_env.symbol_counter = self.symbol_counter
-        new_env.z3_variables = self.z3_variables.copy()
-        return new_env
 
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
@@ -1400,8 +1289,6 @@ class SymbolicExecutor:
         self, var_name: str, conditions: List[PathCondition]
     ) -> List[PathCondition]:
         """Merge negative conditions for the same variable"""
-        import re
-
         negative_gt_conditions = []
         other_conditions = []
 
@@ -1455,8 +1342,6 @@ class PathManager:
         """Add path if within limits and satisfiable"""
         if len(self.paths) >= self.max_paths:
             return False
-
-        # raise ValueError("Pattern matching condition is not satisfiable2")
 
         if path.is_satisfiable() and path not in self.paths:
             self.paths.append(path)
@@ -1522,21 +1407,7 @@ class PathManager:
             default_path.add_statement("# Default path")
             unique_paths = [default_path]
 
-        # return unique_paths
         return renumber_paths_sequentially(unique_paths)
-
-class IRNodeHandler(ABC):
-    """Abstract base class for IR node handlers"""
-
-    @abstractmethod
-    def can_handle(self, ir_node: Tuple) -> bool:
-        """Check if this handler can process the given IR node"""
-        pass
-
-    @abstractmethod
-    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
-        """Handle the IR node and return its symbolic value"""
-        pass
 
 class AssignmentHandler(IRNodeHandler):
     """Handler for assignment operations"""
