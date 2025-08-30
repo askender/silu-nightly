@@ -1530,22 +1530,26 @@ class PathSatisfiabilityChecker:
                         and z3 is not None
                         and z3.is_int_value(z3_value)
                     ):
-                        model_values[var_name] = str(z3_value.as_long())
+                        model_values[var_name] = z3_value.as_long()
                     elif (
                         hasattr(z3, "is_real_value")
                         and z3 is not None
                         and z3.is_real_value(z3_value)
                     ):
+                        # raise
                         model_values[var_name] = str(float(z3_value.as_fraction()))
                     elif (
                         hasattr(z3, "is_bool")
                         and z3 is not None
                         and z3.is_bool(z3_value)
                     ):
+                        raise
                         model_values[var_name] = str(z3.is_true(z3_value)).lower()
                     else:
+                        raise
                         model_values[var_name] = str(z3_value)
                 except Exception:
+                    raise
                     model_values[var_name] = str(z3_value)
         return model_values
 

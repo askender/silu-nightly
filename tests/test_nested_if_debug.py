@@ -606,6 +606,7 @@ class TestComplexElseIfChain:
         )
 
         paths = self.executor.execute_program(ir)
+        print(paths)
 
         # Should generate 2 paths (temp == "Inactive" is false, so we get symbolic execution)
         assert len(paths) == 2, f"Expected 2 paths, got {len(paths)}"
