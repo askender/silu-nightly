@@ -2,9 +2,10 @@ from enum import Enum
 from loguru import logger
 import sys
 from copy import deepcopy
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 from abc import ABC, abstractmethod
 
+from .symbolic.condition_utils import PathCondition
 
 from .symbolic.builtin_utils import (
     SymbolicValue,
@@ -16,6 +17,7 @@ from .symbolic.z3_utils import (
 )
 
 from .symbolic.builtin_utils import (
+    SymbolicValueType,
     SymbolicValue,
     create_concrete_value,
     create_symbolic_value,
@@ -161,3 +163,481 @@ class AssignmentHandler(IRNodeHandler):
                 executor.current_path.add_statement(f"Error in assignment: {e}")
                 executor.current_path.state = ExecutionPathState.ERROR
             return create_concrete_value(None)
+
+
+
+class ConditionalHandler(IRNodeHandler):
+    """Handler for if/elif/else statements"""
+
+    def can_handle(self, ir_node: Tuple) -> bool:
+        return isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "if"
+
+    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+        if len(ir_node) == 4:
+            _, condition_ir, then_block, else_block = ir_node
+        else:
+            _, condition_ir, then_block = ir_node
+            else_block = None
+
+        # 从IR中直接提取变量名，用于改进条件生成
+        if isinstance(condition_ir, tuple) and len(condition_ir) > 0:
+            # 处理and操作
+            if condition_ir[0] == "and" and len(condition_ir) >= 3:
+                # 提取左右操作数
+                left_ir = condition_ir[1]
+                right_ir = condition_ir[2]
+
+                # 处理比较操作如 "<", "=="
+                if (
+                    isinstance(left_ir, tuple)
+                    and len(left_ir) >= 3
+                    and left_ir[0] in ["<", "==", ">", "<=", ">=", "!="]
+                ):
+                    left_var = executor._extract_variable_name(left_ir[1])
+                    left_op = left_ir[0]
+                    left_val = left_ir[2]
+                    if isinstance(left_val, tuple) and left_val[0] == "const":
+                        left_val = left_val[1]
+
+                if (
+                    isinstance(right_ir, tuple)
+                    and len(right_ir) >= 3
+                    and right_ir[0] in ["<", "==", ">", "<=", ">=", "!="]
+                ):
+                    right_var = executor._extract_variable_name(right_ir[1])
+                    right_op = right_ir[0]
+                    right_val = right_ir[2]
+                    if isinstance(right_val, tuple) and right_val[0] == "const":
+                        right_val = right_val[1]
+
+                # 构建更准确的条件字符串
+                if "left_var" in locals() and "right_var" in locals():
+                    readable_condition = f"{left_var} {left_op} {left_val} and {right_var} {right_op} {right_val}"
+
+        # 执行条件求值
+        condition = executor._execute_ir(condition_ir)
+
+        # 如果上面没有生成readable_condition，使用默认方法
+        if "readable_condition" not in locals():
+            readable_condition = executor._make_condition_readable(condition)
+
+        # Handle concrete conditions directly
+        if condition.type == SymbolicValueType.CONCRETE:
+            return self._execute_concrete_if(
+                executor, condition, readable_condition, then_block, else_block
+            )
+
+        # Check path limits
+        if len(executor.path_manager.paths) >= executor.path_manager.max_paths:
+            if executor.current_path:
+                executor.current_path.add_statement(
+                    f"Path limit reached at if condition: {readable_condition}"
+                )
+            return create_concrete_value(None)
+
+        # Execute symbolic if with path splitting
+        return self._execute_symbolic_if(
+            executor, condition, readable_condition, then_block, else_block
+        )
+
+    def _execute_concrete_if(
+        self, executor, condition, readable_condition, then_block, else_block
+    ):
+        """Execute if statement with concrete condition"""
+        if executor.current_path:
+            executor.current_path.add_statement(f"if {readable_condition}:")
+
+        if condition.value:
+            if then_block:
+                executor._execute_ir(then_block)
+        else:
+            if else_block:
+                executor._execute_ir(else_block)
+        return create_concrete_value(None)
+
+    def _execute_symbolic_if(
+        self, executor, condition, readable_condition, then_block, else_block
+    ):
+        """Execute if statement with symbolic condition by splitting paths"""
+        original_path = executor.current_path
+        original_env = executor.current_env.copy()
+
+        # Generate Z3 constraint
+        z3_constraint = executor._generate_z3_constraint(condition)
+
+        # Store all paths that are created from this if statement
+        created_paths = []
+
+        # Save the original path and environment before any execution
+        original_current_path = executor.current_path
+        original_current_env = original_env.copy()
+
+        # Execute true path with a fresh copy of the original path and environment
+        true_path = self._execute_if_branch(
+            executor,
+            original_path,
+            original_env.copy(),
+            readable_condition,
+            True,
+            then_block,
+            z3_constraint,
+            "if",
+        )
+        if true_path:
+            created_paths.append(true_path)
+
+        # Reset to original state before executing the false path
+        executor.current_path = original_current_path
+        executor.current_env = original_current_env.copy()
+
+        # Execute false path with a fresh environment
+        false_path = self._execute_if_branch(
+            executor,
+            original_path,
+            original_env.copy(),
+            readable_condition,
+            False,
+            else_block,
+            z3_constraint,
+            "else",
+        )
+        if false_path:
+            created_paths.append(false_path)
+
+        # Don't reset current_path to None - this breaks nested if statements
+        # Instead, continue with one of the created paths for further execution
+        if created_paths:
+            executor.current_path = created_paths[0]
+        else:
+            # If no paths created, restore the original path
+            executor.current_path = original_current_path
+            executor.current_env = original_current_env.copy()
+
+        return create_concrete_value(None)
+
+    def _execute_if_branch(
+        self,
+        executor,
+        original_path,
+        original_env,
+        readable_condition,
+        is_true_branch,
+        block,
+        z3_constraint,
+        branch_name,
+    ):
+        """Execute a single branch of an if statement"""
+        branch_path = executor.path_manager.copy_path(
+            original_path or ExecutionPath("temp")
+        )
+
+        # Add condition
+        condition_obj = PathCondition(
+            readable_condition, is_true_branch, z3_constraint=z3_constraint
+        )
+        branch_path.add_condition(condition_obj)
+
+        statement = (
+            f"{branch_name} {readable_condition}:"
+            if is_true_branch
+            else f"else not {readable_condition}:"
+        )
+        branch_path.add_statement(statement)
+
+        # Execute block with proper path context
+        executor.current_path = branch_path
+        executor.current_env = original_env.copy()
+
+        # Store the current path count before executing the block
+        initial_path_count = len(executor.path_manager.paths)
+
+        if block:
+            # try:
+                # Handle block execution - if block is a list/tuple of statements, execute each one
+            if isinstance(block, (list, tuple)):
+                for stmt in block:
+                    executor._execute_ir(stmt)
+            else:
+                executor._execute_ir(block)
+            # except Exception:
+            #     exc_type, exc_value, exc_tb = sys.exc_info()
+            #     error_msg = str(exc_value)
+            #     # error_msg = str(e)
+            #     logger.error(f"Error: {error_msg}")
+            #     if executor.current_path:
+            #         executor.current_path.add_statement(
+            #             f"Error in {branch_name} block: {error_msg}"
+            #         )
+            #         executor.current_path.state = ExecutionPathState.ERROR
+
+        # Always add the current path to the path manager if it's satisfiable
+        # This ensures that leaf paths (those without further nested conditions) are captured
+        if executor.current_path and executor.current_path.is_satisfiable():
+            if executor.current_path not in executor.path_manager.paths:
+                executor.path_manager.add_path(executor.current_path)
+
+        return executor.current_path
+
+
+
+
+class LoopHandler(IRNodeHandler):
+    """Handler for loop operations"""
+
+    def can_handle(self, ir_node: Tuple) -> bool:
+        return (
+            isinstance(ir_node, tuple)
+            and len(ir_node) > 0
+            and ir_node[0] in ["while", "for"]
+        )
+
+    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+        if ir_node[0] == "while":
+            return self._handle_while_loop(ir_node, executor)
+        elif ir_node[0] == "for":
+            return self._handle_for_loop(ir_node, executor)
+        return create_concrete_value(None)
+
+    def _handle_while_loop(
+        self, ir_node: Tuple, executor: "SymbolicExecutor"
+    ) -> SymbolicValue:
+        """Handle while loop with enhanced constraint analysis"""
+        _, condition_ir, body_ir = ir_node
+        condition = executor._execute_ir(condition_ir)
+        readable_condition = executor._make_condition_readable(condition)
+
+        if executor.current_path:
+            executor.current_path.add_statement(f"while {readable_condition}:")
+
+        # For concrete false conditions, skip the loop entirely
+        if condition.type == SymbolicValueType.CONCRETE and not condition.value:
+            if executor.current_path:
+                executor.current_path.add_statement(
+                    "# Loop not entered (condition false)"
+                )
+            return create_concrete_value(None)
+
+        return self._execute_while_iterations(
+            executor, ir_node, condition, readable_condition, body_ir
+        )
+
+    def _execute_while_iterations(
+        self, executor, ir_node, condition, readable_condition, body_ir
+    ):
+        """Execute while loop iterations"""
+        original_path = executor.current_path
+        original_env = executor.current_env.copy()
+
+        # Create exit path (condition false)
+        exit_path = executor.path_manager.copy_path(
+            original_path or ExecutionPath("temp")
+        )
+        exit_condition = PathCondition(readable_condition, False)
+        exit_path.add_condition(exit_condition)
+        exit_path.add_statement("# Loop not entered/exited")
+
+        if exit_path.is_satisfiable():
+            executor.path_manager.add_path(exit_path)
+
+        # Create iteration paths
+        for i in range(executor.max_loop_iterations):
+            iter_path = executor.path_manager.copy_path(
+                original_path or ExecutionPath("temp")
+            )
+
+            iter_condition = PathCondition(readable_condition, True)
+            iter_path.add_condition(iter_condition)
+            iter_path.add_statement(f"# Loop iteration {i}")
+            iter_path.loop_iterations[f"while_{id(ir_node)}"] = i
+
+            if not iter_path.is_satisfiable():
+                continue
+
+            executor.current_path = iter_path
+            executor.current_env = original_env.copy()
+
+            try:
+                executor._execute_ir(body_ir)
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                if executor.current_path:
+                    executor.current_path.add_statement(f"Error in loop body: {e}")
+                    executor.current_path.state = ExecutionPathState.ERROR
+
+            if executor.current_path and executor.current_path.is_satisfiable():
+                executor.path_manager.add_path(executor.current_path)
+
+        executor.current_path = None
+        return create_concrete_value(None)
+
+    def _handle_for_loop(
+        self, ir_node: Tuple, executor: "SymbolicExecutor"
+    ) -> SymbolicValue:
+        """Handle for loop with enhanced range analysis"""
+        if len(ir_node) < 4:
+            return create_concrete_value(None)
+
+        _, var_name, iter_expr, body_ir = ir_node[:4]
+
+        if executor.current_path:
+            executor.current_path.add_statement(f"for {var_name} in {iter_expr}:")
+
+        # Check if it's a range call
+        if (
+            isinstance(iter_expr, tuple)
+            and len(iter_expr) >= 3
+            and iter_expr[0] == "call"
+            and iter_expr[1] == "range"
+        ):
+            bounds = executor.loop_analyzer.extract_range_bounds(iter_expr)
+            if bounds:
+                return self._execute_range_loop(
+                    executor, var_name, bounds, body_ir, ir_node
+                )
+
+        # Fallback to simple iteration
+        return self._execute_generic_for(executor, var_name, iter_expr, body_ir)
+
+    def _execute_range_loop(self, executor, var_name, bounds, body_ir, loop_node):
+        """Execute range-based for loop"""
+        original_path = executor.current_path
+        original_env = executor.current_env.copy()
+
+        # Extract literal values
+        start_val = self._extract_literal(bounds.start) if bounds.start else 0
+        stop_val = self._extract_literal(bounds.stop) if bounds.stop else 0
+        step_val = self._extract_literal(bounds.step) if bounds.step else 1
+
+        for k in range(executor.max_loop_iterations):
+            # Check if iteration is valid
+            if not self._is_valid_iteration(k, start_val, stop_val, step_val):
+                break
+
+            iter_path = executor.path_manager.copy_path(
+                original_path or ExecutionPath("temp")
+            )
+
+            # Calculate iteration value
+            iter_val = (
+                start_val + k * step_val
+                if isinstance(start_val, int) and isinstance(step_val, int)
+                else f"{start_val} + {k} * {step_val}"
+            )
+            loop_var = (
+                create_concrete_value(iter_val)
+                if isinstance(iter_val, int)
+                else create_expression_value(iter_val)
+            )
+            loop_var.name = var_name
+
+            iter_path.variables[var_name] = loop_var
+            iter_path.add_statement(f"# Range iteration {k}: {var_name} = {iter_val}")
+            iter_path.loop_iterations[f"for_{id(loop_node)}"] = k
+
+            if not iter_path.is_satisfiable():
+                continue
+
+            executor.current_path = iter_path
+            executor.current_env = original_env.copy()
+            executor.current_env.set_variable(var_name, loop_var)
+
+            try:
+                self._execute_loop_body(executor, body_ir)
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                if executor.current_path:
+                    executor.current_path.add_statement(f"Error in loop body: {e}")
+                    executor.current_path.state = ExecutionPathState.ERROR
+
+            if executor.current_path and executor.current_path.is_satisfiable():
+                executor.path_manager.add_path(executor.current_path)
+
+        executor.current_path = None
+        return create_concrete_value(None)
+
+    def _extract_literal(self, expr) -> Union[int, Any]:
+        """Extract literal value from expression"""
+        if isinstance(expr, int):
+            return expr
+        if isinstance(expr, tuple) and len(expr) >= 2 and expr[0] == "literal":
+            return expr[1]
+        return expr
+
+    def _is_valid_iteration(self, k: int, start: Any, stop: Any, step: Any) -> bool:
+        """Check if iteration k is valid for the given range"""
+        if not all(isinstance(x, int) for x in [start, stop, step]):
+            return k < 3  # Fallback for symbolic values
+
+        current_val = start + k * step
+        return (step > 0 and current_val < stop) or (step < 0 and current_val > stop)
+
+    def _execute_loop_body(self, executor, body_ir):
+        """Execute loop body statements"""
+        if isinstance(body_ir, (tuple, list)) and len(body_ir) > 0:
+            if isinstance(body_ir[0], str):  # Single statement
+                executor._execute_ir(body_ir)
+            else:  # Multiple statements
+                for stmt in body_ir:
+                    executor._execute_ir(stmt)
+        else:
+            executor._execute_ir(body_ir)
+
+    def _execute_generic_for(self, executor, var_name, iter_expr, body_ir):
+        """Execute generic for loop (fallback)"""
+        loop_var = executor.current_env.create_symbol(f"{var_name}_iter")
+        executor.current_env.set_variable(var_name, loop_var)
+
+        if executor.current_path:
+            executor.current_path.add_statement(
+                f"# Generic for loop: {var_name} = {loop_var}"
+            )
+
+        self._execute_loop_body(executor, body_ir)
+        return create_concrete_value(None)
+
+    def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
+        """Handle C-style for loop with enhanced analysis"""
+        max_iterations = getattr(executor, "max_loop_iterations", 10)
+        iterations = 0
+        loop_id = f"c_for_{id(loop_node)}"
+
+        try:
+            while iterations < max_iterations:
+                # Check loop condition
+                if condition:
+                    cond_result = executor._execute_ir(condition)
+                    if hasattr(cond_result, "value") and not cond_result.value:
+                        break
+
+                    # Generate Z3 constraints for condition if available
+                    if executor.z3_available and executor.generate_z3_constraints:
+                        try:
+                            z3_cond = executor._ast_to_z3(condition)
+                            if z3_cond is not None:
+                                executor.current_constraints.append(z3_cond)
+                        except Exception:
+                            pass  # Continue without Z3 constraint
+
+                # Execute loop body
+                executor._execute_ir(body)
+
+                # Execute update statement
+                if update:
+                    executor._execute_ir(update)
+
+                iterations += 1
+
+                # Track iterations in path
+                if executor.current_path:
+                    executor.current_path.loop_iterations[loop_id] = iterations
+
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            if executor.current_path:
+                executor.current_path.add_statement(f"Loop error: {str(e)}")
+
+        # Record final iteration count
+        if executor.current_path:
+            executor.current_path.loop_iterations[loop_id] = iterations
+
+        return create_concrete_value(None)

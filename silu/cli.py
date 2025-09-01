@@ -252,7 +252,6 @@ def run_ir_to_source_converter(
 def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     """Run symbolic execution on source code or IR."""
     try:
-        include_function_paths = kwargs.get("include_function_paths", False)
         performance_mode = kwargs.get("performance_mode", False)
         debug = kwargs.get("debug", False)
 
@@ -260,7 +259,6 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         solve = kwargs.get("solve", False)
 
         executor = SymbolicExecutor(
-            include_function_paths=include_function_paths,
             performance_mode=performance_mode,
             debug=debug,
         )
@@ -279,7 +277,6 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 # IR file - need to get both paths and function analyses
                 ir_executor_result = execute_symbolic_from_file_with_executor(
                     source,
-                    include_function_paths=include_function_paths,
                     performance_mode=performance_mode,
                     debug=debug,
                 )
@@ -295,7 +292,6 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 # IR string
                 ir_executor_result = execute_symbolic_from_string_with_executor(
                     source,
-                    include_function_paths=include_function_paths,
                     performance_mode=performance_mode,
                     debug=debug,
                 )
@@ -697,9 +693,6 @@ def main() -> None:
             symbolic_kwargs = {
                 "simplify": getattr(args, "simplify", False),
                 "solve": getattr(args, "solve", False),
-                "include_function_paths": getattr(
-                    args, "include_function_paths", False
-                ),
                 "performance_mode": getattr(args, "performance_mode", False),
                 "debug": getattr(args, "debug", False),
             }

@@ -12,8 +12,8 @@ import pytest
 # Import the modules we refactored
 from silu.ir_interpreter import execute_ir_from_file, execute_ir_from_string
 from silu.symbolic_executor import (
-    execute_symbolic_from_file,
-    execute_symbolic_from_string,
+    execute_symbolic_from_file_with_executor,
+    execute_symbolic_from_string_with_executor,
 )
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 from silu.silu_ir_to_llvm import SiluToLLVMConverter
@@ -62,7 +62,7 @@ class TestIRInterpreterIntegration:
             temp_file = f.name
 
         try:
-            result = execute_ir_from_file(temp_file)
+            result = execute_symbolic_from_file_with_executor(temp_file)['paths']
             assert result is not None or result is None
         finally:
             os.unlink(temp_file)
@@ -80,10 +80,10 @@ class TestSymbolicExecutorIntegration:
                 "module",
                 [
                     # ["assign", "x", ["input", "int"], None],
-                    ["assign", "x", 2, None],
+                    ["assign", "x", ["const", 2], None],
                     [
                         "if",
-                        ["binop", ">", "x", 0],
+                        [">", ["name", "x"], ["const", 0]],
                         [["print", ["const", "positive"]]],
                         [["print", ["const", "non-positive"]]],
                     ],
@@ -91,7 +91,7 @@ class TestSymbolicExecutorIntegration:
             ]
         )
 
-        paths = execute_symbolic_from_string(ir_json)
+        paths = execute_symbolic_from_string_with_executor(ir_json)['paths']
         # TODO: 2 paths?
         assert len(paths) == 1, f"Expected 1 paths, got {len(paths)}"
 
@@ -105,7 +105,7 @@ class TestSymbolicExecutorIntegration:
                     ["assign", "x", 2, None],
                     [
                         "if",
-                        ["binop", ">", "x", 0],
+                        [">", ["name", "x"], ["const", 0]],
                         [["print", ["const", "positive"]]],
                         [["print", ["const", "non-positive"]]],
                     ],
@@ -120,8 +120,7 @@ class TestSymbolicExecutorIntegration:
             temp_file = f.name
 
         try:
-            # paths = execute_symbolic_from_file(temp_file)
-            paths = execute_symbolic_from_file(temp_file)
+            paths = execute_symbolic_from_file_with_executor(temp_file)['paths']
             # TODO: 2 path?
             assert len(paths) == 1, f"Expected 1 paths, got {len(paths)}"
         finally:

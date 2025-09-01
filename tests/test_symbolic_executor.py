@@ -12,7 +12,7 @@ from silu.symbolic_executor import (
     PathCondition,
     ExecutionPath,
     SymbolicEnvironment,
-    execute_symbolic_from_string,
+    execute_symbolic_from_string_with_executor,
 )
 from silu.symbolic.condition_utils import (
     extract_variable_from_condition,
@@ -396,7 +396,7 @@ class TestSymbolicExecutionFromString:
     def test_simple_ir_string(self):
         """Test executing symbolic analysis from IR string"""
         ir_string = '("module", (("assign", "x", 42, null),))'
-        paths = execute_symbolic_from_string(ir_string)
+        paths = execute_symbolic_from_string_with_executor(ir_string)['paths']
 
         assert len(paths) == 1
         # assert "x" in paths[0].variables
@@ -405,7 +405,7 @@ class TestSymbolicExecutionFromString:
         """Test executing symbolic analysis from JSON IR string"""
         ir_dict = ["module", [["assign", "x", 42, None]]]
         ir_string = json.dumps(ir_dict)
-        paths = execute_symbolic_from_string(ir_string)
+        paths = execute_symbolic_from_string_with_executor(ir_string)['paths']
 
         assert len(paths) == 1
         # assert "x" in paths[0].variables
@@ -413,7 +413,7 @@ class TestSymbolicExecutionFromString:
     def test_invalid_ir_string(self):
         """Test handling of invalid IR string"""
         with pytest.raises(RuntimeError):
-            execute_symbolic_from_string("invalid ir")
+            execute_symbolic_from_string_with_executor("invalid ir")['paths']
 
 
 class TestIntegration:

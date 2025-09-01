@@ -48,7 +48,7 @@ class TestBasicEnhancedExecution:
         """Test if statement with symbolic conditions"""
         ir = (
             "module",
-            [
+            (
                 ("assign", "x", ("literal", 10), None),
                 (
                     "if",
@@ -56,7 +56,7 @@ class TestBasicEnhancedExecution:
                     ("block", (("assign", "result", ("literal", 1), None),)),
                     ("block", (("assign", "result", ("literal", 0), None),)),
                 ),
-            ],
+            ),
         )
 
         executor = SymbolicExecutor()
