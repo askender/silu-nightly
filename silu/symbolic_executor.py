@@ -76,6 +76,11 @@ class SymbolicExecutor:
         )
         self.loop_analyzer = LoopAnalyzer(max_iterations=self.max_loop_iterations)
 
+        # 初始化链式比较处理标志
+        # 此标志用于避免在处理链式比较（如 0 < x < 10）时
+        # 同时在 _execute_binary_op 和 _execute_chained_compare 中重复添加条件
+        self._processing_chained_compare = False
+
         # # Initialize handlers
         self._init_handlers()
         # # Initialize built-in functions
@@ -104,9 +109,8 @@ class SymbolicExecutor:
         self.current_path._function_params = []  # 添加函数参数列表
 
 
-        if 1:
+        self._execute_ir(ir_program)
         # try:
-            self._execute_ir(ir_program)
         # except Exception as e:
         #     logger.error(f"Error in _execute_ir: {e}")
         #     if self.current_path:
@@ -125,6 +129,7 @@ class SymbolicExecutor:
 
     def _execute_ir(self, ir_node: Union[Tuple, str, Any]) -> SymbolicValue:
         """Execute an IR node and return its symbolic value"""
+
         if not isinstance(ir_node, (tuple, list)) or not ir_node:
             # TODO: when this occur?
             return self._handle_non_tuple_node(ir_node)
@@ -152,6 +157,30 @@ class SymbolicExecutor:
         # raise Exception(f"Unhandled node {ir_node}")
         return self._dispatch_ir_node(ir_node)
 
+
+    def _is_part_of_chained_compare(self) -> bool:
+        """
+        检查是否在处理链式比较的一部分
+
+        用于防止在处理链式比较表达式（如 0 < x < 10）时条件被重复添加：
+        - 在 _execute_binary_op 中会为每个单独的比较部分添加条件
+        - 在 _execute_chained_compare 中会为整个链式比较添加组合条件
+
+        返回:
+            bool: 如果当前正在处理链式比较的一部分，则为 True
+        """
+        return self._processing_chained_compare
+
+    def _set_processing_chained_compare(self, value: bool) -> None:
+        """
+        设置链式比较处理标志
+
+        在处理链式比较前后设置此标志，以防止条件被重复添加
+
+        参数:
+            value (bool): 标志的新值
+        """
+        self._processing_chained_compare = value
 
     def _dispatch_ir_node(self, ir_node: Tuple) -> SymbolicValue:
         """Dispatch IR node to appropriate handler method"""
@@ -391,7 +420,10 @@ class SymbolicExecutor:
                     readable_condition = f"{left_str} {op} {right_str}"
 
                     # 添加条件到当前路径
-                    self.current_path.add_condition(readable_condition)
+                    # 只在非链式比较中添加条件，链式比较由 _execute_chained_compare 处理
+                    # 这是避免条件重复的关键检查点之一
+                    if not self._is_part_of_chained_compare():
+                        self.current_path.add_condition(readable_condition)
 
             # Always create symbolic expressions for operations involving symbolic variables
             # This prevents boolean casting errors
@@ -543,10 +575,22 @@ class SymbolicExecutor:
                                 ("and", result, part_result)
                             )
 
-                # Add the combined condition to the current path
+                # Add the combined condition to the result, but don't add to current path
+                # 链式比较条件处理
+                # 修复：返回组合后的条件，但不直接添加到路径
+                # 避免与ConditionalHandler._execute_if_branch中的添加重复
                 if self.current_path and all_conditions:
+                    # 将所有条件部分合并为一个完整的条件表达式
                     combined_condition = " and ".join(all_conditions)
-                    self.current_path.add_condition(combined_condition)
+
+                    # 标记当前正在处理链式比较，防止在 _execute_binary_op 中重复添加条件
+                    self._set_processing_chained_compare(True)
+
+                    # 不再直接添加条件到当前路径
+                    # 条件将由ConditionalHandler在处理if语句时添加
+
+                    # 处理完成后重置标记
+                    self._set_processing_chained_compare(False)
 
                 return result if result is not None else create_concrete_value(True)
             # Original format handling
@@ -970,9 +1014,8 @@ class SymbolicExecutor:
 
         self.current_env = func_env
 
-        if 1:
+        self._execute_function_body(body_ir)
         # try:
-            self._execute_function_body(body_ir)
         # except Exception as e:
         #     logger.error(f"Error: {e}")
         #     raise Exception(f"Error executing function {func_name}: {e}")

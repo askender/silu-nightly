@@ -111,6 +111,7 @@ def generate_comprehensive_report(
     Returns:
         Comprehensive report dictionary
     """
+
     if performance_mode:
         return generate_fast_comprehensive_report(
             paths, global_env_functions, function_analyses
@@ -157,6 +158,8 @@ def generate_comprehensive_report(
     if function_analyses:
         report["function_analyses"] = {}
         for func_name, func_paths in function_analyses.items():
+
+
             report["function_analyses"][func_name] = {
                 "total_paths": len(func_paths),
                 "satisfiable_paths": len(
