@@ -27,8 +27,8 @@ try:
         Int,
         Real,
         Bool,
-        ToReal,
         simplify,
+        # ToReal,
     )
 
     Z3_AVAILABLE = True
@@ -516,9 +516,9 @@ class ConditionProcessor:
             if left is not None and right is not None:
                 return Or(left, right)
 
-        elif op in [">", "<", ">=", "<=", "==", "!="] and len(expr) >= 3:
-            left = self._convert_expr_value(expr[1], var_map)
-            right = self._convert_expr_value(expr[2], var_map)
+        elif op in [">", "<", ">=", "<=", "==", "!="] and len(expr_tuple) >= 3:
+            left = self._convert_expr_value(expr_tuple[1], var_map)
+            right = self._convert_expr_value(expr_tuple[2], var_map)
             if left is not None and right is not None:
                 return self.parser._create_comparison(left, op, right)
 

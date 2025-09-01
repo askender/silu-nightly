@@ -34,7 +34,8 @@ class TestStructIR:
             ),
         )
 
-        result = interpreter.execute(ir)
+        # result =
+        interpreter.execute(ir)
 
         # Check that the instance is created with default values
         p = interpreter._get_variable("p")

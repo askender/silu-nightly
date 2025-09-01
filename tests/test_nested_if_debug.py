@@ -381,7 +381,7 @@ class TestExtractedDebugFeatures:
             stmt = if_stmt["statement"]
             condition = if_stmt["condition"]
             then_block = if_stmt["then_block"]
-            else_block = if_stmt["else_block"]
+            # else_block = if_stmt["else_block"]
 
             # Verify structure
             assert stmt[0] == "if", f"Statement {i} should be an if statement"

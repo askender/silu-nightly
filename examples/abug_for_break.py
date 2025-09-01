@@ -4,7 +4,7 @@
 
 def foo():
     seq = [1, 2, 3]
-    v = 100
+    # v = 100
     i = 5
     while i > 0:
         print(i)
@@ -19,10 +19,10 @@ foo()
 
 # break from within nested for loop
 def bar():
-    l = [1, 2, 3]
-    for e1 in l:
+    alist = [1, 2, 3]
+    for e1 in alist:
         print(e1)
-        for e2 in l:
+        for e2 in alist:
             print(e1, e2)
             if e2 == 2:
                 break

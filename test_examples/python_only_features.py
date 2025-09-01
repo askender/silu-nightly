@@ -1,3 +1,8 @@
+# Import statements (not supported in Silu)
+import math
+
+print("Pi:", math.pi)
+
 # Python features not supported by Silu
 print("Testing Python-only features that should fail in Silu:")
 
@@ -33,11 +38,6 @@ try:
     result = 10 / 0
 except ZeroDivisionError:
     print("Cannot divide by zero")
-
-# Import statements (not supported in Silu)
-import math
-
-print("Pi:", math.pi)
 
 # With statements (not supported in Silu)
 with open("test.txt", "w") as f:

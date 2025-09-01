@@ -120,7 +120,7 @@ def main():
     # Group by first element
     grouped = {}
     for key, value in raw_data:
-        if grouped.get(key) == None:
+        if grouped.get(key) is None:
             grouped[key] = []
         grouped[key].append(value)
 

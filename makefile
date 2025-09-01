@@ -1,7 +1,7 @@
 
 fmt:
-	ruff format .
-	ruff check --fix
+	ruff format . --exclude aok,test_examples
+	ruff check --fix --exclude aok,test_examples
 
 rm:
 	rm -rf __pycache__

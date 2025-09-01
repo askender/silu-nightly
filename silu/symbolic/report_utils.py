@@ -169,6 +169,47 @@ def generate_comprehensive_report(
     return report
 
 
+def generate_fast_comprehensive_report(
+    paths: List[Any],
+    global_env_functions: Optional[Dict] = None,
+    function_analyses: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """Generate simplified report for performance mode"""
+    satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
+
+    report = {
+        "total_paths": len(paths),
+        "satisfiable_paths": len(satisfiable_paths),
+        "paths": [path_to_dict(path) for path in paths],
+        "summary": {
+            "functions_analyzed": len(global_env_functions)
+            if global_env_functions
+            else 0,
+            "max_path_length": max(
+                (len(getattr(p, "statements", [])) for p in paths), default=0
+            ),
+            "max_conditions": max(
+                (len(getattr(p, "conditions", [])) for p in paths), default=0
+            ),
+            "performance_mode": True,
+        },
+    }
+
+    # Add function analysis if available
+    if function_analyses:
+        report["function_analyses"] = {}
+        for func_name, func_paths in function_analyses.items():
+            report["function_analyses"][func_name] = {
+                "total_paths": len(func_paths),
+                "satisfiable_paths": len(
+                    [p for p in func_paths if getattr(p, "satisfiable", True)]
+                ),
+                "paths": [path_to_dict(path) for path in func_paths],
+            }
+
+    return report
+
+
 def renumber_paths_sequentially(paths: List[Any]) -> List[Any]:
     """Renumber paths sequentially starting from 1"""
     for i, path in enumerate(paths, 1):

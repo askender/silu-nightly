@@ -115,7 +115,8 @@ l2.extend(range(100))
 print("Extend:", len(l2))
 """
     # This should work without raising exceptions
-    result = process_code(code)
+    # result =
+    process_code(code)
     # No assertion needed - if it doesn't raise an exception, the test passes
 
 

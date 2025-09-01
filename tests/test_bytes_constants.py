@@ -61,9 +61,9 @@ mixed_equal = b"1" == 1
         tree = ast.parse(code)
         interpreter.visit(tree)
 
-        assert interpreter.env.get("equal") == True
-        assert interpreter.env.get("not_equal") == True
-        assert interpreter.env.get("mixed_equal") == False
+        assert interpreter.env.get("equal") is True
+        assert interpreter.env.get("not_equal") is True
+        assert interpreter.env.get("mixed_equal") is False
 
     def test_bytes_operations_interpreter(self):
         """Test bytes arithmetic operations."""
@@ -154,9 +154,9 @@ mixed = b"1" == 1
         ir_interpreter = IRInterpreter()
         ir_interpreter.execute(ir)
 
-        assert ir_interpreter._get_variable("equal") == True
-        assert ir_interpreter._get_variable("not_equal") == True
-        assert ir_interpreter._get_variable("mixed") == False
+        assert ir_interpreter._get_variable("equal") is True
+        assert ir_interpreter._get_variable("not_equal") is True
+        assert ir_interpreter._get_variable("mixed") is False
 
     def test_ir_bytes_operations(self):
         """Test bytes operations in IR execution."""

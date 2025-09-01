@@ -8,7 +8,6 @@ path constraints for functions with improved Z3 integration and loop handling.
 """
 
 from typing import Any, Dict, List, Tuple, Optional, Union
-from loguru import logger
 import re
 from .ir_utils import parse_ir_from_file
 from .ir_utils import parse_ir_from_json_string
@@ -507,7 +506,7 @@ class SymbolicExecutor:
             }
             if op in operations:
                 return operations[op](left_val, right_val)
-        except (ZeroDivisionError, TypeError, ValueError):
+        except (ZeroDivisionError, TypeError, ValueError) as e:
             logger.error(f"Error: {e}")
         return None
 
@@ -570,10 +569,10 @@ class SymbolicExecutor:
                 # 避免与ConditionalHandler._execute_if_branch中的添加重复
                 if self.current_path and all_conditions:
                     # 将所有条件部分合并为一个完整的条件表达式
-                    combined_condition = " and ".join(all_conditions)
+                    # combined_condition = " and ".join(all_conditions)
 
                     # 标记当前正在处理链式比较，防止在 _execute_binary_op 中重复添加条件
-                    self._set_processing_chained_compare(True)
+                    # self._set_processing_chained_compare(True)
 
                     # 不再直接添加条件到当前路径
                     # 条件将由ConditionalHandler在处理if语句时添加
@@ -639,7 +638,7 @@ class SymbolicExecutor:
                 continue
 
             pattern = case_ir[1]
-            guard = case_ir[2]  # Currently None in our test case
+            # guard = case_ir[2]  # TODO: Currently None in our test case
             body = case_ir[3]
 
             # Create a new path for this case
@@ -741,12 +740,12 @@ class SymbolicExecutor:
             self._execute_ir(init)
 
         # Create loop context
-        loop_context = {
-            "condition": condition,
-            "update": update,
-            "body": body,
-            "type": "c_for",
-        }
+        # loop_context = {
+        #     "condition": condition,
+        #     "update": update,
+        #     "body": body,
+        #     "type": "c_for",
+        # }
 
         if self.current_path:
             # Add loop entry statement

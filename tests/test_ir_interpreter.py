@@ -1358,8 +1358,8 @@ class TestMultipleTargetAssignmentIRInterpreter:
         assert self.interpreter._get_variable("str2") == "test"
         assert self.interpreter._get_variable("list1") == [1, 2, 3]
         assert self.interpreter._get_variable("list2") == [1, 2, 3]
-        assert self.interpreter._get_variable("bool1") == True
-        assert self.interpreter._get_variable("bool2") == True
+        assert self.interpreter._get_variable("bool1") is True
+        assert self.interpreter._get_variable("bool2") is True
 
 
 class TestGenericEnumTypedef:

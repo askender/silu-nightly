@@ -44,7 +44,10 @@ class TestIRNodeDispatching(unittest.TestCase):
         self.assertEqual(result, "a + b")
 
         # Test with default handler
-        default_handler = lambda node: f"default:{node[0]}"
+        # default_handler = lambda node: f"default:{node[0]}"
+        def default_handler(node):
+            return f"default:{node[0]}"
+
         result = dispatch_ir_node(("unknown", 123), handlers, default_handler)
         self.assertEqual(result, "default:unknown")
 

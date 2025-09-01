@@ -1001,7 +1001,7 @@ class SiluToLLVMConverter:
         if len(func_def) < 4:
             return
 
-        func_name = func_def[1]
+        # func_name = func_def[1]
         param_names = func_def[2]
         body_stmts = func_def[3]
 
@@ -1030,7 +1030,8 @@ class SiluToLLVMConverter:
         # Generate function body
         return_generated = False
         for stmt in body_stmts:
-            result = self._convert_node(stmt)
+            # result =
+            self._convert_node(stmt)
             if isinstance(stmt, list) and len(stmt) > 0 and stmt[0] == "return":
                 return_generated = True
                 break

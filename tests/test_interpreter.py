@@ -1190,8 +1190,8 @@ bool1 = bool2 = True
         assert interpreter.env.get("str2") == "test"
         assert interpreter.env.get("list1") == [1, 2, 3]
         assert interpreter.env.get("list2") == [1, 2, 3]
-        assert interpreter.env.get("bool1") == True
-        assert interpreter.env.get("bool2") == True
+        assert interpreter.env.get("bool1") is True
+        assert interpreter.env.get("bool2") is True
 
     def test_multiple_assignment_in_function(self):
         """Test multiple assignment inside a function."""

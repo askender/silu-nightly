@@ -10,6 +10,7 @@ from .symbolic.condition_utils import PathCondition
 from .symbolic.builtin_utils import (
     SymbolicValue,
     create_symbolic_value,
+    create_expression_value,  # TODO
 )
 
 from .symbolic.z3_utils import (
@@ -20,6 +21,12 @@ from .symbolic.builtin_utils import (
     SymbolicValueType,
     create_concrete_value,
 )
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from silu.symbolic_executor import SymbolicExecutor
+
 
 # Configuration Constants
 
@@ -130,7 +137,7 @@ class IRNodeHandler(ABC):
         pass
 
     @abstractmethod
-    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
         """Handle the IR node and return its symbolic value"""
         pass
 
@@ -143,7 +150,7 @@ class AssignmentHandler(IRNodeHandler):
             isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "assign"
         )
 
-    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
         try:
             _, var_name, value_ir, _ = ir_node
             value = executor._execute_ir(value_ir)
@@ -169,7 +176,7 @@ class ConditionalHandler(IRNodeHandler):
     def can_handle(self, ir_node: Tuple) -> bool:
         return isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "if"
 
-    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
         if len(ir_node) == 4:
             _, condition_ir, then_block, else_block = ir_node
         else:
@@ -324,9 +331,8 @@ class ConditionalHandler(IRNodeHandler):
         branch_name,
     ):
         """Execute a single branch of an if statement"""
-        branch_path = executor.path_manager.copy_path(
-            original_path or ExecutionPath("temp")
-        )
+        # or ExecutionPath("temp")
+        branch_path = executor.path_manager.copy_path(original_path)
 
         # Add condition
         condition_obj = PathCondition(
@@ -346,7 +352,7 @@ class ConditionalHandler(IRNodeHandler):
         executor.current_env = original_env.copy()
 
         # Store the current path count before executing the block
-        initial_path_count = len(executor.path_manager.paths)
+        # initial_path_count = len(executor.path_manager.paths)
 
         if block:
             # try:
@@ -386,7 +392,7 @@ class LoopHandler(IRNodeHandler):
             and ir_node[0] in ["while", "for"]
         )
 
-    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
         if ir_node[0] == "while":
             return self._handle_while_loop(ir_node, executor)
         elif ir_node[0] == "for":
@@ -394,7 +400,7 @@ class LoopHandler(IRNodeHandler):
         return create_concrete_value(None)
 
     def _handle_while_loop(
-        self, ir_node: Tuple, executor: "SymbolicExecutor"
+        self, ir_node: Tuple, executor: SymbolicExecutor
     ) -> SymbolicValue:
         """Handle while loop with enhanced constraint analysis"""
         _, condition_ir, body_ir = ir_node
@@ -424,9 +430,9 @@ class LoopHandler(IRNodeHandler):
         original_env = executor.current_env.copy()
 
         # Create exit path (condition false)
-        exit_path = executor.path_manager.copy_path(
-            original_path or ExecutionPath("temp")
-        )
+        # or ExecutionPath("temp")
+        exit_path = executor.path_manager.copy_path(original_path)
+
         exit_condition = PathCondition(readable_condition, False)
         exit_path.add_condition(exit_condition)
         exit_path.add_statement("# Loop not entered/exited")
@@ -436,9 +442,8 @@ class LoopHandler(IRNodeHandler):
 
         # Create iteration paths
         for i in range(executor.max_loop_iterations):
-            iter_path = executor.path_manager.copy_path(
-                original_path or ExecutionPath("temp")
-            )
+            # or ExecutionPath("temp")
+            iter_path = executor.path_manager.copy_path(original_path)
 
             iter_condition = PathCondition(readable_condition, True)
             iter_path.add_condition(iter_condition)
@@ -466,7 +471,7 @@ class LoopHandler(IRNodeHandler):
         return create_concrete_value(None)
 
     def _handle_for_loop(
-        self, ir_node: Tuple, executor: "SymbolicExecutor"
+        self, ir_node: Tuple, executor: SymbolicExecutor
     ) -> SymbolicValue:
         """Handle for loop with enhanced range analysis"""
         if len(ir_node) < 4:
@@ -507,10 +512,8 @@ class LoopHandler(IRNodeHandler):
             # Check if iteration is valid
             if not self._is_valid_iteration(k, start_val, stop_val, step_val):
                 break
-
-            iter_path = executor.path_manager.copy_path(
-                original_path or ExecutionPath("temp")
-            )
+            # or ExecutionPath("temp")
+            iter_path = executor.path_manager.copy_path(original_path)
 
             # Calculate iteration value
             iter_val = (
