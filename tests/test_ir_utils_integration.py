@@ -8,11 +8,13 @@ import tempfile
 import json
 import os
 import pytest
-from pathlib import Path
 
 # Import the modules we refactored
 from silu.ir_interpreter import execute_ir_from_file, execute_ir_from_string
-from silu.symbolic_executor import execute_symbolic_from_file, execute_symbolic_from_string
+from silu.symbolic_executor import (
+    execute_symbolic_from_file,
+    execute_symbolic_from_string,
+)
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 from silu.silu_ir_to_llvm import SiluToLLVMConverter
 
@@ -24,15 +26,22 @@ class TestIRInterpreterIntegration:
         """Test executing IR from JSON string."""
 
         # Test with JSON string (using lists since JSON doesn't support tuples)
-        ir_json = json.dumps(["module", [
-            ["assign", "x", 42, None],
-            ["assign", "y", ["binop", "+", "x", 10], None],
-            ["print", ["name", "y"]]
-        ]])
+        ir_json = json.dumps(
+            [
+                "module",
+                [
+                    ["assign", "x", 42, None],
+                    ["assign", "y", ["binop", "+", "x", 10], None],
+                    ["print", ["name", "y"]],
+                ],
+            ]
+        )
 
         result = execute_ir_from_string(ir_json)
         # The execution should complete without errors
-        assert result is not None or result is None  # Result can be None for print statements
+        assert (
+            result is not None or result is None
+        )  # Result can be None for print statements
 
     def test_execute_from_python_literal(self):
         """Test executing IR from Python literal string."""
@@ -42,12 +51,13 @@ class TestIRInterpreterIntegration:
 
     def test_execute_from_file(self):
         """Test executing IR from file."""
-        ir_json = json.dumps(["module", [
-            ["assign", "x", 42, None],
-            ["print", ["name", "x"]]
-        ]])
+        ir_json = json.dumps(
+            ["module", [["assign", "x", 42, None], ["print", ["name", "x"]]]]
+        )
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.ir.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ir.json", delete=False
+        ) as f:
             f.write(ir_json)
             temp_file = f.name
 
@@ -65,13 +75,21 @@ class TestSymbolicExecutorIntegration:
         """Test symbolic execution from IR string."""
 
         # Simple IR for symbolic execution
-        ir_json = json.dumps(["module", [
-            # ["assign", "x", ["input", "int"], None],
-            ["assign", "x", 2, None],
-            ["if", ["binop", ">", "x", 0],
-             [["print", ["const", "positive"]]],
-             [["print", ["const", "non-positive"]]]]
-        ]])
+        ir_json = json.dumps(
+            [
+                "module",
+                [
+                    # ["assign", "x", ["input", "int"], None],
+                    ["assign", "x", 2, None],
+                    [
+                        "if",
+                        ["binop", ">", "x", 0],
+                        [["print", ["const", "positive"]]],
+                        [["print", ["const", "non-positive"]]],
+                    ],
+                ],
+            ]
+        )
 
         paths = execute_symbolic_from_string(ir_json)
         # TODO: 2 paths?
@@ -79,15 +97,25 @@ class TestSymbolicExecutorIntegration:
 
     def test_execute_symbolic_from_file(self):
         """Test symbolic execution from IR file."""
-        ir_json = json.dumps(["module", [
-            # ["assign", "x", ["input", "int"], None],
-            ["assign", "x", 2, None],
-            ["if", ["binop", ">", "x", 0],
-             [["print", ["const", "positive"]]],
-             [["print", ["const", "non-positive"]]]]
-        ]])
+        ir_json = json.dumps(
+            [
+                "module",
+                [
+                    # ["assign", "x", ["input", "int"], None],
+                    ["assign", "x", 2, None],
+                    [
+                        "if",
+                        ["binop", ">", "x", 0],
+                        [["print", ["const", "positive"]]],
+                        [["print", ["const", "non-positive"]]],
+                    ],
+                ],
+            ]
+        )
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.ir.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ir.json", delete=False
+        ) as f:
             f.write(ir_json)
             temp_file = f.name
 
@@ -107,25 +135,39 @@ class TestIRToSourceIntegration:
         """Test converting IR string to source."""
 
         # IR that should convert back to readable source
-        ir_json = json.dumps(["module", [
-            ["assign", "x", 42, None],
-            ["assign", "y", ["binop", "+", "x", 10], None],
-            ["print", ["name", "y"]]
-        ]])
+        ir_json = json.dumps(
+            [
+                "module",
+                [
+                    ["assign", "x", 42, None],
+                    ["assign", "y", ["binop", "+", "x", 10], None],
+                    ["print", ["name", "y"]],
+                ],
+            ]
+        )
 
         source = convert_ir_string_to_source(ir_json)
         assert "x = 42" in source, f"Expected 'x = 42' in source, got: {source}"
-        assert "y = binop('+', x, 10)" in source, f"Expected 'y = binop('+', x, 10)' in source, got: {source}"
+        assert "y = binop('+', x, 10)" in source, (
+            f"Expected 'y = binop('+', x, 10)' in source, got: {source}"
+        )
 
     def test_convert_from_file(self):
         """Test converting IR file to source."""
-        ir_json = json.dumps(["module", [
-            ["assign", "x", 42, None],
-            ["assign", "y", ["binop", "+", "x", 10], None],
-            ["print", ["name", "y"]]
-        ]])
+        ir_json = json.dumps(
+            [
+                "module",
+                [
+                    ["assign", "x", 42, None],
+                    ["assign", "y", ["binop", "+", "x", 10], None],
+                    ["print", ["name", "y"]],
+                ],
+            ]
+        )
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.ir.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".ir.json", delete=False
+        ) as f:
             f.write(ir_json)
             temp_file = f.name
 
@@ -144,10 +186,9 @@ class TestSiluIRToLLVMIntegration:
         """Test converting IR to LLVM."""
 
         # Simple IR for LLVM conversion
-        ir_json = json.dumps(["module", [
-            ["assign", "x", 42, None],
-            ["print", ["name", "x"]]
-        ]])
+        ir_json = json.dumps(
+            ["module", [["assign", "x", 42, None], ["print", ["name", "x"]]]]
+        )
 
         converter = SiluToLLVMConverter()
         try:
@@ -175,7 +216,9 @@ class TestErrorHandling:
         """Test handling of non-existent file."""
         with pytest.raises(RuntimeError) as exc_info:
             execute_ir_from_file("non_existent_file.ir.json")
-        assert "not found" in str(exc_info.value) or "Failed to load" in str(exc_info.value)
+        assert "not found" in str(exc_info.value) or "Failed to load" in str(
+            exc_info.value
+        )
 
 
 class TestFormatCompatibility:

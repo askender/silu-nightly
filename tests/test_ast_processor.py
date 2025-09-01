@@ -380,7 +380,7 @@ class TestBaseASTProcessor:
         aug_assign = ast.AugAssign(
             target=ast.Name(id="x", ctx=ast.Store()),
             op=ast.Add(),
-            value=ast.Constant(value=5)
+            value=ast.Constant(value=5),
         )
 
         result = processor.visit_AugAssign(aug_assign)
@@ -395,10 +395,10 @@ class TestBaseASTProcessor:
             target=ast.Subscript(
                 value=ast.Name(id="arr", ctx=ast.Load()),
                 slice=ast.Constant(value=0),
-                ctx=ast.Store()
+                ctx=ast.Store(),
             ),
             op=ast.Sub(),
-            value=ast.Constant(value=3)
+            value=ast.Constant(value=3),
         )
 
         result = processor.visit_AugAssign(aug_assign)
@@ -411,15 +411,15 @@ class TestBaseASTProcessor:
         # Create an augmented assignment with unsupported target (attribute)
         aug_assign = ast.AugAssign(
             target=ast.Attribute(
-                value=ast.Name(id="obj", ctx=ast.Load()),
-                attr="attr",
-                ctx=ast.Store()
+                value=ast.Name(id="obj", ctx=ast.Load()), attr="attr", ctx=ast.Store()
             ),
             op=ast.Add(),
-            value=ast.Constant(value=1)
+            value=ast.Constant(value=1),
         )
 
-        with pytest.raises(NotImplementedError, match="Augmented assignment to Attribute not supported"):
+        with pytest.raises(
+            NotImplementedError, match="Augmented assignment to Attribute not supported"
+        ):
             processor.visit_AugAssign(aug_assign)
 
     def test_visit_assign_tuple_unpacking(self):
@@ -428,15 +428,11 @@ class TestBaseASTProcessor:
 
         # Create tuple unpacking assignment: a, b = 1, 2
         targets = ast.Tuple(
-            elts=[
-                ast.Name(id="a", ctx=ast.Store()),
-                ast.Name(id="b", ctx=ast.Store())
-            ],
-            ctx=ast.Store()
+            elts=[ast.Name(id="a", ctx=ast.Store()), ast.Name(id="b", ctx=ast.Store())],
+            ctx=ast.Store(),
         )
         value = ast.Tuple(
-            elts=[ast.Constant(value=1), ast.Constant(value=2)],
-            ctx=ast.Load()
+            elts=[ast.Constant(value=1), ast.Constant(value=2)], ctx=ast.Load()
         )
         assign = ast.Assign(targets=[targets], value=value)
 
@@ -454,19 +450,18 @@ class TestBaseASTProcessor:
                 ast.Attribute(
                     value=ast.Name(id="obj", ctx=ast.Load()),
                     attr="attr",
-                    ctx=ast.Store()
-                )
+                    ctx=ast.Store(),
+                ),
             ],
-            ctx=ast.Store()
+            ctx=ast.Store(),
         )
         value = ast.Tuple(
-            elts=[ast.Constant(value=1), ast.Constant(value=2)],
-            ctx=ast.Load()
+            elts=[ast.Constant(value=1), ast.Constant(value=2)], ctx=ast.Load()
         )
         assign = ast.Assign(targets=[targets], value=value)
 
         with pytest.raises(
             NotImplementedError,
-            match="Only simple names are supported in tuple unpacking"
+            match="Only simple names are supported in tuple unpacking",
         ):
             processor.visit_Assign(assign)

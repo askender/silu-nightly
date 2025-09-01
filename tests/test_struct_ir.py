@@ -4,7 +4,7 @@ Tests for struct functionality in the IR interpreter.
 """
 
 import pytest
-from silu.ir_interpreter import IRInterpreter, execute_ir_from_string
+from silu.ir_interpreter import IRInterpreter
 
 
 class TestStructIR:
@@ -26,10 +26,13 @@ class TestStructIR:
         interpreter = IRInterpreter()
 
         # Define struct type and create instance
-        ir = ("module", (
-            ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
-            ("assign", "p", None, "struct_Point")
-        ))
+        ir = (
+            "module",
+            (
+                ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
+                ("assign", "p", None, "struct_Point"),
+            ),
+        )
 
         result = interpreter.execute(ir)
 
@@ -42,35 +45,13 @@ class TestStructIR:
     def test_struct_attribute_access(self):
         """Test accessing struct attributes."""
         ir_data = (
-          "module",
-          (
+            "module",
             (
-              "typedef_struct",
-              "Point",
-              (
-                ("x", "int"),
-                ("y", "int")
-              )
+                ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
+                ("assign", "p", None, "struct_Point"),
+                ("assign", ("attribute", ("name", "p"), "x"), ("const", 5), None),
+                ("assign", ("attribute", ("name", "p"), "y"), ("const", 10), None),
             ),
-            (
-              "assign",
-              "p",
-              None,
-              "struct_Point"
-            ),
-            (
-              "assign",
-              ("attribute", ("name", "p"), "x"),
-              ("const", 5),
-              None
-            ),
-            (
-              "assign",
-              ("attribute", ("name", "p"), "y"),
-              ("const", 10),
-              None
-            )
-          )
         )
 
         interpreter = IRInterpreter()
@@ -83,44 +64,31 @@ class TestStructIR:
     def test_struct_attribute_in_expressions(self):
         """Test using struct attributes in expressions."""
         ir_data = (
-          "module",
-          (
+            "module",
             (
-              "typedef_struct",
-              "Point",
-              (
-                ("x", "int"),
-                ("y", "int")
-              )
+                ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
+                ("assign", "p", None, "struct_Point"),
+                ("assign", ("attribute", ("name", "p"), "x"), ("const", 3), None),
+                ("assign", ("attribute", ("name", "p"), "y"), ("const", 4), None),
+                (
+                    "assign",
+                    "distance_squared",
+                    (
+                        "+",
+                        (
+                            "*",
+                            ("attribute", ("name", "p"), "x"),
+                            ("attribute", ("name", "p"), "x"),
+                        ),
+                        (
+                            "*",
+                            ("attribute", ("name", "p"), "y"),
+                            ("attribute", ("name", "p"), "y"),
+                        ),
+                    ),
+                    None,
+                ),
             ),
-            (
-              "assign",
-              "p",
-              None,
-              "struct_Point"
-            ),
-            (
-              "assign",
-              ("attribute", ("name", "p"), "x"),
-              ("const", 3),
-              None
-            ),
-            (
-              "assign",
-              ("attribute", ("name", "p"), "y"),
-              ("const", 4),
-              None
-            ),
-            (
-              "assign",
-              "distance_squared",
-              ("+",
-                ("*", ("attribute", ("name", "p"), "x"), ("attribute", ("name", "p"), "x")),
-                ("*", ("attribute", ("name", "p"), "y"), ("attribute", ("name", "p"), "y"))
-              ),
-              None
-            )
-          )
         )
 
         interpreter = IRInterpreter()
@@ -133,25 +101,27 @@ class TestStructIR:
         """Test struct with different field types."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("typedef_struct", "Person", (
-                ("name", "str"),
-                ("age", "int"),
-                ("height", "float"),
-                ("active", "bool")
-            )),
-            ("assign", "person", None, "struct_Person")
-        ))
+        ir = (
+            "module",
+            (
+                (
+                    "typedef_struct",
+                    "Person",
+                    (
+                        ("name", "str"),
+                        ("age", "int"),
+                        ("height", "float"),
+                        ("active", "bool"),
+                    ),
+                ),
+                ("assign", "person", None, "struct_Person"),
+            ),
+        )
 
         interpreter.execute(ir)
         person = interpreter._get_variable("person")
 
-        assert person == {
-            "name": "",
-            "age": 0,
-            "height": 0.0,
-            "active": False
-        }
+        assert person == {"name": "", "age": 0, "height": 0.0, "active": False}
 
     def test_struct_undefined_type_auto_creation(self):
         """Test auto-creation of undefined struct types."""
@@ -174,10 +144,13 @@ class TestStructIR:
         """Test error when accessing non-existent struct attribute."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
-            ("assign", "p", None, "struct_Point")
-        ))
+        ir = (
+            "module",
+            (
+                ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
+                ("assign", "p", None, "struct_Point"),
+            ),
+        )
 
         interpreter.execute(ir)
 
@@ -195,9 +168,11 @@ class TestStructIR:
         # This should use getattr, not struct attribute access, which should work
         # because regular dicts have methods like 'items'
         try:
-            result = interpreter.execute(("call", ("attribute", ("name", "d"), "items"), (), ()))
+            result = interpreter.execute(
+                ("call", ("attribute", ("name", "d"), "items"), (), ())
+            )
             # If this works, the dict is being treated as a regular dict, not a struct
-            assert callable(result) or hasattr(result, '__iter__')
+            assert callable(result) or hasattr(result, "__iter__")
         except AttributeError:
             # This would indicate the dict is being treated as a struct, which is wrong
             pytest.fail("Regular dictionary was treated as struct")
@@ -205,48 +180,40 @@ class TestStructIR:
     def test_struct_in_function_main(self):
         """Test the exact IR structure from 00024.ir.json."""
         ir_data = (
-          "module",
-          (
+            "module",
             (
-              "typedef_struct",
-              "s",
-              (
-                ("x", "int"),
-                ("y", "int")
-              )
-            ),
-            (
-              "assign",
-              "v",
-              None,
-              "struct_s"
-            ),
-            (
-              "func_def",
-              "main",
-              (),
-              (
+                ("typedef_struct", "s", (("x", "int"), ("y", "int"))),
+                ("assign", "v", None, "struct_s"),
                 (
-                  "assign",
-                  ("attribute", ("name", "v"), "x"),
-                  ("const", 1),
-                  None
+                    "func_def",
+                    "main",
+                    (),
+                    (
+                        (
+                            "assign",
+                            ("attribute", ("name", "v"), "x"),
+                            ("const", 1),
+                            None,
+                        ),
+                        (
+                            "assign",
+                            ("attribute", ("name", "v"), "y"),
+                            ("const", 2),
+                            None,
+                        ),
+                        (
+                            "return",
+                            (
+                                "-",
+                                ("-", ("const", 3), ("attribute", ("name", "v"), "x")),
+                                ("attribute", ("name", "v"), "y"),
+                            ),
+                        ),
+                    ),
+                    (),
+                    "int",
                 ),
-                (
-                  "assign",
-                  ("attribute", ("name", "v"), "y"),
-                  ("const", 2),
-                  None
-                ),
-                (
-                  "return",
-                  ("-", ("-", ("const", 3), ("attribute", ("name", "v"), "x")), ("attribute", ("name", "v"), "y"))
-                )
-              ),
-              (),
-              "int"
-            )
-          )
+            ),
         )
 
         interpreter = IRInterpreter()
@@ -259,12 +226,15 @@ class TestStructIR:
         """Test defining and using multiple struct types."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
-            ("typedef_struct", "Color", (("r", "int"), ("g", "int"), ("b", "int"))),
-            ("assign", "p", None, "struct_Point"),
-            ("assign", "c", None, "struct_Color")
-        ))
+        ir = (
+            "module",
+            (
+                ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
+                ("typedef_struct", "Color", (("r", "int"), ("g", "int"), ("b", "int"))),
+                ("assign", "p", None, "struct_Point"),
+                ("assign", "c", None, "struct_Color"),
+            ),
+        )
 
         interpreter.execute(ir)
 
@@ -280,13 +250,16 @@ class TestStructIR:
         """Test that different struct instances are independent."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
-            ("assign", "p1", None, "struct_Point"),
-            ("assign", "p2", None, "struct_Point"),
-            ("assign", ("attribute", ("name", "p1"), "x"), ("const", 10), None),
-            ("assign", ("attribute", ("name", "p2"), "x"), ("const", 20), None)
-        ))
+        ir = (
+            "module",
+            (
+                ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
+                ("assign", "p1", None, "struct_Point"),
+                ("assign", "p2", None, "struct_Point"),
+                ("assign", ("attribute", ("name", "p1"), "x"), ("const", 10), None),
+                ("assign", ("attribute", ("name", "p2"), "x"), ("const", 20), None),
+            ),
+        )
 
         interpreter.execute(ir)
 

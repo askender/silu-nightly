@@ -629,6 +629,7 @@ class TestConditionSimplification:
         merged = self.executor._merge_negative_conditions("x", conditions)
         assert merged == conditions
 
+
 class TestFunctionAnalyses:
     """Test function analysis functionality"""
 
@@ -706,6 +707,7 @@ class TestCaseGeneration:
     def setup_method(self):
         """Set up test fixtures"""
         self.executor = SymbolicExecutor()
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

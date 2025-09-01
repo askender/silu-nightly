@@ -3,8 +3,7 @@
 Tests for type annotation conversion functionality in the IR interpreter.
 """
 
-import pytest
-from silu.ir_interpreter import IRInterpreter, execute_ir_from_string
+from silu.ir_interpreter import IRInterpreter
 
 
 class TestTypeAnnotationConversionIR:
@@ -14,9 +13,7 @@ class TestTypeAnnotationConversionIR:
         """Test conversion of string constants to float with double annotation."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "x", ("const", "100.0"), "double"),
-        ))
+        ir = ("module", (("assign", "x", ("const", "100.0"), "double"),))
 
         interpreter.execute(ir)
         x = interpreter._get_variable("x")
@@ -28,9 +25,7 @@ class TestTypeAnnotationConversionIR:
         """Test conversion of string constants to int."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "x", ("const", "42"), "int"),
-        ))
+        ir = ("module", (("assign", "x", ("const", "42"), "int"),))
 
         interpreter.execute(ir)
         x = interpreter._get_variable("x")
@@ -42,9 +37,7 @@ class TestTypeAnnotationConversionIR:
         """Test conversion of float string to int (should truncate)."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "x", ("const", "42.7"), "int"),
-        ))
+        ir = ("module", (("assign", "x", ("const", "42.7"), "int"),))
 
         interpreter.execute(ir)
         x = interpreter._get_variable("x")
@@ -58,9 +51,7 @@ class TestTypeAnnotationConversionIR:
 
         # Test true values
         for true_val in ["true", "True", "1", "yes"]:
-            ir = ("module", (
-                ("assign", "x", ("const", true_val), "bool"),
-            ))
+            ir = ("module", (("assign", "x", ("const", true_val), "bool"),))
 
             interpreter.execute(ir)
             x = interpreter._get_variable("x")
@@ -68,9 +59,7 @@ class TestTypeAnnotationConversionIR:
 
         # Test false values
         for false_val in ["false", "False", "0", "no", ""]:
-            ir = ("module", (
-                ("assign", "x", ("const", false_val), "bool"),
-            ))
+            ir = ("module", (("assign", "x", ("const", false_val), "bool"),))
 
             interpreter.execute(ir)
             x = interpreter._get_variable("x")
@@ -80,10 +69,13 @@ class TestTypeAnnotationConversionIR:
         """Test conversion of numbers to string."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "x", ("const", 42), "str"),
-            ("assign", "y", ("const", 3.14), "str"),
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "x", ("const", 42), "str"),
+                ("assign", "y", ("const", 3.14), "str"),
+            ),
+        )
 
         interpreter.execute(ir)
         x = interpreter._get_variable("x")
@@ -96,10 +88,13 @@ class TestTypeAnnotationConversionIR:
 
     def test_comparison_after_conversion(self):
         """Test that comparisons work correctly after type conversion."""
-        ir = ("module", (
-            ("assign", "x", ("const", "100.0"), "double"),
-            ("assign", "result", ("<", ("name", "x"), ("const", 1)), None)
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "x", ("const", "100.0"), "double"),
+                ("assign", "result", ("<", ("name", "x"), ("const", 1)), None),
+            ),
+        )
 
         interpreter = IRInterpreter()
         interpreter.execute(ir)
@@ -109,11 +104,14 @@ class TestTypeAnnotationConversionIR:
 
     def test_arithmetic_after_conversion(self):
         """Test arithmetic operations after type conversion."""
-        ir = ("module", (
-            ("assign", "x", ("const", "10.5"), "double"),
-            ("assign", "y", ("const", "2.5"), "double"),
-            ("assign", "result", ("+", ("name", "x"), ("name", "y")), None)
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "x", ("const", "10.5"), "double"),
+                ("assign", "y", ("const", "2.5"), "double"),
+                ("assign", "result", ("+", ("name", "x"), ("name", "y")), None),
+            ),
+        )
 
         interpreter = IRInterpreter()
         interpreter.execute(ir)
@@ -125,12 +123,15 @@ class TestTypeAnnotationConversionIR:
         """Test that null values still get default initialization."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "a", None, "int"),
-            ("assign", "b", None, "double"),
-            ("assign", "c", None, "bool"),
-            ("assign", "d", None, "str"),
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "a", None, "int"),
+                ("assign", "b", None, "double"),
+                ("assign", "c", None, "bool"),
+                ("assign", "d", None, "str"),
+            ),
+        )
 
         interpreter.execute(ir)
 
@@ -143,9 +144,7 @@ class TestTypeAnnotationConversionIR:
         """Test that invalid conversions keep the original value."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "x", ("const", "not_a_number"), "int"),
-        ))
+        ir = ("module", (("assign", "x", ("const", "not_a_number"), "int"),))
 
         interpreter.execute(ir)
         x = interpreter._get_variable("x")
@@ -157,10 +156,13 @@ class TestTypeAnnotationConversionIR:
         """Test both 'float' and 'double' annotations work."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "x", ("const", "3.14"), "float"),
-            ("assign", "y", ("const", "2.71"), "double"),
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "x", ("const", "3.14"), "float"),
+                ("assign", "y", ("const", "2.71"), "double"),
+            ),
+        )
 
         interpreter.execute(ir)
 
@@ -176,10 +178,13 @@ class TestTypeAnnotationConversionIR:
         """Test both 'str' and 'char*' annotations work."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "x", ("const", 42), "str"),
-            ("assign", "y", ("const", 3.14), "char*"),
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "x", ("const", 42), "str"),
+                ("assign", "y", ("const", 3.14), "char*"),
+            ),
+        )
 
         interpreter.execute(ir)
 
@@ -193,12 +198,20 @@ class TestTypeAnnotationConversionIR:
 
     def test_function_with_type_conversion(self):
         """Test the exact IR structure from 00123.ir.json."""
-        ir = ("module", (
-            ("assign", "x", ("const", "100.0"), "double"),
-            ("func_def", "main", (), (
-                ("return", ("<", ("name", "x"), ("const", 1))),
-            ), (), "int")
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "x", ("const", "100.0"), "double"),
+                (
+                    "func_def",
+                    "main",
+                    (),
+                    (("return", ("<", ("name", "x"), ("const", 1))),),
+                    (),
+                    "int",
+                ),
+            ),
+        )
 
         interpreter = IRInterpreter()
         result = interpreter.execute_program(ir)
@@ -208,12 +221,20 @@ class TestTypeAnnotationConversionIR:
 
     def test_multiple_conversions_in_expression(self):
         """Test multiple type conversions within a single expression."""
-        ir = ("module", (
-            ("assign", "a", ("const", "10"), "int"),
-            ("assign", "b", ("const", "3.14"), "float"),
-            ("assign", "c", ("const", "true"), "bool"),
-            ("assign", "result", ("+", ("+", ("name", "a"), ("name", "b")), ("name", "c")), None)
-        ))
+        ir = (
+            "module",
+            (
+                ("assign", "a", ("const", "10"), "int"),
+                ("assign", "b", ("const", "3.14"), "float"),
+                ("assign", "c", ("const", "true"), "bool"),
+                (
+                    "assign",
+                    "result",
+                    ("+", ("+", ("name", "a"), ("name", "b")), ("name", "c")),
+                    None,
+                ),
+            ),
+        )
 
         interpreter = IRInterpreter()
         interpreter.execute(ir)
@@ -226,9 +247,7 @@ class TestTypeAnnotationConversionIR:
         """Test that array type annotations still work with the new system."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("assign", "arr", None, "int[3]"),
-        ))
+        ir = ("module", (("assign", "arr", None, "int[3]"),))
 
         interpreter.execute(ir)
         arr = interpreter._get_variable("arr")
@@ -239,10 +258,13 @@ class TestTypeAnnotationConversionIR:
         """Test that struct type annotations still work with the new system."""
         interpreter = IRInterpreter()
 
-        ir = ("module", (
-            ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
-            ("assign", "p", None, "struct_Point"),
-        ))
+        ir = (
+            "module",
+            (
+                ("typedef_struct", "Point", (("x", "int"), ("y", "int"))),
+                ("assign", "p", None, "struct_Point"),
+            ),
+        )
 
         interpreter.execute(ir)
         p = interpreter._get_variable("p")

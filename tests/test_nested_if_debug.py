@@ -4,7 +4,6 @@ Test utilities for debugging nested if statements, extracted from debug_symbolic
 Focuses on structural analysis and debugging tools rather than complex execution tests.
 """
 
-import pytest
 from silu.symbolic_executor import SymbolicExecutor
 
 
@@ -26,13 +25,15 @@ class TestIRStructureAnalysis:
         def _traverse(node, path=""):
             if isinstance(node, (list, tuple)) and len(node) > 0:
                 if node[0] == target_type:
-                    found_statements.append({
-                        "path": path,
-                        "statement": node,
-                        "condition": node[1] if len(node) > 1 else None,
-                        "then_block": node[2] if len(node) > 2 else None,
-                        "else_block": node[3] if len(node) > 3 else None,
-                    })
+                    found_statements.append(
+                        {
+                            "path": path,
+                            "statement": node,
+                            "condition": node[1] if len(node) > 1 else None,
+                            "then_block": node[2] if len(node) > 2 else None,
+                            "else_block": node[3] if len(node) > 3 else None,
+                        }
+                    )
 
                 for i, child in enumerate(node):
                     if isinstance(child, (list, tuple)):
@@ -90,7 +91,9 @@ class TestIRStructureAnalysis:
 
         if_statements = self.analyze_ir_structure(ir, "if")
 
-        assert len(if_statements) == 2, "Should find exactly two if statements (one nested)"
+        assert len(if_statements) == 2, (
+            "Should find exactly two if statements (one nested)"
+        )
 
         # Verify both outer and inner if statements are found
         conditions = [stmt["condition"] for stmt in if_statements]
@@ -212,7 +215,9 @@ class TestDebugUtilities:
                         result.append(f"{prefix}[{item}]")
                     elif isinstance(item, (list, tuple)):
                         result.append(f"{prefix}  [{i}]:")
-                        result.extend(TestDebugUtilities.format_ir_structure(item, indent + 2))
+                        result.extend(
+                            TestDebugUtilities.format_ir_structure(item, indent + 2)
+                        )
                     else:
                         result.append(f"{prefix}  [{i}]: {repr(item)}")
         else:
@@ -300,7 +305,9 @@ class TestDebugUtilities:
             path_info = {
                 "path_id": i + 1,
                 "conditions": [str(c) for c in path.conditions],
-                "variables": dict(path.variables) if hasattr(path.variables, 'items') else path.variables,
+                "variables": dict(path.variables)
+                if hasattr(path.variables, "items")
+                else path.variables,
                 "statements": path.statements,
                 "return_value": path.return_value,
             }
@@ -383,10 +390,14 @@ class TestExtractedDebugFeatures:
 
             # Check condition structure
             if isinstance(condition, tuple) and len(condition) >= 4:
-                assert condition[0] == "chained_compare", f"Condition {i} should be a comparison"
+                assert condition[0] == "chained_compare", (
+                    f"Condition {i} should be a comparison"
+                )
 
         # Should find both if statements
-        assert len(if_statements) == 2, "Should find 2 if statements in nested structure"
+        assert len(if_statements) == 2, (
+            "Should find 2 if statements in nested structure"
+        )
 
     def test_debug_symbolic_workflow(self):
         """Test the complete workflow that debug_symbolic.py was trying to achieve"""
@@ -442,7 +453,9 @@ class TestExtractedDebugFeatures:
                 {
                     "conditions": [str(c) for c in path.conditions],
                     "statements": path.statements,
-                    "variables": dict(path.variables) if hasattr(path.variables, 'items') else path.variables,
+                    "variables": dict(path.variables)
+                    if hasattr(path.variables, "items")
+                    else path.variables,
                 }
                 for path in paths
             ],
@@ -487,8 +500,14 @@ class TestComplexElseIfChain:
                                         (
                                             "if",
                                             ("chained_compare", "score", "<", 90),
-                                            ("block", (("assign", "grade", "B", None),)),
-                                            ("block", (("assign", "grade", "A", None),)),
+                                            (
+                                                "block",
+                                                (("assign", "grade", "B", None),),
+                                            ),
+                                            (
+                                                "block",
+                                                (("assign", "grade", "A", None),),
+                                            ),
                                         ),
                                     ),
                                 ),
@@ -509,13 +528,15 @@ class TestComplexElseIfChain:
         for path in paths:
             if "grade" in path.variables:
                 grade_val = path.variables["grade"]
-                if hasattr(grade_val, 'value'):
+                if hasattr(grade_val, "value"):
                     grades_found.add(grade_val.value)
                 else:
                     grades_found.add(grade_val)
 
         expected_grades = {"F", "D", "C", "B", "A"}
-        assert grades_found == expected_grades, f"Expected {expected_grades}, got {grades_found}"
+        assert grades_found == expected_grades, (
+            f"Expected {expected_grades}, got {grades_found}"
+        )
 
         # Verify path conditions are logically correct
         condition_patterns = []
@@ -551,13 +572,15 @@ class TestComplexElseIfChain:
         for path in paths:
             if "result" in path.variables:
                 result_val = path.variables["result"]
-                if hasattr(result_val, 'value'):
+                if hasattr(result_val, "value"):
                     results.add(result_val.value)
                 else:
                     results.add(result_val)
 
         expected_results = {"Low", "High"}
-        assert results == expected_results, f"Expected {expected_results}, got {results}"
+        assert results == expected_results, (
+            f"Expected {expected_results}, got {results}"
+        )
 
     def test_single_letter_grade_assignments(self):
         """Test that single uppercase letters are treated as string literals"""
@@ -585,22 +608,39 @@ class TestComplexElseIfChain:
         grade2_val = path.variables["grade2"]
         grade3_val = path.variables["grade3"]
 
-        assert (hasattr(grade1_val, 'value') and grade1_val.value == "A") or grade1_val == "A"
-        assert (hasattr(grade2_val, 'value') and grade2_val.value == "B") or grade2_val == "B"
-        assert (hasattr(grade3_val, 'value') and grade3_val.value == "F") or grade3_val == "F"
+        assert (
+            hasattr(grade1_val, "value") and grade1_val.value == "A"
+        ) or grade1_val == "A"
+        assert (
+            hasattr(grade2_val, "value") and grade2_val.value == "B"
+        ) or grade2_val == "B"
+        assert (
+            hasattr(grade3_val, "value") and grade3_val.value == "F"
+        ) or grade3_val == "F"
 
     def test_mixed_variable_and_literal_handling(self):
         """Test handling of both variables and string literals in the same program"""
         ir = (
             "module",
             (
-                ("assign", "status", "Active", None),    # String literal (capitalized)
-                ("assign", "temp", "status", None),      # Variable reference
+                ("assign", "status", "Active", None),  # String literal (capitalized)
+                ("assign", "temp", "status", None),  # Variable reference
                 (
                     "if",
-                    ("chained_compare", "temp", "==", "Inactive"),  # Compare with different literal
-                    ("block", (("assign", "result", "N", None),)),    # Single letter literal
-                    ("block", (("assign", "result", "Y", None),)),    # Single letter literal
+                    (
+                        "chained_compare",
+                        "temp",
+                        "==",
+                        "Inactive",
+                    ),  # Compare with different literal
+                    (
+                        "block",
+                        (("assign", "result", "N", None),),
+                    ),  # Single letter literal
+                    (
+                        "block",
+                        (("assign", "result", "Y", None),),
+                    ),  # Single letter literal
                 ),
             ),
         )
@@ -623,17 +663,23 @@ class TestComplexElseIfChain:
             result_val = path.variables["result"]
 
             # Status should be the literal "Active"
-            assert (hasattr(status_val, 'value') and status_val.value == "Active") or status_val == "Active"
+            assert (
+                hasattr(status_val, "value") and status_val.value == "Active"
+            ) or status_val == "Active"
 
             # temp should reference the variable status, so should also be "Active"
-            assert (hasattr(temp_val, 'value') and temp_val.value == "Active") or temp_val == "Active"
+            assert (
+                hasattr(temp_val, "value") and temp_val.value == "Active"
+            ) or temp_val == "Active"
 
             # Collect result values
-            if hasattr(result_val, 'value'):
+            if hasattr(result_val, "value"):
                 results_found.add(result_val.value)
             else:
                 results_found.add(result_val)
 
         # Should have both Y and N results
         expected_results = {"Y", "N"}
-        assert results_found == expected_results, f"Expected {expected_results}, got {results_found}"
+        assert results_found == expected_results, (
+            f"Expected {expected_results}, got {results_found}"
+        )

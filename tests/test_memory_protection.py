@@ -2,7 +2,6 @@
 
 import pytest
 
-from silu.interpreter import SiluInterpreter
 from silu.ast_processor import process_code
 
 
@@ -13,7 +12,9 @@ def test_list_multiplication_protection():
 l = [1, 2, 3]
 result = l * 1000001
 """
-    with pytest.raises(MemoryError, match="Memory protection: Cannot multiply sequence by 1000001"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: Cannot multiply sequence by 1000001"
+    ):
         process_code(code)
 
 
@@ -24,7 +25,9 @@ def test_list_multiplication_reverse_protection():
 l = [1, 2, 3]
 result = 1000001 * l
 """
-    with pytest.raises(MemoryError, match="Memory protection: Cannot multiply sequence by 1000001"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: Cannot multiply sequence by 1000001"
+    ):
         process_code(code)
 
 
@@ -35,7 +38,9 @@ def test_string_multiplication_protection():
 s = "hello"
 result = s * 2000001
 """
-    with pytest.raises(MemoryError, match="Memory protection: Cannot multiply sequence by 2000001"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: Cannot multiply sequence by 2000001"
+    ):
         process_code(code)
 
 
@@ -46,7 +51,9 @@ def test_large_total_elements_protection():
 l = list(range(5000))  # 5000 elements
 result = l * 2001      # Would result in 10,005,000 elements (over 10M limit)
 """
-    with pytest.raises(MemoryError, match="Memory protection: Result would have 10005000 elements"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: Result would have 10005000 elements"
+    ):
         process_code(code)
 
 
@@ -56,7 +63,9 @@ def test_range_protection():
     code = """
 result = list(range(10000001))
 """
-    with pytest.raises(MemoryError, match="Memory protection: range\\(10000001\\) exceeds limit"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: range\\(10000001\\) exceeds limit"
+    ):
         process_code(code)
 
 
@@ -66,7 +75,9 @@ def test_range_with_stop_protection():
     code = """
 result = list(range(0, 10000001))
 """
-    with pytest.raises(MemoryError, match="Memory protection: range\\(.*, 10000001\\) exceeds limit"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: range\\(.*, 10000001\\) exceeds limit"
+    ):
         process_code(code)
 
 
@@ -77,7 +88,9 @@ def test_extend_with_large_range_protection():
 l = []
 l.extend(range(10000001))
 """
-    with pytest.raises(MemoryError, match="Memory protection: range\\(10000001\\) exceeds limit"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: range\\(10000001\\) exceeds limit"
+    ):
         process_code(code)
 
 
@@ -133,7 +146,9 @@ def test_total_elements_calculation():
 l = list(range(5000))  # 5000 elements
 result = l * 500000    # Would result in 2,500,000,000 elements (over 10M limit)
 """
-    with pytest.raises(MemoryError, match="Memory protection: Result would have 2500000000 elements"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: Result would have 2500000000 elements"
+    ):
         process_code(code)
 
 
@@ -144,7 +159,9 @@ def test_tuple_multiplication_protection():
 t = (1, 2, 3)
 result = t * 1000001
 """
-    with pytest.raises(MemoryError, match="Memory protection: Cannot multiply sequence by 1000001"):
+    with pytest.raises(
+        MemoryError, match="Memory protection: Cannot multiply sequence by 1000001"
+    ):
         process_code(code)
 
 

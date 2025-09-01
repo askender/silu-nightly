@@ -301,10 +301,7 @@ class TestMultipleTargetAssignmentIR:
         result = generator.visit_Assign(assign_node)
         expected = (
             "multi_assign",
-            (
-                ("assign", "a", ("const", 1), None),
-                ("assign", "b", ("const", 1), None)
-            )
+            (("assign", "a", ("const", 1), None), ("assign", "b", ("const", 1), None)),
         )
         assert result == expected
 
@@ -324,8 +321,8 @@ class TestMultipleTargetAssignmentIR:
             (
                 ("assign", "x", ("const", "hello"), None),
                 ("assign", "y", ("const", "hello"), None),
-                ("assign", "z", ("const", "hello"), None)
-            )
+                ("assign", "z", ("const", "hello"), None),
+            ),
         )
         assert result == expected
 
@@ -345,8 +342,8 @@ class TestMultipleTargetAssignmentIR:
             "multi_assign",
             (
                 ("assign", "a", ("+", ("const", 2), ("const", 3)), None),
-                ("assign", "b", ("+", ("const", 2), ("const", 3)), None)
-            )
+                ("assign", "b", ("+", ("const", 2), ("const", 3)), None),
+            ),
         )
         assert result == expected
 
@@ -372,8 +369,8 @@ class TestMultipleTargetAssignmentIR:
             "multi_assign",
             (
                 ("subscript_assign", ("name", "arr1"), ("const", 0), ("const", 99)),
-                ("subscript_assign", ("name", "arr2"), ("const", 1), ("const", 99))
-            )
+                ("subscript_assign", ("name", "arr2"), ("const", 1), ("const", 99)),
+            ),
         )
         assert result == expected
 
@@ -381,18 +378,17 @@ class TestMultipleTargetAssignmentIR:
         """Test IR generation for multiple assignment with tuple unpacking: a, b = c, d = [1, 2]"""
         generator = SiluIRGenerator()
 
-        target1 = ast.Tuple(elts=[
-            ast.Name(id="a", ctx=ast.Store()),
-            ast.Name(id="b", ctx=ast.Store())
-        ], ctx=ast.Store())
-        target2 = ast.Tuple(elts=[
-            ast.Name(id="c", ctx=ast.Store()),
-            ast.Name(id="d", ctx=ast.Store())
-        ], ctx=ast.Store())
-        value = ast.List(elts=[
-            ast.Constant(value=1),
-            ast.Constant(value=2)
-        ], ctx=ast.Load())
+        target1 = ast.Tuple(
+            elts=[ast.Name(id="a", ctx=ast.Store()), ast.Name(id="b", ctx=ast.Store())],
+            ctx=ast.Store(),
+        )
+        target2 = ast.Tuple(
+            elts=[ast.Name(id="c", ctx=ast.Store()), ast.Name(id="d", ctx=ast.Store())],
+            ctx=ast.Store(),
+        )
+        value = ast.List(
+            elts=[ast.Constant(value=1), ast.Constant(value=2)], ctx=ast.Load()
+        )
         assign_node = ast.Assign(targets=[target1, target2], value=value)
 
         result = generator.visit_Assign(assign_node)
@@ -400,8 +396,8 @@ class TestMultipleTargetAssignmentIR:
             "multi_assign",
             (
                 ("tuple_assign", ("a", "b"), ("list", (("const", 1), ("const", 2)))),
-                ("tuple_assign", ("c", "d"), ("list", (("const", 1), ("const", 2))))
-            )
+                ("tuple_assign", ("c", "d"), ("list", (("const", 1), ("const", 2)))),
+            ),
         )
         assert result == expected
 
@@ -410,14 +406,13 @@ class TestMultipleTargetAssignmentIR:
         generator = SiluIRGenerator()
 
         target1 = ast.Name(id="x", ctx=ast.Store())
-        target2 = ast.Tuple(elts=[
-            ast.Name(id="y", ctx=ast.Store()),
-            ast.Name(id="z", ctx=ast.Store())
-        ], ctx=ast.Store())
-        value = ast.List(elts=[
-            ast.Constant(value=100),
-            ast.Constant(value=200)
-        ], ctx=ast.Load())
+        target2 = ast.Tuple(
+            elts=[ast.Name(id="y", ctx=ast.Store()), ast.Name(id="z", ctx=ast.Store())],
+            ctx=ast.Store(),
+        )
+        value = ast.List(
+            elts=[ast.Constant(value=100), ast.Constant(value=200)], ctx=ast.Load()
+        )
         assign_node = ast.Assign(targets=[target1, target2], value=value)
 
         result = generator.visit_Assign(assign_node)
@@ -425,8 +420,12 @@ class TestMultipleTargetAssignmentIR:
             "multi_assign",
             (
                 ("assign", "x", ("list", (("const", 100), ("const", 200))), None),
-                ("tuple_assign", ("y", "z"), ("list", (("const", 100), ("const", 200))))
-            )
+                (
+                    "tuple_assign",
+                    ("y", "z"),
+                    ("list", (("const", 100), ("const", 200))),
+                ),
+            ),
         )
         assert result == expected
 

@@ -5,10 +5,7 @@ Tests for the IR Common module.
 This module tests the shared IR processing utilities in ir_common.py.
 """
 
-import sys
 import unittest
-from io import StringIO
-from typing import Any, Dict, List, Optional, Tuple
 
 from silu.ir_common import (
     IRProcessingError,
@@ -61,6 +58,7 @@ class TestIRNodeDispatching(unittest.TestCase):
 
     def test_create_handlers_map(self):
         """Test creating a handlers map from methods of an object."""
+
         # Setup test class with handler methods
         class TestProcessor:
             def _process_const(self, node):
@@ -128,7 +126,9 @@ class TestErrorHandling(unittest.TestCase):
         self.assertIn("test context", str(context.exception))
 
         # Test without raising the error
-        error_message = handle_node_error(node, error, "test context", raise_error=False)
+        error_message = handle_node_error(
+            node, error, "test context", raise_error=False
+        )
         self.assertIn("Error processing const node", error_message)
         self.assertIn("Test error", error_message)
         self.assertIn("test context", error_message)

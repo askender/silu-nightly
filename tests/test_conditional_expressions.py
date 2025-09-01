@@ -5,7 +5,6 @@ Tests for the if-else expression syntax: value_if_true if condition else value_i
 """
 
 import ast
-import pytest
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
 from silu.ir_interpreter import IRInterpreter

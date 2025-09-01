@@ -544,29 +544,24 @@ class TestClosureFunctionality:
                             "func_def",
                             "adder",
                             ("x",),
-                            (
-                                (
-                                    "return",
-                                    ("+", ("name", "x"), ("name", "n"))
-                                ),
-                            )
+                            (("return", ("+", ("name", "x"), ("name", "n"))),),
                         ),
-                        ("return", ("name", "adder"))
-                    )
+                        ("return", ("name", "adder")),
+                    ),
                 ),
                 (
                     "assign",
                     "add5",
                     ("call", ("name", "make_adder"), (("const", 5),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result",
                     ("call", ("name", "add5"), (("const", 3),), ()),
-                    None
-                )
-            )
+                    None,
+                ),
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result") == 8
@@ -585,41 +580,36 @@ class TestClosureFunctionality:
                             "func_def",
                             "multiply",
                             ("x",),
-                            (
-                                (
-                                    "return",
-                                    ("*", ("name", "x"), ("name", "factor"))
-                                ),
-                            )
+                            (("return", ("*", ("name", "x"), ("name", "factor"))),),
                         ),
-                        ("return", ("name", "multiply"))
-                    )
+                        ("return", ("name", "multiply")),
+                    ),
                 ),
                 (
                     "assign",
                     "double",
                     ("call", ("name", "make_multiplier"), (("const", 2),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "triple",
                     ("call", ("name", "make_multiplier"), (("const", 3),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result1",
                     ("call", ("name", "double"), (("const", 4),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result2",
                     ("call", ("name", "triple"), (("const", 4),), ()),
-                    None
-                )
-            )
+                    None,
+                ),
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result1") == 8
@@ -649,43 +639,53 @@ class TestClosureFunctionality:
                                             (
                                                 "*",
                                                 ("name", "a"),
-                                                ("**", ("name", "x"), ("const", 2))
+                                                ("**", ("name", "x"), ("const", 2)),
                                             ),
-                                            ("*", ("name", "b"), ("name", "x"))
+                                            ("*", ("name", "b"), ("name", "x")),
                                         ),
-                                        ("name", "c")
-                                    )
+                                        ("name", "c"),
+                                    ),
                                 ),
-                            )
+                            ),
                         ),
-                        ("return", ("name", "poly"))
-                    )
+                        ("return", ("name", "poly")),
+                    ),
                 ),
                 (
                     "assign",
                     "f1",
-                    ("call", ("name", "make_polynomial"), (("const", 1), ("const", 0), ("const", 0)), ()),
-                    None
+                    (
+                        "call",
+                        ("name", "make_polynomial"),
+                        (("const", 1), ("const", 0), ("const", 0)),
+                        (),
+                    ),
+                    None,
                 ),
                 (
                     "assign",
                     "f2",
-                    ("call", ("name", "make_polynomial"), (("const", 2), ("const", 3), ("const", 1)), ()),
-                    None
+                    (
+                        "call",
+                        ("name", "make_polynomial"),
+                        (("const", 2), ("const", 3), ("const", 1)),
+                        (),
+                    ),
+                    None,
                 ),
                 (
                     "assign",
                     "result1",
                     ("call", ("name", "f1"), (("const", 5),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result2",
                     ("call", ("name", "f2"), (("const", 5),), ()),
-                    None
-                )
-            )
+                    None,
+                ),
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result1") == 25  # 1*5^2 + 0*5 + 0
@@ -713,35 +713,39 @@ class TestClosureFunctionality:
                                     (
                                         (
                                             "return",
-                                            ("+", ("+", ("name", "x"), ("name", "y")), ("name", "z"))
+                                            (
+                                                "+",
+                                                ("+", ("name", "x"), ("name", "y")),
+                                                ("name", "z"),
+                                            ),
                                         ),
-                                    )
+                                    ),
                                 ),
-                                ("return", ("name", "innermost"))
-                            )
+                                ("return", ("name", "innermost")),
+                            ),
                         ),
-                        ("return", ("name", "make_inner"))
-                    )
+                        ("return", ("name", "make_inner")),
+                    ),
                 ),
                 (
                     "assign",
                     "outer_func",
                     ("call", ("name", "make_outer"), (("const", 10),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "inner_func",
                     ("call", ("name", "outer_func"), (("const", 20),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result",
                     ("call", ("name", "inner_func"), (("const", 30),), ()),
-                    None
-                )
-            )
+                    None,
+                ),
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result") == 60  # 10 + 20 + 30
@@ -764,38 +768,23 @@ class TestClosureFunctionality:
                             "increment",
                             (),
                             (
-                                ("assign", "count", ("+", ("name", "count"), ("const", 1)), None),
-                                ("return", ("name", "count"))
-                            )
+                                (
+                                    "assign",
+                                    "count",
+                                    ("+", ("name", "count"), ("const", 1)),
+                                    None,
+                                ),
+                                ("return", ("name", "count")),
+                            ),
                         ),
-                        ("return", ("name", "increment"))
-                    )
+                        ("return", ("name", "increment")),
+                    ),
                 ),
-                (
-                    "assign",
-                    "counter",
-                    ("call", ("name", "make_counter"), (), ()),
-                    None
-                ),
-                (
-                    "assign",
-                    "result1",
-                    ("call", ("name", "counter"), (), ()),
-                    None
-                ),
-                (
-                    "assign",
-                    "result2",
-                    ("call", ("name", "counter"), (), ()),
-                    None
-                ),
-                (
-                    "assign",
-                    "result3",
-                    ("call", ("name", "counter"), (), ()),
-                    None
-                )
-            )
+                ("assign", "counter", ("call", ("name", "make_counter"), (), ()), None),
+                ("assign", "result1", ("call", ("name", "counter"), (), ()), None),
+                ("assign", "result2", ("call", ("name", "counter"), (), ()), None),
+                ("assign", "result3", ("call", ("name", "counter"), (), ()), None),
+            ),
         )
         self.interpreter.execute_program(ir)
 
@@ -821,44 +810,49 @@ class TestClosureFunctionality:
                             "add",
                             ("value",),
                             (
-                                ("assign", "total", ("+", ("name", "total"), ("name", "value")), None),
-                                ("return", ("name", "total"))
-                            )
+                                (
+                                    "assign",
+                                    "total",
+                                    ("+", ("name", "total"), ("name", "value")),
+                                    None,
+                                ),
+                                ("return", ("name", "total")),
+                            ),
                         ),
-                        ("return", ("name", "add"))
-                    )
+                        ("return", ("name", "add")),
+                    ),
                 ),
                 (
                     "assign",
                     "acc1",
                     ("call", ("name", "make_accumulator"), (("const", 10),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "acc2",
                     ("call", ("name", "make_accumulator"), (("const", 20),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result1a",
                     ("call", ("name", "acc1"), (("const", 5),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result1b",
                     ("call", ("name", "acc1"), (("const", 3),), ()),
-                    None
+                    None,
                 ),
                 (
                     "assign",
                     "result2a",
                     ("call", ("name", "acc2"), (("const", 7),), ()),
-                    None
-                )
-            )
+                    None,
+                ),
+            ),
         )
         self.interpreter.execute_program(ir)
 
@@ -881,9 +875,7 @@ class TestTupleUnpackingIR:
         """Test basic tuple unpacking assignment."""
         ir = (
             "module",
-            (
-                ("tuple_assign", ("a", "b"), ("tuple", (("const", 1), ("const", 2)))),
-            )
+            (("tuple_assign", ("a", "b"), ("tuple", (("const", 1), ("const", 2)))),),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("a") == 1
@@ -897,7 +889,7 @@ class TestTupleUnpackingIR:
                 ("assign", "x", ("const", 10), None),
                 ("assign", "y", ("const", 20), None),
                 ("tuple_assign", ("x", "y"), ("tuple", (("name", "y"), ("name", "x")))),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("x") == 20
@@ -908,9 +900,14 @@ class TestTupleUnpackingIR:
         ir = (
             "module",
             (
-                ("assign", "nums", ("list", (("const", 100), ("const", 200), ("const", 300))), None),
+                (
+                    "assign",
+                    "nums",
+                    ("list", (("const", 100), ("const", 200), ("const", 300))),
+                    None,
+                ),
                 ("tuple_assign", ("a", "b", "c"), ("name", "nums")),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("a") == 100
@@ -924,7 +921,7 @@ class TestTupleUnpackingIR:
             (
                 ("assign", "s", ("const", "hi"), None),
                 ("tuple_assign", ("c1", "c2"), ("name", "s")),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("c1") == "h"
@@ -935,10 +932,16 @@ class TestTupleUnpackingIR:
         ir = (
             "module",
             (
-                ("tuple_assign", ("a", "b"), ("tuple", (("const", 1), ("const", 2), ("const", 3)))),
-            )
+                (
+                    "tuple_assign",
+                    ("a", "b"),
+                    ("tuple", (("const", 1), ("const", 2), ("const", 3))),
+                ),
+            ),
         )
-        with pytest.raises(ValueError, match="too many values to unpack \\(expected 2\\)"):
+        with pytest.raises(
+            ValueError, match="too many values to unpack \\(expected 2\\)"
+        ):
             self.interpreter.execute_program(ir)
 
     def test_tuple_unpacking_not_enough_values(self):
@@ -946,20 +949,21 @@ class TestTupleUnpackingIR:
         ir = (
             "module",
             (
-                ("tuple_assign", ("a", "b", "c"), ("tuple", (("const", 1), ("const", 2)))),
-            )
+                (
+                    "tuple_assign",
+                    ("a", "b", "c"),
+                    ("tuple", (("const", 1), ("const", 2))),
+                ),
+            ),
         )
-        with pytest.raises(ValueError, match="not enough values to unpack \\(expected 3, got 2\\)"):
+        with pytest.raises(
+            ValueError, match="not enough values to unpack \\(expected 3, got 2\\)"
+        ):
             self.interpreter.execute_program(ir)
 
     def test_tuple_unpacking_non_sequence(self):
         """Test error when trying to unpack a non-sequence."""
-        ir = (
-            "module",
-            (
-                ("tuple_assign", ("a", "b"), ("const", 42)),
-            )
-        )
+        ir = ("module", (("tuple_assign", ("a", "b"), ("const", 42)),))
         with pytest.raises(TypeError, match="cannot unpack non-sequence int"):
             self.interpreter.execute_program(ir)
 
@@ -978,21 +982,50 @@ class TestTupleUnpackingIR:
                             ("<=", ("name", "n"), ("const", 1)),
                             (("return", ("name", "n")),),
                             (
-                                ("tuple_assign", ("a", "b"), ("tuple", (("const", 0), ("const", 1)))),
+                                (
+                                    "tuple_assign",
+                                    ("a", "b"),
+                                    ("tuple", (("const", 0), ("const", 1))),
+                                ),
                                 (
                                     "for",
                                     ("name", "i"),
-                                    ("call", ("name", "range"), (("const", 2), ("+", ("name", "n"), ("const", 1))), ()),
-                                    (("tuple_assign", ("a", "b"), ("tuple", (("name", "b"), ("+", ("name", "a"), ("name", "b"))))),),
-                                    ()
+                                    (
+                                        "call",
+                                        ("name", "range"),
+                                        (
+                                            ("const", 2),
+                                            ("+", ("name", "n"), ("const", 1)),
+                                        ),
+                                        (),
+                                    ),
+                                    (
+                                        (
+                                            "tuple_assign",
+                                            ("a", "b"),
+                                            (
+                                                "tuple",
+                                                (
+                                                    ("name", "b"),
+                                                    ("+", ("name", "a"), ("name", "b")),
+                                                ),
+                                            ),
+                                        ),
+                                    ),
+                                    (),
                                 ),
-                                ("return", ("name", "b"))
-                            )
+                                ("return", ("name", "b")),
+                            ),
                         ),
-                    )
+                    ),
                 ),
-                ("assign", "result", ("call", ("name", "fibonacci"), (("const", 5),), ()), None)
-            )
+                (
+                    "assign",
+                    "result",
+                    ("call", ("name", "fibonacci"), (("const", 5),), ()),
+                    None,
+                ),
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result") == 5
@@ -1014,10 +1047,10 @@ class TestMultipleTargetAssignmentIRInterpreter:
                     "multi_assign",
                     (
                         ("assign", "a", ("const", 1), None),
-                        ("assign", "b", ("const", 1), None)
-                    )
+                        ("assign", "b", ("const", 1), None),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("a") == 1
@@ -1033,10 +1066,10 @@ class TestMultipleTargetAssignmentIRInterpreter:
                     (
                         ("assign", "x", ("const", "hello"), None),
                         ("assign", "y", ("const", "hello"), None),
-                        ("assign", "z", ("const", "hello"), None)
-                    )
+                        ("assign", "z", ("const", "hello"), None),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("x") == "hello"
@@ -1052,10 +1085,10 @@ class TestMultipleTargetAssignmentIRInterpreter:
                     "multi_assign",
                     (
                         ("assign", "a", ("+", ("const", 2), ("const", 3)), None),
-                        ("assign", "b", ("+", ("const", 2), ("const", 3)), None)
-                    )
+                        ("assign", "b", ("+", ("const", 2), ("const", 3)), None),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("a") == 5
@@ -1071,11 +1104,11 @@ class TestMultipleTargetAssignmentIRInterpreter:
                     (
                         ("assign", "a", ("const", 100), None),
                         ("assign", "b", ("const", 100), None),
-                        ("assign", "c", ("const", 100), None)
-                    )
+                        ("assign", "c", ("const", 100), None),
+                    ),
                 ),
-                ("assign", "a", ("const", 200), None)
-            )
+                ("assign", "a", ("const", 200), None),
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("a") == 200
@@ -1090,12 +1123,22 @@ class TestMultipleTargetAssignmentIRInterpreter:
                 (
                     "multi_assign",
                     (
-                        ("assign", "list1", ("list", (("const", 1), ("const", 2), ("const", 3))), None),
-                        ("assign", "list2", ("list", (("const", 1), ("const", 2), ("const", 3))), None)
-                    )
+                        (
+                            "assign",
+                            "list1",
+                            ("list", (("const", 1), ("const", 2), ("const", 3))),
+                            None,
+                        ),
+                        (
+                            "assign",
+                            "list2",
+                            ("list", (("const", 1), ("const", 2), ("const", 3))),
+                            None,
+                        ),
+                    ),
                 ),
-                ("subscript_assign", ("name", "list1"), ("const", 0), ("const", 999))
-            )
+                ("subscript_assign", ("name", "list1"), ("const", 0), ("const", 999)),
+            ),
         )
         self.interpreter.execute_program(ir)
         list1 = self.interpreter._get_variable("list1")
@@ -1109,16 +1152,36 @@ class TestMultipleTargetAssignmentIRInterpreter:
         ir = (
             "module",
             (
-                ("assign", "arr1", ("list", (("const", 0), ("const", 0), ("const", 0))), None),
-                ("assign", "arr2", ("list", (("const", 0), ("const", 0), ("const", 0))), None),
+                (
+                    "assign",
+                    "arr1",
+                    ("list", (("const", 0), ("const", 0), ("const", 0))),
+                    None,
+                ),
+                (
+                    "assign",
+                    "arr2",
+                    ("list", (("const", 0), ("const", 0), ("const", 0))),
+                    None,
+                ),
                 (
                     "multi_assign",
                     (
-                        ("subscript_assign", ("name", "arr1"), ("const", 0), ("const", 99)),
-                        ("subscript_assign", ("name", "arr2"), ("const", 1), ("const", 99))
-                    )
+                        (
+                            "subscript_assign",
+                            ("name", "arr1"),
+                            ("const", 0),
+                            ("const", 99),
+                        ),
+                        (
+                            "subscript_assign",
+                            ("name", "arr2"),
+                            ("const", 1),
+                            ("const", 99),
+                        ),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         arr1 = self.interpreter._get_variable("arr1")
@@ -1134,11 +1197,19 @@ class TestMultipleTargetAssignmentIRInterpreter:
                 (
                     "multi_assign",
                     (
-                        ("tuple_assign", ("a", "b"), ("list", (("const", 10), ("const", 20)))),
-                        ("tuple_assign", ("c", "d"), ("list", (("const", 10), ("const", 20))))
-                    )
+                        (
+                            "tuple_assign",
+                            ("a", "b"),
+                            ("list", (("const", 10), ("const", 20))),
+                        ),
+                        (
+                            "tuple_assign",
+                            ("c", "d"),
+                            ("list", (("const", 10), ("const", 20))),
+                        ),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("a") == 10
@@ -1154,11 +1225,20 @@ class TestMultipleTargetAssignmentIRInterpreter:
                 (
                     "multi_assign",
                     (
-                        ("assign", "x", ("list", (("const", 100), ("const", 200))), None),
-                        ("tuple_assign", ("y", "z"), ("list", (("const", 100), ("const", 200))))
-                    )
+                        (
+                            "assign",
+                            "x",
+                            ("list", (("const", 100), ("const", 200))),
+                            None,
+                        ),
+                        (
+                            "tuple_assign",
+                            ("y", "z"),
+                            ("list", (("const", 100), ("const", 200))),
+                        ),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("x") == [100, 200]
@@ -1178,10 +1258,10 @@ class TestMultipleTargetAssignmentIRInterpreter:
                         ("assign", "c", ("const", 123), None),
                         ("assign", "d", ("const", 123), None),
                         ("assign", "e", ("const", 123), None),
-                        ("assign", "f", ("const", 123), None)
-                    )
+                        ("assign", "f", ("const", 123), None),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("a") == 123
@@ -1206,14 +1286,17 @@ class TestMultipleTargetAssignmentIRInterpreter:
                             (
                                 ("assign", "a", ("const", 42), None),
                                 ("assign", "b", ("const", 42), None),
-                                ("assign", "c", ("const", 42), None)
-                            )
+                                ("assign", "c", ("const", 42), None),
+                            ),
                         ),
-                        ("return", ("+", ("+", ("name", "a"), ("name", "b")), ("name", "c")))
-                    )
+                        (
+                            "return",
+                            ("+", ("+", ("name", "a"), ("name", "b")), ("name", "c")),
+                        ),
+                    ),
                 ),
-                ("assign", "result", ("call", ("name", "test_func"), (), ()), None)
-            )
+                ("assign", "result", ("call", ("name", "test_func"), (), ()), None),
+            ),
         )
         self.interpreter.execute_program(ir)
         assert self.interpreter._get_variable("result") == 126
@@ -1228,34 +1311,44 @@ class TestMultipleTargetAssignmentIRInterpreter:
                     "multi_assign",
                     (
                         ("assign", "num1", ("const", 42), None),
-                        ("assign", "num2", ("const", 42), None)
-                    )
+                        ("assign", "num2", ("const", 42), None),
+                    ),
                 ),
                 # Strings
                 (
                     "multi_assign",
                     (
                         ("assign", "str1", ("const", "test"), None),
-                        ("assign", "str2", ("const", "test"), None)
-                    )
+                        ("assign", "str2", ("const", "test"), None),
+                    ),
                 ),
                 # Lists
                 (
                     "multi_assign",
                     (
-                        ("assign", "list1", ("list", (("const", 1), ("const", 2), ("const", 3))), None),
-                        ("assign", "list2", ("list", (("const", 1), ("const", 2), ("const", 3))), None)
-                    )
+                        (
+                            "assign",
+                            "list1",
+                            ("list", (("const", 1), ("const", 2), ("const", 3))),
+                            None,
+                        ),
+                        (
+                            "assign",
+                            "list2",
+                            ("list", (("const", 1), ("const", 2), ("const", 3))),
+                            None,
+                        ),
+                    ),
                 ),
                 # Booleans
                 (
                     "multi_assign",
                     (
                         ("assign", "bool1", ("const", True), None),
-                        ("assign", "bool2", ("const", True), None)
-                    )
+                        ("assign", "bool2", ("const", True), None),
+                    ),
                 ),
-            )
+            ),
         )
         self.interpreter.execute_program(ir)
 
@@ -1287,10 +1380,13 @@ class TestGenericEnumTypedef:
 
     def test_multiple_enum_types(self):
         """Test storing multiple different enum types."""
-        ir = ("module", (
-            ("typedef", "Color", "Enum"),
-            ("typedef", "Direction", "Enum"),
-        ))
+        ir = (
+            "module",
+            (
+                ("typedef", "Color", "Enum"),
+                ("typedef", "Direction", "Enum"),
+            ),
+        )
         self.interpreter.execute_program(ir)
 
         assert "Color" in self.interpreter.enum_types

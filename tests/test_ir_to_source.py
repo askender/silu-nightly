@@ -47,13 +47,21 @@ class TestIRToSourceConverter:
         assert result == expected
 
         # Three variable tuple assignment
-        ir_node = ("tuple_assign", ("x", "y", "z"), ("tuple", (("const", 10), ("const", 20), ("const", 30))))
+        ir_node = (
+            "tuple_assign",
+            ("x", "y", "z"),
+            ("tuple", (("const", 10), ("const", 20), ("const", 30))),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "x, y, z = (10, 20, 30)"
         assert result == expected
 
         # Tuple assignment with variables
-        ir_node = ("tuple_assign", ("a", "b"), ("tuple", (("name", "b"), ("+", ("name", "a"), ("name", "b")))))
+        ir_node = (
+            "tuple_assign",
+            ("a", "b"),
+            ("tuple", (("name", "b"), ("+", ("name", "a"), ("name", "b")))),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "a, b = (b, a + b)"
         assert result == expected
@@ -63,29 +71,35 @@ class TestIRToSourceConverter:
         converter = IRToSourceConverter()
 
         # Simple multiple assignment: a = b = 1
-        ir_node = ("multi_assign", (
-            ("assign", "a", ("const", 1), None),
-            ("assign", "b", ("const", 1), None)
-        ))
+        ir_node = (
+            "multi_assign",
+            (("assign", "a", ("const", 1), None), ("assign", "b", ("const", 1), None)),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "a = b = 1"
         assert result == expected
 
         # Three variable multiple assignment: x = y = z = 42
-        ir_node = ("multi_assign", (
-            ("assign", "x", ("const", 42), None),
-            ("assign", "y", ("const", 42), None),
-            ("assign", "z", ("const", 42), None)
-        ))
+        ir_node = (
+            "multi_assign",
+            (
+                ("assign", "x", ("const", 42), None),
+                ("assign", "y", ("const", 42), None),
+                ("assign", "z", ("const", 42), None),
+            ),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "x = y = z = 42"
         assert result == expected
 
         # Multiple assignment with expression: a = b = 2 + 3
-        ir_node = ("multi_assign", (
-            ("assign", "a", ("+", ("const", 2), ("const", 3)), None),
-            ("assign", "b", ("+", ("const", 2), ("const", 3)), None)
-        ))
+        ir_node = (
+            "multi_assign",
+            (
+                ("assign", "a", ("+", ("const", 2), ("const", 3)), None),
+                ("assign", "b", ("+", ("const", 2), ("const", 3)), None),
+            ),
+        )
         result = converter.convert_to_source(ir_node)
         expected = "a = b = 2 + 3"
         assert result == expected

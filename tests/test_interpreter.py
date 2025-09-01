@@ -971,7 +971,9 @@ a, b = 1, 2, 3
 """
         interpreter = SiluInterpreter()
         tree = ast.parse(code)
-        with pytest.raises(ValueError, match="too many values to unpack \\(expected 2\\)"):
+        with pytest.raises(
+            ValueError, match="too many values to unpack \\(expected 2\\)"
+        ):
             interpreter.visit(tree)
 
     def test_tuple_unpacking_not_enough_values(self):
@@ -981,7 +983,9 @@ a, b, c = 1, 2
 """
         interpreter = SiluInterpreter()
         tree = ast.parse(code)
-        with pytest.raises(ValueError, match="not enough values to unpack \\(expected 3, got 2\\)"):
+        with pytest.raises(
+            ValueError, match="not enough values to unpack \\(expected 3, got 2\\)"
+        ):
             interpreter.visit(tree)
 
     def test_tuple_unpacking_non_sequence(self):

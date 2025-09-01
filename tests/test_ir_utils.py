@@ -9,12 +9,11 @@ validation, analysis, and file operations.
 import json
 import pytest
 import tempfile
-from pathlib import Path
-from unittest.mock import patch, mock_open
 
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from silu.ir_utils import (
     # Parsing functions
@@ -22,23 +21,19 @@ from silu.ir_utils import (
     tuples_to_json_compatible,
     parse_ir_from_json_string,
     parse_ir_from_file,
-
     # Validation functions
     validate_ir_node_format,
     validate_ir_program,
     validate_ir_node_structure,
-
     # Analysis functions
     extract_ir_opcodes,
     count_ir_nodes,
     find_ir_nodes_by_opcode,
-
     # File I/O
     save_ir_to_file,
     safe_ir_parse,
     get_ir_node_info,
     check_file_size,
-
     # Exceptions
     IRParseError,
     IRValidationError,
@@ -132,7 +127,7 @@ class TestIRParsing:
 
     def test_parse_ir_from_file_json_format(self):
         """Test parsing IR from JSON file."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(["module", [["const", 42]]], f)
             temp_path = f.name
 
@@ -228,8 +223,12 @@ class TestIRAnalysis:
 
     def test_extract_ir_opcodes_nested(self):
         """Test extracting opcodes from nested IR."""
-        ir = ("if", ("binary_op", "<", ("name", "x"), ("const", 0)),
-              (("assign", "y", ("const", 1), None),), ())
+        ir = (
+            "if",
+            ("binary_op", "<", ("name", "x"), ("const", 0)),
+            (("assign", "y", ("const", 1), None),),
+            (),
+        )
         opcodes = extract_ir_opcodes(ir)
         expected = {"if", "binary_op", "name", "const", "assign"}
         assert opcodes == expected
@@ -268,14 +267,14 @@ class TestFileIO:
         """Test saving IR to JSON file."""
         ir_data = ("module", (("const", 42),))
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             temp_path = f.name
 
         try:
             save_ir_to_file(ir_data, temp_path, format="json")
 
             # Read back and verify
-            with open(temp_path, 'r') as f:
+            with open(temp_path, "r") as f:
                 content = f.read()
                 loaded_data = json.loads(content)
                 # Should be converted to lists for JSON compatibility
@@ -287,14 +286,14 @@ class TestFileIO:
         """Test saving IR to Python format."""
         ir_data = ("module", (("const", 42),))
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             temp_path = f.name
 
         try:
             save_ir_to_file(ir_data, temp_path, format="python")
 
             # Read back and verify
-            with open(temp_path, 'r') as f:
+            with open(temp_path, "r") as f:
                 content = f.read()
                 # Should be Python repr format
                 assert "('module'," in content
@@ -324,7 +323,7 @@ class TestFileIO:
 
     def test_check_file_size_within_limit(self):
         """Test file size checking."""
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
             f.write("small content")
             temp_path = f.name
 
@@ -377,14 +376,23 @@ class TestConfiguration:
 
     def test_ir_config_constants(self):
         """Test that configuration constants are defined."""
-        assert hasattr(IRConfig, 'DEFAULT_ENCODING')
-        assert hasattr(IRConfig, 'CORE_OPCODES')
-        assert hasattr(IRConfig, 'MAX_FILE_SIZE')
-        assert hasattr(IRConfig, 'MAX_RECURSION_DEPTH')
+        assert hasattr(IRConfig, "DEFAULT_ENCODING")
+        assert hasattr(IRConfig, "CORE_OPCODES")
+        assert hasattr(IRConfig, "MAX_FILE_SIZE")
+        assert hasattr(IRConfig, "MAX_RECURSION_DEPTH")
 
     def test_core_opcodes_contains_expected(self):
         """Test that core opcodes contain expected values."""
-        expected_opcodes = {"module", "const", "name", "assign", "call", "if", "while", "for"}
+        expected_opcodes = {
+            "module",
+            "const",
+            "name",
+            "assign",
+            "call",
+            "if",
+            "while",
+            "for",
+        }
         assert expected_opcodes.issubset(IRConfig.CORE_OPCODES)
 
 

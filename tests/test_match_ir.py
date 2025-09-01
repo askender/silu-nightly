@@ -6,7 +6,6 @@ This module tests the IR generation for Python's match-case statements
 """
 
 import ast
-import pytest
 from silu.ir_generator import SiluIRGenerator
 
 
@@ -150,7 +149,7 @@ match x:
         pattern1 = case1[1]
         assert pattern1[0] == "match_as"
         assert pattern1[1] is None  # No nested pattern
-        assert pattern1[2] == "y"   # Capture name
+        assert pattern1[2] == "y"  # Capture name
 
         # Second case: wildcard pattern
         case2 = cases[1]
@@ -338,9 +337,9 @@ match x:
 
         # Should have 3 statements in body
         assert len(body) == 3
-        assert body[0][0] == "call"      # print statement
-        assert body[1][0] == "assign"    # assignment
-        assert body[2][0] == "return"    # return statement
+        assert body[0][0] == "call"  # print statement
+        assert body[1][0] == "assign"  # assignment
+        assert body[2][0] == "return"  # return statement
 
     def test_match_with_constants_and_expressions(self):
         """Test match with various constant types."""
