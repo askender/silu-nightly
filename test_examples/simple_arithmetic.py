@@ -26,7 +26,7 @@ result6 = 17 % 4
 print("17 % 4 =", result6)
 
 # Power
-result7 = 2 ** 3
+result7 = 2**3
 print("2 ** 3 =", result7)
 
 # Combined operations

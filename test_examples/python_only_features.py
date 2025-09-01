@@ -1,6 +1,7 @@
 # Python features not supported by Silu
 print("Testing Python-only features that should fail in Silu:")
 
+
 # Classes (not supported in Silu)
 class Person:
     def __init__(self, name, age):
@@ -10,16 +11,13 @@ class Person:
     def greet(self):
         return f"Hello, I'm {self.name}"
 
+
 # Create an instance
 person = Person("Alice", 25)
 print(person.greet())
 
 # Dictionaries (not supported in Silu)
-student = {
-    "name": "Bob",
-    "age": 20,
-    "grades": [85, 92, 78]
-}
+student = {"name": "Bob", "age": 20, "grades": [85, 92, 78]}
 print("Student:", student["name"])
 
 # List comprehensions (not supported in Silu)
@@ -38,6 +36,7 @@ except ZeroDivisionError:
 
 # Import statements (not supported in Silu)
 import math
+
 print("Pi:", math.pi)
 
 # With statements (not supported in Silu)

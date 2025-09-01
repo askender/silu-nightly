@@ -6,6 +6,7 @@ This demo showcases the bytes data type functionality in Silu,
 including creation, operations, comparisons, and usage patterns.
 """
 
+
 def main():
     print("=== Silu Bytes Functionality Demo ===")
     print()
@@ -29,7 +30,7 @@ def main():
 
     newline_data = b"Line 1\nLine 2\nLine 3"
     tab_data = b"Col1\tCol2\tCol3"
-    mixed_escapes = b"Quote: \"Hello\"\nTab: \tEnd"
+    mixed_escapes = b'Quote: "Hello"\nTab: \tEnd'
 
     print("Newline data:", newline_data)
     print("Tab data:", tab_data)
@@ -41,8 +42,8 @@ def main():
     print("-------------------------------")
 
     null_byte = b"\x00"
-    high_bytes = b"\x80\x90\xA0\xB0\xC0\xD0\xE0\xF0\xFF"
-    mixed_binary = b"Header\x00\x01\x02Data\xFF\xFE\xFD"
+    high_bytes = b"\x80\x90\xa0\xb0\xc0\xd0\xe0\xf0\xff"
+    mixed_binary = b"Header\x00\x01\x02Data\xff\xfe\xfd"
 
     print("Null byte:", null_byte)
     print("High bytes:", high_bytes)
@@ -117,11 +118,7 @@ def main():
     print("Tuple with bytes:", byte_tuple)
 
     # Dictionary with bytes
-    byte_dict = {
-        b"key1": "value1",
-        "key2": b"value2",
-        b"key3": b"value3"
-    }
+    byte_dict = {b"key1": "value1", "key2": b"value2", b"key3": b"value3"}
     print("Dictionary with bytes:", byte_dict)
     print()
 
@@ -130,11 +127,7 @@ def main():
     print("----------------------------")
 
     # Simulating packet processing
-    packets = [
-        b"\x01\x02\x03DATA1",
-        b"\x04\x05\x06DATA2",
-        b"\x07\x08\x09DATA3"
-    ]
+    packets = [b"\x01\x02\x03DATA1", b"\x04\x05\x06DATA2", b"\x07\x08\x09DATA3"]
 
     print("Processing packets:")
     i = 0
@@ -156,7 +149,7 @@ def main():
         b"",
         b"\x00\x00\x00",
         b"text_content",
-        b"\xFF\xFE\xFD"
+        b"\xff\xfe\xfd",
     ]
 
     non_empty_data = []
@@ -207,7 +200,7 @@ def main():
 
     print("=== Demo Complete ===")
     print("Bytes functionality includes:")
-    print("- Literal creation with b\"\" syntax")
+    print('- Literal creation with b"" syntax')
     print("- Escape sequences (\\n, \\t, \\x00, etc.)")
     print("- Concatenation with + operator")
     print("- Repetition with * operator")
@@ -215,5 +208,6 @@ def main():
     print("- Integration with lists, tuples, and dictionaries")
     print("- Length calculation with len()")
     print("- Type safety (bytes != strings != integers)")
+
 
 main()

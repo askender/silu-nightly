@@ -6,6 +6,7 @@ This demo showcases the tuple unpacking functionality in for loops,
 which allows elegant iteration over sequences of tuples.
 """
 
+
 def main():
     print("=== Silu Tuple Unpacking Demo ===")
     print()
@@ -28,12 +29,7 @@ def main():
     # Demo 2: Dictionary iteration with .items()
     print("2. Dictionary Items Unpacking")
     print("-----------------------------")
-    inventory = {
-        'apples': 150,
-        'bananas': 80,
-        'oranges': 200,
-        'grapes': 45
-    }
+    inventory = {"apples": 150, "bananas": 80, "oranges": 200, "grapes": 45}
 
     print("Inventory:")
     total_items = 0
@@ -48,10 +44,10 @@ def main():
     print("3. Multiple Element Unpacking")
     print("-----------------------------")
     student_records = [
-        ('Alice', 'Computer Science', 3.8),
-        ('Bob', 'Mathematics', 3.6),
-        ('Charlie', 'Physics', 3.9),
-        ('Diana', 'Chemistry', 3.7)
+        ("Alice", "Computer Science", 3.8),
+        ("Bob", "Mathematics", 3.6),
+        ("Charlie", "Physics", 3.9),
+        ("Diana", "Chemistry", 3.7),
     ]
 
     print("Student Records:")
@@ -69,9 +65,9 @@ def main():
     print("4. Nested Data Processing")
     print("-------------------------")
     sales_data = [
-        ('January', [('Product A', 100), ('Product B', 150), ('Product C', 75)]),
-        ('February', [('Product A', 120), ('Product B', 130), ('Product C', 90)]),
-        ('March', [('Product A', 110), ('Product B', 160), ('Product C', 85)])
+        ("January", [("Product A", 100), ("Product B", 150), ("Product C", 75)]),
+        ("February", [("Product A", 120), ("Product B", 130), ("Product C", 90)]),
+        ("March", [("Product A", 110), ("Product B", 160), ("Product C", 85)]),
     ]
 
     monthly_totals = []
@@ -94,11 +90,11 @@ def main():
     print("5. Configuration Processing")
     print("---------------------------")
     config = {
-        'host': 'localhost',
-        'port': 8080,
-        'debug': True,
-        'max_connections': 100,
-        'timeout': 30
+        "host": "localhost",
+        "port": 8080,
+        "debug": True,
+        "max_connections": 100,
+        "timeout": 30,
     }
 
     print("Configuration settings:")
@@ -118,7 +114,7 @@ def main():
     # Demo 6: Data transformation
     print("6. Data Transformation")
     print("----------------------")
-    raw_data = [('A', 1), ('B', 2), ('C', 3), ('A', 4), ('B', 5), ('C', 6)]
+    raw_data = [("A", 1), ("B", 2), ("C", 3), ("A", 4), ("B", 5), ("C", 6)]
     print("Raw data:", raw_data)
 
     # Group by first element
@@ -137,5 +133,6 @@ def main():
 
     print()
     print("=== Demo Complete ===")
+
 
 main()

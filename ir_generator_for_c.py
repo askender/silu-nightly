@@ -8,14 +8,14 @@ and analysis of C code.
 
 import json
 import sys
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 import re
 import os
 
 # 继承当前环境
 env = os.environ.copy()
 
-pattern_comment = re.compile(r'/\*.*?\*/', re.DOTALL)  # re.DOTALL 让 . 可以匹配换行符
+pattern_comment = re.compile(r"/\*.*?\*/", re.DOTALL)  # re.DOTALL 让 . 可以匹配换行符
 
 
 try:
@@ -65,21 +65,21 @@ class CIRGenerator(c_ast.NodeVisitor):
         # Extract parameters
         params = []
         param_types = []
-        if hasattr(node.decl.type, 'args') and node.decl.type.args:
+        if hasattr(node.decl.type, "args") and node.decl.type.args:
             for param in node.decl.type.args.params:
-                if hasattr(param, 'name') and param.name:
+                if hasattr(param, "name") and param.name:
                     params.append(param.name)
                     if self.record_types:
                         param_types.append(self._get_type_string(param.type))
 
         # Extract return type
         return_type = None
-        if self.record_types and hasattr(node.decl.type, 'type'):
+        if self.record_types and hasattr(node.decl.type, "type"):
             return_type = self._get_type_string(node.decl.type.type)
 
         # Process function body
         body = []
-        if node.body and hasattr(node.body, 'block_items') and node.body.block_items:
+        if node.body and hasattr(node.body, "block_items") and node.body.block_items:
             for stmt in node.body.block_items:
                 result = self.visit(stmt)
                 if result is not None:
@@ -89,7 +89,14 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         # Return IR in format: ('func_def', name, params, body, param_types, return_type)
         if self.record_types:
-            return ("func_def", name, tuple(params), tuple(body), tuple(param_types), return_type)
+            return (
+                "func_def",
+                name,
+                tuple(params),
+                tuple(body),
+                tuple(param_types),
+                return_type,
+            )
         else:
             return ("func_def", name, tuple(params), tuple(body))
 
@@ -116,7 +123,9 @@ class CIRGenerator(c_ast.NodeVisitor):
             return None
 
         # Check if this is a struct typedef
-        if isinstance(node.type, c_ast.TypeDecl) and isinstance(node.type.type, c_ast.Struct):
+        if isinstance(node.type, c_ast.TypeDecl) and isinstance(
+            node.type.type, c_ast.Struct
+        ):
             struct_node = node.type.type
             struct_name = node.name
 
@@ -132,7 +141,9 @@ class CIRGenerator(c_ast.NodeVisitor):
             # Return IR representation for struct typedef
             return ("typedef_struct", struct_name, fields)
         # Check if this is an enum typedef
-        elif isinstance(node.type, c_ast.TypeDecl) and isinstance(node.type.type, c_ast.Enum):
+        elif isinstance(node.type, c_ast.TypeDecl) and isinstance(
+            node.type.type, c_ast.Enum
+        ):
             enum_node = node.type.type
             enum_name = node.name
 
@@ -149,7 +160,11 @@ class CIRGenerator(c_ast.NodeVisitor):
                         if enum_values:
                             # Get the last value and increment
                             last_value = enum_values[-1][1]
-                            if isinstance(last_value, tuple) and last_value[0] == "constant" and isinstance(last_value[1], int):
+                            if (
+                                isinstance(last_value, tuple)
+                                and last_value[0] == "constant"
+                                and isinstance(last_value[1], int)
+                            ):
                                 next_value = last_value[1] + 1
                             else:
                                 next_value = len(enum_values)
@@ -179,22 +194,22 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         # Map C assignment operators
         op_map = {
-            '=': '=',
-            '+=': '+=',
-            '-=': '-=',
-            '*=': '*=',
-            '/=': '/=',
-            '%=': '%=',
-            '&=': '&=',
-            '|=': '|=',
-            '^=': '^=',
-            '<<=': '<<=',
-            '>>=': '>>='
+            "=": "=",
+            "+=": "+=",
+            "-=": "-=",
+            "*=": "*=",
+            "/=": "/=",
+            "%=": "%=",
+            "&=": "&=",
+            "|=": "|=",
+            "^=": "^=",
+            "<<=": "<<=",
+            ">>=": ">>=",
         }
 
         op = op_map.get(node.op, node.op)
 
-        if op == '=':
+        if op == "=":
             return ("assign", lvalue, rvalue, None)
         else:
             return ("aug_assign", lvalue, op, rvalue)
@@ -213,7 +228,7 @@ class CIRGenerator(c_ast.NodeVisitor):
         # Process then block
         then_body = []
         if node.iftrue:
-            if hasattr(node.iftrue, 'block_items') and node.iftrue.block_items:
+            if hasattr(node.iftrue, "block_items") and node.iftrue.block_items:
                 for stmt in node.iftrue.block_items:
                     result = self.visit(stmt)
                     if result is not None:
@@ -226,7 +241,7 @@ class CIRGenerator(c_ast.NodeVisitor):
         # Process else block
         else_body = []
         if node.iffalse:
-            if hasattr(node.iffalse, 'block_items') and node.iffalse.block_items:
+            if hasattr(node.iffalse, "block_items") and node.iffalse.block_items:
                 for stmt in node.iffalse.block_items:
                     result = self.visit(stmt)
                     if result is not None:
@@ -245,7 +260,7 @@ class CIRGenerator(c_ast.NodeVisitor):
         # Process body
         body = []
         if node.stmt:
-            if hasattr(node.stmt, 'block_items') and node.stmt.block_items:
+            if hasattr(node.stmt, "block_items") and node.stmt.block_items:
                 for stmt in node.stmt.block_items:
                     result = self.visit(stmt)
                     if result is not None:
@@ -266,7 +281,7 @@ class CIRGenerator(c_ast.NodeVisitor):
         # Process body
         body = []
         if node.stmt:
-            if hasattr(node.stmt, 'block_items') and node.stmt.block_items:
+            if hasattr(node.stmt, "block_items") and node.stmt.block_items:
                 for stmt in node.stmt.block_items:
                     result = self.visit(stmt)
                     if result is not None:
@@ -292,7 +307,7 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         # Process switch body
         cases = []
-        if node.stmt and hasattr(node.stmt, 'block_items') and node.stmt.block_items:
+        if node.stmt and hasattr(node.stmt, "block_items") and node.stmt.block_items:
             for stmt in node.stmt.block_items:
                 result = self.visit(stmt)
                 if result is not None:
@@ -307,7 +322,7 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         # Collect statements in this case
         statements = []
-        if hasattr(node, 'stmts') and node.stmts:
+        if hasattr(node, "stmts") and node.stmts:
             for stmt in node.stmts:
                 result = self.visit(stmt)
                 if result is not None:
@@ -319,7 +334,7 @@ class CIRGenerator(c_ast.NodeVisitor):
         """Convert default label to IR."""
         # Collect statements in this default case
         statements = []
-        if hasattr(node, 'stmts') and node.stmts:
+        if hasattr(node, "stmts") and node.stmts:
             for stmt in node.stmts:
                 result = self.visit(stmt)
                 if result is not None:
@@ -336,24 +351,24 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         # Map C operators to IR operators
         op_map = {
-            '+': '+',
-            '-': '-',
-            '*': '*',
-            '/': '/',
-            '%': '%',
-            '<<': '<<',
-            '>>': '>>',
-            '&': '&',
-            '|': '|',
-            '^': '^',
-            '&&': 'and',
-            '||': 'or',
-            '==': '==',
-            '!=': '!=',
-            '<': '<',
-            '<=': '<=',
-            '>': '>',
-            '>=': '>='
+            "+": "+",
+            "-": "-",
+            "*": "*",
+            "/": "/",
+            "%": "%",
+            "<<": "<<",
+            ">>": ">>",
+            "&": "&",
+            "|": "|",
+            "^": "^",
+            "&&": "and",
+            "||": "or",
+            "==": "==",
+            "!=": "!=",
+            "<": "<",
+            "<=": "<=",
+            ">": ">",
+            ">=": ">=",
         }
 
         op = op_map.get(node.op, node.op)
@@ -365,16 +380,16 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         # Map C unary operators
         op_map = {
-            '+': '+',
-            '-': '-',
-            '!': 'not',
-            '~': '~',
-            '++': '++',
-            '--': '--',
-            'p++': 'p++',  # post-increment
-            'p--': 'p--',  # post-decrement
-            '*': 'deref',
-            '&': 'addr'
+            "+": "+",
+            "-": "-",
+            "!": "not",
+            "~": "~",
+            "++": "++",
+            "--": "--",
+            "p++": "p++",  # post-increment
+            "p--": "p--",  # post-decrement
+            "*": "deref",
+            "&": "addr",
         }
 
         op = op_map.get(node.op, node.op)
@@ -389,26 +404,26 @@ class CIRGenerator(c_ast.NodeVisitor):
         value = node.value
 
         # Convert string constants
-        if hasattr(node, 'type'):
-            if node.type == 'int':
+        if hasattr(node, "type"):
+            if node.type == "int":
                 try:
                     value = int(value)
                 except ValueError:
                     # Handle hex, octal, etc.
                     value = int(value, 0)
-            elif node.type == 'float':
+            elif node.type == "float":
                 value = float(value)
-            elif node.type == 'char':
+            elif node.type == "char":
                 # Handle character literals
                 if value.startswith("'") and value.endswith("'"):
                     if len(value) == 3:  # Simple character like 'a'
                         value = value[1]
                     else:  # Escape sequences like '\n'
-                        value = value[1:-1].encode().decode('unicode_escape')
-            elif node.type == 'string':
+                        value = value[1:-1].encode().decode("unicode_escape")
+            elif node.type == "string":
                 # Handle string literals
                 if value.startswith('"') and value.endswith('"'):
-                    value = value[1:-1].encode().decode('unicode_escape')
+                    value = value[1:-1].encode().decode("unicode_escape")
 
         return ("const", value)
 
@@ -418,7 +433,7 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         # Process arguments
         args = []
-        if node.args and hasattr(node.args, 'exprs'):
+        if node.args and hasattr(node.args, "exprs"):
             for arg in node.args.exprs:
                 args.append(self.visit(arg))
 
@@ -434,7 +449,7 @@ class CIRGenerator(c_ast.NodeVisitor):
     def visit_StructRef(self, node: c_ast.StructRef) -> Tuple:
         """Convert struct member reference to IR."""
         struct = self.visit(node.name)
-        field = node.field.name if hasattr(node.field, 'name') else str(node.field)
+        field = node.field.name if hasattr(node.field, "name") else str(node.field)
         return ("attribute", struct, field)
 
     # ================== Compound Statements ==================
@@ -455,7 +470,9 @@ class CIRGenerator(c_ast.NodeVisitor):
 
     # ================== Struct Handling ==================
 
-    def _extract_struct_fields(self, struct_node: c_ast.Struct) -> List[Tuple[str, str]]:
+    def _extract_struct_fields(
+        self, struct_node: c_ast.Struct
+    ) -> List[Tuple[str, str]]:
         """Extract field information from a struct node."""
         fields = []
         if struct_node.decls:
@@ -483,7 +500,7 @@ class CIRGenerator(c_ast.NodeVisitor):
         """Extract type information as a string."""
         if isinstance(type_node, c_ast.TypeDecl):
             if isinstance(type_node.type, c_ast.IdentifierType):
-                type_name = ' '.join(type_node.type.names)
+                type_name = " ".join(type_node.type.names)
                 # Recursively resolve typedef aliases
                 return self._resolve_typedef(type_name)
             else:
@@ -509,11 +526,11 @@ class CIRGenerator(c_ast.NodeVisitor):
             base_type = self._get_type_string(current_node)
 
             # Build the type string with dimensions in correct order
-            return base_type + ''.join(dimensions)
+            return base_type + "".join(dimensions)
         elif isinstance(type_node, c_ast.FuncDecl):
             return "function"
         elif isinstance(type_node, c_ast.IdentifierType):
-            type_name = ' '.join(type_node.names)
+            type_name = " ".join(type_node.names)
             # Recursively resolve typedef aliases
             return self._resolve_typedef(type_name)
         elif isinstance(type_node, c_ast.Struct):
@@ -562,13 +579,15 @@ class CIRGenerator(c_ast.NodeVisitor):
 
 
 def clean_comment(astr):
-    if '//' in astr:
-        return astr.split('//')[0].strip()
+    if "//" in astr:
+        return astr.split("//")[0].strip()
     return astr
+
 
 # ================== Main Functions ==================
 
-def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple|None:
+
+def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple | None:
     """
     Generate IR from C source code.
 
@@ -583,20 +602,20 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple|Non
         parser = c_parser.CParser()
         # c_code = c_code.replace("#include <stdlib.h>", "")
         c_code = c_code.replace("#include <stdio.h>", "")
-        c_code = c_code.replace('__signed', 'signed')
-        c_code = re.sub(pattern_comment, '', c_code)
-        c_code = [j for j in c_code.split('\n') if not j.strip().startswith('#')]
-        c_code = [j for j in c_code if not j.strip().startswith('//')]
+        c_code = c_code.replace("__signed", "signed")
+        c_code = re.sub(pattern_comment, "", c_code)
+        c_code = [j for j in c_code.split("\n") if not j.strip().startswith("#")]
+        c_code = [j for j in c_code if not j.strip().startswith("//")]
 
         c_code = [j for j in c_code if "__darwin_" not in j.strip()]
-        c_code = [clean_comment(j) for j in c_code ]
-        c_code = '\n'.join(c_code)
+        c_code = [clean_comment(j) for j in c_code]
+        c_code = "\n".join(c_code)
         # print(f"c_code:\n{c_code}")
 
         try:
             ast = parser.parse(c_code)
         except Exception as e:
-            print(f"Error2 parsing C code: {e}") # , file=sys.stderr
+            print(f"Error2 parsing C code: {e}")  # , file=sys.stderr
             return
 
         print("ast.show:")
@@ -624,11 +643,11 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
     """
     try:
         tmp_file = f"{file_path}.v2.c"
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             c_code = f.read()
             c_code = c_code.replace("#include <stdio.h>", "")
             # c_code = re.sub(r'#include\s+<[^>]+>', '', c_code)
-            with open(tmp_file, 'w', encoding='utf-8') as f:
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 f.write(c_code)
 
         import os
@@ -637,16 +656,25 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
         #         c_code = f.read()
 
         import subprocess
+
         # "-nostdinc", "-nostdlib", cpp gcc clang
         # "-nostdinc", "-Iutils/fake_libc_include",
         # r'-I/path/to/pycparser/utils/fake_libc_include'
-        cmd = ["clang", "-E", "-Imystdint", "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include", tmp_file]
+        cmd = [
+            "clang",
+            "-E",
+            "-Imystdint",
+            "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include",
+            tmp_file,
+        ]
         # print(' '.join(cmd))
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
         if result.returncode != 0:
             # TODO
-            print(f"[Error1] cpp failed on {file_path}.v2.c with return code {result.returncode}")
+            print(
+                f"[Error1] cpp failed on {file_path}.v2.c with return code {result.returncode}"
+            )
             print(f"stderr output:\n{result.stderr}")
             return
 
@@ -677,11 +705,12 @@ def save_ir_to_file(ir: Tuple, output_path: str, format_type: str = "json") -> N
         format_type: Output format ("json" or "pretty")
     """
     try:
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             if format_type == "json":
                 json.dump(ir, f, indent=2, default=str)
             else:
                 import pprint
+
                 f.write(pprint.pformat(ir, width=80))
     except IOError as e:
         print(f"Error writing IR file '{output_path}': {e}", file=sys.stderr)
@@ -689,6 +718,7 @@ def save_ir_to_file(ir: Tuple, output_path: str, format_type: str = "json") -> N
 
 
 # ================== Command Line Interface ==================
+
 
 def main():
     """Command line interface for C IR generation."""
@@ -698,17 +728,17 @@ def main():
         description="Generate IR from C source code for symbolic execution"
     )
     parser.add_argument("input_file", help="Input C source file")
-    parser.add_argument("-o", "--output", help="Output IR file (default: input.ir.json)")
+    parser.add_argument(
+        "-o", "--output", help="Output IR file (default: input.ir.json)"
+    )
     parser.add_argument(
         "--format",
         choices=["json", "pretty"],
         default="json",
-        help="Output format (default: json)"
+        help="Output format (default: json)",
     )
     parser.add_argument(
-        "--no-types",
-        action="store_true",
-        help="Don't record type information in IR"
+        "--no-types", action="store_true", help="Don't record type information in IR"
     )
 
     args = parser.parse_args()
@@ -717,10 +747,10 @@ def main():
     output_file = args.output
     if not output_file:
         input_path = args.input_file
-        if input_path.endswith('.c'):
-            output_file = input_path[:-2] + '.ir.json'
+        if input_path.endswith(".c"):
+            output_file = input_path[:-2] + ".ir.json"
         else:
-            output_file = input_path + '.ir.json'
+            output_file = input_path + ".ir.json"
 
     try:
         # Generate IR
@@ -734,7 +764,7 @@ def main():
         print(f"IR generation complete. Output saved to {output_file}")
 
         # Print summary
-        print(f"\nIR Summary:")
+        print("\nIR Summary:")
         print(f"  Format: {args.format}")
         print(f"  Type info: {'No' if args.no_types else 'Yes'}")
 

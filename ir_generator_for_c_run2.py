@@ -8,9 +8,8 @@
 
 import os
 import io
-import sys
 import contextlib
-from ir_generator_for_c import generate_ir_from_c_file, save_ir_to_file
+from ir_generator_for_c import generate_ir_from_c_file
 from silu.ir_interpreter import IRInterpreter
 # execute_ir_from_string, _json_to_tuples
 
@@ -44,7 +43,7 @@ void*
 int a[] = {5, [2] = 2, 3};
 sizeof(int)
 (*(*p)
-""".strip().split('\n')
+""".strip().split("\n")
 # if (s[3] != '\0') out of range
 # } while (     do while
 # int b = 01234567;   8进制
@@ -58,16 +57,16 @@ n_diff = 0
 n_empty = 0
 for i in range(1, 221):
     # make 0 to 00001
-    i_str = f'{i:05d}'
-    f = f'aokc/{i_str}.c'
+    i_str = f"{i:05d}"
+    f = f"aokc/{i_str}.c"
     if not os.path.isfile(f):
-        print(f'File {f} not exists')
+        print(f"File {f} not exists")
         raise
 
     gold_result = None
-    f_result = f'aokc/{i_str}.c.expected'
+    f_result = f"aokc/{i_str}.c.expected"
     if not os.path.isfile(f_result):
-        print(f'File {f_result} not exists')
+        print(f"File {f_result} not exists")
         raise
     gold_result = open(f_result).read()
 
@@ -77,7 +76,7 @@ for i in range(1, 221):
     # if '*' in input_data:
     #     print('==== *')
     #     continue
-    if '&' in input_data:
+    if "&" in input_data:
         # print('==== &')
         continue
     should_skip = False
@@ -90,10 +89,9 @@ for i in range(1, 221):
         continue
     # continue
 
-    print(f'input_file: {input_file}')
+    print(f"input_file: {input_file}")
     n_all += 1
     no_types = False
-
 
     ir = None
     # Generate IR
@@ -102,7 +100,7 @@ for i in range(1, 221):
         ir = generate_ir_from_c_file(input_file, record_types=not no_types)
         # if ir:
         #     print('ookk')
-    except Exception as e:
+    except Exception:
         # print(f"Error generating IR from {input_file}: {e}")
         raise
 
@@ -124,12 +122,14 @@ for i in range(1, 221):
     # ir_data = _json_to_tuples(ir)
 
     try:
-    # if 1:
+        # if 1:
         # Capture stdout and stderr
         stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
-        with contextlib.redirect_stdout(stdout_capture), \
-                contextlib.redirect_stderr(stderr_capture):
+        with (
+            contextlib.redirect_stdout(stdout_capture),
+            contextlib.redirect_stderr(stderr_capture),
+        ):
             # execute_ir_from_string(ir)
             interpreter = IRInterpreter()
             output = interpreter.execute_program(ir_data)
@@ -137,24 +137,24 @@ for i in range(1, 221):
         # print(f"input_file: {input_file}")
         my_result = stdout_capture.getvalue()
         if my_result == gold_result:
-            n_ok+=1
+            n_ok += 1
         else:
             if my_result.strip():
-                print(f'==== {input_file}')
+                print(f"==== {input_file}")
                 print(my_result)
-                print('----')
+                print("----")
                 print(gold_result)
-                n_diff+=1
+                n_diff += 1
             else:
-                n_empty +=1
+                n_empty += 1
             # sys.exit(1)
             # raise Exception(f"Result mismatch: {my_result} != {gold_result}")
         # print(f"output: {output}")
-    except Exception as e:
+    except Exception:
         # print(f"Error executing IR from {input_file}: {e}")
         continue
 
-print('==')
+print("==")
 print(n_all)
 print(n_ir)
 print(n_ok)

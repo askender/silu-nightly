@@ -61,5 +61,5 @@ for num in range(1, 11):
     if num == 3:
         continue  # Skip 3
     if num == 8:
-        break     # Stop at 8
+        break  # Stop at 8
     print("Processing:", num)

@@ -13,7 +13,6 @@ import ast
 import json
 import sys
 import argparse
-import re
 from pathlib import Path
 
 # Import Silu modules
@@ -21,7 +20,10 @@ try:
     from silu.ir_generator import SiluIRGenerator
     from silu.ir_to_source import convert_ir_string_to_source
 except ImportError:
-    print("Error: Cannot import Silu modules. Make sure you're in the silu directory and it's installed.", file=sys.stderr)
+    print(
+        "Error: Cannot import Silu modules. Make sure you're in the silu directory and it's installed.",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 
@@ -36,7 +38,7 @@ def normalize_code(code: str) -> str:
         Normalized code string
     """
     lines = []
-    for line in code.split('\n'):
+    for line in code.split("\n"):
         # Remove comments (but preserve strings that might contain #)
         # This is a simple approach - for more robust comment removal,
         # we'd need to parse the code properly
@@ -47,17 +49,17 @@ def normalize_code(code: str) -> str:
             continue
 
         # Simple comment removal (doesn't handle # in strings perfectly, but good enough for testing)
-        if '#' in line_stripped and not ('"' in line_stripped or "'" in line_stripped):
+        if "#" in line_stripped and not ('"' in line_stripped or "'" in line_stripped):
             # Find the # that's not in a string
-            comment_pos = line_stripped.find('#')
+            comment_pos = line_stripped.find("#")
             # Simple heuristic: if # appears before any quotes, it's likely a comment
             quote_pos_single = line_stripped.find("'")
             quote_pos_double = line_stripped.find('"')
 
             if quote_pos_single == -1:
-                quote_pos_single = float('inf')
+                quote_pos_single = float("inf")
             if quote_pos_double == -1:
-                quote_pos_double = float('inf')
+                quote_pos_double = float("inf")
 
             min_quote_pos = min(quote_pos_single, quote_pos_double)
 
@@ -68,7 +70,7 @@ def normalize_code(code: str) -> str:
 
         lines.append(line_stripped)
 
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
 def advanced_normalize_code(code: str) -> str:
@@ -91,15 +93,18 @@ def advanced_normalize_code(code: str) -> str:
 
         # Remove extra blank lines
         lines = []
-        for line in normalized.split('\n'):
+        for line in normalized.split("\n"):
             line_stripped = line.strip()
             if line_stripped:  # Only keep non-empty lines
                 lines.append(line_stripped)
 
-        return '\n'.join(lines)
+        return "\n".join(lines)
 
     except Exception as e:
-        print(f"Warning: Could not use AST normalization ({e}), falling back to simple normalization", file=sys.stderr)
+        print(
+            f"Warning: Could not use AST normalization ({e}), falling back to simple normalization",
+            file=sys.stderr,
+        )
         return normalize_code(code)
 
 
@@ -144,7 +149,9 @@ def ir_to_python(ir_string: str) -> str:
         raise RuntimeError(f"Error converting IR to Python: {e}")
 
 
-def test_roundtrip_consistency(file_path: str, verbose: bool = False, use_ast_normalize: bool = True) -> bool:
+def test_roundtrip_consistency(
+    file_path: str, verbose: bool = False, use_ast_normalize: bool = True
+) -> bool:
     """
     Test round-trip consistency for a Python file.
 
@@ -158,7 +165,7 @@ def test_roundtrip_consistency(file_path: str, verbose: bool = False, use_ast_no
     """
     try:
         # Read original file
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             original_code = f.read()
 
         if verbose:
@@ -189,7 +196,9 @@ def test_roundtrip_consistency(file_path: str, verbose: bool = False, use_ast_no
         if verbose:
             print("Step 3: Normalizing and comparing codes...")
 
-        normalize_func = advanced_normalize_code if use_ast_normalize else normalize_code
+        normalize_func = (
+            advanced_normalize_code if use_ast_normalize else normalize_code
+        )
 
         normalized_original = normalize_func(original_code)
         normalized_generated = normalize_func(generated_code)
@@ -216,8 +225,8 @@ def test_roundtrip_consistency(file_path: str, verbose: bool = False, use_ast_no
                 print("=" * 40)
 
                 # Show line-by-line differences
-                orig_lines = normalized_original.split('\n')
-                gen_lines = normalized_generated.split('\n')
+                orig_lines = normalized_original.split("\n")
+                gen_lines = normalized_generated.split("\n")
 
                 max_lines = max(len(orig_lines), len(gen_lines))
                 for i in range(max_lines):
@@ -225,7 +234,7 @@ def test_roundtrip_consistency(file_path: str, verbose: bool = False, use_ast_no
                     gen_line = gen_lines[i] if i < len(gen_lines) else "<missing>"
 
                     if orig_line != gen_line:
-                        print(f"Line {i+1}:")
+                        print(f"Line {i + 1}:")
                         print(f"  Original: {repr(orig_line)}")
                         print(f"  Generated: {repr(gen_line)}")
 
@@ -250,31 +259,23 @@ Examples:
   python test_ir_roundtrip.py example.py --verbose
   python test_ir_roundtrip.py example1.py example2.py --no-ast-normalize
   python test_ir_roundtrip.py examples/*.py
-        """
+        """,
+    )
+
+    parser.add_argument("files", nargs="+", help="Python files to test")
+
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Show detailed output"
     )
 
     parser.add_argument(
-        'files',
-        nargs='+',
-        help='Python files to test'
+        "--no-ast-normalize",
+        action="store_true",
+        help="Use simple normalization instead of AST-based normalization",
     )
 
     parser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        help='Show detailed output'
-    )
-
-    parser.add_argument(
-        '--no-ast-normalize',
-        action='store_true',
-        help='Use simple normalization instead of AST-based normalization'
-    )
-
-    parser.add_argument(
-        '--summary',
-        action='store_true',
-        help='Show summary of results at the end'
+        "--summary", action="store_true", help="Show summary of results at the end"
     )
 
     args = parser.parse_args()
@@ -286,11 +287,15 @@ Examples:
 
     for file_pattern in args.files:
         # Handle glob patterns
-        if '*' in file_pattern or '?' in file_pattern:
+        if "*" in file_pattern or "?" in file_pattern:
             from glob import glob
+
             files = glob(file_pattern)
             if not files:
-                print(f"Warning: No files found matching pattern '{file_pattern}'", file=sys.stderr)
+                print(
+                    f"Warning: No files found matching pattern '{file_pattern}'",
+                    file=sys.stderr,
+                )
                 continue
         else:
             files = [file_pattern]
@@ -300,8 +305,10 @@ Examples:
                 print(f"Error: File not found: {file_path}", file=sys.stderr)
                 continue
 
-            if not file_path.endswith('.py'):
-                print(f"Warning: Skipping non-Python file: {file_path}", file=sys.stderr)
+            if not file_path.endswith(".py"):
+                print(
+                    f"Warning: Skipping non-Python file: {file_path}", file=sys.stderr
+                )
                 continue
 
             total_files += 1
@@ -309,7 +316,7 @@ Examples:
             is_consistent = test_roundtrip_consistency(
                 file_path,
                 verbose=args.verbose,
-                use_ast_normalize=not args.no_ast_normalize
+                use_ast_normalize=not args.no_ast_normalize,
             )
 
             results[file_path] = is_consistent
@@ -322,20 +329,24 @@ Examples:
                     print(f"❌ {file_path}: INCONSISTENT")
 
             if args.verbose and len(files) > 1:
-                print("\n" + "="*60 + "\n")
+                print("\n" + "=" * 60 + "\n")
 
     # Show summary if requested or if testing multiple files
     if args.summary or total_files > 1:
-        print(f"\n{'='*50}")
-        print(f"SUMMARY")
-        print(f"{'='*50}")
+        print(f"\n{'=' * 50}")
+        print("SUMMARY")
+        print(f"{'=' * 50}")
         print(f"Total files tested: {total_files}")
         print(f"Consistent: {passed_files}")
         print(f"Inconsistent: {total_files - passed_files}")
-        print(f"Success rate: {passed_files/total_files*100:.1f}%" if total_files > 0 else "N/A")
+        print(
+            f"Success rate: {passed_files / total_files * 100:.1f}%"
+            if total_files > 0
+            else "N/A"
+        )
 
         if total_files > 0 and passed_files < total_files:
-            print(f"\nFiles with issues:")
+            print("\nFiles with issues:")
             for file_path, is_consistent in results.items():
                 if not is_consistent:
                     print(f"  - {file_path}")
@@ -344,5 +355,5 @@ Examples:
     sys.exit(0 if passed_files == total_files else 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

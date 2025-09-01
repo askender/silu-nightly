@@ -19,7 +19,7 @@ import contextlib
 import tempfile
 import json
 from pathlib import Path
-from typing import Tuple, Optional, Dict, Any
+from typing import Dict, Any
 import re
 
 # Import Silu modules
@@ -27,7 +27,10 @@ try:
     from silu.ir_generator import SiluIRGenerator
     from silu.ir_interpreter import execute_ir_from_string
 except ImportError:
-    print("Error: Cannot import Silu modules. Make sure you're in the silu directory and it's installed.", file=sys.stderr)
+    print(
+        "Error: Cannot import Silu modules. Make sure you're in the silu directory and it's installed.",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 
@@ -49,19 +52,23 @@ class ExecutionResult:
     def __eq__(self, other) -> bool:
         if not isinstance(other, ExecutionResult):
             return False
-        return (self.success == other.success and
-                self.output == other.output and
-                self.error == other.error)
+        return (
+            self.success == other.success
+            and self.output == other.output
+            and self.error == other.error
+        )
 
-    def normalize_output(self, normalize_line_endings: bool = False) -> 'ExecutionResult':
+    def normalize_output(
+        self, normalize_line_endings: bool = False
+    ) -> "ExecutionResult":
         """Return a new ExecutionResult with normalized output."""
         output = self.output
         error = self.error
 
         if normalize_line_endings:
             # Normalize line endings: convert \r to \n and \r\n to \n
-            output = re.sub(r'\r\n?', '\n', output)
-            error = re.sub(r'\r\n?', '\n', error)
+            output = re.sub(r"\r\n?", "\n", output)
+            error = re.sub(r"\r\n?", "\n", error)
 
         return ExecutionResult(self.success, output, error, self.exit_code)
 
@@ -79,7 +86,7 @@ def execute_with_python(source_code: str, timeout: int = 30) -> ExecutionResult:
     """
     try:
         # Create a temporary file to avoid shell injection issues
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(source_code)
             temp_file = f.name
 
@@ -89,14 +96,14 @@ def execute_with_python(source_code: str, timeout: int = 30) -> ExecutionResult:
                 [sys.executable, temp_file],
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
             )
 
             return ExecutionResult(
                 success=result.returncode == 0,
                 output=result.stdout,
                 error=result.stderr,
-                exit_code=result.returncode
+                exit_code=result.returncode,
             )
 
         finally:
@@ -105,17 +112,11 @@ def execute_with_python(source_code: str, timeout: int = 30) -> ExecutionResult:
 
     except subprocess.TimeoutExpired:
         return ExecutionResult(
-            success=False,
-            output="",
-            error="Execution timed out",
-            exit_code=-1
+            success=False, output="", error="Execution timed out", exit_code=-1
         )
     except Exception as e:
         return ExecutionResult(
-            success=False,
-            output="",
-            error=f"Failed to execute: {e}",
-            exit_code=-1
+            success=False, output="", error=f"Failed to execute: {e}", exit_code=-1
         )
 
 
@@ -149,35 +150,34 @@ def execute_with_silu_ir(source_code: str, **kwargs) -> ExecutionResult:
         stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
 
-        with contextlib.redirect_stdout(stdout_capture), \
-             contextlib.redirect_stderr(stderr_capture):
+        with (
+            contextlib.redirect_stdout(stdout_capture),
+            contextlib.redirect_stderr(stderr_capture),
+        ):
             execute_ir_from_string(ir_json)
 
         return ExecutionResult(
             success=True,
             output=stdout_capture.getvalue(),
             error=stderr_capture.getvalue(),
-            exit_code=0
+            exit_code=0,
         )
 
     except SyntaxError as e:
         return ExecutionResult(
-            success=False,
-            output="",
-            error=f"Syntax Error: {e}",
-            exit_code=1
+            success=False, output="", error=f"Syntax Error: {e}", exit_code=1
         )
     except Exception as e:
         return ExecutionResult(
-            success=False,
-            output="",
-            error=f"Runtime Error: {e}",
-            exit_code=1
+            success=False, output="", error=f"Runtime Error: {e}", exit_code=1
         )
 
 
-def compare_execution_results(python_result: ExecutionResult, silu_ir_result: ExecutionResult,
-                            normalize_line_endings: bool = False) -> Dict[str, Any]:
+def compare_execution_results(
+    python_result: ExecutionResult,
+    silu_ir_result: ExecutionResult,
+    normalize_line_endings: bool = False,
+) -> Dict[str, Any]:
     """
     Compare execution results between Python and Silu IR execution.
 
@@ -197,59 +197,64 @@ def compare_execution_results(python_result: ExecutionResult, silu_ir_result: Ex
         silu_normalized = silu_ir_result
 
     comparison = {
-        'match': python_normalized == silu_normalized,
-        'python': python_result,
-        'silu_ir': silu_ir_result,
-        'normalized': normalize_line_endings,
-        'differences': {}
+        "match": python_normalized == silu_normalized,
+        "python": python_result,
+        "silu_ir": silu_ir_result,
+        "normalized": normalize_line_endings,
+        "differences": {},
     }
 
     # Detailed difference analysis
-    if not comparison['match']:
+    if not comparison["match"]:
         if python_normalized.success != silu_normalized.success:
-            comparison['differences']['success'] = {
-                'python': python_result.success,
-                'silu_ir': silu_ir_result.success
+            comparison["differences"]["success"] = {
+                "python": python_result.success,
+                "silu_ir": silu_ir_result.success,
             }
 
         if python_normalized.output != silu_normalized.output:
-            comparison['differences']['output'] = {
-                'python': python_result.output,
-                'silu_ir': silu_ir_result.output
+            comparison["differences"]["output"] = {
+                "python": python_result.output,
+                "silu_ir": silu_ir_result.output,
             }
 
             # If normalization was used, also show the normalized versions
             if normalize_line_endings:
-                comparison['differences']['output_normalized'] = {
-                    'python': python_normalized.output,
-                    'silu_ir': silu_normalized.output
+                comparison["differences"]["output_normalized"] = {
+                    "python": python_normalized.output,
+                    "silu_ir": silu_normalized.output,
                 }
 
         if python_normalized.error != silu_normalized.error:
-            comparison['differences']['error'] = {
-                'python': python_result.error,
-                'silu_ir': silu_ir_result.error
+            comparison["differences"]["error"] = {
+                "python": python_result.error,
+                "silu_ir": silu_ir_result.error,
             }
 
             # If normalization was used, also show the normalized versions
             if normalize_line_endings:
-                comparison['differences']['error_normalized'] = {
-                    'python': python_normalized.error,
-                    'silu_ir': silu_normalized.error
+                comparison["differences"]["error_normalized"] = {
+                    "python": python_normalized.error,
+                    "silu_ir": silu_normalized.error,
                 }
 
         if python_normalized.exit_code != silu_normalized.exit_code:
-            comparison['differences']['exit_code'] = {
-                'python': python_result.exit_code,
-                'silu_ir': silu_ir_result.exit_code
+            comparison["differences"]["exit_code"] = {
+                "python": python_result.exit_code,
+                "silu_ir": silu_ir_result.exit_code,
             }
 
     return comparison
 
 
-def test_file_compatibility(file_path: str, verbose: bool = False, timeout: int = 30,
-                          normalize_line_endings: bool = False, show_ir: bool = False,
-                          **kwargs) -> bool:
+def test_file_compatibility(
+    file_path: str,
+    verbose: bool = False,
+    timeout: int = 30,
+    normalize_line_endings: bool = False,
+    show_ir: bool = False,
+    **kwargs,
+) -> bool:
     """
     Test a Python file for compatibility between Python and Silu IR execution.
 
@@ -266,7 +271,7 @@ def test_file_compatibility(file_path: str, verbose: bool = False, timeout: int 
     """
     try:
         # Read the source file
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             source_code = f.read()
 
         if verbose:
@@ -291,7 +296,7 @@ def test_file_compatibility(file_path: str, verbose: bool = False, timeout: int 
                 ir_json = json.dumps(ir_result, indent=2)
 
                 if verbose:
-                    print(f"\nGenerated IR:")
+                    print("\nGenerated IR:")
                     print("-" * 30)
                     print(ir_json)
                     print()
@@ -305,7 +310,9 @@ def test_file_compatibility(file_path: str, verbose: bool = False, timeout: int 
         silu_ir_result = execute_with_silu_ir(source_code, **kwargs)
 
         # Compare results
-        comparison = compare_execution_results(python_result, silu_ir_result, normalize_line_endings)
+        comparison = compare_execution_results(
+            python_result, silu_ir_result, normalize_line_endings
+        )
 
         if verbose:
             print("\nExecution Results:")
@@ -314,39 +321,50 @@ def test_file_compatibility(file_path: str, verbose: bool = False, timeout: int 
             print(f"Silu IR:  {silu_ir_result}")
             print()
 
-            if comparison['match']:
-                match_msg = "✅ MATCH: Both execution methods produced identical results!"
-                if comparison['normalized']:
+            if comparison["match"]:
+                match_msg = (
+                    "✅ MATCH: Both execution methods produced identical results!"
+                )
+                if comparison["normalized"]:
                     match_msg += " (after line ending normalization)"
                 print(match_msg)
             else:
                 mismatch_msg = "❌ MISMATCH: Different execution results detected!"
-                if comparison['normalized']:
+                if comparison["normalized"]:
                     mismatch_msg += " (even after line ending normalization)"
                 print(mismatch_msg)
                 print("\nDifferences:")
-                for key, diff in comparison['differences'].items():
-                    if key.endswith('_normalized'):
+                for key, diff in comparison["differences"].items():
+                    if key.endswith("_normalized"):
                         print(f"  {key} (after normalization):")
                     else:
                         print(f"  {key}:")
-                    if isinstance(diff, dict) and 'python' in diff and 'silu_ir' in diff:
+                    if (
+                        isinstance(diff, dict)
+                        and "python" in diff
+                        and "silu_ir" in diff
+                    ):
                         print(f"    Python:   {repr(diff['python'])}")
                         print(f"    Silu IR:  {repr(diff['silu_ir'])}")
                     else:
                         print(f"    Value: {repr(diff)}")
 
                 # Show line ending analysis if there are output differences
-                if 'output' in comparison['differences'] and not comparison['normalized']:
-                    python_has_cr = '\r' in python_result.output
-                    silu_has_cr = '\r' in silu_ir_result.output
+                if (
+                    "output" in comparison["differences"]
+                    and not comparison["normalized"]
+                ):
+                    python_has_cr = "\r" in python_result.output
+                    silu_has_cr = "\r" in silu_ir_result.output
                     if python_has_cr or silu_has_cr:
-                        print(f"\n  Line ending analysis:")
+                        print("\n  Line ending analysis:")
                         print(f"    Python output contains \\r:   {python_has_cr}")
                         print(f"    Silu IR output contains \\r: {silu_has_cr}")
-                        print(f"    Note: Try --normalize-line-endings to ignore these differences")
+                        print(
+                            "    Note: Try --normalize-line-endings to ignore these differences"
+                        )
 
-        return comparison['match']
+        return comparison["match"]
 
     except FileNotFoundError:
         error_msg = f"Error: File not found: {file_path}"
@@ -377,44 +395,37 @@ Examples:
   python compare_ir_execution.py examples/*.py --summary
   python compare_ir_execution.py test.py --show-ir --verbose
   python compare_ir_execution.py program.py --normalize-line-endings
-        """
+        """,
+    )
+
+    parser.add_argument("files", nargs="+", help="Python files to test")
+
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show detailed output for each file",
     )
 
     parser.add_argument(
-        'files',
-        nargs='+',
-        help='Python files to test'
-    )
-
-    parser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        help='Show detailed output for each file'
-    )
-
-    parser.add_argument(
-        '--timeout',
+        "--timeout",
         type=int,
         default=30,
-        help='Timeout for Python execution in seconds (default: 30)'
+        help="Timeout for Python execution in seconds (default: 30)",
     )
 
     parser.add_argument(
-        '--show-ir',
-        action='store_true',
-        help='Show the generated IR for each file'
+        "--show-ir", action="store_true", help="Show the generated IR for each file"
     )
 
     parser.add_argument(
-        '--normalize-line-endings',
-        action='store_true',
-        help='Normalize line ending differences (\\r vs \\n) when comparing outputs'
+        "--normalize-line-endings",
+        action="store_true",
+        help="Normalize line ending differences (\\r vs \\n) when comparing outputs",
     )
 
     parser.add_argument(
-        '--summary',
-        action='store_true',
-        help='Show summary of results at the end'
+        "--summary", action="store_true", help="Show summary of results at the end"
     )
 
     args = parser.parse_args()
@@ -429,11 +440,15 @@ Examples:
 
     for file_pattern in args.files:
         # Handle glob patterns
-        if '*' in file_pattern or '?' in file_pattern:
+        if "*" in file_pattern or "?" in file_pattern:
             from glob import glob
+
             files = glob(file_pattern)
             if not files:
-                print(f"Warning: No files found matching pattern '{file_pattern}'", file=sys.stderr)
+                print(
+                    f"Warning: No files found matching pattern '{file_pattern}'",
+                    file=sys.stderr,
+                )
                 continue
         else:
             files = [file_pattern]
@@ -443,8 +458,10 @@ Examples:
                 print(f"Error: File not found: {file_path}", file=sys.stderr)
                 continue
 
-            if not file_path.endswith('.py'):
-                print(f"Warning: Skipping non-Python file: {file_path}", file=sys.stderr)
+            if not file_path.endswith(".py"):
+                print(
+                    f"Warning: Skipping non-Python file: {file_path}", file=sys.stderr
+                )
                 continue
 
             total_files += 1
@@ -455,7 +472,7 @@ Examples:
                 timeout=args.timeout,
                 normalize_line_endings=args.normalize_line_endings,
                 show_ir=args.show_ir,
-                **silu_kwargs
+                **silu_kwargs,
             )
 
             results[file_path] = is_matching
@@ -473,15 +490,19 @@ Examples:
     # Show summary if requested or if testing multiple files
     if args.summary or total_files > 1:
         print(f"\n{'=' * 50}")
-        print(f"IR EXECUTION COMPARISON SUMMARY")
+        print("IR EXECUTION COMPARISON SUMMARY")
         print(f"{'=' * 50}")
         print(f"Total files tested: {total_files}")
         print(f"Matching results: {matching_files}")
         print(f"Different results: {total_files - matching_files}")
-        print(f"IR compatibility rate: {matching_files/total_files*100:.1f}%" if total_files > 0 else "N/A")
+        print(
+            f"IR compatibility rate: {matching_files / total_files * 100:.1f}%"
+            if total_files > 0
+            else "N/A"
+        )
 
         if total_files > 0 and matching_files < total_files:
-            print(f"\nFiles with different results:")
+            print("\nFiles with different results:")
             for file_path, is_matching in results.items():
                 if not is_matching:
                     print(f"  - {file_path}")
@@ -490,5 +511,5 @@ Examples:
     sys.exit(0 if matching_files == total_files else 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

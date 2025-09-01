@@ -5,7 +5,7 @@
 """
 
 import os
-from ir_generator_for_c import generate_ir_from_c_file, save_ir_to_file
+from ir_generator_for_c import generate_ir_from_c_file
 
 # 162
 # void foos(int x[static 5]);
@@ -35,15 +35,15 @@ typedef union Unaligned16a {
 """
 
 # 40 cpp err
-l_int = '40 129 137 141 162 210 213'.split(' ')
+l_int = "40 129 137 141 162 210 213".split(" ")
 l_int = [int(j) for j in l_int]
 
 for i in range(1, 221):
     # make 0 to 00001
-    i_str = f'{i:05d}'
-    f = f'aokc/{i_str}.c'
+    i_str = f"{i:05d}"
+    f = f"aokc/{i_str}.c"
     if not os.path.isfile(f):
-        print(f'File {f} not exists')
+        print(f"File {f} not exists")
 
     input_file = f
     no_types = False

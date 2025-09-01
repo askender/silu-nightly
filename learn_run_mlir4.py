@@ -14,7 +14,9 @@ with ir.Context() as ctx:
 
     # 声明 putchar 函数 (更简单更可靠)
     putchar_type = ir.FunctionType.get([i32_type], [i32_type])
-    putchar = func.FuncOp(name="putchar", type=putchar_type, visibility="private", loc=loc)
+    putchar = func.FuncOp(
+        name="putchar", type=putchar_type, visibility="private", loc=loc
+    )
     module.body.append(putchar)
 
     # 辅助函数：输出字符串
@@ -34,27 +36,49 @@ with ir.Context() as ctx:
 
         # 处理负数
         is_negative = arith.CmpIOp(arith.CmpIPredicate.slt, value, zero.result, loc=loc)
-        abs_value = arith.SelectOp(is_negative.result,
-                                   arith.SubIOp(zero.result, value, loc=loc),
-                                   value, loc=loc)
+        abs_value = arith.SelectOp(
+            is_negative.result,
+            arith.SubIOp(zero.result, value, loc=loc),
+            value,
+            loc=loc,
+        )
 
         # 输出负号
-        minus_output = arith.SelectOp(is_negative.result, minus_char.result, zero.result, loc=loc)
+        minus_output = arith.SelectOp(
+            is_negative.result, minus_char.result, zero.result, loc=loc
+        )
         func.CallOp(putchar_func, [minus_output.result], loc=loc)
 
         # 特殊处理0
-        is_zero = arith.CmpIOp(arith.CmpIPredicate.eq, abs_value.result, zero.result, loc=loc)
+        is_zero = arith.CmpIOp(
+            arith.CmpIPredicate.eq, abs_value.result, zero.result, loc=loc
+        )
         zero_char = arith.AddIOp(zero.result, ascii_0.result, loc=loc)
-        zero_output = arith.SelectOp(is_zero.result, zero_char.result, zero.result, loc=loc)
+        zero_output = arith.SelectOp(
+            is_zero.result, zero_char.result, zero.result, loc=loc
+        )
         func.CallOp(putchar_func, [zero_output.result], loc=loc)
 
         # 智能动态算法：使用10的幂次数组，自适应处理任意位数
         # 无硬编码 - 通过数学方法动态检测和处理
-        powers = [1000000000, 100000000, 10000000, 1000000, 100000, 10000, 1000, 100, 10, 1]
+        powers = [
+            1000000000,
+            100000000,
+            10000000,
+            1000000,
+            100000,
+            10000,
+            1000,
+            100,
+            10,
+            1,
+        ]
 
         started_output = arith.ConstantOp(i1_type, False, loc=loc)
         current_value = abs_value.result
-        not_zero_number = arith.CmpIOp(arith.CmpIPredicate.ne, abs_value.result, zero.result, loc=loc)
+        not_zero_number = arith.CmpIOp(
+            arith.CmpIPredicate.ne, abs_value.result, zero.result, loc=loc
+        )
 
         for power_val in powers:
             power_const = arith.ConstantOp(i32_type, power_val, loc=loc)
@@ -64,26 +88,37 @@ with ir.Context() as ctx:
             remainder = arith.RemSIOp(current_value, power_const.result, loc=loc)
 
             # 智能检测：是否应该开始输出
-            digit_nonzero = arith.CmpIOp(arith.CmpIPredicate.ne, digit.result, zero.result, loc=loc)
-            is_last_digit = (power_val == 1)
+            digit_nonzero = arith.CmpIOp(
+                arith.CmpIPredicate.ne, digit.result, zero.result, loc=loc
+            )
+            is_last_digit = power_val == 1
 
             # 动态决策：开始输出条件
             if is_last_digit:
                 should_start = arith.ConstantOp(i1_type, True, loc=loc)
             else:
-                should_start = arith.OrIOp(digit_nonzero.result, started_output.result, loc=loc)
+                should_start = arith.OrIOp(
+                    digit_nonzero.result, started_output.result, loc=loc
+                )
 
-            should_output = arith.AndIOp(should_start.result, not_zero_number.result, loc=loc)
+            should_output = arith.AndIOp(
+                should_start.result, not_zero_number.result, loc=loc
+            )
 
             # 输出当前位
             digit_char = arith.AddIOp(digit.result, ascii_0.result, loc=loc)
-            output_char = arith.SelectOp(should_output.result, digit_char.result, zero.result, loc=loc)
+            output_char = arith.SelectOp(
+                should_output.result, digit_char.result, zero.result, loc=loc
+            )
             func.CallOp(putchar_func, [output_char.result], loc=loc)
 
             # 更新状态：一旦开始输出就继续
-            started_output = arith.SelectOp(digit_nonzero.result,
-                                          arith.ConstantOp(i1_type, True, loc=loc),
-                                          started_output, loc=loc)
+            started_output = arith.SelectOp(
+                digit_nonzero.result,
+                arith.ConstantOp(i1_type, True, loc=loc),
+                started_output,
+                loc=loc,
+            )
             current_value = remainder.result
 
     # square 函数
