@@ -36,13 +36,19 @@ class SiluIRGenerator(BaseASTProcessor):
         if isinstance(target, tuple) and len(target) == 2 and target[0] == "name":
             # Simple variable augmented assignment: x += value
             return ("aug_assign", target, op, value)
-        elif isinstance(target, tuple) and len(target) == 2 and not isinstance(target[0], str):
+        elif (
+            isinstance(target, tuple)
+            and len(target) == 2
+            and not isinstance(target[0], str)
+        ):
             # Subscript augmented assignment: obj[key] += value
             # target is (obj_ir_node, key_ir_node)
             obj, key = target
             return ("subscript_aug_assign", obj, key, op, value)
         else:
-            raise NotImplementedError(f"Unsupported augmented assignment target: {target}")
+            raise NotImplementedError(
+                f"Unsupported augmented assignment target: {target}"
+            )
 
     def process_name(self, name: str, context: ast.AST) -> Tuple[str, str]:
         """Return identifier with type information for IR."""
@@ -52,7 +58,7 @@ class SiluIRGenerator(BaseASTProcessor):
         """Return constant value with type information for IR."""
         if isinstance(value, bytes):
             # Handle bytes objects specially for JSON serialization
-            return ("const_b", value.decode('latin-1'))
+            return ("const_b", value.decode("latin-1"))
         return ("const", value)
 
     def process_operation(self, op: str, *operands) -> Tuple:

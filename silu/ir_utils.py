@@ -21,15 +21,18 @@ from pathlib import Path
 
 class IRParseError(Exception):
     """Exception raised when IR parsing fails."""
+
     pass
 
 
 class IRValidationError(Exception):
     """Exception raised when IR validation fails."""
+
     pass
 
 
 # ============ JSON and Format Conversion ============
+
 
 def json_to_tuples(obj: Any) -> Any:
     """
@@ -75,6 +78,7 @@ def tuples_to_json_compatible(obj: Any) -> Any:
 
 # ============ IR Parsing Functions ============
 
+
 def parse_ir_from_json_string(json_string: str) -> Union[Tuple, List]:
     """
     Parse IR from a JSON string.
@@ -117,7 +121,9 @@ def parse_ir_from_json_string(json_string: str) -> Union[Tuple, List]:
         raise IRParseError(f"Failed to parse IR string: {e}")
 
 
-def parse_ir_from_file(file_path: Union[str, Path], encoding: str = "utf-8") -> Union[Tuple, List]:
+def parse_ir_from_file(
+    file_path: Union[str, Path], encoding: str = "utf-8"
+) -> Union[Tuple, List]:
     """
     Parse IR from a file.
 
@@ -141,18 +147,21 @@ def parse_ir_from_file(file_path: Union[str, Path], encoding: str = "utf-8") -> 
         raise IRParseError(f"Path is not a file: {file_path}")
 
     try:
-        with open(file_path, 'r', encoding=encoding) as f:
+        with open(file_path, "r", encoding=encoding) as f:
             content = f.read()
 
         return parse_ir_from_json_string(content)
 
     except UnicodeDecodeError as e:
-        raise IRParseError(f"Failed to decode file {file_path} with encoding {encoding}: {e}")
+        raise IRParseError(
+            f"Failed to decode file {file_path} with encoding {encoding}: {e}"
+        )
     except IOError as e:
         raise IRParseError(f"Failed to read file {file_path}: {e}")
 
 
 # ============ IR Validation Functions ============
+
 
 def validate_ir_node_format(ir_node: Any) -> bool:
     """
@@ -203,8 +212,12 @@ def validate_ir_program(ir_program: Any) -> bool:
     return True
 
 
-def validate_ir_node_structure(ir_node: Any, expected_opcode: str = None,
-                              min_args: int = None, max_args: int = None) -> bool:
+def validate_ir_node_structure(
+    ir_node: Any,
+    expected_opcode: str = None,
+    min_args: int = None,
+    max_args: int = None,
+) -> bool:
     """
     Validate specific IR node structure.
 
@@ -236,6 +249,7 @@ def validate_ir_node_structure(ir_node: Any, expected_opcode: str = None,
 
 
 # ============ IR Analysis Utilities ============
+
 
 def extract_ir_opcodes(ir_node: Any, visited: Optional[set] = None) -> set:
     """
@@ -309,8 +323,9 @@ def count_ir_nodes(ir_node: Any, visited: Optional[set] = None) -> int:
     return count
 
 
-def find_ir_nodes_by_opcode(ir_node: Any, target_opcode: str,
-                           visited: Optional[set] = None) -> List[Any]:
+def find_ir_nodes_by_opcode(
+    ir_node: Any, target_opcode: str, visited: Optional[set] = None
+) -> List[Any]:
     """
     Find all IR nodes with a specific opcode.
 
@@ -334,7 +349,11 @@ def find_ir_nodes_by_opcode(ir_node: Any, target_opcode: str,
     visited.add(node_id)
 
     if isinstance(ir_node, (tuple, list)):
-        if len(ir_node) > 0 and isinstance(ir_node[0], str) and ir_node[0] == target_opcode:
+        if (
+            len(ir_node) > 0
+            and isinstance(ir_node[0], str)
+            and ir_node[0] == target_opcode
+        ):
             results.append(ir_node)
 
         # Recursively search all child nodes
@@ -347,8 +366,14 @@ def find_ir_nodes_by_opcode(ir_node: Any, target_opcode: str,
 
 # ============ File I/O Utilities ============
 
-def save_ir_to_file(ir_data: Any, file_path: Union[str, Path],
-                   format: str = "json", encoding: str = "utf-8", indent: int = 2) -> None:
+
+def save_ir_to_file(
+    ir_data: Any,
+    file_path: Union[str, Path],
+    format: str = "json",
+    encoding: str = "utf-8",
+    indent: int = 2,
+) -> None:
     """
     Save IR data to a file.
 
@@ -376,13 +401,14 @@ def save_ir_to_file(ir_data: Any, file_path: Union[str, Path],
         raise IRValidationError(f"Unsupported output format: {format}")
 
     try:
-        with open(file_path, 'w', encoding=encoding) as f:
+        with open(file_path, "w", encoding=encoding) as f:
             f.write(content)
     except IOError as e:
         raise IOError(f"Failed to write IR to file {file_path}: {e}")
 
 
 # ============ Error Handling Utilities ============
+
 
 def safe_ir_parse(content: str, context: str = "IR parsing") -> Optional[Any]:
     """
@@ -421,13 +447,16 @@ def get_ir_node_info(ir_node: Any) -> Dict[str, Any]:
     }
 
     if isinstance(ir_node, (tuple, list)) and len(ir_node) > 0:
-        info["opcode"] = ir_node[0] if isinstance(ir_node[0], str) else type(ir_node[0]).__name__
+        info["opcode"] = (
+            ir_node[0] if isinstance(ir_node[0], str) else type(ir_node[0]).__name__
+        )
         info["args_count"] = len(ir_node) - 1
 
     return info
 
 
 # ============ Configuration and Constants ============
+
 
 class IRConfig:
     """Configuration constants for IR processing."""
@@ -437,13 +466,35 @@ class IRConfig:
 
     # Supported IR opcodes (can be extended by modules)
     CORE_OPCODES = {
-        "module", "const", "const_b", "name", "assign", "call",
-        "if", "while", "for", "func_def", "return", "break", "continue",
-        "binary_op", "unary_op", "chained_compare",
-        "list", "tuple", "dict", "attribute", "subscript",
-        "match", "match_case",
-        "typedef", "typedef_struct", "typedef_enum",
-        "tuple_assign", "subscript_assign", "aug_assign"
+        "module",
+        "const",
+        "const_b",
+        "name",
+        "assign",
+        "call",
+        "if",
+        "while",
+        "for",
+        "func_def",
+        "return",
+        "break",
+        "continue",
+        "binary_op",
+        "unary_op",
+        "chained_compare",
+        "list",
+        "tuple",
+        "dict",
+        "attribute",
+        "subscript",
+        "match",
+        "match_case",
+        "typedef",
+        "typedef_struct",
+        "typedef_enum",
+        "tuple_assign",
+        "subscript_assign",
+        "aug_assign",
     }
 
     # File size limits (in bytes)

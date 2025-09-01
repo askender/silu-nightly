@@ -6,6 +6,7 @@ This module provides symbolic execution capabilities for Silu programs,
 allowing analysis of all possible execution paths and generation of
 path constraints for functions with improved Z3 integration and loop handling.
 """
+
 from typing import Any, Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass, field
 from loguru import logger
@@ -14,7 +15,14 @@ from .ir_utils import parse_ir_from_file
 from .ir_utils import parse_ir_from_json_string
 
 # Import symbolic execution utilities
-from .symbolic_utils import Config, ExecutionPathState, logger, SymbolicEnvironment, IRNodeHandler
+from .symbolic_utils import (
+    Config,
+    ExecutionPathState,
+    logger,
+    SymbolicEnvironment,
+    IRNodeHandler,
+    AssignmentHandler,
+)
 from .symbolic.loop_utils import LoopAnalyzer
 from .symbolic.condition_utils import PathCondition
 
@@ -38,6 +46,7 @@ from .symbolic.report_utils import (
     renumber_paths_sequentially,
     # enhance_paths_with_z3_test_cases,
 )
+
 
 @dataclass
 class ExecutionPath:
@@ -64,24 +73,34 @@ class ExecutionPath:
             return
 
         cleaned_inputs = {}
-        var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
-        keywords = {'and', 'or', 'not', 'True', 'False', 'None'}
-        operators = {'<', '>', '<=', '>=', '==', '!=', '+', '-', '*', '/', '%'}
+        var_pattern = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
+        keywords = {"and", "or", "not", "True", "False", "None"}
+        operators = {"<", ">", "<=", ">=", "==", "!=", "+", "-", "*", "/", "%"}
 
         # Get all variable names from the test_inputs
         all_vars = set()
         compound_keys = []
-        for key in list(self.test_inputs.keys()):  # Use list to avoid dict change during iteration
+        for key in list(
+            self.test_inputs.keys()
+        ):  # Use list to avoid dict change during iteration
             # Handle compound conditions (containing operators or logical operators)
-            if ' and ' in key or ' or ' in key or any(op in key for op in operators):
+            if " and " in key or " or " in key or any(op in key for op in operators):
                 compound_keys.append(key)
                 # Extract variables from the compound condition
                 matches = var_pattern.findall(key)
                 for var in matches:
-                    if var not in keywords and var not in operators and not var.isdigit():
+                    if (
+                        var not in keywords
+                        and var not in operators
+                        and not var.isdigit()
+                    ):
                         all_vars.add(var)
             # Clean normal variable keys
-            elif key not in keywords and not key.isdigit() and not any(op in key for op in operators):
+            elif (
+                key not in keywords
+                and not key.isdigit()
+                and not any(op in key for op in operators)
+            ):
                 cleaned_inputs[key] = self.test_inputs[key]
                 all_vars.add(key)
 
@@ -144,14 +163,20 @@ class ExecutionPath:
     def to_dict(self) -> Dict[str, Any]:
         """Convert execution path to dictionary"""
         # Clean test inputs before serialization
-        if hasattr(self, "clean_test_inputs") and hasattr(self, "test_inputs") and self.test_inputs:
+        if (
+            hasattr(self, "clean_test_inputs")
+            and hasattr(self, "test_inputs")
+            and self.test_inputs
+        ):
             self.clean_test_inputs()
 
         result = {
             "path_id": self.path_id,
             "conditions": [str(c) for c in self.conditions],
             "statements": self.statements,
-            "return_value": self.return_value.value if hasattr(self.return_value, "value") else self.return_value,
+            "return_value": self.return_value.value
+            if hasattr(self.return_value, "value")
+            else self.return_value,
             "satisfiable": self.is_satisfiable(),
             "loop_iterations": self.loop_iterations,
             "state": self.state.value,
@@ -169,11 +194,15 @@ class ExecutionPath:
 
         return result
 
+
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
 
     def __init__(
-        self, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False,
+        self,
+        include_function_paths: bool = False,
+        performance_mode: bool = False,
+        debug: bool = False,
     ):
         self.global_env = SymbolicEnvironment()
         self.current_env = self.global_env
@@ -240,7 +269,6 @@ class SymbolicExecutor:
             else:
                 logger.error(f"Error: {e}")
 
-
         if self.current_path:
             self.path_manager.add_path(self.current_path)
 
@@ -301,9 +329,13 @@ class SymbolicExecutor:
         # Handle wrapped statements - if we have a single-element tuple containing a statement
         # unwrap it to the actual statement
         # TODO: check if real code have the situation
-        if (isinstance(ir_node, tuple) and len(ir_node) == 1 and
-            isinstance(ir_node[0], tuple) and len(ir_node[0]) > 0 and
-            isinstance(ir_node[0][0], str)):
+        if (
+            isinstance(ir_node, tuple)
+            and len(ir_node) == 1
+            and isinstance(ir_node[0], tuple)
+            and len(ir_node[0]) > 0
+            and isinstance(ir_node[0][0], str)
+        ):
             unwrapped = ir_node[0]
             return self._execute_ir(unwrapped)
 
@@ -328,10 +360,12 @@ class SymbolicExecutor:
 
             # Check if it's likely a string literal rather than a variable
             # TODO: better handling of string literals
-            if (len(ir_node) == 1 and ir_node.isupper()) or \
-               ir_node.istitle() or \
-               not ir_node.isidentifier() or \
-               ir_node in {'True', 'False', 'None'}:
+            if (
+                (len(ir_node) == 1 and ir_node.isupper())
+                or ir_node.istitle()
+                or not ir_node.isidentifier()
+                or ir_node in {"True", "False", "None"}
+            ):
                 # Treat as string literal
                 return create_concrete_value(ir_node)
             else:
@@ -350,9 +384,22 @@ class SymbolicExecutor:
 
         # Binary operations that should use _execute_binary_op
         binary_ops = {
-            "+", "-", "*", "/", "//", "%", "**",
-            "==", "!=", "<", ">", "<=", ">=",
-            "and", "or", "not"
+            "+",
+            "-",
+            "*",
+            "/",
+            "//",
+            "%",
+            "**",
+            "==",
+            "!=",
+            "<",
+            ">",
+            "<=",
+            ">=",
+            "and",
+            "or",
+            "not",
         }
 
         dispatch_table = {
@@ -438,7 +485,9 @@ class SymbolicExecutor:
             # C format: ("func_def", name, params, body, param_types, [return_type])
             _, func_name, params, body = ir_node[:4]
         else:
-            raise ValueError(f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}")
+            raise ValueError(
+                f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}"
+            )
         self.global_env.functions[func_name] = (params, body)
 
         if self.current_path:
@@ -465,10 +514,10 @@ class SymbolicExecutor:
 
         # Create loop context
         loop_context = {
-            'condition': condition,
-            'update': update,
-            'body': body,
-            'type': 'c_for'
+            "condition": condition,
+            "update": update,
+            "body": body,
+            "type": "c_for",
         }
 
         if self.current_path:
@@ -477,13 +526,17 @@ class SymbolicExecutor:
                 init_str = self._ir_to_readable_string(init)
                 cond_str = self._ir_to_readable_string(condition)
                 update_str = self._ir_to_readable_string(update)
-                self.current_path.add_statement(f"for ({init_str}; {cond_str}; {update_str}):")
+                self.current_path.add_statement(
+                    f"for ({init_str}; {cond_str}; {update_str}):"
+                )
             else:
                 self.current_path.add_statement("for loop:")
 
         # Handle the loop using existing loop handler
         if self.loop_handler:
-            return self.loop_handler._handle_c_for_loop(self, condition, update, body, ir_node)
+            return self.loop_handler._handle_c_for_loop(
+                self, condition, update, body, ir_node
+            )
         else:
             # Simple fallback execution
             max_iterations = 5  # Limit iterations for symbolic execution
@@ -493,7 +546,7 @@ class SymbolicExecutor:
                 # Check condition
                 if condition:
                     cond_result = self._execute_ir(condition)
-                    if hasattr(cond_result, 'value') and not cond_result.value:
+                    if hasattr(cond_result, "value") and not cond_result.value:
                         break
 
                 # Execute body
@@ -506,7 +559,7 @@ class SymbolicExecutor:
                 iterations += 1
 
                 # Track loop iterations
-                if self.current_path and hasattr(self.current_path, 'loop_iterations'):
+                if self.current_path and hasattr(self.current_path, "loop_iterations"):
                     loop_id = f"c_for_{id(ir_node)}"
                     self.current_path.loop_iterations[loop_id] = iterations
 
@@ -524,7 +577,9 @@ class SymbolicExecutor:
             var_name = var_expr[1]
             if var_name in self.current_env.variables:
                 old_val = self.current_env.variables[var_name]
-                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                if hasattr(old_val, "value") and isinstance(
+                    old_val.value, (int, float)
+                ):
                     new_val = create_concrete_value(old_val.value + 1)
                     self.current_env.variables[var_name] = new_val
                 else:
@@ -551,7 +606,9 @@ class SymbolicExecutor:
             var_name = var_expr[1]
             if var_name in self.current_env.variables:
                 old_val = self.current_env.variables[var_name]
-                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                if hasattr(old_val, "value") and isinstance(
+                    old_val.value, (int, float)
+                ):
                     new_val = create_concrete_value(old_val.value - 1)
                     self.current_env.variables[var_name] = new_val
                 else:
@@ -575,7 +632,9 @@ class SymbolicExecutor:
             var_name = var_expr[1]
             if var_name in self.current_env.variables:
                 old_val = self.current_env.variables[var_name]
-                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                if hasattr(old_val, "value") and isinstance(
+                    old_val.value, (int, float)
+                ):
                     new_val = create_concrete_value(old_val.value + 1)
                     self.current_env.variables[var_name] = new_val
                 else:
@@ -599,7 +658,9 @@ class SymbolicExecutor:
             var_name = var_expr[1]
             if var_name in self.current_env.variables:
                 old_val = self.current_env.variables[var_name]
-                if hasattr(old_val, 'value') and isinstance(old_val.value, (int, float)):
+                if hasattr(old_val, "value") and isinstance(
+                    old_val.value, (int, float)
+                ):
                     new_val = create_concrete_value(old_val.value - 1)
                     self.current_env.variables[var_name] = new_val
                 else:
@@ -632,26 +693,40 @@ class SymbolicExecutor:
 
         # Perform the operation
         if op == "+=":
-            if (hasattr(current_val, 'value') and hasattr(value_result, 'value') and
-                isinstance(current_val.value, (int, float)) and isinstance(value_result.value, (int, float))):
+            if (
+                hasattr(current_val, "value")
+                and hasattr(value_result, "value")
+                and isinstance(current_val.value, (int, float))
+                and isinstance(value_result.value, (int, float))
+            ):
                 new_val = create_concrete_value(current_val.value + value_result.value)
             else:
                 new_val = self.current_env.create_symbol(f"{var_name}_add")
         elif op == "-=":
-            if (hasattr(current_val, 'value') and hasattr(value_result, 'value') and
-                isinstance(current_val.value, (int, float)) and isinstance(value_result.value, (int, float))):
+            if (
+                hasattr(current_val, "value")
+                and hasattr(value_result, "value")
+                and isinstance(current_val.value, (int, float))
+                and isinstance(value_result.value, (int, float))
+            ):
                 new_val = create_concrete_value(current_val.value - value_result.value)
             else:
                 new_val = self.current_env.create_symbol(f"{var_name}_sub")
         elif op == "*=":
-            if (hasattr(current_val, 'value') and hasattr(value_result, 'value') and
-                isinstance(current_val.value, (int, float)) and isinstance(value_result.value, (int, float))):
+            if (
+                hasattr(current_val, "value")
+                and hasattr(value_result, "value")
+                and isinstance(current_val.value, (int, float))
+                and isinstance(value_result.value, (int, float))
+            ):
                 new_val = create_concrete_value(current_val.value * value_result.value)
             else:
                 new_val = self.current_env.create_symbol(f"{var_name}_mul")
         else:
             # Generic handling for other operators
-            new_val = self.current_env.create_symbol(f"{var_name}_{op.replace('=', '')}")
+            new_val = self.current_env.create_symbol(
+                f"{var_name}_{op.replace('=', '')}"
+            )
 
         # Update variable
         self.current_env.variables[var_name] = new_val
@@ -881,7 +956,9 @@ class SymbolicExecutor:
 
         return create_concrete_value(None)
 
-    def _create_match_condition(self, subject_value: SymbolicValue, pattern: Tuple) -> str:
+    def _create_match_condition(
+        self, subject_value: SymbolicValue, pattern: Tuple
+    ) -> str:
         """Create a condition string for pattern matching"""
         if not isinstance(pattern, (tuple, list)) or len(pattern) < 2:
             return ""
@@ -904,10 +981,12 @@ class SymbolicExecutor:
         if not isinstance(pattern, (tuple, list)) or len(pattern) < 2:
             return False
 
-        return (pattern[0] == "match_as" and
-                len(pattern) >= 3 and
-                pattern[1] is None and
-                pattern[2] is None)
+        return (
+            pattern[0] == "match_as"
+            and len(pattern) >= 3
+            and pattern[1] is None
+            and pattern[2] is None
+        )
 
     def _extract_match_value(self, pattern: Tuple) -> Any:
         """Extract the match value from a pattern for constraint generation"""
@@ -960,8 +1039,16 @@ class SymbolicExecutor:
 
                 # 如果成功提取了变量名，使用这些名称创建可读的条件
                 if left_name or right_name:
-                    left_str = left_name if left_name else self._convert_expression_readable(left)
-                    right_str = right_name if right_name else self._convert_expression_readable(right)
+                    left_str = (
+                        left_name
+                        if left_name
+                        else self._convert_expression_readable(left)
+                    )
+                    right_str = (
+                        right_name
+                        if right_name
+                        else self._convert_expression_readable(right)
+                    )
                     readable_condition = f"{left_str} {op} {right_str}"
 
                     # 添加条件到当前路径
@@ -1073,9 +1160,17 @@ class SymbolicExecutor:
                         right_str = self._convert_expression_readable(right)
 
                         # 从原始IR中提取变量名，避免出现None
-                        if left_str == "None" and isinstance(left_ir, tuple) and left_ir[0] == "name":
+                        if (
+                            left_str == "None"
+                            and isinstance(left_ir, tuple)
+                            and left_ir[0] == "name"
+                        ):
                             left_str = left_ir[1]
-                        if right_str == "None" and isinstance(right_ir, tuple) and right_ir[0] == "name":
+                        if (
+                            right_str == "None"
+                            and isinstance(right_ir, tuple)
+                            and right_ir[0] == "name"
+                        ):
                             right_str = right_ir[1]
 
                         readable_condition = f"{left_str} {op} {right_str}"
@@ -1088,7 +1183,9 @@ class SymbolicExecutor:
                             result = part_result
                         else:
                             # Combine with AND
-                            result = create_expression_value(("and", result, part_result))
+                            result = create_expression_value(
+                                ("and", result, part_result)
+                            )
 
                 # Add the combined condition to the current path
                 if self.current_path and all_conditions:
@@ -1142,7 +1239,11 @@ class SymbolicExecutor:
     def _make_condition_readable(self, condition: Any) -> str:
         """Convert IR condition to readable format with recursive tuple handling"""
         # 处理IR节点的特殊情况 - 直接提取变量名
-        if isinstance(condition, tuple) and len(condition) >= 2 and condition[0] == "name":
+        if (
+            isinstance(condition, tuple)
+            and len(condition) >= 2
+            and condition[0] == "name"
+        ):
             return condition[1]  # 直接返回变量名
 
         if condition is None:
@@ -1163,9 +1264,17 @@ class SymbolicExecutor:
             right_readable = self._make_condition_readable(right)
 
             # 确保变量名不是 "None"
-            if left_readable == "None" and isinstance(left, tuple) and left[0] == "name":
+            if (
+                left_readable == "None"
+                and isinstance(left, tuple)
+                and left[0] == "name"
+            ):
                 left_readable = left[1]
-            if right_readable == "None" and isinstance(right, tuple) and right[0] == "name":
+            if (
+                right_readable == "None"
+                and isinstance(right, tuple)
+                and right[0] == "name"
+            ):
                 right_readable = right[1]
 
             # Special handling for 'and' operator in chained comparisons
@@ -1324,6 +1433,7 @@ class SymbolicExecutor:
         """Enhance execution paths with Z3-generated test case information"""
         return enhance_paths_with_z3_test_cases(paths)
 
+
 class PathManager:
     """Manages execution paths and path operations"""
 
@@ -1389,10 +1499,12 @@ class PathManager:
 
             path_signature = (
                 tuple(str(c) for c in path.conditions),
-                tuple(sorted_variables)
+                tuple(sorted_variables),
             )
 
-            if path_signature not in seen_paths and (path.statements or path.conditions or path.variables):
+            if path_signature not in seen_paths and (
+                path.statements or path.conditions or path.variables
+            ):
                 seen_paths.add(path_signature)
                 unique_paths.append(path)
 
@@ -1409,32 +1521,7 @@ class PathManager:
 
         return renumber_paths_sequentially(unique_paths)
 
-class AssignmentHandler(IRNodeHandler):
-    """Handler for assignment operations"""
 
-    def can_handle(self, ir_node: Tuple) -> bool:
-        return (
-            isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "assign"
-        )
-
-    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
-        try:
-            _, var_name, value_ir, _ = ir_node
-            value = executor._execute_ir(value_ir)
-            executor.current_env.set_variable(var_name, value)
-
-            if executor.current_path:
-                simplified_value = executor._simplify_display(value)
-                executor.current_path.add_statement(f"{var_name} = {simplified_value}")
-                executor.current_path.variables[var_name] = value
-
-            return value
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            if executor.current_path:
-                executor.current_path.add_statement(f"Error in assignment: {e}")
-                executor.current_path.state = ExecutionPathState.ERROR
-            return create_concrete_value(None)
 
 class ConditionalHandler(IRNodeHandler):
     """Handler for if/elif/else statements"""
@@ -1458,14 +1545,22 @@ class ConditionalHandler(IRNodeHandler):
                 right_ir = condition_ir[2]
 
                 # 处理比较操作如 "<", "=="
-                if isinstance(left_ir, tuple) and len(left_ir) >= 3 and left_ir[0] in ["<", "==", ">", "<=", ">=", "!="]:
+                if (
+                    isinstance(left_ir, tuple)
+                    and len(left_ir) >= 3
+                    and left_ir[0] in ["<", "==", ">", "<=", ">=", "!="]
+                ):
                     left_var = executor._extract_variable_name(left_ir[1])
                     left_op = left_ir[0]
                     left_val = left_ir[2]
                     if isinstance(left_val, tuple) and left_val[0] == "const":
                         left_val = left_val[1]
 
-                if isinstance(right_ir, tuple) and len(right_ir) >= 3 and right_ir[0] in ["<", "==", ">", "<=", ">=", "!="]:
+                if (
+                    isinstance(right_ir, tuple)
+                    and len(right_ir) >= 3
+                    and right_ir[0] in ["<", "==", ">", "<=", ">=", "!="]
+                ):
                     right_var = executor._extract_variable_name(right_ir[1])
                     right_op = right_ir[0]
                     right_val = right_ir[2]
@@ -1473,14 +1568,14 @@ class ConditionalHandler(IRNodeHandler):
                         right_val = right_val[1]
 
                 # 构建更准确的条件字符串
-                if 'left_var' in locals() and 'right_var' in locals():
+                if "left_var" in locals() and "right_var" in locals():
                     readable_condition = f"{left_var} {left_op} {left_val} and {right_var} {right_op} {right_val}"
 
         # 执行条件求值
         condition = executor._execute_ir(condition_ir)
 
         # 如果上面没有生成readable_condition，使用默认方法
-        if 'readable_condition' not in locals():
+        if "readable_condition" not in locals():
             readable_condition = executor._make_condition_readable(condition)
 
         # Handle concrete conditions directly
@@ -1636,6 +1731,7 @@ class ConditionalHandler(IRNodeHandler):
                 executor.path_manager.add_path(executor.current_path)
 
         return executor.current_path
+
 
 class LoopHandler(IRNodeHandler):
     """Handler for loop operations"""
@@ -1853,7 +1949,7 @@ class LoopHandler(IRNodeHandler):
 
     def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
         """Handle C-style for loop with enhanced analysis"""
-        max_iterations = getattr(executor, 'max_loop_iterations', 10)
+        max_iterations = getattr(executor, "max_loop_iterations", 10)
         iterations = 0
         loop_id = f"c_for_{id(loop_node)}"
 
@@ -1862,7 +1958,7 @@ class LoopHandler(IRNodeHandler):
                 # Check loop condition
                 if condition:
                     cond_result = executor._execute_ir(condition)
-                    if hasattr(cond_result, 'value') and not cond_result.value:
+                    if hasattr(cond_result, "value") and not cond_result.value:
                         break
 
                     # Generate Z3 constraints for condition if available
@@ -1898,43 +1994,11 @@ class LoopHandler(IRNodeHandler):
 
         return create_concrete_value(None)
 
-def execute_symbolic_from_file(
-    file_path: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
-) -> List[ExecutionPath]:
-    """Execute symbolic analysis from an IR file"""
-    try:
-        ir_program = parse_ir_from_file(file_path, encoding=Config.DEFAULT_ENCODING)
-
-        executor = SymbolicExecutor(
-            include_function_paths=include_function_paths,
-            performance_mode=performance_mode,
-            debug=debug,
-        )
-        paths = executor.execute_program(ir_program)
-
-        return paths
-
-    except Exception as e:
-        raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
-
-def execute_symbolic_from_string(
-    ir_string: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
-) -> List[ExecutionPath]:
-    """Execute symbolic analysis from a string"""
-    try:
-        ir_program = parse_ir_from_json_string(ir_string)
-        executor = SymbolicExecutor(
-            include_function_paths=include_function_paths,
-            performance_mode=performance_mode,
-            debug=debug,
-        )
-        return executor.execute_program(ir_program)
-
-    except Exception as e:
-        raise RuntimeError(f"Error in symbolic execution from string: {e}")
-
 def execute_symbolic_from_file_with_executor(
-    file_path: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
+    file_path: str,
+    include_function_paths: bool = False,
+    performance_mode: bool = False,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     """Execute symbolic analysis from an IR file and return paths with function analyses"""
     try:
@@ -1955,8 +2019,12 @@ def execute_symbolic_from_file_with_executor(
     except Exception as e:
         raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
 
+
 def execute_symbolic_from_string_with_executor(
-    ir_string: str, include_function_paths: bool = False, performance_mode: bool = False, debug: bool = False
+    ir_string: str,
+    include_function_paths: bool = False,
+    performance_mode: bool = False,
+    debug: bool = False,
 ) -> Dict[str, Any]:
     """Execute symbolic analysis from an IR string and return paths with function analyses"""
     try:
@@ -1974,4 +2042,50 @@ def execute_symbolic_from_string_with_executor(
 
         return result
     except Exception as e:
-        raise RuntimeError(f"Error in symbolic execution from string with executor: {e}")
+        raise RuntimeError(
+            f"Error in symbolic execution from string with executor: {e}"
+        )
+
+
+def execute_symbolic_from_file(
+    file_path: str,
+    include_function_paths: bool = False,
+    performance_mode: bool = False,
+    debug: bool = False,
+) -> List[ExecutionPath]:
+    """Execute symbolic analysis from an IR file"""
+    try:
+        ir_program = parse_ir_from_file(file_path, encoding=Config.DEFAULT_ENCODING)
+
+        executor = SymbolicExecutor(
+            include_function_paths=include_function_paths,
+            performance_mode=performance_mode,
+            debug=debug,
+        )
+        paths = executor.execute_program(ir_program)
+
+        return paths
+
+    except Exception as e:
+        raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
+
+
+
+def execute_symbolic_from_string(
+    ir_string: str,
+    include_function_paths: bool = False,
+    performance_mode: bool = False,
+    debug: bool = False,
+) -> List[ExecutionPath]:
+    """Execute symbolic analysis from a string"""
+    try:
+        ir_program = parse_ir_from_json_string(ir_string)
+        executor = SymbolicExecutor(
+            include_function_paths=include_function_paths,
+            performance_mode=performance_mode,
+            debug=debug,
+        )
+        return executor.execute_program(ir_program)
+
+    except Exception as e:
+        raise RuntimeError(f"Error in symbolic execution from string: {e}")

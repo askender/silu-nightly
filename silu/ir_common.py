@@ -10,22 +10,24 @@ this module provides functions specifically for IR node processing logic.
 """
 
 import sys
-from typing import Any, Dict, Callable, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Callable, List, Optional
 from . import ir_utils
 
 
 class IRProcessingError(Exception):
     """Exception raised during IR node processing."""
+
     pass
 
 
 # ============ IR Node Dispatching ============
 
+
 def dispatch_ir_node(
     node: Any,
     handlers: Dict[str, Callable],
     default_handler: Optional[Callable] = None,
-    debug: bool = False
+    debug: bool = False,
 ) -> Any:
     """
     Dispatch an IR node to the appropriate handler function.
@@ -60,7 +62,9 @@ def dispatch_ir_node(
         raise IRProcessingError(f"No handler for IR opcode: {opcode}")
 
 
-def create_handlers_map(processor_obj: Any, prefix: str = "_process_") -> Dict[str, Callable]:
+def create_handlers_map(
+    processor_obj: Any, prefix: str = "_process_"
+) -> Dict[str, Callable]:
     """
     Create a handlers map from methods of a processor object.
 
@@ -75,7 +79,7 @@ def create_handlers_map(processor_obj: Any, prefix: str = "_process_") -> Dict[s
 
     for attr_name in dir(processor_obj):
         if attr_name.startswith(prefix):
-            opcode = attr_name[len(prefix):]
+            opcode = attr_name[len(prefix) :]
             handler = getattr(processor_obj, attr_name)
             if callable(handler):
                 handlers[opcode] = handler
@@ -85,12 +89,13 @@ def create_handlers_map(processor_obj: Any, prefix: str = "_process_") -> Dict[s
 
 # ============ Debug and Logging ============
 
+
 def log_ir_processing(
     opcode: str,
     args: List[Any],
     level: str = "INFO",
     extra_info: Optional[Dict] = None,
-    output_stream=None
+    output_stream=None,
 ) -> None:
     """
     Log information about IR node processing.
@@ -127,11 +132,9 @@ def log_ir_processing(
 
 # ============ Error Handling ============
 
+
 def handle_node_error(
-    node: Any,
-    error: Exception,
-    context: str = "",
-    raise_error: bool = True
+    node: Any, error: Exception, context: str = "", raise_error: bool = True
 ) -> Optional[str]:
     """
     Handle an error that occurred during node processing.
@@ -162,11 +165,12 @@ def handle_node_error(
 
 # ============ Node Validation ============
 
+
 def validate_node_args(
     node: Any,
     expected_opcode: str,
     min_args: Optional[int] = None,
-    max_args: Optional[int] = None
+    max_args: Optional[int] = None,
 ) -> None:
     """
     Validate an IR node's structure and arguments.
@@ -202,10 +206,11 @@ def validate_node_args(
 
 # ============ Common Node Processing ============
 
+
 def process_ir_block(
     statements: List[Any],
     process_func: Callable[[Any], Any],
-    break_on_return: bool = False
+    break_on_return: bool = False,
 ) -> List[Any]:
     """
     Process a block of IR statements.
@@ -231,9 +236,7 @@ def process_ir_block(
     return results
 
 
-def extract_names_from_params(
-    params: List[str]
-) -> List[str]:
+def extract_names_from_params(params: List[str]) -> List[str]:
     """
     Extract parameter names from a function definition's parameters.
 
@@ -290,16 +293,17 @@ def is_valid_identifier(name: str) -> bool:
         return False
 
     # First character must be alphabetic or underscore
-    if not (name[0].isalpha() or name[0] == '_'):
+    if not (name[0].isalpha() or name[0] == "_"):
         return False
 
     # Remaining characters must be alphanumeric or underscore
     for char in name[1:]:
-        if not (char.isalnum() or char == '_'):
+        if not (char.isalnum() or char == "_"):
             return False
 
     # Check if it's a Python keyword
     import keyword
+
     if keyword.iskeyword(name):
         return False
 

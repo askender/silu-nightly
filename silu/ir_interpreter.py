@@ -55,7 +55,10 @@ class IRInterpreter:
 
     def execute(self, ir_node: Union[Tuple, Any]) -> Any:
         """Execute an IR node and return its value."""
-        if not isinstance(ir_node, (tuple, list)) or (isinstance(ir_node, list) and (not ir_node or not isinstance(ir_node[0], str))):
+        if not isinstance(ir_node, (tuple, list)) or (
+            isinstance(ir_node, list)
+            and (not ir_node or not isinstance(ir_node[0], str))
+        ):
             # Leaf values (constants, variables)
             if isinstance(ir_node, str) and self._is_identifier(ir_node):
                 try:
@@ -131,13 +134,23 @@ class IRInterpreter:
                 break
 
             # Check if main was called explicitly
-            if (isinstance(stmt, tuple) and len(stmt) >= 2 and
-                stmt[0] == "call" and isinstance(stmt[1], tuple) and
-                len(stmt[1]) >= 2 and stmt[1][0] == "name" and stmt[1][1] == "main"):
+            if (
+                isinstance(stmt, tuple)
+                and len(stmt) >= 2
+                and stmt[0] == "call"
+                and isinstance(stmt[1], tuple)
+                and len(stmt[1]) >= 2
+                and stmt[1][0] == "name"
+                and stmt[1][1] == "main"
+            ):
                 main_called_explicitly = True
 
         # Second pass: automatically call main() if it exists and wasn't called explicitly
-        if "main" in self.functions and not self.should_return and not main_called_explicitly:
+        if (
+            "main" in self.functions
+            and not self.should_return
+            and not main_called_explicitly
+        ):
             # Reset return state before calling main
             self.should_return = False
             self.return_value = None
@@ -167,7 +180,7 @@ class IRInterpreter:
     def _execute_const_b(self, value: str) -> bytes:
         """Execute bytes constant value."""
         # Convert string back to bytes using latin-1 encoding
-        return value.encode('latin-1')
+        return value.encode("latin-1")
 
     def _execute_typedef_struct(self, name: str, fields: Tuple) -> None:
         """Execute struct type definition."""
@@ -179,7 +192,11 @@ class IRInterpreter:
         if type_spec == "Enum":
             # Store the enum type
             self.enum_types[name] = type_spec
-        elif isinstance(type_spec, tuple) and len(type_spec) >= 2 and type_spec[0] == "Enum":
+        elif (
+            isinstance(type_spec, tuple)
+            and len(type_spec) >= 2
+            and type_spec[0] == "Enum"
+        ):
             # Future extensibility: Handle enum with constants list
             # Format: ("Enum", [constant_names])
             self.enum_types[name] = type_spec[0]
@@ -190,8 +207,10 @@ class IRInterpreter:
             #     self._set_variable(f"{name}_{constant}", i)
         else:
             # Handle other typedef cases (like struct)
-            if isinstance(type_spec, str) and hasattr(self, f'_execute_typedef_{type_spec.lower()}'):
-                getattr(self, f'_execute_typedef_{type_spec.lower()}')(name, type_spec)
+            if isinstance(type_spec, str) and hasattr(
+                self, f"_execute_typedef_{type_spec.lower()}"
+            ):
+                getattr(self, f"_execute_typedef_{type_spec.lower()}")(name, type_spec)
 
     def _execute_typedef_enum(self, enum_name: str, constants: List[Tuple]) -> None:
         """Execute enum type definition with constants."""
@@ -208,7 +227,9 @@ class IRInterpreter:
         """Execute variable name reference."""
         return self._get_variable(name)
 
-    def _execute_assign(self, target: Union[str, Tuple], value: Any, annotation: Any) -> None:
+    def _execute_assign(
+        self, target: Union[str, Tuple], value: Any, annotation: Any
+    ) -> None:
         """Execute assignment: target = value"""
         evaluated_value = self.execute(value)
 
@@ -256,10 +277,14 @@ class IRInterpreter:
                         evaluated_value = {}
                         # Mark this dictionary as a struct instance
                         self.struct_instances.add(id(evaluated_value))
-                elif isinstance(annotation, str) and annotation.endswith(']') and '[' in annotation:
+                elif (
+                    isinstance(annotation, str)
+                    and annotation.endswith("]")
+                    and "[" in annotation
+                ):
                     # Handle array types like "int[2]", "float[10]", etc.
-                    base_type, size_part = annotation.split('[', 1)
-                    size_str = size_part.rstrip(']')
+                    base_type, size_part = annotation.split("[", 1)
+                    size_str = size_part.rstrip("]")
                     try:
                         size = int(size_str)
                         if base_type == "int":
@@ -282,7 +307,9 @@ class IRInterpreter:
                 if annotation == "int":
                     try:
                         if isinstance(evaluated_value, str):
-                            evaluated_value = int(float(evaluated_value))  # Handle "123.0" strings
+                            evaluated_value = int(
+                                float(evaluated_value)
+                            )  # Handle "123.0" strings
                         else:
                             evaluated_value = int(evaluated_value)
                     except (ValueError, TypeError):
@@ -295,7 +322,11 @@ class IRInterpreter:
                 elif annotation == "bool":
                     try:
                         if isinstance(evaluated_value, str):
-                            evaluated_value = evaluated_value.lower() in ("true", "1", "yes")
+                            evaluated_value = evaluated_value.lower() in (
+                                "true",
+                                "1",
+                                "yes",
+                            )
                         else:
                             evaluated_value = bool(evaluated_value)
                     except (ValueError, TypeError):
@@ -341,13 +372,17 @@ class IRInterpreter:
                 # Handle other iterables
                 values = list(evaluated_value)
         except TypeError:
-            raise TypeError(f"cannot unpack non-sequence {type(evaluated_value).__name__}")
+            raise TypeError(
+                f"cannot unpack non-sequence {type(evaluated_value).__name__}"
+            )
 
         # Check that the number of targets matches the number of values
         if len(targets) != len(values):
-            raise ValueError(f"too many values to unpack (expected {len(targets)})"
-                           if len(values) > len(targets)
-                           else f"not enough values to unpack (expected {len(targets)}, got {len(values)})")
+            raise ValueError(
+                f"too many values to unpack (expected {len(targets)})"
+                if len(values) > len(targets)
+                else f"not enough values to unpack (expected {len(targets)}, got {len(values)})"
+            )
 
         # Assign each value to its corresponding target
         for target, val in zip(targets, values):
@@ -361,7 +396,9 @@ class IRInterpreter:
         elif isinstance(target, str):
             var_name = target
         else:
-            raise NotImplementedError(f"Unsupported augmented assignment target: {target}")
+            raise NotImplementedError(
+                f"Unsupported augmented assignment target: {target}"
+            )
 
         current_value = self._get_variable(var_name)
         new_value = self.execute(value)
@@ -404,7 +441,9 @@ class IRInterpreter:
 
         # Check closure functions
         if func_name in self.closures:
-            return self._call_closure_function(func_name, evaluated_args, evaluated_kwargs)
+            return self._call_closure_function(
+                func_name, evaluated_args, evaluated_kwargs
+            )
 
         # Check user-defined functions
         if func_name in self.functions:
@@ -459,9 +498,13 @@ class IRInterpreter:
             for item in iterable:
                 # Perform tuple unpacking
                 if not isinstance(item, (tuple, list)):
-                    raise ValueError(f"Cannot unpack non-sequence {type(item).__name__}")
+                    raise ValueError(
+                        f"Cannot unpack non-sequence {type(item).__name__}"
+                    )
                 if len(item) != len(target_names):
-                    raise ValueError(f"Too many values to unpack (expected {len(target_names)}, got {len(item)})")
+                    raise ValueError(
+                        f"Too many values to unpack (expected {len(target_names)}, got {len(item)})"
+                    )
 
                 # Assign each unpacked value to corresponding variable
                 for name, value in zip(target_names, item):
@@ -508,7 +551,14 @@ class IRInterpreter:
 
         return result
 
-    def _execute_func_def(self, name: str, args: Tuple, body: Tuple, decorators: Tuple = (), return_type: Any = None) -> None:
+    def _execute_func_def(
+        self,
+        name: str,
+        args: Tuple,
+        body: Tuple,
+        decorators: Tuple = (),
+        return_type: Any = None,
+    ) -> None:
         """Execute function definition."""
         # Capture current environment for closure support
         current_env = {}
@@ -517,7 +567,7 @@ class IRInterpreter:
         self.functions[name] = {
             "args": args,
             "body": body,
-            "closure_env": current_env  # Capture environment
+            "closure_env": current_env,  # Capture environment
         }
 
         # Also store in global environment for function name resolution
@@ -669,7 +719,7 @@ class IRInterpreter:
                 # Has star pattern
                 before_patterns = patterns[:star_index]
                 star_pattern = patterns[star_index]
-                after_patterns = patterns[star_index + 1:]
+                after_patterns = patterns[star_index + 1 :]
 
                 if len(value) < len(before_patterns) + len(after_patterns):
                     return None
@@ -1033,7 +1083,10 @@ class IRInterpreter:
             self._execute_block(func_body)
 
             # Handle case where function returns another function
-            if isinstance(self.return_value, str) and self.return_value in self.functions:
+            if (
+                isinstance(self.return_value, str)
+                and self.return_value in self.functions
+            ):
                 # Create a closure for the returned function
                 returned_func_name = self.return_value
                 self.closure_counter += 1
@@ -1042,7 +1095,7 @@ class IRInterpreter:
                 # Store the closure with current environment
                 self.closures[closure_id] = {
                     "func_name": returned_func_name,
-                    "closure_env": self.local_env_stack[-1].copy()
+                    "closure_env": self.local_env_stack[-1].copy(),
                 }
 
                 return closure_id
@@ -1201,7 +1254,7 @@ class IRInterpreter:
                     # Try to convert string numbers to appropriate types
                     try:
                         # Check if it looks like a float
-                        if '.' in arg:
+                        if "." in arg:
                             converted_args.append(float(arg))
                         else:
                             converted_args.append(int(arg))
@@ -1214,7 +1267,7 @@ class IRInterpreter:
             # Use Python's % formatting which is similar to C printf
             formatted = format_str % tuple(converted_args)
             print(formatted, end="")
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError):
             # If formatting fails, fall back to simple concatenation
             parts = [str(format_str)] + [str(arg) for arg in args]
             print(" ".join(parts), end="")

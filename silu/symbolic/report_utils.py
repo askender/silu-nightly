@@ -27,7 +27,9 @@ def path_to_dict(path: Any) -> Dict[str, Any]:
         "return_value": str(getattr(path, "return_value", None))
         if getattr(path, "return_value", None) is not None
         else None,
-        "variables": {str(k): str(v) for k, v in getattr(path, "variables", {}).items()},
+        "variables": {
+            str(k): str(v) for k, v in getattr(path, "variables", {}).items()
+        },
         "satisfiable": getattr(path, "satisfiable", True),
         "loop_iterations": getattr(path, "loop_iterations", {}),
         "test_inputs": getattr(path, "test_inputs", {}),
@@ -164,6 +166,7 @@ def generate_comprehensive_report(
             }
 
     return report
+
 
 def renumber_paths_sequentially(paths: List[Any]) -> List[Any]:
     """Renumber paths sequentially starting from 1"""

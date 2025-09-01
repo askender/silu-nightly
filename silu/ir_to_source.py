@@ -133,7 +133,7 @@ class IRToSourceConverter:
         """Convert bytes constant IR node to bytes literal."""
         _, string_value = ir_node
         # Convert string back to bytes representation
-        bytes_value = string_value.encode('latin-1')
+        bytes_value = string_value.encode("latin-1")
         return repr(bytes_value)
 
     def _convert_assign(self, ir_node: Tuple, indent_level: int) -> str:
@@ -262,7 +262,9 @@ class IRToSourceConverter:
             # C format: ("func_def", name, args, body, param_types, [return_type])
             _, name, args, body = ir_node[:4]
         else:
-            raise ValueError(f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}")
+            raise ValueError(
+                f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}"
+            )
         lines = []
 
         args_str = ", ".join(str(arg) for arg in args)
@@ -296,8 +298,6 @@ class IRToSourceConverter:
             lines.append(self.convert_to_source(body, indent_level + 1))
 
         return "\n".join(lines)
-
-
 
     def _convert_increment_decrement(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert increment/decrement operations IR to source code."""
@@ -836,7 +836,6 @@ def convert_ir_string_to_source(ir_string: str) -> str:
     # Convert to source
     converter = IRToSourceConverter()
     return converter.convert_to_source(ir_data)
-
 
 
 # Convenience functions for shared use with symbolic_executor

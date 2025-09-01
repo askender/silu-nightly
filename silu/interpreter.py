@@ -170,9 +170,11 @@ class SiluInterpreter(BaseASTProcessor):
 
         # Check that the number of targets matches the number of values
         if len(targets) != len(values):
-            raise ValueError(f"too many values to unpack (expected {len(targets)})"
-                           if len(values) > len(targets)
-                           else f"not enough values to unpack (expected {len(targets)}, got {len(values)})")
+            raise ValueError(
+                f"too many values to unpack (expected {len(targets)})"
+                if len(values) > len(targets)
+                else f"not enough values to unpack (expected {len(targets)}, got {len(values)})"
+            )
 
         # Assign each value to its corresponding target
         for target, val in zip(targets, values):
@@ -193,7 +195,9 @@ class SiluInterpreter(BaseASTProcessor):
             new_value = self.process_operation(op, current_value, value)
             self.process_subscript_assign(obj, key, new_value)
         else:
-            raise NotImplementedError(f"Unsupported augmented assignment target: {target}")
+            raise NotImplementedError(
+                f"Unsupported augmented assignment target: {target}"
+            )
 
     def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> None:
         """Handle subscript assignment (e.g., dict[key] = value)."""
@@ -280,37 +284,45 @@ class SiluInterpreter(BaseASTProcessor):
             raise TypeError(f"'{type(func).__name__}' object is not callable")
 
         # Memory protection for potentially dangerous function calls
-        if hasattr(func, '__name__'):
+        if hasattr(func, "__name__"):
             func_name = func.__name__
-        elif hasattr(func, '__class__') and hasattr(func.__class__, '__name__'):
+        elif hasattr(func, "__class__") and hasattr(func.__class__, "__name__"):
             func_name = func.__class__.__name__
         else:
             func_name = str(func)
 
         # Protect against large range() calls
-        if func_name == 'range' and args:
+        if func_name == "range" and args:
             if len(args) >= 1 and isinstance(args[0], int) and args[0] > 10000000:
-                raise MemoryError(f"Memory protection: range({args[0]}) exceeds limit (10,000,000)")
+                raise MemoryError(
+                    f"Memory protection: range({args[0]}) exceeds limit (10,000,000)"
+                )
             elif len(args) >= 2 and isinstance(args[1], int) and args[1] > 10000000:
-                raise MemoryError(f"Memory protection: range(..., {args[1]}) exceeds limit (10,000,000)")
+                raise MemoryError(
+                    f"Memory protection: range(..., {args[1]}) exceeds limit (10,000,000)"
+                )
 
         # Protect against extend() with large iterables
-        if func_name == 'extend' and args:
+        if func_name == "extend" and args:
             # Check if the argument is a range or large iterable
             if len(args) >= 1:
                 arg = args[0]
-                if hasattr(arg, '__len__'):
+                if hasattr(arg, "__len__"):
                     try:
                         length = len(arg)
                         if length > 10000000:
-                            raise MemoryError(f"Memory protection: extend() with {length} elements exceeds limit (10,000,000)")
+                            raise MemoryError(
+                                f"Memory protection: extend() with {length} elements exceeds limit (10,000,000)"
+                            )
                     except (TypeError, OverflowError):
                         # Some iterables like range might not have a reliable len()
                         # Check if it's a range with large values
-                        if hasattr(arg, 'start') and hasattr(arg, 'stop'):
+                        if hasattr(arg, "start") and hasattr(arg, "stop"):
                             size = abs(arg.stop - arg.start)
                             if size > 10000000:
-                                raise MemoryError(f"Memory protection: extend() with range of {size} elements exceeds limit (10,000,000)")
+                                raise MemoryError(
+                                    f"Memory protection: extend() with range of {size} elements exceeds limit (10,000,000)"
+                                )
 
         return func(*args, **keywords)
 
@@ -350,9 +362,13 @@ class SiluInterpreter(BaseASTProcessor):
                     for item in kwargs["iter"]:
                         # Perform tuple unpacking
                         if not isinstance(item, (tuple, list)):
-                            raise ValueError(f"Cannot unpack non-sequence {type(item).__name__}")
+                            raise ValueError(
+                                f"Cannot unpack non-sequence {type(item).__name__}"
+                            )
                         if len(item) != len(target_names):
-                            raise ValueError(f"Too many values to unpack (expected {len(target_names)}, got {len(item)})")
+                            raise ValueError(
+                                f"Too many values to unpack (expected {len(target_names)}, got {len(item)})"
+                            )
 
                         # Assign each unpacked value to corresponding variable
                         for name, value in zip(target_names, item):

@@ -326,15 +326,23 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             # Check for large number * sequence operations
             if isinstance(left, (list, tuple, str)) and isinstance(right, int):
                 if right > 1000000:  # 1M element limit
-                    raise MemoryError(f"Memory protection: Cannot multiply sequence by {right} (limit: 1,000,000)")
+                    raise MemoryError(
+                        f"Memory protection: Cannot multiply sequence by {right} (limit: 1,000,000)"
+                    )
                 if len(left) * right > 10000000:  # 10M total elements limit
-                    raise MemoryError(f"Memory protection: Result would have {len(left) * right} elements (limit: 10,000,000)")
+                    raise MemoryError(
+                        f"Memory protection: Result would have {len(left) * right} elements (limit: 10,000,000)"
+                    )
 
             elif isinstance(right, (list, tuple, str)) and isinstance(left, int):
                 if left > 1000000:  # 1M element limit
-                    raise MemoryError(f"Memory protection: Cannot multiply sequence by {left} (limit: 1,000,000)")
+                    raise MemoryError(
+                        f"Memory protection: Cannot multiply sequence by {left} (limit: 1,000,000)"
+                    )
                 if len(right) * left > 10000000:  # 10M total elements limit
-                    raise MemoryError(f"Memory protection: Result would have {len(right) * left} elements (limit: 10,000,000)")
+                    raise MemoryError(
+                        f"Memory protection: Result would have {len(right) * left} elements (limit: 10,000,000)"
+                    )
 
     # ================== Shared Node Processing Methods ==================
 

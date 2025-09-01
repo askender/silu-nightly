@@ -9,7 +9,7 @@ with tagged unions for Python-like objects.
 """
 
 import sys
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 from llvmlite import ir
 import llvmlite.binding as llvm
 from .ir_utils import parse_ir_from_json_string, IRParseError
@@ -22,16 +22,22 @@ class PyObject:
         self.module = module
 
         # Define PyObject struct: { i32 type_tag, i8* data }
-        self.pyobj_type = ir.LiteralStructType([
-            ir.IntType(32),  # type tag (0=int, 1=float, 2=str, 3=bool, 4=list, 5=dict, 6=none)
-            ir.PointerType(ir.IntType(8))  # data pointer
-        ])
+        self.pyobj_type = ir.LiteralStructType(
+            [
+                ir.IntType(
+                    32
+                ),  # type tag (0=int, 1=float, 2=str, 3=bool, 4=list, 5=dict, 6=none)
+                ir.PointerType(ir.IntType(8)),  # data pointer
+            ]
+        )
 
         # Define string struct: { i32 length, i8* chars }
-        self.string_type = ir.LiteralStructType([
-            ir.IntType(32),  # length
-            ir.PointerType(ir.IntType(8))  # chars
-        ])
+        self.string_type = ir.LiteralStructType(
+            [
+                ir.IntType(32),  # length
+                ir.PointerType(ir.IntType(8)),  # chars
+            ]
+        )
 
 
 class SiluToLLVMConverter:
@@ -56,7 +62,9 @@ class SiluToLLVMConverter:
         self.pyobj = PyObject(self.module)
 
         # Global context
-        self.variables: Dict[str, ir.Value] = {}  # Maps variable names to alloca instructions
+        self.variables: Dict[
+            str, ir.Value
+        ] = {}  # Maps variable names to alloca instructions
         self.functions: Dict[str, ir.Function] = {}
         self.current_function: Optional[ir.Function] = None
         self.current_builder: Optional[ir.IRBuilder] = None
@@ -71,7 +79,9 @@ class SiluToLLVMConverter:
         """Initialize runtime support functions."""
 
         # printf declaration
-        printf_ty = ir.FunctionType(ir.IntType(32), [ir.PointerType(ir.IntType(8))], var_arg=True)
+        printf_ty = ir.FunctionType(
+            ir.IntType(32), [ir.PointerType(ir.IntType(8))], var_arg=True
+        )
         self.printf = ir.Function(self.module, printf_ty, name="printf")
 
         # malloc and free
@@ -91,34 +101,46 @@ class SiluToLLVMConverter:
         """Create PyObject constructor functions."""
 
         # PyObject* create_int(i64 value)
-        create_int_ty = ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type), [ir.IntType(64)])
+        create_int_ty = ir.FunctionType(
+            ir.PointerType(self.pyobj.pyobj_type), [ir.IntType(64)]
+        )
         self.create_int = ir.Function(self.module, create_int_ty, name="create_int")
 
         block = self.create_int.append_basic_block("entry")
         builder = ir.IRBuilder(block)
 
         # Allocate PyObject
-        obj_ptr = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 16)])  # sizeof(PyObject)
+        obj_ptr = builder.call(
+            self.malloc, [ir.Constant(ir.IntType(64), 16)]
+        )  # sizeof(PyObject)
         obj = builder.bitcast(obj_ptr, ir.PointerType(self.pyobj.pyobj_type))
 
         # Set type tag to 0 (int)
-        tag_ptr = builder.gep(obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        tag_ptr = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
         builder.store(ir.Constant(ir.IntType(32), 0), tag_ptr)
 
         # Allocate and store integer value
-        data_ptr = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 8)])  # sizeof(i64)
+        data_ptr = builder.call(
+            self.malloc, [ir.Constant(ir.IntType(64), 8)]
+        )  # sizeof(i64)
         data_i64 = builder.bitcast(data_ptr, ir.PointerType(ir.IntType(64)))
         builder.store(self.create_int.args[0], data_i64)
 
         # Store data pointer
-        data_ptr_field = builder.gep(obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        data_ptr_field = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         builder.store(data_ptr, data_ptr_field)
 
         builder.ret(obj)
 
         # PyObject* create_str(i8* str, i32 len)
-        create_str_ty = ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type),
-                                       [ir.PointerType(ir.IntType(8)), ir.IntType(32)])
+        create_str_ty = ir.FunctionType(
+            ir.PointerType(self.pyobj.pyobj_type),
+            [ir.PointerType(ir.IntType(8)), ir.IntType(32)],
+        )
         self.create_str = ir.Function(self.module, create_str_ty, name="create_str")
 
         block = self.create_str.append_basic_block("entry")
@@ -129,23 +151,33 @@ class SiluToLLVMConverter:
         obj = builder.bitcast(obj_ptr, ir.PointerType(self.pyobj.pyobj_type))
 
         # Set type tag to 2 (string)
-        tag_ptr = builder.gep(obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        tag_ptr = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
         builder.store(ir.Constant(ir.IntType(32), 2), tag_ptr)
 
         # Allocate string struct
-        str_ptr = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 16)])  # sizeof(string_type)
+        str_ptr = builder.call(
+            self.malloc, [ir.Constant(ir.IntType(64), 16)]
+        )  # sizeof(string_type)
         str_struct = builder.bitcast(str_ptr, ir.PointerType(self.pyobj.string_type))
 
         # Store length
-        len_ptr = builder.gep(str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        len_ptr = builder.gep(
+            str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
         builder.store(self.create_str.args[1], len_ptr)
 
         # Store chars pointer
-        chars_ptr = builder.gep(str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        chars_ptr = builder.gep(
+            str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         builder.store(self.create_str.args[0], chars_ptr)
 
         # Store data pointer
-        data_ptr_field = builder.gep(obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        data_ptr_field = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         builder.store(str_ptr, data_ptr_field)
 
         builder.ret(obj)
@@ -154,8 +186,13 @@ class SiluToLLVMConverter:
         """Create PyObject operation functions."""
 
         # PyObject* pyobj_add(PyObject* left, PyObject* right)
-        add_ty = ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type),
-                               [ir.PointerType(self.pyobj.pyobj_type), ir.PointerType(self.pyobj.pyobj_type)])
+        add_ty = ir.FunctionType(
+            ir.PointerType(self.pyobj.pyobj_type),
+            [
+                ir.PointerType(self.pyobj.pyobj_type),
+                ir.PointerType(self.pyobj.pyobj_type),
+            ],
+        )
         self.pyobj_add = ir.Function(self.module, add_ty, name="pyobj_add")
 
         block = self.pyobj_add.append_basic_block("entry")
@@ -164,15 +201,19 @@ class SiluToLLVMConverter:
         left, right = self.pyobj_add.args
 
         # Get type tags
-        left_tag_ptr = builder.gep(left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        right_tag_ptr = builder.gep(right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        left_tag_ptr = builder.gep(
+            left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
+        right_tag_ptr = builder.gep(
+            right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
         left_tag = builder.load(left_tag_ptr)
         right_tag = builder.load(right_tag_ptr)
 
         # Check if both are integers (tag == 0)
         both_int_cond = builder.and_(
-            builder.icmp_signed('==', left_tag, ir.Constant(ir.IntType(32), 0)),
-            builder.icmp_signed('==', right_tag, ir.Constant(ir.IntType(32), 0))
+            builder.icmp_signed("==", left_tag, ir.Constant(ir.IntType(32), 0)),
+            builder.icmp_signed("==", right_tag, ir.Constant(ir.IntType(32), 0)),
         )
 
         int_block = self.pyobj_add.append_basic_block("int_add")
@@ -183,8 +224,12 @@ class SiluToLLVMConverter:
         builder.position_at_end(int_block)
 
         # Get integer values
-        left_data_ptr = builder.gep(left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
-        right_data_ptr = builder.gep(right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        left_data_ptr = builder.gep(
+            left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
+        right_data_ptr = builder.gep(
+            right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         left_data = builder.load(left_data_ptr)
         right_data = builder.load(right_data_ptr)
         left_i64_ptr = builder.bitcast(left_data, ir.PointerType(ir.IntType(64)))
@@ -206,7 +251,9 @@ class SiluToLLVMConverter:
 
         # Overflow case - print error and exit
         builder.position_at_end(overflow_block)
-        error_msg = self._create_global_string_with_builder("Error: Integer overflow in addition\n", builder)
+        error_msg = self._create_global_string_with_builder(
+            "Error: Integer overflow in addition\n", builder
+        )
         builder.call(self.printf, [error_msg])
 
         # Exit with error code 1
@@ -230,7 +277,9 @@ class SiluToLLVMConverter:
     def _create_pyobj_print(self):
         """Create PyObject print function."""
 
-        print_ty = ir.FunctionType(ir.VoidType(), [ir.PointerType(self.pyobj.pyobj_type)])
+        print_ty = ir.FunctionType(
+            ir.VoidType(), [ir.PointerType(self.pyobj.pyobj_type)]
+        )
         self.pyobj_print = ir.Function(self.module, print_ty, name="pyobj_print")
 
         entry_block = self.pyobj_print.append_basic_block("entry")
@@ -243,7 +292,9 @@ class SiluToLLVMConverter:
         obj = self.pyobj_print.args[0]
 
         # Get type tag
-        tag_ptr = builder.gep(obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        tag_ptr = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
         tag = builder.load(tag_ptr)
 
         # Switch on type tag
@@ -253,7 +304,9 @@ class SiluToLLVMConverter:
 
         # Print integer
         builder.position_at_end(int_block)
-        data_ptr = builder.gep(obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        data_ptr = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         data = builder.load(data_ptr)
         i64_ptr = builder.bitcast(data, ir.PointerType(ir.IntType(64)))
         val = builder.load(i64_ptr)
@@ -265,10 +318,14 @@ class SiluToLLVMConverter:
 
         # Print string
         builder.position_at_end(str_block)
-        data_ptr = builder.gep(obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        data_ptr = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         data = builder.load(data_ptr)
         str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
-        chars_ptr_ptr = builder.gep(str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        chars_ptr_ptr = builder.gep(
+            str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         chars_ptr = builder.load(chars_ptr_ptr)
 
         str_fmt = self._create_global_string_with_builder("%s", builder)
@@ -277,7 +334,9 @@ class SiluToLLVMConverter:
 
         # Default case
         builder.position_at_end(default_block)
-        unknown_fmt = self._create_global_string_with_builder("<unknown object>", builder)
+        unknown_fmt = self._create_global_string_with_builder(
+            "<unknown object>", builder
+        )
         builder.call(self.printf, [unknown_fmt])
         builder.ret_void()
 
@@ -285,8 +344,13 @@ class SiluToLLVMConverter:
         """Create PyObject comparison operations."""
 
         # PyObject* pyobj_le(PyObject* left, PyObject* right) - less than or equal
-        le_ty = ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type),
-                               [ir.PointerType(self.pyobj.pyobj_type), ir.PointerType(self.pyobj.pyobj_type)])
+        le_ty = ir.FunctionType(
+            ir.PointerType(self.pyobj.pyobj_type),
+            [
+                ir.PointerType(self.pyobj.pyobj_type),
+                ir.PointerType(self.pyobj.pyobj_type),
+            ],
+        )
         self.pyobj_le = ir.Function(self.module, le_ty, name="pyobj_le")
 
         block = self.pyobj_le.append_basic_block("entry")
@@ -295,15 +359,19 @@ class SiluToLLVMConverter:
         left, right = self.pyobj_le.args
 
         # Get type tags
-        left_tag_ptr = builder.gep(left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
-        right_tag_ptr = builder.gep(right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        left_tag_ptr = builder.gep(
+            left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
+        right_tag_ptr = builder.gep(
+            right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
         left_tag = builder.load(left_tag_ptr)
         right_tag = builder.load(right_tag_ptr)
 
         # Check if both are integers (tag == 0)
         both_int_cond = builder.and_(
-            builder.icmp_signed('==', left_tag, ir.Constant(ir.IntType(32), 0)),
-            builder.icmp_signed('==', right_tag, ir.Constant(ir.IntType(32), 0))
+            builder.icmp_signed("==", left_tag, ir.Constant(ir.IntType(32), 0)),
+            builder.icmp_signed("==", right_tag, ir.Constant(ir.IntType(32), 0)),
         )
 
         int_block = self.pyobj_le.append_basic_block("int_le")
@@ -314,8 +382,12 @@ class SiluToLLVMConverter:
         builder.position_at_end(int_block)
 
         # Get integer values
-        left_data_ptr = builder.gep(left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
-        right_data_ptr = builder.gep(right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        left_data_ptr = builder.gep(
+            left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
+        right_data_ptr = builder.gep(
+            right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         left_data = builder.load(left_data_ptr)
         right_data = builder.load(right_data_ptr)
         left_i64_ptr = builder.bitcast(left_data, ir.PointerType(ir.IntType(64)))
@@ -324,7 +396,7 @@ class SiluToLLVMConverter:
         right_val = builder.load(right_i64_ptr)
 
         # Compare values (left <= right)
-        result_bool = builder.icmp_signed('<=', left_val, right_val)
+        result_bool = builder.icmp_signed("<=", left_val, right_val)
         result_int = builder.zext(result_bool, ir.IntType(64))
         result_obj = builder.call(self.create_int, [result_int])
         builder.ret(result_obj)
@@ -339,28 +411,40 @@ class SiluToLLVMConverter:
         # For simplicity, inline the comparison here
 
         # Get integer values
-        left_data_ptr = self.current_builder.gep(left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
-        right_data_ptr = self.current_builder.gep(right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        left_data_ptr = self.current_builder.gep(
+            left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
+        right_data_ptr = self.current_builder.gep(
+            right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         left_data = self.current_builder.load(left_data_ptr)
         right_data = self.current_builder.load(right_data_ptr)
-        left_i64_ptr = self.current_builder.bitcast(left_data, ir.PointerType(ir.IntType(64)))
-        right_i64_ptr = self.current_builder.bitcast(right_data, ir.PointerType(ir.IntType(64)))
+        left_i64_ptr = self.current_builder.bitcast(
+            left_data, ir.PointerType(ir.IntType(64))
+        )
+        right_i64_ptr = self.current_builder.bitcast(
+            right_data, ir.PointerType(ir.IntType(64))
+        )
         left_val = self.current_builder.load(left_i64_ptr)
         right_val = self.current_builder.load(right_i64_ptr)
 
         # Compare values (left < right)
-        result_bool = self.current_builder.icmp_signed('<', left_val, right_val)
+        result_bool = self.current_builder.icmp_signed("<", left_val, right_val)
         result_int = self.current_builder.zext(result_bool, ir.IntType(64))
         return self.current_builder.call(self.create_int, [result_int])
 
     def _create_unary_minus(self, operand: ir.Value) -> ir.Value:
         """Create unary minus operation for PyObject."""
         # Check if operand is an integer
-        tag_ptr = self.current_builder.gep(operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        tag_ptr = self.current_builder.gep(
+            operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
         tag = self.current_builder.load(tag_ptr)
 
         # Check if it's an integer (tag == 0)
-        is_int_cond = self.current_builder.icmp_signed('==', tag, ir.Constant(ir.IntType(32), 0))
+        is_int_cond = self.current_builder.icmp_signed(
+            "==", tag, ir.Constant(ir.IntType(32), 0)
+        )
 
         int_block = self.current_function.append_basic_block("unary_minus_int")
         error_block = self.current_function.append_basic_block("unary_minus_error")
@@ -368,7 +452,9 @@ class SiluToLLVMConverter:
 
         # Integer negation
         self.current_builder.position_at_end(int_block)
-        data_ptr = self.current_builder.gep(operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+        data_ptr = self.current_builder.gep(
+            operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
         data = self.current_builder.load(data_ptr)
         i64_ptr = self.current_builder.bitcast(data, ir.PointerType(ir.IntType(64)))
         val = self.current_builder.load(i64_ptr)
@@ -399,20 +485,30 @@ class SiluToLLVMConverter:
 
         # llvm.sadd.with.overflow.i64 - signed add with overflow detection
         overflow_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(1)])  # {i64, i1}
-        sadd_overflow_ty = ir.FunctionType(overflow_ty, [ir.IntType(64), ir.IntType(64)])
-        self.sadd_overflow = ir.Function(self.module, sadd_overflow_ty, name="llvm.sadd.with.overflow.i64")
+        sadd_overflow_ty = ir.FunctionType(
+            overflow_ty, [ir.IntType(64), ir.IntType(64)]
+        )
+        self.sadd_overflow = ir.Function(
+            self.module, sadd_overflow_ty, name="llvm.sadd.with.overflow.i64"
+        )
 
     def _create_global_string(self, string_content: str) -> ir.Value:
         """Create a global string constant."""
-        return self._create_global_string_with_builder(string_content, self.current_builder)
+        return self._create_global_string_with_builder(
+            string_content, self.current_builder
+        )
 
-    def _create_global_string_with_builder(self, string_content: str, builder: ir.IRBuilder) -> ir.Value:
+    def _create_global_string_with_builder(
+        self, string_content: str, builder: ir.IRBuilder
+    ) -> ir.Value:
         """Create a global string constant with a specific builder."""
-        string_bytes = bytearray((string_content + '\0').encode('utf-8'))
+        string_bytes = bytearray((string_content + "\0").encode("utf-8"))
         string_type = ir.ArrayType(ir.IntType(8), len(string_bytes))
 
         # Create global variable
-        global_str = ir.GlobalVariable(self.module, string_type, name=f"str_{len(self.module.globals)}")
+        global_str = ir.GlobalVariable(
+            self.module, string_type, name=f"str_{len(self.module.globals)}"
+        )
         global_str.global_constant = True
         global_str.initializer = ir.Constant(string_type, string_bytes)
 
@@ -475,7 +571,9 @@ class SiluToLLVMConverter:
             # All functions return PyObject* and take PyObject* parameters
             param_count = len(func_def[2]) if len(func_def) > 2 else 0
             param_types = [ir.PointerType(self.pyobj.pyobj_type)] * param_count
-            func_ty = ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type), param_types)
+            func_ty = ir.FunctionType(
+                ir.PointerType(self.pyobj.pyobj_type), param_types
+            )
             func = ir.Function(self.module, func_ty, name=func_name)
             self.functions[func_name] = func
 
@@ -485,7 +583,9 @@ class SiluToLLVMConverter:
             func = self.functions[func_name]
             self._generate_function_body(func, func_def)
 
-    def _convert_node(self, node: Any, skip_func_defs: bool = False) -> Optional[ir.Value]:
+    def _convert_node(
+        self, node: Any, skip_func_defs: bool = False
+    ) -> Optional[ir.Value]:
         """Convert a single IR node."""
 
         if not isinstance(node, list) or len(node) == 0:
@@ -503,16 +603,21 @@ class SiluToLLVMConverter:
         elif op == "const":
             value = node[1]
             if isinstance(value, int):
-                return self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), value)])
+                return self.current_builder.call(
+                    self.create_int, [ir.Constant(ir.IntType(64), value)]
+                )
             elif isinstance(value, str):
                 # Create string constant
                 str_len = len(value)  # Not including null terminator
                 str_ptr = self._create_global_string(value)
-                return self.current_builder.call(self.create_str,
-                                                [str_ptr, ir.Constant(ir.IntType(32), str_len)])
+                return self.current_builder.call(
+                    self.create_str, [str_ptr, ir.Constant(ir.IntType(32), str_len)]
+                )
             else:
                 # For now, just treat other constants as integers
-                return self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), 0)])
+                return self.current_builder.call(
+                    self.create_int, [ir.Constant(ir.IntType(64), 0)]
+                )
 
         elif op == "name":
             var_name = node[1]
@@ -569,7 +674,11 @@ class SiluToLLVMConverter:
             func_node = node[1]
             args_node = node[2] if len(node) > 2 else []
 
-            if isinstance(func_node, list) and len(func_node) >= 2 and func_node[0] == "name":
+            if (
+                isinstance(func_node, list)
+                and len(func_node) >= 2
+                and func_node[0] == "name"
+            ):
                 func_name = func_node[1]
 
                 if func_name == "print":
@@ -593,8 +702,16 @@ class SiluToLLVMConverter:
                         # range(start, stop) -> return stop for loop iteration count
                         # For proper loop implementation, we need the stop value
                         stop_val = self._convert_node(args_node[1])
-                        return stop_val if stop_val else self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), 0)])
-                    return self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), 0)])
+                        return (
+                            stop_val
+                            if stop_val
+                            else self.current_builder.call(
+                                self.create_int, [ir.Constant(ir.IntType(64), 0)]
+                            )
+                        )
+                    return self.current_builder.call(
+                        self.create_int, [ir.Constant(ir.IntType(64), 0)]
+                    )
 
                 elif func_name in self.functions:
                     # Handle user-defined function calls
@@ -629,13 +746,23 @@ class SiluToLLVMConverter:
 
                     # Extract boolean value from PyObject and branch accordingly
                     # Get the data pointer (should be i64 for integers)
-                    data_ptr = self.current_builder.gep(test_val, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+                    data_ptr = self.current_builder.gep(
+                        test_val,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), 1),
+                        ],
+                    )
                     data = self.current_builder.load(data_ptr)
-                    i64_ptr = self.current_builder.bitcast(data, ir.PointerType(ir.IntType(64)))
+                    i64_ptr = self.current_builder.bitcast(
+                        data, ir.PointerType(ir.IntType(64))
+                    )
                     bool_val = self.current_builder.load(i64_ptr)
 
                     # Convert i64 to i1 (boolean) - non-zero is true
-                    condition = self.current_builder.icmp_signed('!=', bool_val, ir.Constant(ir.IntType(64), 0))
+                    condition = self.current_builder.icmp_signed(
+                        "!=", bool_val, ir.Constant(ir.IntType(64), 0)
+                    )
                     self.current_builder.cbranch(condition, then_block, else_block)
 
                     # Generate then block
@@ -672,16 +799,25 @@ class SiluToLLVMConverter:
                 start_val = None
                 end_val = None
 
-                if isinstance(iter_node, list) and len(iter_node) >= 3 and iter_node[0] == "call":
+                if (
+                    isinstance(iter_node, list)
+                    and len(iter_node) >= 3
+                    and iter_node[0] == "call"
+                ):
                     func_node = iter_node[1]
                     args_node = iter_node[2] if len(iter_node) > 2 else []
 
-                    if (isinstance(func_node, list) and len(func_node) >= 2 and
-                        func_node[0] == "name" and func_node[1] == "range"):
-
+                    if (
+                        isinstance(func_node, list)
+                        and len(func_node) >= 2
+                        and func_node[0] == "name"
+                        and func_node[1] == "range"
+                    ):
                         if len(args_node) == 1:
                             # range(stop) -> start=0, stop=args[0]
-                            start_val = self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), 0)])
+                            start_val = self.current_builder.call(
+                                self.create_int, [ir.Constant(ir.IntType(64), 0)]
+                            )
                             end_val = self._convert_node(args_node[0])
                         elif len(args_node) >= 2:
                             # range(start, stop) -> start=args[0], stop=args[1]
@@ -690,9 +826,15 @@ class SiluToLLVMConverter:
 
                 # Default values if not range()
                 if not start_val:
-                    start_val = self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), 0)])
+                    start_val = self.current_builder.call(
+                        self.create_int, [ir.Constant(ir.IntType(64), 0)]
+                    )
                 if not end_val:
-                    end_val = self._convert_node(iter_node) or self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), 10)])
+                    end_val = self._convert_node(
+                        iter_node
+                    ) or self.current_builder.call(
+                        self.create_int, [ir.Constant(ir.IntType(64), 10)]
+                    )
 
                 # Create loop blocks
                 loop_init = self.current_function.append_basic_block("loop_init")
@@ -705,7 +847,9 @@ class SiluToLLVMConverter:
 
                 # Initialize loop variable to start value
                 self.current_builder.position_at_end(loop_init)
-                counter_ptr = self.current_builder.alloca(ir.PointerType(self.pyobj.pyobj_type))
+                counter_ptr = self.current_builder.alloca(
+                    ir.PointerType(self.pyobj.pyobj_type)
+                )
                 self.current_builder.store(start_val, counter_ptr)
                 self.current_builder.branch(loop_cond)
 
@@ -717,18 +861,29 @@ class SiluToLLVMConverter:
                 cond_result = self._create_less_than_comparison(current_val, end_val)
 
                 # Extract boolean condition
-                data_ptr = self.current_builder.gep(cond_result, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)])
+                data_ptr = self.current_builder.gep(
+                    cond_result,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+                )
                 data = self.current_builder.load(data_ptr)
-                i64_ptr = self.current_builder.bitcast(data, ir.PointerType(ir.IntType(64)))
+                i64_ptr = self.current_builder.bitcast(
+                    data, ir.PointerType(ir.IntType(64))
+                )
                 bool_val = self.current_builder.load(i64_ptr)
-                condition = self.current_builder.icmp_signed('!=', bool_val, ir.Constant(ir.IntType(64), 0))
+                condition = self.current_builder.icmp_signed(
+                    "!=", bool_val, ir.Constant(ir.IntType(64), 0)
+                )
                 self.current_builder.cbranch(condition, loop_body, loop_end)
 
                 # Loop body
                 self.current_builder.position_at_end(loop_body)
 
                 # Set loop variable if it's a name (current iteration value)
-                if isinstance(target_node, list) and len(target_node) >= 2 and target_node[0] == "name":
+                if (
+                    isinstance(target_node, list)
+                    and len(target_node) >= 2
+                    and target_node[0] == "name"
+                ):
                     var_name = target_node[1]
                     # Create alloca if variable doesn't exist
                     if var_name not in self.variables:
@@ -737,7 +892,9 @@ class SiluToLLVMConverter:
                         )
                     # Store current iteration value
                     current_iter_val = self.current_builder.load(counter_ptr)
-                    self.current_builder.store(current_iter_val, self.variables[var_name])
+                    self.current_builder.store(
+                        current_iter_val, self.variables[var_name]
+                    )
 
                 # Execute body statements
                 for stmt in body_stmts:
@@ -748,8 +905,12 @@ class SiluToLLVMConverter:
                 # Increment counter if not terminated
                 if not self.current_builder.block.is_terminated:
                     current_counter = self.current_builder.load(counter_ptr)
-                    one = self.current_builder.call(self.create_int, [ir.Constant(ir.IntType(64), 1)])
-                    next_val = self.current_builder.call(self.pyobj_add, [current_counter, one])
+                    one = self.current_builder.call(
+                        self.create_int, [ir.Constant(ir.IntType(64), 1)]
+                    )
+                    next_val = self.current_builder.call(
+                        self.pyobj_add, [current_counter, one]
+                    )
                     self.current_builder.store(next_val, counter_ptr)
                     self.current_builder.branch(loop_cond)
 
@@ -771,7 +932,11 @@ class SiluToLLVMConverter:
                 value_node = node[2]  # Expression to unpack
 
                 # Handle tuple assignment with proper simultaneous semantics
-                if isinstance(value_node, list) and len(value_node) >= 2 and value_node[0] == "tuple":
+                if (
+                    isinstance(value_node, list)
+                    and len(value_node) >= 2
+                    and value_node[0] == "tuple"
+                ):
                     elements = value_node[1] if len(value_node) > 1 else []
 
                     # First, evaluate all right-hand side values before any assignment
@@ -783,14 +948,20 @@ class SiluToLLVMConverter:
 
                     # Then assign all values to targets
                     for i, target in enumerate(targets):
-                        if i < len(evaluated_values) and evaluated_values[i] and isinstance(target, str):
+                        if (
+                            i < len(evaluated_values)
+                            and evaluated_values[i]
+                            and isinstance(target, str)
+                        ):
                             # Create alloca if variable doesn't exist
                             if target not in self.variables:
                                 self.variables[target] = self.current_builder.alloca(
                                     ir.PointerType(self.pyobj.pyobj_type), name=target
                                 )
                             # Store the value
-                            self.current_builder.store(evaluated_values[i], self.variables[target])
+                            self.current_builder.store(
+                                evaluated_values[i], self.variables[target]
+                            )
 
                 return None
 
@@ -808,7 +979,11 @@ class SiluToLLVMConverter:
             # Handle return statements
             if len(node) > 1:
                 return_val = self._convert_node(node[1])
-                if return_val and self.current_function and not self.current_builder.block.is_terminated:
+                if (
+                    return_val
+                    and self.current_function
+                    and not self.current_builder.block.is_terminated
+                ):
                     self.current_builder.ret(return_val)
                     return return_val
             # Return None/null if no value
@@ -872,7 +1047,7 @@ class SiluToLLVMConverter:
 
     def save_to_file(self, llvm_ir: str, filename: str):
         """Save LLVM IR to file."""
-        with open(filename, 'w') as f:
+        with open(filename, "w") as f:
             f.write(llvm_ir)
 
 
@@ -888,7 +1063,7 @@ def main():
 
     try:
         # Read Silu IR
-        with open(input_file, 'r') as f:
+        with open(input_file, "r") as f:
             ir_json = f.read()
 
         # Convert to LLVM IR

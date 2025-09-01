@@ -249,10 +249,18 @@ class ExpressionParser:
                     right = parts[1].strip()
 
                     # 确保变量在 var_map 中
-                    if left not in var_map and not left.isdigit() and left not in {'True', 'False', 'None'}:
+                    if (
+                        left not in var_map
+                        and not left.isdigit()
+                        and left not in {"True", "False", "None"}
+                    ):
                         var_map[left] = Int(left)
 
-                    if right not in var_map and not right.isdigit() and right not in {'True', 'False', 'None'}:
+                    if (
+                        right not in var_map
+                        and not right.isdigit()
+                        and right not in {"True", "False", "None"}
+                    ):
                         var_map[right] = Int(right)
 
                     left_z3 = self._expr_to_z3_simple(left, var_map)
@@ -441,23 +449,28 @@ class ConditionProcessor:
 
         return None
 
-    def _ensure_variables_in_map(self, condition_str: str, var_map: Dict[str, Any]) -> None:
+    def _ensure_variables_in_map(
+        self, condition_str: str, var_map: Dict[str, Any]
+    ) -> None:
         """确保条件字符串中的所有变量都在变量映射中"""
         if not Z3_AVAILABLE:
             return
 
         import re
+
         # 匹配变量名的正则表达式
-        var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
+        var_pattern = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
         # 用于识别比较表达式的模式
-        comparison_pattern = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*([<>=!]+)\s*(\d+|\w+)')
-        keywords = {'and', 'or', 'not', 'True', 'False', 'None'}
-        operators = {'<', '>', '<=', '>=', '==', '!=', '+', '-', '*', '/', '%'}
+        comparison_pattern = re.compile(
+            r"([a-zA-Z_][a-zA-Z0-9_]*)\s*([<>=!]+)\s*(\d+|\w+)"
+        )
+        keywords = {"and", "or", "not", "True", "False", "None"}
+        operators = {"<", ">", "<=", ">=", "==", "!=", "+", "-", "*", "/", "%"}
 
         variables = []
 
         # 优先处理复合条件中的比较表达式
-        if ' and ' in condition_str or ' or ' in condition_str:
+        if " and " in condition_str or " or " in condition_str:
             comp_matches = comparison_pattern.findall(condition_str)
             for var_name, op, value in comp_matches:
                 if var_name not in keywords and not var_name.isdigit():
@@ -466,14 +479,25 @@ class ConditionProcessor:
         # 提取所有变量名
         matches = var_pattern.findall(condition_str)
         # 过滤掉关键字、操作符和数字
-        variables.extend([var for var in matches if var not in keywords and var not in operators and not var.isdigit() and var not in variables])
+        variables.extend(
+            [
+                var
+                for var in matches
+                if var not in keywords
+                and var not in operators
+                and not var.isdigit()
+                and var not in variables
+            ]
+        )
 
         # 为每个变量创建Z3变量
         for var_name in variables:
             if var_name not in var_map:
                 var_map[var_name] = Int(var_name)
 
-    def tuple_expr_to_z3_simple(self, expr_tuple: tuple, var_map: Dict[str, Any]) -> Any:
+    def tuple_expr_to_z3_simple(
+        self, expr_tuple: tuple, var_map: Dict[str, Any]
+    ) -> Any:
         """Simple tuple expression processing"""
         if not Z3_AVAILABLE or not isinstance(expr_tuple, tuple) or len(expr_tuple) < 2:
             return None
@@ -526,8 +550,6 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
     if not Z3_AVAILABLE:
         return None
 
-
-
     processor = ConditionProcessor()
 
     # 处理字符串条件
@@ -536,12 +558,18 @@ def condition_to_z3(condition: Any, var_map: Dict[str, Any], solver) -> Any:
 
         # 为所有变量名创建Z3变量
         import re
-        var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
-        keywords = {'and', 'or', 'not', 'True', 'False', 'None'}
-        operators = {'<', '>', '<=', '>=', '==', '!=', '+', '-', '*', '/', '%'}
+
+        var_pattern = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
+        keywords = {"and", "or", "not", "True", "False", "None"}
+        operators = {"<", ">", "<=", ">=", "==", "!=", "+", "-", "*", "/", "%"}
         matches = var_pattern.findall(expr)
         for var in matches:
-            if var not in keywords and var not in operators and not var.isdigit() and var not in var_map:
+            if (
+                var not in keywords
+                and var not in operators
+                and not var.isdigit()
+                and var not in var_map
+            ):
                 var_map[var] = Int(var)
 
         # 处理 "and" 条件

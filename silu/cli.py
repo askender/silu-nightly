@@ -20,13 +20,14 @@ from silu.symbolic_executor import (
     SymbolicExecutor,
     execute_symbolic_from_file_with_executor,
     execute_symbolic_from_string_with_executor,
-#     execute_symbolic_from_file,
-#     execute_symbolic_from_string,
+    #     execute_symbolic_from_file,
+    #     execute_symbolic_from_string,
 )
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 
 try:
     from .silu_ir_to_llvm import SiluToLLVMConverter
+
     LLVM_AVAILABLE = True
 except ImportError:
     LLVM_AVAILABLE = False
@@ -88,8 +89,10 @@ def check_interpreter(source_code: str, **kwargs) -> tuple[bool, str]:
         interpreter = SiluInterpreter(**kwargs)
 
         # Suppress all output during interpretation
-        with contextlib.redirect_stdout(io.StringIO()), \
-             contextlib.redirect_stderr(io.StringIO()):
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
             interpreter.visit(tree)
 
         return True, ""
@@ -194,13 +197,16 @@ def run_llvm_ir_generator(
 ) -> None:
     """Generate LLVM IR from Silu IR."""
     if not LLVM_AVAILABLE:
-        print("Error: LLVM IR generation not available. Please install llvmlite.", file=sys.stderr)
+        print(
+            "Error: LLVM IR generation not available. Please install llvmlite.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     try:
         if is_file:
             # Read IR from file
-            with open(source, 'r', encoding='utf-8') as f:
+            with open(source, "r", encoding="utf-8") as f:
                 ir_json = f.read()
         else:
             # Use IR string directly
@@ -241,6 +247,7 @@ def run_ir_to_source_converter(
     except Exception as e:
         print(f"Error converting IR to source: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     """Run symbolic execution on source code or IR."""
@@ -328,12 +335,9 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                         if isinstance(func_paths, list) and func_paths:
                             # Renumber and enhance function paths
                             enhanced_func_paths = (
-                                executor.enhance_paths_with_test_cases(
-                                    func_paths
-                                )
+                                executor.enhance_paths_with_test_cases(func_paths)
                             )
                             executor.function_analyses[func_name] = enhanced_func_paths
-
 
             # Generate and print report for all files
             report = executor.generate_report(paths)
@@ -341,12 +345,9 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         else:
             print("No execution paths found.")
 
-
-
     except Exception as e:
         print(f"Error in symbolic execution: {e}", file=sys.stderr)
         sys.exit(1)
-
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -417,9 +418,7 @@ Examples:
     check_parser = subparsers.add_parser(
         "check", help="Check if Python code can be interpreted by Silu"
     )
-    check_parser.add_argument(
-        "file", help="Python source file to check"
-    )
+    check_parser.add_argument("file", help="Python source file to check")
 
     # IR generation subcommand
     ir_parser = subparsers.add_parser("ir", help="Generate intermediate representation")
@@ -528,7 +527,10 @@ def validate_arguments(args) -> None:
     if args.mode == "check":
         # For check mode, only file is required (no --source support)
         if not args.file:
-            print("Error: A Python source file must be provided for check mode.", file=sys.stderr)
+            print(
+                "Error: A Python source file must be provided for check mode.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         # Don't check file existence here for check mode - let run_check handle it
     elif args.mode in ["exec", "symbolic", "to-source", "llvm"]:

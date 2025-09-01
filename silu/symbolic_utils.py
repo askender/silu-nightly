@@ -7,7 +7,6 @@ from abc import ABC, abstractmethod
 
 
 from .symbolic.builtin_utils import (
-    SymbolicValueType,
     SymbolicValue,
     create_symbolic_value,
 )
@@ -16,7 +15,14 @@ from .symbolic.z3_utils import (
     Z3_AVAILABLE,
 )
 
+from .symbolic.builtin_utils import (
+    SymbolicValue,
+    create_concrete_value,
+    create_symbolic_value,
+)
+
 # Configuration Constants
+
 
 class Config:
     """Configuration constants for symbolic execution"""
@@ -28,6 +34,7 @@ class Config:
     DEFAULT_PATH_PREFIX = "path_"
     DEFAULT_ENCODING = "utf-8"
 
+
 class ExecutionPathState(Enum):
     """Enumeration of execution path states"""
 
@@ -36,17 +43,19 @@ class ExecutionPathState(Enum):
     ERROR = "error"
     UNSATISFIABLE = "unsatisfiable"
 
+
 logger.remove()  # 移除默认的 handler
 logger.add(
-    sink=sys.stderr,   # 或 sys.stdout
+    sink=sys.stderr,  # 或 sys.stdout
     format=(
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<level>{level: <8}</level> | "
         "<cyan>{file.path}</cyan>:<cyan>{line}</cyan>:<cyan>{function}</cyan>: - "
         "<level>{message}</level>"
     ),
-    colorize=True
+    colorize=True,
 )
+
 
 class SymbolicEnvironment:
     """Environment for symbolic execution with improved encapsulation"""
@@ -124,3 +133,31 @@ class IRNodeHandler(ABC):
     def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         """Handle the IR node and return its symbolic value"""
         pass
+
+
+class AssignmentHandler(IRNodeHandler):
+    """Handler for assignment operations"""
+
+    def can_handle(self, ir_node: Tuple) -> bool:
+        return (
+            isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "assign"
+        )
+
+    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
+        try:
+            _, var_name, value_ir, _ = ir_node
+            value = executor._execute_ir(value_ir)
+            executor.current_env.set_variable(var_name, value)
+
+            if executor.current_path:
+                simplified_value = executor._simplify_display(value)
+                executor.current_path.add_statement(f"{var_name} = {simplified_value}")
+                executor.current_path.variables[var_name] = value
+
+            return value
+        except Exception as e:
+            logger.error(f"Error: {e}")
+            if executor.current_path:
+                executor.current_path.add_statement(f"Error in assignment: {e}")
+                executor.current_path.state = ExecutionPathState.ERROR
+            return create_concrete_value(None)
