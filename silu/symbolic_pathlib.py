@@ -35,15 +35,16 @@ class ExecutionPath:
     expected_outputs: Dict[str, Any] = field(default_factory=dict)
     z3_error: Optional[str] = None
 
-    def add_condition(self, condition: PathCondition) -> None:
-        """Add a path condition"""
-        self.conditions.append(condition)
-
     def add_statement(self, statement: str) -> None:
         """Add an executed statement"""
         pass
         # TODO: temp disable show statements
         # self.statements.append(statement)
+
+    def add_condition(self, condition: PathCondition) -> None:
+        """Add a path condition"""
+        self.conditions.append(condition)
+
 
     def is_satisfiable(self) -> bool:
         """Check if the path conditions are satisfiable using enhanced Z3 checking"""
@@ -56,16 +57,16 @@ class ExecutionPath:
         # Use Z3-based satisfiability checking if available
         if Z3_AVAILABLE:
             condition_strs = [str(c) for c in self.conditions]
-            # logger.debug(f"Z3 condition strings: {condition_strs}")
+            logger.debug(f"Z3 condition strings: {condition_strs}")
+
             is_sat_result, model_values = check_path_satisfiability(condition_strs)
-            # logger.debug(f"Z3 satisfiability check result: {is_sat_result}")
-            # logger.debug(f"Z3 model values: {model_values}")
-            # raise NotImplementedError("is_satisfiable method is not implemented")
+            logger.debug(f"Z3 satisfiability check result: {is_sat_result}")
+            # # logger.debug(f"Z3 model values: {model_values}")
             if not is_sat_result:
                 self.state = ExecutionPathState.UNSATISFIABLE
             elif model_values:
-                # Store test inputs from Z3 model
-                self.test_inputs = model_values
+                self.test_inputs = model_values # Store test inputs from Z3 model
+            logger.debug(f"Z3 model values: {model_values}")
             return is_sat_result
 
         # Fallback to basic logical contradiction checking
@@ -82,27 +83,22 @@ class ExecutionPath:
             expressions[condition.expression] = condition.is_true
         return True
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert execution path to dictionary"""
-
-        result = {
-            "path_id": self.path_id,
-            "conditions": [str(c) for c in self.conditions],
-            "statements": self.statements,
-            "return_value": self.return_value.value
-            if hasattr(self.return_value, "value") else self.return_value,
-            "satisfiable": self.is_satisfiable(),
-            "loop_iterations": self.loop_iterations,
-            "state": self.state.value,
-            "test_inputs": self.test_inputs,
+    def to_dict(path: Any) -> Dict[str, Any]:
+        path_dict = {
+            "path_id": path.path_id,
+            "conditions": [str(c) for c in path.conditions],
+            "statements": path.statements,
+            "return_value": path.return_value.value if hasattr(path.return_value, "value") else path.return_value,
+            # variables
+            "satisfiable": path.is_satisfiable(),
+            "loop_iterations": path.loop_iterations,
+            "state": path.state.value,
+            "test_inputs": path.test_inputs,
+            "expected_outputs": getattr(path, "expected_outputs", {}),
+            "z3_error": getattr(path, "z3_error", None),
         }
+        return path_dict
 
-        # Add optional attributes if present
-        for attr in ["expected_outputs", "z3_error"]:
-            if hasattr(self, attr) and getattr(self, attr):
-                result[attr] = getattr(self, attr)
-
-        return result
 
 
 class PathManager:

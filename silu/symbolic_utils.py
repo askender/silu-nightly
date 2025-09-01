@@ -28,6 +28,18 @@ if TYPE_CHECKING:
     from silu.symbolic_executor import SymbolicExecutor
 
 
+logger.remove()  # 移除默认的 handler
+logger.add(
+    sink=sys.stderr,  # 或 sys.stdout
+    format=(
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{file.path}</cyan>:<cyan>{line}</cyan>:<cyan>{function}</cyan>: - "
+        "<level>{message}</level>"
+    ),
+    colorize=True,
+)
+
 # Configuration Constants
 
 
@@ -51,17 +63,7 @@ class ExecutionPathState(Enum):
     UNSATISFIABLE = "unsatisfiable"
 
 
-logger.remove()  # 移除默认的 handler
-logger.add(
-    sink=sys.stderr,  # 或 sys.stdout
-    format=(
-        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-        "<level>{level: <8}</level> | "
-        "<cyan>{file.path}</cyan>:<cyan>{line}</cyan>:<cyan>{function}</cyan>: - "
-        "<level>{message}</level>"
-    ),
-    colorize=True,
-)
+
 
 
 class SymbolicEnvironment:
@@ -267,7 +269,10 @@ class ConditionalHandler(IRNodeHandler):
         original_env = executor.current_env.copy()
 
         # Generate Z3 constraint
+        logger.debug(f"Generating Z3 constraint for condition: {condition}")
+        logger.debug(f"Generating Z3 constraint for readable_condition: {readable_condition}")
         z3_constraint = executor._generate_z3_constraint(condition)
+        logger.debug(f"Generated Z3 constraint: {z3_constraint}")
 
         # Store all paths that are created from this if statement
         created_paths = []
@@ -607,10 +612,10 @@ class LoopHandler(IRNodeHandler):
                     if hasattr(cond_result, "value") and not cond_result.value:
                         break
 
-                    # Generate Z3 constraints for condition if available
-                    if executor.z3_available and executor.generate_z3_constraints:
+                    # TODO: Generate Z3 constraints for condition if available
+                    if executor.z3_available:
                         try:
-                            z3_cond = executor._ast_to_z3(condition)
+                            z3_cond = executor._generate_z3_constraint(condition)
                             if z3_cond is not None:
                                 executor.current_constraints.append(z3_cond)
                         except Exception:

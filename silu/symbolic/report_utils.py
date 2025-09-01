@@ -16,27 +16,23 @@ from .z3_utils import (
 
 def path_to_dict(path: Any) -> Dict[str, Any]:
     """Convert a path object to dictionary format"""
-    if hasattr(path, "to_dict"):
-        return path.to_dict()
+    # if hasattr(path, "to_dict"):
+    #     return path.to_dict()
 
     path_dict = {
-        "path_id": getattr(path, "path_id", "unknown"),
-        "conditions": [str(c) for c in getattr(path, "conditions", [])],
-        "statements": list(getattr(path, "statements", [])),
-        "return_value": str(getattr(path, "return_value", None))
-        if getattr(path, "return_value", None) is not None
-        else None,
-        "variables": {
-            str(k): str(v) for k, v in getattr(path, "variables", {}).items()
-        },
-        "satisfiable": getattr(path, "satisfiable", True),
-        "loop_iterations": getattr(path, "loop_iterations", {}),
-        "test_inputs": getattr(path, "test_inputs", {}),
+        "path_id": path.path_id,
+        "conditions": [str(c) for c in path.conditions],
+        "statements": path.statements,
+        "return_value": path.return_value.value if hasattr(path.return_value, "value") else path.return_value,
+        # variables
+        "satisfiable": path.is_satisfiable(),
+        "loop_iterations": path.loop_iterations,
+        "state": path.state.value,
+        "test_inputs": path.test_inputs,
         "expected_outputs": getattr(path, "expected_outputs", {}),
         "z3_error": getattr(path, "z3_error", None),
     }
     return path_dict
-
 
 def _build_path_metrics(paths: List[Any]) -> Dict[str, Any]:
     """Build path metrics information from paths"""

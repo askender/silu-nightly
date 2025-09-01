@@ -21,6 +21,8 @@ from .z3_utils import (
 
 if Z3_AVAILABLE:
     pass
+    # from .z3_utils import ast_to_z3_expr
+
 
 
 class LoopType(Enum):
@@ -144,13 +146,13 @@ class LoopAnalyzer:
             if k == 0:
                 # First iteration: condition must be true to enter
                 if Z3_AVAILABLE:
-                    from .z3_utils import ast_to_z3_expr
+                    raise NotImplementedError("Z3 support for loop unrolling is not implemented yet.")
 
-                    condition_z3 = ast_to_z3_expr(condition_ast, self.variable_dict)
-                    if condition_z3 is not None:
-                        iterations.append(LoopIteration(k, condition_z3))
-                    else:
-                        iterations.append(LoopIteration(k, f"condition_true_{k}"))
+                    # condition_z3 = ast_to_z3_expr(condition_ast, self.variable_dict)
+                    # if condition_z3 is not None:
+                    #     iterations.append(LoopIteration(k, condition_z3))
+                    # else:
+                    #     iterations.append(LoopIteration(k, f"condition_true_{k}"))
                 else:
                     iterations.append(LoopIteration(k, f"condition_true_{k}"))
             else:

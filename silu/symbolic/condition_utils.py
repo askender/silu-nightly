@@ -13,7 +13,7 @@ from dataclasses import dataclass
 # Z3 availability check
 try:
     import z3  # noqa: F401
-
+    from z3 import Not
     Z3_AVAILABLE = True
 except ImportError:
     Z3_AVAILABLE = False
@@ -92,8 +92,6 @@ class PathCondition:
         """Return the negated condition"""
         negated_constraint = None
         if self.z3_constraint is not None and Z3_AVAILABLE:
-            from z3 import Not
-
             negated_constraint = Not(self.z3_constraint)
 
         # Handle logical negation properly
@@ -584,7 +582,6 @@ def conditions_are_contradictory(cond1: PathCondition, cond2: PathCondition) -> 
         return check_range_contradiction(norm1, norm2, var1)
 
     return False
-
 
 def check_range_contradiction(
     cond1: PathCondition, cond2: PathCondition, variable: str

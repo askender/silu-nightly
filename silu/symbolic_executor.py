@@ -1079,6 +1079,8 @@ class SymbolicExecutor:
         """Generate Z3 constraint from condition"""
         if Z3_AVAILABLE and hasattr(condition, "value"):
             try:
+                logger.debug(f"Debug: Generating Z3 constraint for condition: {condition}")
+                logger.debug(f"Debug: Generating Z3 constraint z3_variables: {self.current_env.z3_variables}")
                 ret = to_z3_expr(condition.value, self.current_env.z3_variables)
                 return ret
             except (TypeError, AttributeError, ValueError) as e:
