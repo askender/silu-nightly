@@ -137,7 +137,7 @@ class IRNodeHandler(ABC):
         pass
 
     @abstractmethod
-    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         """Handle the IR node and return its symbolic value"""
         pass
 
@@ -150,7 +150,7 @@ class AssignmentHandler(IRNodeHandler):
             isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "assign"
         )
 
-    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         try:
             _, var_name, value_ir, _ = ir_node
             value = executor._execute_ir(value_ir)
@@ -176,7 +176,7 @@ class ConditionalHandler(IRNodeHandler):
     def can_handle(self, ir_node: Tuple) -> bool:
         return isinstance(ir_node, tuple) and len(ir_node) > 0 and ir_node[0] == "if"
 
-    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         if len(ir_node) == 4:
             _, condition_ir, then_block, else_block = ir_node
         else:
@@ -392,7 +392,7 @@ class LoopHandler(IRNodeHandler):
             and ir_node[0] in ["while", "for"]
         )
 
-    def handle(self, ir_node: Tuple, executor: SymbolicExecutor) -> SymbolicValue:
+    def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         if ir_node[0] == "while":
             return self._handle_while_loop(ir_node, executor)
         elif ir_node[0] == "for":
@@ -400,7 +400,7 @@ class LoopHandler(IRNodeHandler):
         return create_concrete_value(None)
 
     def _handle_while_loop(
-        self, ir_node: Tuple, executor: SymbolicExecutor
+        self, ir_node: Tuple, executor: "SymbolicExecutor"
     ) -> SymbolicValue:
         """Handle while loop with enhanced constraint analysis"""
         _, condition_ir, body_ir = ir_node
@@ -471,7 +471,7 @@ class LoopHandler(IRNodeHandler):
         return create_concrete_value(None)
 
     def _handle_for_loop(
-        self, ir_node: Tuple, executor: SymbolicExecutor
+        self, ir_node: Tuple, executor: "SymbolicExecutor"
     ) -> SymbolicValue:
         """Handle for loop with enhanced range analysis"""
         if len(ir_node) < 4:
