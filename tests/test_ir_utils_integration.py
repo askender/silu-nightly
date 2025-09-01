@@ -62,7 +62,7 @@ class TestIRInterpreterIntegration:
             temp_file = f.name
 
         try:
-            result = execute_symbolic_from_file_with_executor(temp_file)['paths']
+            result = execute_symbolic_from_file_with_executor(temp_file)["paths"]
             assert result is not None or result is None
         finally:
             os.unlink(temp_file)
@@ -91,7 +91,7 @@ class TestSymbolicExecutorIntegration:
             ]
         )
 
-        paths = execute_symbolic_from_string_with_executor(ir_json)['paths']
+        paths = execute_symbolic_from_string_with_executor(ir_json)["paths"]
         # TODO: 2 paths?
         assert len(paths) == 1, f"Expected 1 paths, got {len(paths)}"
 
@@ -120,7 +120,7 @@ class TestSymbolicExecutorIntegration:
             temp_file = f.name
 
         try:
-            paths = execute_symbolic_from_file_with_executor(temp_file)['paths']
+            paths = execute_symbolic_from_file_with_executor(temp_file)["paths"]
             # TODO: 2 path?
             assert len(paths) == 1, f"Expected 1 paths, got {len(paths)}"
         finally:

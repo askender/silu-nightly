@@ -49,6 +49,7 @@ from .symbolic_pathlib import PathManager, ExecutionPath
 
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
+
     def __init__(
         self,
         performance_mode: bool = False,
@@ -94,7 +95,6 @@ class SymbolicExecutor:
             LoopHandler(),
         ]
 
-
     def _init_builtins(self):
         """Initialize built-in functions"""
         builtins = create_builtin_functions_dict(current_path=self.current_path)
@@ -107,7 +107,6 @@ class SymbolicExecutor:
 
         self.current_path = self.path_manager.create_path()
         self.current_path._function_params = []  # 添加函数参数列表
-
 
         self._execute_ir(ir_program)
         # try:
@@ -125,7 +124,6 @@ class SymbolicExecutor:
         # paths = self.path_manager.paths
         # paths = renumber_paths_sequentially(paths)
         return paths
-
 
     def _execute_ir(self, ir_node: Union[Tuple, str, Any]) -> SymbolicValue:
         """Execute an IR node and return its symbolic value"""
@@ -156,7 +154,6 @@ class SymbolicExecutor:
         # Fallback to direct dispatch
         # raise Exception(f"Unhandled node {ir_node}")
         return self._dispatch_ir_node(ir_node)
-
 
     def _is_part_of_chained_compare(self) -> bool:
         """
@@ -250,13 +247,11 @@ class SymbolicExecutor:
                 return self.current_env.get_variable(op)
             return create_concrete_value(op)
 
-
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a module IR node"""
         for stmt in ir_node[1]:
             self._execute_ir(stmt)
         return create_concrete_value(None)
-
 
     def _execute_name(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a name (variable reference) IR node"""
@@ -276,7 +271,6 @@ class SymbolicExecutor:
         result = create_concrete_value(value)
         result.original_ir = ir_node
         return result
-
 
     def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a literal IR node"""
@@ -308,7 +302,6 @@ class SymbolicExecutor:
         self.function_analyses[func_name] = function_paths
 
         return create_concrete_value(None)
-
 
     def _execute_call(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function call symbolically"""
@@ -348,7 +341,6 @@ class SymbolicExecutor:
                     f"{result} = {func_name}({args_str}) # unknown function"
                 )
             return result
-
 
     def _execute_return(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a return statement"""
@@ -471,7 +463,6 @@ class SymbolicExecutor:
                 self.current_path.state = ExecutionPathState.ERROR
             return create_concrete_value(None)
 
-
     def _extract_variable_name(self, ir_node: Any) -> Optional[str]:
         """从IR节点中提取变量名"""
         if isinstance(ir_node, tuple) and len(ir_node) >= 2:
@@ -485,7 +476,6 @@ class SymbolicExecutor:
                     return left_name
                 return right_name
         return None
-
 
     def _try_concrete_operation(
         self, op: str, left_val: Any, right_val: Any
@@ -520,7 +510,6 @@ class SymbolicExecutor:
         except (ZeroDivisionError, TypeError, ValueError):
             logger.error(f"Error: {e}")
         return None
-
 
     def _execute_chained_compare(self, ir_node: Tuple) -> SymbolicValue:
         """Execute chained comparison"""
@@ -701,7 +690,6 @@ class SymbolicExecutor:
             and pattern[2] is None
         )
 
-
     def _extract_match_value(self, pattern: Tuple) -> Any:
         """Extract the match value from a pattern for constraint generation"""
         if not isinstance(pattern, (tuple, list)) or len(pattern) < 2:
@@ -735,7 +723,6 @@ class SymbolicExecutor:
 
         return ""
 
-
     def _get_variable_name(self, symbolic_value: SymbolicValue) -> str:
         """Extract variable name from symbolic value for condition creation"""
         if symbolic_value.name:
@@ -744,8 +731,6 @@ class SymbolicExecutor:
             return str(symbolic_value)
         else:
             return str(symbolic_value)
-
-
 
     def _execute_c_for(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a C-style for loop: for(init; condition; update) body"""
@@ -808,7 +793,6 @@ class SymbolicExecutor:
 
         return create_concrete_value(None)
 
-
     def _execute_post_increment(self, ir_node: Tuple) -> SymbolicValue:
         """Execute post-increment operation (var++)"""
         _, var_expr = ir_node
@@ -837,7 +821,6 @@ class SymbolicExecutor:
 
         # Return the original value (post-increment semantics)
         return current_value
-
 
     def _execute_post_decrement(self, ir_node: Tuple) -> SymbolicValue:
         """Execute post-decrement operation (var--)"""
@@ -868,7 +851,6 @@ class SymbolicExecutor:
         # Return the original value (post-decrement semantics)
         return current_value
 
-
     def _execute_pre_increment(self, ir_node: Tuple) -> SymbolicValue:
         """Execute pre-increment operation (++var)"""
         _, var_expr = ir_node
@@ -895,7 +877,6 @@ class SymbolicExecutor:
 
         return self._execute_ir(var_expr)
 
-
     def _execute_pre_decrement(self, ir_node: Tuple) -> SymbolicValue:
         """Execute pre-decrement operation (--var)"""
         _, var_expr = ir_node
@@ -921,7 +902,6 @@ class SymbolicExecutor:
             self.current_path.add_statement(f"--{var_str}")
 
         return self._execute_ir(var_expr)
-
 
     def _execute_aug_assign(self, ir_node: Tuple) -> SymbolicValue:
         """Execute augmented assignment (+=, -=, *=, etc.)"""
@@ -1036,7 +1016,6 @@ class SymbolicExecutor:
         self.current_env = original_env
         return function_paths
 
-
     def _execute_function_body(self, body_ir: Any) -> None:
         """Execute function body statements"""
         if isinstance(body_ir, (tuple, list)):
@@ -1050,7 +1029,6 @@ class SymbolicExecutor:
             raise Exception("Function execution failed 2")
             # TODO
             self._execute_ir(body_ir)
-
 
     def _make_condition_readable(self, condition: Any) -> str:
         """Convert IR condition to readable format with recursive tuple handling"""
@@ -1147,7 +1125,6 @@ class SymbolicExecutor:
                 logger.error(f"Debug: Value display conversion failed: {e}")
             return str(value)
 
-
     def _convert_value_display(self, value: Any) -> str:
         """Internal simplified value display converter"""
         if isinstance(value, str):
@@ -1160,8 +1137,6 @@ class SymbolicExecutor:
             items = [self._convert_value_display(item) for item in value]
             return f"[{', '.join(items)}]"
         return str(value)
-
-
 
     def _convert_expression_readable(self, expr: Any) -> str:
         """Internal simplified expression to readable format converter"""
@@ -1238,7 +1213,6 @@ class SymbolicExecutor:
         result = positive_conditions + merged_negative
         return result if result else conditions
 
-
     def _merge_negative_conditions(
         self, var_name: str, conditions: List[PathCondition]
     ) -> List[PathCondition]:
@@ -1271,7 +1245,6 @@ class SymbolicExecutor:
             other_conditions.append(negative_gt_conditions[0][0])
 
         return other_conditions
-
 
     def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
         """Generate a comprehensive report of symbolic execution results"""
@@ -1313,6 +1286,7 @@ def execute_symbolic_from_file_with_executor(
         return result
     except Exception as e:
         raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
+
 
 def execute_symbolic_from_string_with_executor(
     ir_string: str,
