@@ -6,9 +6,8 @@ This module provides symbolic execution capabilities for Silu programs,
 allowing analysis of all possible execution paths and generation of
 path constraints for functions with improved Z3 integration and loop handling.
 """
-
-from typing import Any, Dict, List, Tuple, Optional, Union
 import re
+from typing import Any, Dict, List, Tuple, Optional, Union
 from .ir_utils import parse_ir_from_file
 from .ir_utils import parse_ir_from_json_string
 
@@ -151,7 +150,6 @@ class SymbolicExecutor:
                 return handler.handle(ir_node, self)
 
         # Fallback to direct dispatch
-        # raise Exception(f"Unhandled node {ir_node}")
         return self._dispatch_ir_node(ir_node)
 
     def _is_part_of_chained_compare(self) -> bool:
@@ -215,6 +213,7 @@ class SymbolicExecutor:
             "chained_compare": self._execute_chained_compare,
             "comparison": self._execute_comparison,
             "match": self._execute_match,
+            "switch": self._execute_match,
             "c_for": self._execute_c_for,
             "p++": self._execute_post_increment,
             "p--": self._execute_post_decrement,
@@ -230,9 +229,6 @@ class SymbolicExecutor:
             dispatch_table[binary_op] = self._execute_binary_op
 
         if op in dispatch_table:
-            # logger.info(f"Executing operation {op}")
-            # logger.info(f"Executing ir_node {ir_node}")
-            # raise NotImplementedError(f"Operation {op} not implemented")
             return dispatch_table[op](ir_node)
         elif isinstance(op, str) and op.isdigit():
             raise ValueError(f"Invalid integer literal {op}")
@@ -521,6 +517,8 @@ class SymbolicExecutor:
                 # We'll combine them with logical AND
                 result = None
                 all_conditions = []
+                # Extract variable names for test inputs
+                # variables = set()
 
                 for compare_part in compare_parts:
                     if len(compare_part) >= 3:
@@ -542,12 +540,14 @@ class SymbolicExecutor:
                             and left_ir[0] == "name"
                         ):
                             left_str = left_ir[1]
+                            # variables.add(left_ir[1])
                         if (
                             right_str == "None"
                             and isinstance(right_ir, tuple)
                             and right_ir[0] == "name"
                         ):
                             right_str = right_ir[1]
+                            # variables.add(right_ir[1])
 
                         readable_condition = f"{left_str} {op} {right_str}"
                         all_conditions.append(readable_condition)
@@ -568,15 +568,6 @@ class SymbolicExecutor:
                 # 修复：返回组合后的条件，但不直接添加到路径
                 # 避免与ConditionalHandler._execute_if_branch中的添加重复
                 if self.current_path and all_conditions:
-                    # 将所有条件部分合并为一个完整的条件表达式
-                    # combined_condition = " and ".join(all_conditions)
-
-                    # 标记当前正在处理链式比较，防止在 _execute_binary_op 中重复添加条件
-                    # self._set_processing_chained_compare(True)
-
-                    # 不再直接添加条件到当前路径
-                    # 条件将由ConditionalHandler在处理if语句时添加
-
                     # 处理完成后重置标记
                     self._set_processing_chained_compare(False)
 
@@ -657,7 +648,6 @@ class SymbolicExecutor:
 
             # Check if this path is satisfiable
             if case_path.is_satisfiable():
-                raise ValueError("Pattern matching condition is not satisfiable")
                 # Set this as current path and execute the body
                 self.current_path = case_path
 
@@ -1247,6 +1237,7 @@ class SymbolicExecutor:
 
     def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
         """Generate a comprehensive report of symbolic execution results"""
+
         report = generate_comprehensive_report(
             paths=paths,
             performance_mode=self.performance_mode,

@@ -19,7 +19,6 @@ def path_to_dict(path: Any) -> Dict[str, Any]:
     if hasattr(path, "to_dict"):
         return path.to_dict()
 
-    # Fallback manual conversion
     path_dict = {
         "path_id": getattr(path, "path_id", "unknown"),
         "conditions": [str(c) for c in getattr(path, "conditions", [])],

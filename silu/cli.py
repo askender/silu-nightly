@@ -329,11 +329,11 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 ):
                     for func_name, func_paths in executor.function_analyses.items():
                         if isinstance(func_paths, list) and func_paths:
-                            # Renumber and enhance function paths
-                            enhanced_func_paths = (
-                                executor.enhance_paths_with_test_cases(func_paths)
-                            )
-                            executor.function_analyses[func_name] = enhanced_func_paths
+                            # Process paths before report generation
+                            # for path in func_paths:
+                            #     if hasattr(path, "clean_test_inputs"):
+                            #         path.clean_test_inputs()
+                            executor.function_analyses[func_name] = func_paths
 
             # Generate and print report for all files
             report = executor.generate_report(paths)
