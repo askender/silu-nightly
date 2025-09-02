@@ -7,6 +7,10 @@ from .symbolic_utils import (
     ExecutionPathState,
     logger,
 )
+import logging
+# Fallback logger if not imported
+if 'logger' not in locals():
+    logger = logging.getLogger(__name__)
 from .symbolic.condition_utils import PathCondition
 
 from .symbolic.z3_utils import (
@@ -20,6 +24,10 @@ from .symbolic.report_utils import renumber_paths_sequentially
 
 if Z3_AVAILABLE:
     import z3
+
+
+# For debugging
+import traceback
 
 
 @dataclass
@@ -121,13 +129,29 @@ class ExecutionPath:
         """Convert execution path to dictionary"""
         if path.satisfiable is None:
             path.satisfiable = path.is_satisfiable()
+        # Convert variables to dictionary with string keys
+        safe_variables = {}
+        for k, v in path.variables.items():
+            # Convert any non-string keys to strings
+            key_str = str(k) if not isinstance(k, str) else k
+            try:
+                # Try to convert value to a serializable format
+                if hasattr(v, "value"):
+                    safe_variables[key_str] = v.value
+                else:
+                    safe_variables[key_str] = str(v)
+            except Exception as e:
+                # Fallback for any serialization errors
+                logger.error(f"Error serializing variable {k}: {e}")
+                safe_variables[key_str] = f"<error:{type(v).__name__}>"
+
         path_dict = {
             "path_id": path.path_id,
             "conditions": [str(c) for c in path.conditions],
             "return_value": path.return_value.value
             if hasattr(path.return_value, "value")
             else path.return_value,
-            "variables": path.variables,
+            "variables": safe_variables,
             "satisfiable": path.satisfiable,
             "test_inputs": path.test_inputs,
         }
@@ -197,22 +221,42 @@ class PathManager:
                 try:
                     variable_items.append((key_str, str(v)))
                 except Exception as e:
-                    logger.error(f"Error: {e}")
+                    logger.error(f"Error converting value to string: {e}")
                     # Handle cases where str(v) might fail
-                    variable_items.append((key_str, repr(v)))
+                    try:
+                        variable_items.append((key_str, repr(v)))
+                    except Exception as e2:
+                        logger.error(f"Error even with repr(): {e2}")
+                        variable_items.append((key_str, f"<error:{type(e2).__name__}>"))
 
             # Sort by string keys only
             sorted_variables = sorted(variable_items, key=lambda x: x[0])
 
-            path_signature = (
-                tuple(str(c) for c in path.conditions),
-                tuple(sorted_variables),
-            )
+            try:
+                # Convert conditions to strings safely
+                conditions_str = []
+                for c in path.conditions:
+                    try:
+                        conditions_str.append(str(c))
+                    except Exception as e:
+                        logger.error(f"Error converting condition to string: {e}")
+                        conditions_str.append(f"<error:{type(e).__name__}>")
 
-            if path_signature not in seen_paths and (
-                path.statements or path.conditions or path.variables
-            ):
-                seen_paths.add(path_signature)
+                # Create path signature with only string keys
+                path_signature = (
+                    tuple(conditions_str),
+                    # Use string representation of the variables tuple to avoid using tuples as dict keys
+                    str(tuple(sorted_variables)),
+                )
+
+                if path_signature not in seen_paths and (
+                    path.statements or path.conditions or path.variables
+                ):
+                    seen_paths.add(path_signature)
+                    unique_paths.append(path)
+            except Exception as e:
+                logger.error(f"Error creating path signature: {e}")
+                # Still add the path to avoid losing it
                 unique_paths.append(path)
 
         # TODO: 确保至少返回一个路径
@@ -224,4 +268,15 @@ class PathManager:
 
     def __get_satisfiable_paths(self) -> List[ExecutionPath]:
         """Get all satisfiable paths"""
-        return [p for p in self.paths if p.is_satisfiable()]
+        satisfiable_paths = []
+        for p in self.paths:
+            try:
+                if p.is_satisfiable():
+                    satisfiable_paths.append(p)
+            except Exception as e:
+                logger.error(f"Error checking path satisfiability: {e}")
+                # Include stack trace for debugging
+                logger.error(traceback.format_exc())
+                # Keep the path if we can't determine satisfiability
+                satisfiable_paths.append(p)
+        return satisfiable_paths

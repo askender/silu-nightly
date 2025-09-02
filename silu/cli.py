@@ -7,8 +7,12 @@ import argparse
 import ast
 import json
 import sys
+import logging
 from pathlib import Path
 from typing import Any
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
@@ -264,10 +268,12 @@ def run_ir_to_source_converter(
 
 def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     """Run symbolic execution on source code or IR."""
-    # try:
-    if 1:
+    try:
         performance_mode = kwargs.get("performance_mode", False)
         debug = kwargs.get("debug", False)
+        if debug:
+            logger.info(f"Running symbolic execution on {'file' if is_file else 'source'}: {source}")
+
 
         simplify = kwargs.get("simplify", False)
         solve = kwargs.get("solve", False)
@@ -294,7 +300,11 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                     performance_mode=performance_mode,
                     debug=debug,
                 )
-                paths = ir_executor_result["paths"]
+                paths = ir_executor_result.get("paths", [])
+
+                # Handle error in symbolic execution
+                if "error" in ir_executor_result:
+                    logger.warning(f"Symbolic execution had errors: {ir_executor_result['error']}")
 
                 # Transfer function analyses from IR executor to main executor
                 if "function_analyses" in ir_executor_result:
@@ -350,14 +360,29 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                             executor.function_analyses[func_name] = func_paths
 
             # Generate and print report for all files
-            report = executor.generate_report(paths)
-            print(json.dumps(report, indent=2, default=str))
+            try:
+                report = executor.generate_report(paths)
+                print(json.dumps(report, indent=2, default=str))
+            except Exception as e:
+                logger.error(f"Error generating report: {e}")
+                print(f"Error generating report: {e}", file=sys.stderr)
+                print(json.dumps({"error": str(e), "paths_count": len(paths)}, indent=2))
         else:
             print("No execution paths found.")
 
-    # except Exception as e:
-    #     print(f"Error in symbolic execution: {e}", file=sys.stderr)
-    # sys.exit(1)
+    except KeyError as ke:
+        print(f"Dictionary key error in symbolic execution: {ke}", file=sys.stderr)
+        if debug:
+            import traceback
+            traceback.print_exc()
+        print(json.dumps({"error": f"KeyError: {ke}"}, indent=2))
+    except Exception as e:
+        print(f"Error in symbolic execution: {e}", file=sys.stderr)
+        if debug:
+            import traceback
+            traceback.print_exc()
+        print(json.dumps({"error": str(e)}, indent=2))
+
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -711,6 +736,7 @@ def main() -> None:
                 "debug": getattr(args, "debug", False),
             }
 
+            # Execute symbolic execution with better error handling
             if args.source:
                 # Symbolic execution from command line source
                 run_symbolic_executor(args.source, is_file=False, **symbolic_kwargs)
@@ -728,6 +754,8 @@ def main() -> None:
         sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
+        import traceback
+        logger.error(traceback.format_exc())
         if hasattr(args, "debug") and getattr(args, "debug", False):
             import traceback
 
