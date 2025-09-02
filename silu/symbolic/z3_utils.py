@@ -9,9 +9,7 @@ handling constraints, and performing satisfiability checking.
 import re
 import ast
 import sys
-from typing import Any, Dict, List, Optional, Set, Union, Callable
-from _pytest._code.code import E
-from _pytest.monkeypatch import V
+from typing import Any, Dict, List, Optional, Set, Union
 from loguru import logger
 
 # Z3 availability check
@@ -94,6 +92,7 @@ logger.add(
     colorize=True,
 )
 
+
 def to_z3_expr(expr, var_dict: Optional[Dict[str, Any]] = None):
     """
     Convert various expression types to Z3 expressions.
@@ -137,7 +136,6 @@ class RangeConstraintGenerator:
 
         logger.warning(f"Unsupported expression type:\n {type(expr)}: {expr}")
         return None
-
 
     # TODO: check if the constraint is valid
     @staticmethod
@@ -199,7 +197,6 @@ class RangeConstraintGenerator:
             return None
 
 
-
 # Legacy function wrappers
 def simplify_range_cond(
     k: int, start, stop, step=None, var_dict: Optional[Dict[str, Any]] = None
@@ -219,9 +216,11 @@ def simplify_range_cond(
     """
     return RangeConstraintGenerator.generate_constraint(k, start, stop, step, var_dict)
 
+
 def create_z3_variable(name: str, var_type: str = "int"):
     """Create a Z3 variable of the specified type"""
     return Z3SafeOperations.create_z3_variable(name, var_type)
+
 
 def extract_constant_value(z3_expr) -> Optional[Union[int, float, bool]]:
     """Extract constant value from Z3 expression if possible"""
@@ -273,7 +272,6 @@ class Z3SafeOperations:
 
         return None
 
-
     # @staticmethod
     # def is_sat(constraint) -> bool:
     #     """Check if a Z3 constraint is satisfiable"""
@@ -286,7 +284,6 @@ class Z3SafeOperations:
     #         return solver.check() == sat
     #     except Exception:
     #         return True
-
 
     # @staticmethod
     # def create_solver_with_constraints(constraints: List[Any]) -> Optional[Any]:
@@ -303,6 +300,7 @@ class Z3SafeOperations:
     #     except Exception:
     #         return None
 
+
 def get_vars_from_ast(node: ast.AST) -> Set[str]:
     """Extract all variable names from an AST node"""
     variables = set()
@@ -315,6 +313,7 @@ def get_vars_from_ast(node: ast.AST) -> Set[str]:
     collector = VariableCollector()
     collector.visit(node)
     return variables
+
 
 # Legacy function wrappers
 def check_path_satisfiability(
@@ -359,7 +358,7 @@ class PathSatisfiabilityChecker:
 
             for condition_str in conditions:
                 if 1:
-                # try:
+                    # try:
                     constraint = self._parse_condition_string(
                         condition_str, var_dict, program_variables
                     )
@@ -399,7 +398,7 @@ class PathSatisfiabilityChecker:
         # Remove parentheses
         condition = condition.strip("()")
 
-        if 'and' not in condition and 'or' not in condition and 'not' not in condition:
+        if "and" not in condition and "or" not in condition and "not" not in condition:
             # Pattern for simple comparisons: left op right
             pattern = r"(\w+)\s*([><=!]+)\s*(.+)"
             match = re.match(pattern, condition)
@@ -424,7 +423,9 @@ class PathSatisfiabilityChecker:
         else:
             raise ValueError("Invalid condition format")
 
-    def _parse_condition_string(self, condition: str, var_dict: dict, program_variables: set) -> Optional[Any]:
+    def _parse_condition_string(
+        self, condition: str, var_dict: dict, program_variables: set
+    ) -> Optional[Any]:
         condition = condition.strip()
         # logger.debug(f"condition: {condition} var_dict: {var_dict} program_variables: {program_variables} raw")
 
@@ -439,31 +440,34 @@ class PathSatisfiabilityChecker:
         # 处理 or
         depth = 0
         for i, c in enumerate(condition):
-            if c == '(':
+            if c == "(":
                 depth += 1
-            elif c == ')':
+            elif c == ")":
                 depth -= 1
-            elif depth == 0 and condition[i:i+4] == ' or ':
+            elif depth == 0 and condition[i : i + 4] == " or ":
                 left = condition[:i].strip()
-                right = condition[i+4:].strip()
-                return Or(self._parse_condition_string(left, var_dict, program_variables),
-                        self._parse_condition_string(right, var_dict, program_variables))
+                right = condition[i + 4 :].strip()
+                return Or(
+                    self._parse_condition_string(left, var_dict, program_variables),
+                    self._parse_condition_string(right, var_dict, program_variables),
+                )
 
         # 处理 and
         depth = 0
         for i, c in enumerate(condition):
             # logger.debug(f"i: {i}; c: {c} == {condition[i:i+3]}")
-            if c == '(':
+            if c == "(":
                 depth += 1
-            elif c == ')':
+            elif c == ")":
                 depth -= 1
-            elif depth == 0 and condition[i:i+3] == 'and':
+            elif depth == 0 and condition[i : i + 3] == "and":
                 left = condition[:i].strip()
-                right = condition[i+3:].strip()
+                right = condition[i + 3 :].strip()
                 logger.debug(f"left: {left}; right: {right}")
-                return And(self._parse_condition_string(left, var_dict, program_variables),
-                        self._parse_condition_string(right, var_dict, program_variables))
-
+                return And(
+                    self._parse_condition_string(left, var_dict, program_variables),
+                    self._parse_condition_string(right, var_dict, program_variables),
+                )
 
         # logger.debug(f"program_variables: {program_variables} raw2")
         # 单个比较
@@ -492,10 +496,9 @@ class PathSatisfiabilityChecker:
             # logger.debug(f"left_str: {left_str}; right_str: {right_str} op: {op}")
             return self.parser._create_comparison(left_value, op, right_value)
         else:
-            assert condition.lower() in  "true false".split()
+            assert condition.lower() in "true false".split()
             one_value = self._parse_value(condition, var_dict, program_variables)
             return one_value
-
 
     def _extract_model_values(self, model, var_dict, program_variables):
         """Extract model values for program variables"""
@@ -508,14 +511,14 @@ class PathSatisfiabilityChecker:
                     if (
                         hasattr(z3, "is_int_value")
                         and z3 is not None
-                        and z3.is_int_value(z3_value) # IntNumRef
+                        and z3.is_int_value(z3_value)  # IntNumRef
                     ):
                         model_values[var_name] = z3_value.as_long()
                     elif isinstance(z3_value, z3.RatNumRef):
                         num = z3_value.numerator_as_long()
                         den = z3_value.denominator_as_long()
                         if den == 0:  # 表示无穷大
-                            return float('inf') if num > 0 else float('-inf')
+                            return float("inf") if num > 0 else float("-inf")
                         elif den == 1:  # 表示整数
                             model_values[var_name] = num
                         else:
@@ -530,7 +533,9 @@ class PathSatisfiabilityChecker:
                         # str(z3.is_true(z3_value)).lower()
                         model_values[var_name] = z3.is_true(z3_value)
                     else:
-                        logger.error(f"Error var_name {var_name} z3_value: {z3_value} {type(z3_value)}")
+                        logger.error(
+                            f"Error var_name {var_name} z3_value: {z3_value} {type(z3_value)}"
+                        )
                         raise ValueError("Error parsing Z3 value others")
                         model_values[var_name] = str(z3_value)
                 except Exception as e:
@@ -654,7 +659,6 @@ class ExpressionParser:
     #     if expr not in var_map:
     #         var_map[expr] = Int(expr)
     #     return var_map[expr]
-
 
     # def parse_operand_format(self, expr: str, var_map: Dict[str, Any]) -> Optional[Any]:
     #     """Parse expressions in format '> ('name', 'x') 0'"""

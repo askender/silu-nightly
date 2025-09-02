@@ -24,7 +24,6 @@ if Z3_AVAILABLE:
     # from .z3_utils import ast_to_z3_expr
 
 
-
 class LoopType(Enum):
     """Types of loops"""
 
@@ -146,7 +145,9 @@ class LoopAnalyzer:
             if k == 0:
                 # First iteration: condition must be true to enter
                 if Z3_AVAILABLE:
-                    raise NotImplementedError("Z3 support for loop unrolling is not implemented yet.")
+                    raise NotImplementedError(
+                        "Z3 support for loop unrolling is not implemented yet."
+                    )
 
                     # condition_z3 = ast_to_z3_expr(condition_ast, self.variable_dict)
                     # if condition_z3 is not None:

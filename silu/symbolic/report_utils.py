@@ -19,6 +19,7 @@ def path_to_dict(path: Any) -> Dict[str, Any]:
     # if hasattr(path, "to_dict"):
     return path.to_dict()
 
+
 def _build_path_metrics(paths: List[Any]) -> Dict[str, Any]:
     """Build path metrics information from paths"""
     return {

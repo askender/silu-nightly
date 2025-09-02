@@ -163,7 +163,7 @@ class AssignmentHandler(IRNodeHandler):
             _, var_name, value_ir, var_type = ir_node
             value = executor._execute_ir(value_ir)
             executor.current_env.set_variable(var_name, value)
-            if var_type is not None: # ('name', 'int')
+            if var_type is not None:  # ('name', 'int')
                 executor.current_env.set_variable_type(var_name, var_type[1])
 
             if executor.current_path:
@@ -637,7 +637,7 @@ class LoopHandler(IRNodeHandler):
                     #             executor.current_constraints.append(z3_cond)
                     #     except Exception as e:
                     #         raise
-                            # Continue without Z3 constraint
+                    # Continue without Z3 constraint
 
                 # Execute loop body
                 executor._execute_ir(body)

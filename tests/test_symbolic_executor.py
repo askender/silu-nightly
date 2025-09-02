@@ -468,7 +468,6 @@ class TestIntegration:
         assert len(paths) > 0
         assert "factorial" in executor.global_env.functions
 
-
     # TODO
     # def test_complex_control_flow(self):
     #     """Test symbolic execution with complex control flow"""
@@ -526,9 +525,9 @@ class TestIntegration:
     #     for path in paths:
     #         all_statements.extend(path.statements)
 
-        # TODO: : temp disable show statements
-        # assert any("while" in stmt for stmt in all_statements)
-        # assert any("print" in stmt for stmt in all_statements)
+    # TODO: : temp disable show statements
+    # assert any("while" in stmt for stmt in all_statements)
+    # assert any("print" in stmt for stmt in all_statements)
 
 
 class TestConditionSimplification:

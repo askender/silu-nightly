@@ -6,6 +6,7 @@ This module provides symbolic execution capabilities for Silu programs,
 allowing analysis of all possible execution paths and generation of
 path constraints for functions with improved Z3 integration and loop handling.
 """
+
 import re
 from typing import Any, Dict, List, Tuple, Optional, Union
 from .ir_utils import parse_ir_from_file
@@ -1079,7 +1080,9 @@ class SymbolicExecutor:
         """Generate Z3 constraint from condition"""
         if Z3_AVAILABLE and hasattr(condition, "value"):
             try:
-                logger.debug(f"Gen Z3 constraint for cond: {condition} z3_vars: {self.current_env.z3_variables}")
+                logger.debug(
+                    f"Gen Z3 constraint for cond: {condition} z3_vars: {self.current_env.z3_variables}"
+                )
                 ret = to_z3_expr(condition.value, self.current_env.z3_variables)
                 return ret
             except (TypeError, AttributeError, ValueError) as e:

@@ -344,7 +344,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
 
     # except Exception as e:
     #     print(f"Error in symbolic execution: {e}", file=sys.stderr)
-        # sys.exit(1)
+    # sys.exit(1)
 
 
 def create_parser() -> argparse.ArgumentParser:

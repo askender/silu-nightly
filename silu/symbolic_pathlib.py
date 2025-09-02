@@ -21,6 +21,7 @@ from .symbolic.report_utils import renumber_paths_sequentially
 if Z3_AVAILABLE:
     import z3
 
+
 @dataclass
 class ExecutionPath:
     """Represents a single execution path through a function"""
@@ -48,7 +49,6 @@ class ExecutionPath:
         """Add a path condition"""
         self.conditions.append(condition)
 
-
     def is_satisfiable(self) -> bool:
         """Check if the path conditions are satisfiable using enhanced Z3 checking"""
         if not self.conditions:
@@ -67,13 +67,13 @@ class ExecutionPath:
             for k in self.variables:
                 if k in self.variable_types:
                     atype = self.variable_types[k]
-                    if atype == 'int':
+                    if atype == "int":
                         variable_z3_map[k] = z3.Int(k)
-                    elif atype == 'float':
+                    elif atype == "float":
                         variable_z3_map[k] = z3.Real(k)
-                    elif atype == 'bool':
+                    elif atype == "bool":
                         variable_z3_map[k] = z3.Bool(k)
-                    elif atype == 'str':
+                    elif atype == "str":
                         variable_z3_map[k] = z3.String(k)
                     # elif atype == 'list':
                     #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
@@ -88,13 +88,15 @@ class ExecutionPath:
                 else:
                     variable_z3_map[k] = z3.Int(k)
 
-            is_sat_result, model_values = check_path_satisfiability(condition_strs, variable_z3_map)
+            is_sat_result, model_values = check_path_satisfiability(
+                condition_strs, variable_z3_map
+            )
             # logger.debug(f"Z3 is_sat_result: {is_sat_result}")
             # # logger.debug(f"Z3 model values: {model_values}")
             if not is_sat_result:
                 self.state = ExecutionPathState.UNSATISFIABLE
             elif model_values:
-                self.test_inputs = model_values # Store test inputs from Z3 model
+                self.test_inputs = model_values  # Store test inputs from Z3 model
             else:
                 # raise ValueError(f"Z3 model values are empty: {model_values}")
                 logger.trace(f"Z3 model values are empty: {model_values}")
@@ -123,7 +125,9 @@ class ExecutionPath:
             "path_id": path.path_id,
             "conditions": [str(c) for c in path.conditions],
             "statements": path.statements,
-            "return_value": path.return_value.value if hasattr(path.return_value, "value") else path.return_value,
+            "return_value": path.return_value.value
+            if hasattr(path.return_value, "value")
+            else path.return_value,
             "variables": path.variables,
             "satisfiable": path.satisfiable,
             "loop_iterations": path.loop_iterations,
@@ -133,7 +137,6 @@ class ExecutionPath:
             "z3_error": getattr(path, "z3_error", None),
         }
         return path_dict
-
 
 
 class PathManager:

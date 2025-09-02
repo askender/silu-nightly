@@ -14,6 +14,7 @@ from dataclasses import dataclass
 try:
     import z3  # noqa: F401
     from z3 import Not
+
     Z3_AVAILABLE = True
 except ImportError:
     Z3_AVAILABLE = False
@@ -582,6 +583,7 @@ def conditions_are_contradictory(cond1: PathCondition, cond2: PathCondition) -> 
         return check_range_contradiction(norm1, norm2, var1)
 
     return False
+
 
 def check_range_contradiction(
     cond1: PathCondition, cond2: PathCondition, variable: str
