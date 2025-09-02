@@ -63,6 +63,7 @@ class SymbolicExecutor:
         self.path_manager = PathManager(max_paths)
         self.performance_mode = performance_mode
         self.global_env = SymbolicEnvironment()
+        self.enum_types = {}  # Store enum type definitions
 
         self.current_path: Optional[ExecutionPath] = None
         self.current_env = self.global_env
@@ -223,6 +224,7 @@ class SymbolicExecutor:
             "aug_assign": self._execute_aug_assign,
             "print": self._execute_print,
             "binop": self._execute_binop,
+            "typedef_enum": self._execute_typedef_enum,
         }
 
         # Add binary operations to dispatch table
@@ -267,6 +269,23 @@ class SymbolicExecutor:
         result = create_concrete_value(value)
         result.original_ir = ir_node
         return result
+
+    def _execute_typedef_enum(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute enum type definition with constants."""
+        # Extract enum name and constants from IR node
+        _, enum_name, constants = ir_node
+
+        # Store the enum type
+        self.enum_types[enum_name] = "enum"
+
+        # Define each enum constant as a variable
+        for constant_name, value_ir in constants:
+            # Execute the value IR (typically ["const", value])
+            value = self._execute_ir(value_ir)
+            self.current_env.variables[constant_name] = value
+
+        # Return None as this operation doesn't produce a value
+        return create_concrete_value(None)
 
     def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a literal IR node"""

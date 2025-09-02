@@ -124,18 +124,18 @@ class ExecutionPath:
         path_dict = {
             "path_id": path.path_id,
             "conditions": [str(c) for c in path.conditions],
-            "statements": path.statements,
             "return_value": path.return_value.value
             if hasattr(path.return_value, "value")
             else path.return_value,
             "variables": path.variables,
             "satisfiable": path.satisfiable,
-            "loop_iterations": path.loop_iterations,
-            "state": path.state.value,
             "test_inputs": path.test_inputs,
-            "expected_outputs": getattr(path, "expected_outputs", {}),
-            "z3_error": getattr(path, "z3_error", None),
         }
+        # "state": path.state.value,
+        # "statements": path.statements,
+        # "loop_iterations": path.loop_iterations,
+        # "expected_outputs": getattr(path, "expected_outputs", {}),
+        # "z3_error": getattr(path, "z3_error", None),
         return path_dict
 
 
