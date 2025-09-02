@@ -225,6 +225,7 @@ class SymbolicExecutor:
             "print": self._execute_print,
             "binop": self._execute_binop,
             "typedef_enum": self._execute_typedef_enum,
+            "typedef": self._execute_typedef,
         }
 
         # Add binary operations to dispatch table
@@ -283,6 +284,35 @@ class SymbolicExecutor:
             # Execute the value IR (typically ["const", value])
             value = self._execute_ir(value_ir)
             self.current_env.variables[constant_name] = value
+
+        # Return None as this operation doesn't produce a value
+        return create_concrete_value(None)
+
+    def _execute_typedef(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute type definition."""
+        # Extract type name and type specification from IR node
+        _, name, type_spec = ir_node
+
+        if type_spec == "Enum":
+            # Store the enum type
+            self.enum_types[name] = type_spec
+        elif (
+            isinstance(type_spec, tuple)
+            and len(type_spec) >= 2
+            and type_spec[0] == "Enum"
+        ):
+            # Future extensibility: Handle enum with constants list
+            # Format: ("Enum", [constant_names])
+            self.enum_types[name] = type_spec[0]
+        else:
+            # Store the typedef mapping for other types
+            self.current_env.variable_types[name] = type_spec
+
+            # Handle other typedef cases (like struct)
+            if isinstance(type_spec, str) and hasattr(
+                self, f"_execute_typedef_{type_spec.lower()}"
+            ):
+                getattr(self, f"_execute_typedef_{type_spec.lower()}")(name, type_spec)
 
         # Return None as this operation doesn't produce a value
         return create_concrete_value(None)
