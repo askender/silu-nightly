@@ -21,15 +21,15 @@ try:
         And,
         Or,
         Not,
-        If,
         IntVal,
         BoolVal,
         RealVal,
-        BoolSort,
         Int,
         Real,
         Bool,
         simplify,
+        # If,
+        # BoolSort,
         # ToReal,
     )
 
