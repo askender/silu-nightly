@@ -62,7 +62,8 @@ class IRInterpreter:
             # Leaf values (constants, variables)
             if isinstance(ir_node, str) and self._is_identifier(ir_node):
                 try:
-                    return self._get_variable(ir_node)
+                    value = self._get_variable(ir_node)
+                    return value
                 except NameError:
                     # Only treat as string literal if it looks like a common string
                     if self._looks_like_string_literal(ir_node):
@@ -83,7 +84,19 @@ class IRInterpreter:
         # Dispatch to appropriate handler
         handler_name = f"_execute_{opcode}"
         if hasattr(self, handler_name):
-            return getattr(self, handler_name)(*ir_node[1:])
+            try:
+                result = getattr(self, handler_name)(*ir_node[1:])
+                return result
+            except Exception as e:
+                # Provide more context about which opcode failed
+                if opcode == "attribute" and len(ir_node) >= 3:
+                    obj_name = ir_node[1] if isinstance(ir_node[1], str) else ir_node[1][1] if isinstance(ir_node[1], tuple) and len(ir_node[1]) > 1 else str(ir_node[1])
+                    attr_name = ir_node[2]
+                    globals_info = f"Available globals: {', '.join(sorted(self.global_env.keys()))}"
+                    error_msg = f"Error accessing attribute '{attr_name}' on '{obj_name}'. {globals_info}"
+                    raise type(e)(error_msg) from e
+                else:
+                    raise type(e)(f"Error executing '{opcode}': {str(e)}") from e
 
         # Handle unary operators first (they have exactly 2 elements: opcode + operand)
         unary_ops = {"+", "-", "not"}
@@ -115,8 +128,8 @@ class IRInterpreter:
         if opcode == "p++":
             return self._execute_post_increment(ir_node[1])
 
-        # TODO
-        # raise NotImplementedError(f"IR opcode not implemented: {opcode}")
+        # Handle unknown opcodes
+        raise NotImplementedError(f"IR opcode not implemented: {opcode}")
 
     def execute_program(self, ir_module: Tuple) -> Any:
         """Execute a complete IR module and automatically call main() if it exists."""
@@ -130,6 +143,7 @@ class IRInterpreter:
         # First pass: execute all statements to define functions and variables
         for stmt in statements:
             result = self.execute(stmt)
+
             if self.should_return:
                 break
 
@@ -224,8 +238,13 @@ class IRInterpreter:
             self._set_variable(constant_name, value)
 
     def _execute_name(self, name: str) -> Any:
-        """Execute variable name reference."""
-        return self._get_variable(name)
+        """Execute variable reference."""
+        try:
+            return self._get_variable(name)
+        except NameError:
+            # Enhanced error message with available globals
+            globals_list = ", ".join(sorted(self.global_env.keys()))
+            raise NameError(f"Name '{name}' is not defined. Available globals: {globals_list}")
 
     def _execute_assign(
         self, target: Union[str, Tuple], value: Any, annotation: Any
@@ -580,26 +599,48 @@ class IRInterpreter:
         body: Tuple,
     ) -> None:
         """Execute class definition."""
-        # Create a new environment for class attributes
-        class_env = {}
+        # Create a simple class object
+        class ClassType:
+            pass
 
-        # Save current environment stack
-        old_env_stack = self.local_env_stack.copy()
+        # Create an instance of our class
+        cls = ClassType()
+        cls.__name__ = name
 
-        # Create a temporary environment for class body execution
-        self.local_env_stack = [class_env]
+        # Store class in global environment BEFORE executing body
+        # This is crucial for allowing class references within itself
+        self.global_env[name] = cls
 
-        # Execute class body to populate class attributes
+        # Process base classes (simple inheritance)
+        for base in bases:
+            base_val = self.execute(base)
+            if hasattr(base_val, '__dict__'):
+                # Copy attributes from base class
+                for key, value in base_val.__dict__.items():
+                    if key != "__name__":  # Don't copy the name
+                        setattr(cls, key, value)
+
+        # Execute class body to populate attributes
         for stmt in body:
-            self.execute(stmt)
-            if self.should_return:
-                break
+            # For annotated assignments (class attributes with type hints)
+            if isinstance(stmt, tuple) and stmt[0] == "ann_assign" and len(stmt) >= 3:
+                attr_name = stmt[1]
+                attr_value = self.execute(stmt[2]) if len(stmt) > 2 else None
+                setattr(cls, attr_name, attr_value)
+            # For regular assignments
+            elif isinstance(stmt, tuple) and stmt[0] == "assign" and len(stmt) >= 3:
+                attr_name = stmt[1]
+                attr_value = self.execute(stmt[2])
+                setattr(cls, attr_name, attr_value)
+            # For other statements (methods, etc.)
+            elif isinstance(stmt, tuple) and stmt[0] == "func_def" and len(stmt) > 1:
+                method_name = stmt[1]
+                method_func = self.execute(stmt)
+                setattr(cls, method_name, method_func)
+            else:
+                self.execute(stmt)
 
-        # Restore original environment
-        self.local_env_stack = old_env_stack
-
-        # Store class in global environment
-        self.global_env[name] = class_env
+        return cls
 
     def _execute_return(self, value: Any) -> Any:
         """Execute return statement."""
@@ -997,9 +1038,16 @@ class IRInterpreter:
                 return obj_val[attr]
             else:
                 raise AttributeError(f"struct object has no attribute '{attr}'")
-        else:
-            # For other objects (including regular dicts), use getattr
+        # Try direct attribute access first (works for our class objects)
+        elif hasattr(obj_val, attr):
             return getattr(obj_val, attr)
+        # Handle dictionary-like objects
+        elif isinstance(obj_val, dict) and attr in obj_val:
+            return obj_val[attr]
+        else:
+            # Failed to find attribute
+            obj_type = getattr(obj_val, "__name__", type(obj_val).__name__)
+            raise AttributeError(f"'{obj_type}' has no attribute '{attr}'")
 
     def _execute_subscript(self, obj: Any, index: Any) -> Any:
         """Execute subscript operation obj[index]."""

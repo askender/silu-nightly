@@ -276,6 +276,29 @@ class IRToSourceConverter:
 
         return "\n".join(lines)
 
+    def _convert_class_def(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert class definition IR to source code."""
+        _, name, bases, body = ir_node
+        lines = []
+
+        indent = self._get_indent(indent_level)
+
+        # Handle base classes if present
+        bases_str = ""
+        if bases:
+            bases_str = "(" + ", ".join(self._convert_expression(base) for base in bases) + ")"
+
+        lines.append(f"{indent}class {name}{bases_str}:")
+
+        if body:
+            for stmt in body:
+                lines.append(self.convert_to_source(stmt, indent_level + 1))
+        else:
+            # Empty class needs a pass statement
+            lines.append(f"{indent}    pass")
+
+        return "\n".join(lines)
+
     def _convert_c_for(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert C-style for loop IR to source code."""
         _, init, condition, update, body = ir_node

@@ -106,6 +106,15 @@ class SiluIRGenerator(BaseASTProcessor):
             # Process class body statements
             body = tuple(self.visit(stmt) for stmt in kwargs["body"])
             bases = tuple(base for base in kwargs["bases"])
+
+            # Collect class attributes and methods
+            class_attrs = {}
+            for stmt in body:
+                if isinstance(stmt, tuple) and stmt[0] == "ann_assign" and len(stmt) >= 3:
+                    # Handle annotated assignments as class attributes
+                    attr_name = stmt[1]
+                    class_attrs[attr_name] = stmt
+
             return (
                 "class_def",
                 kwargs["name"],
@@ -419,6 +428,12 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def generic_visit(self, node: ast.AST) -> None:
         """Handle unsupported AST nodes."""
+        # Provide more helpful error message for common node types
+        if isinstance(node, ast.ClassDef):
+            # This should not happen as we now handle ClassDef
+            raise NotImplementedError(
+                f"Class definition issue: {node.name}. Check implementation."
+            )
         raise NotImplementedError(
             f"Unsupported syntax for IR generation: {type(node).__name__}"
         )

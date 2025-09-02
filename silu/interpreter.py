@@ -331,6 +331,53 @@ class SiluInterpreter(BaseASTProcessor):
         if node_type == "function_def":
             func = Function(kwargs["name"], kwargs["args"], kwargs["body"], self.env)
             self.env.set(kwargs["name"], func)
+        elif node_type == "class_def":
+            # Create a class as a dictionary of attributes
+            class_attrs = {}
+
+            # Process base classes if any
+            for base in kwargs.get("bases", []):
+                base_obj = self.visit(base)
+                # Copy attributes from base classes
+                if hasattr(base_obj, "__dict__"):
+                    for key, value in base_obj.__dict__.items():
+                        class_attrs[key] = value
+
+            # Create a class type that will hold the attributes
+            class ClassType:
+                pass
+
+            # Create class instance
+            cls = ClassType()
+
+            # Store class in environment before processing body
+            # to allow self-references within the class
+            self.env.set(kwargs["name"], cls)
+
+            # Process class body to set attributes
+            for stmt in kwargs["body"]:
+                # Execute statements in class body context
+                self.visit(stmt)
+
+                # If it's an assignment, capture it as class attribute
+                if isinstance(stmt, ast.Assign):
+                    for target in stmt.targets:
+                        if isinstance(target, ast.Name):
+                            # Get the attribute value from the environment
+                            attr_name = target.id
+                            attr_value = self.env.get(attr_name)
+                            # Set it as a class attribute
+                            setattr(cls, attr_name, attr_value)
+
+                # If it's an annotated assignment, capture it as class attribute
+                elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                    attr_name = stmt.target.id
+                    if stmt.value:  # If there's a value
+                        attr_value = self.visit(stmt.value)
+                        setattr(cls, attr_name, attr_value)
+
+            # Return the class object
+            return cls
         elif node_type == "return":
             raise ReturnException(kwargs["value"])
         elif node_type == "if":
