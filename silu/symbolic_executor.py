@@ -119,10 +119,15 @@ class SymbolicExecutor:
         if not ir_program or ir_program[0] != "module":
             raise ValueError("Invalid IR program format")
 
-        self.current_path = self.path_manager.create_path()
-        self.current_path._function_params = []  # 添加函数参数列表
+        try:
+            self.current_path = self.path_manager.create_path()
+            self.current_path._function_params = []  # 添加函数参数列表
 
-        self._execute_ir(ir_program)
+            self._execute_ir(ir_program)
+        except Exception as e:
+            logger.error(f"Error in execute_program: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         # try:
         # except Exception as e:
         #     logger.error(f"Error in _execute_ir: {e}")
@@ -352,7 +357,16 @@ class SymbolicExecutor:
             # Store the struct type definition
             if not hasattr(self, "struct_types"):
                 self.struct_types = {}
+
+            # Log struct definition for debugging
+            logger.debug(f"Defining struct type {name} with fields: {fields}")
             self.struct_types[name] = fields
+
+            # Create a symbolic struct instance for later use
+            struct_id = f"struct_{name}"
+            if hasattr(self, "current_path") and self.current_path:
+                self.current_path.variables[struct_id] = create_concrete_value(struct_id)
+                self.current_path.variable_types[struct_id] = "struct"
 
             # Return None as this operation doesn't produce a value
             return create_concrete_value(None)
@@ -394,15 +408,37 @@ class SymbolicExecutor:
                         # Find the field in this struct
                         for field_name, field_type in fields:
                             if field_name == attr:
-                                # Create a default value for this field type
-                                if field_type == "int":
-                                    return create_concrete_value(0)
-                                elif field_type == "float":
-                                    return create_concrete_value(0.0)
+                                # 创建结构体成员的符号值，保留完整路径以便Z3处理（使用点号格式）
+                                member_name = f"{struct_id}.{attr}"
+                                # 记录在当前路径的符号变量映射中
+                                try:
+                                    if hasattr(self, "current_path") and self.current_path:
+                                        var_type = "int"  # 默认类型
+
+                                        # 根据字段类型推断变量类型
+                                        if field_type in ["int", "signed int", "signed short int", "enum", "_Bool", "bool"]:
+                                            var_type = "int"
+                                        elif field_type in ["float", "double"]:
+                                            var_type = "float"
+                                        elif field_type in ["char*", "string"]:
+                                            var_type = "str"
+
+                                        # 只添加原始点号格式的变量名
+                                        self.current_path.add_symbolic_variable(member_name, var_type)
+                                except Exception as e:
+                                    logger.error(f"Error adding symbolic variable {member_name}: {e}")
+
+                                # 根据类型创建合适的返回值，只使用点号格式的变量名
+                                if field_type == "int" or field_type == "signed int" or field_type == "signed short int":
+                                    return create_symbolic_value(member_name, default_value=0)
+                                elif field_type == "float" or field_type == "double":
+                                    return create_symbolic_value(member_name, default_value=0.0)
                                 elif field_type == "char*" or field_type == "string":
-                                    return create_concrete_value("")
+                                    return create_symbolic_value(member_name, default_value="")
+                                elif field_type == "enum" or field_type == "_Bool" or field_type == "bool":
+                                    return create_symbolic_value(member_name, default_value=0)
                                 else:
-                                    return create_symbolic_value(f"{struct_id}.{attr}")
+                                    return create_symbolic_value(member_name)
 
             # For concrete execution, try to access the attribute
             if (

@@ -49,9 +49,17 @@ def create_concrete_value(value: Any) -> SymbolicValue:
     return SymbolicValue(SymbolicValueType.CONCRETE, value)
 
 
-def create_symbolic_value(name: str) -> SymbolicValue:
-    """Create a symbolic value"""
-    return SymbolicValue(SymbolicValueType.SYMBOLIC, None, name)
+def create_symbolic_value(name: str, default_value: Any = None) -> SymbolicValue:
+    """Create a symbolic value
+
+    Args:
+        name: Name of the symbolic variable
+        default_value: Optional default value for concrete operations
+
+    Returns:
+        A symbolic value with the given name and optional default value
+    """
+    return SymbolicValue(SymbolicValueType.SYMBOLIC, default_value, name)
 
 
 def create_expression_value(expression) -> SymbolicValue:

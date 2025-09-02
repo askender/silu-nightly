@@ -58,6 +58,17 @@ class ExecutionPath:
         """Add a path condition"""
         self.conditions.append(condition)
 
+    def add_symbolic_variable(self, var_name: str, var_type: str = "int") -> None:
+        """Add a symbolic variable to the path
+
+        Args:
+            var_name: Name of the symbolic variable
+            var_type: Type of the variable (default: int)
+        """
+        if var_name not in self.variables:
+            self.variables[var_name] = None
+            self.variable_types[var_name] = var_type
+
     def is_satisfiable(self) -> bool:
         """Check if the path conditions are satisfiable using enhanced Z3 checking"""
         if not self.conditions:
@@ -74,28 +85,55 @@ class ExecutionPath:
 
             variable_z3_map = {}
             for k in self.variables:
+                # Process key based on its type
+                if isinstance(k, tuple):
+                    # Handle tuple keys for struct members: ('name', 'VehSpdabs')
+                    # Convert to a valid variable name
+                    if len(k) == 2 and k[0] == 'name':
+                        var_name = k[1]  # Use the field name directly
+                    else:
+                        var_name = "_".join(str(item) for item in k)
+                    z3_var_name = var_name
+                    # 不改变原始键
+                    original_key = k
+                elif isinstance(k, str):
+                    # Handle dots in variable names (struct members)
+                    # Replace dots with underscores to create valid Z3 variable names
+                    # 但只是为了Z3内部使用，保留原始点号格式的键
+                    original_key = k
+                    z3_var_name = k.replace(".", "_")
+                else:
+                    logger.warning(f"Unsupported variable key type: {k} of type {type(k)}")
+                    continue
+
                 if k in self.variable_types:
                     atype = self.variable_types[k]
                     if atype == "int":
-                        variable_z3_map[k] = z3.Int(k)
+                        variable_z3_map[original_key] = z3.Int(z3_var_name)
                     elif atype == "float":
-                        variable_z3_map[k] = z3.Real(k)
+                        variable_z3_map[original_key] = z3.Real(z3_var_name)
                     elif atype == "bool":
-                        variable_z3_map[k] = z3.Bool(k)
+                        variable_z3_map[original_key] = z3.Bool(z3_var_name)
                     elif atype == "str":
-                        variable_z3_map[k] = z3.String(k)
+                        variable_z3_map[original_key] = z3.String(z3_var_name)
                     # elif atype == 'list':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    #     variable_z3_map[original_key] = z3.Array(k, z3.IntSort(), z3.IntSort())
                     # elif atype == 'dict':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    #     variable_z3_map[original_key] = z3.Array(k, z3.IntSort(), z3.IntSort())
                     # elif atype == 'tuple':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    #     variable_z3_map[original_key] = z3.Array(k, z3.IntSort(), z3.IntSort())
                     # elif atype == 'set':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    #     variable_z3_map[original_key] = z3.Array(k, z3.IntSort(), z3.IntSort())
                     # elif atype == 'frozenset':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    #     variable_z3_map[original_key] = z3.Array(k, z3.IntSort(), z3.IntSort())
                 else:
-                    variable_z3_map[k] = z3.Int(k)
+                    # Use default Int type for variables without type information
+                    try:
+                        variable_z3_map[original_key] = z3.Int(z3_var_name)
+                    except Exception as e:
+                        logger.warning(f"Failed to create Z3 variable for {original_key} (as {z3_var_name}): {e}")
+                        # Skip this variable but continue processing others
+                        continue
 
             is_sat_result, model_values = check_path_satisfiability(
                 condition_strs, variable_z3_map
@@ -107,6 +145,7 @@ class ExecutionPath:
             elif model_values:
                 self.test_inputs = model_values  # Store test inputs from Z3 model
             else:
+                logger.debug(f"Z3 model values are empty but path is satisfiable")
                 # raise ValueError(f"Z3 model values are empty: {model_values}")
                 logger.trace(f"Z3 model values are empty: {model_values}")
             # logger.debug(f"Z3 model values: {model_values}")
