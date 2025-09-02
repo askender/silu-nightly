@@ -1380,9 +1380,18 @@ class SymbolicExecutor:
         other_conditions = []
 
         for condition in conditions:
-            if not condition.is_true and var_name in condition.expression:
+            # Handle both PathCondition objects and string conditions
+            if hasattr(condition, 'expression'):
+                expr = condition.expression
+                is_true = condition.is_true
+            else:
+                expr = str(condition)
+                # For string conditions, assume they are true constraints
+                is_true = True
+
+            if not is_true and var_name in expr:
                 pattern = rf"{re.escape(var_name)}\s*>\s*(.+)"
-                match = re.search(pattern, condition.expression)
+                match = re.search(pattern, expr)
                 if match:
                     try:
                         value = float(match.group(1))
@@ -1457,7 +1466,12 @@ class SymbolicExecutor:
                     # Extract unique variable names from conditions
                     var_names = set()
                     for condition in path.conditions:
-                        expr = condition.expression
+                        # Handle both PathCondition objects and string conditions
+                        if hasattr(condition, 'expression'):
+                            expr = condition.expression
+                        else:
+                            expr = str(condition)
+
                         # Simple extraction of variable names from conditions
                         parts = re.split(r'[<>=!]', expr)
                         if parts and len(parts) > 0:
@@ -1472,9 +1486,18 @@ class SymbolicExecutor:
 
                     # Process all conditions to generate test inputs
                     for condition in path.conditions:
-                        if condition.is_true and ">" in condition.expression:
+                        # Handle both PathCondition objects and string conditions
+                        if hasattr(condition, 'expression'):
+                            expr = condition.expression
+                            is_true = condition.is_true
+                        else:
+                            expr = str(condition)
+                            # For string conditions, assume they are true constraints
+                            is_true = True
+
+                        if is_true and ">" in expr:
                             # For x > N conditions, set x to N+1
-                            parts = condition.expression.split(">")
+                            parts = expr.split(">")
                             if len(parts) == 2:
                                 var_name = parts[0].strip()
                                 try:
@@ -1482,9 +1505,9 @@ class SymbolicExecutor:
                                     test_inputs[var_name] = threshold + 1
                                 except ValueError:
                                     pass
-                        elif condition.is_true and "<" in condition.expression:
+                        elif is_true and "<" in expr:
                             # For x < N conditions, set x to N-1
-                            parts = condition.expression.split("<")
+                            parts = expr.split("<")
                             if len(parts) == 2:
                                 var_name = parts[0].strip()
                                 try:
@@ -1492,9 +1515,9 @@ class SymbolicExecutor:
                                     test_inputs[var_name] = threshold - 1
                                 except ValueError:
                                     pass
-                        elif not condition.is_true and ">" in condition.expression:
-                            # For not (x > N) conditions, set x to N
-                            parts = condition.expression.split(">")
+                        elif is_true and "==" in expr:
+                            # For x == N conditions, set x to N
+                            parts = expr.split("==")
                             if len(parts) == 2:
                                 var_name = parts[0].strip()
                                 try:
@@ -1502,9 +1525,9 @@ class SymbolicExecutor:
                                     test_inputs[var_name] = threshold
                                 except ValueError:
                                     pass
-                        elif not condition.is_true and "<" in condition.expression:
+                        elif not is_true and "<" in expr:
                             # For not (x < N) conditions, set x to N
-                            parts = condition.expression.split("<")
+                            parts = expr.split("<")
                             if len(parts) == 2:
                                 var_name = parts[0].strip()
                                 try:
