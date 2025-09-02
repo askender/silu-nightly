@@ -1433,13 +1433,14 @@ def execute_symbolic_from_file_with_executor(
             return result
         except KeyError as ke:
             logger.error(f"KeyError in symbolic execution: {ke}")
-            # Return empty result on key error (common with tuple keys)
-            return {"paths": [], "error": f"KeyError: {ke}"}
+            # Raise RuntimeError for test compatibility while providing error info
+            raise RuntimeError(f"KeyError in symbolic execution: {ke}")
     except Exception as e:
         logger.error(f"Error in symbolic execution from file '{file_path}': {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return {"paths": [], "error": f"Error: {str(e)}"}
+        # Raise RuntimeError for compatibility with tests
+        raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
 
 
 def execute_symbolic_from_string_with_executor(
@@ -1464,10 +1465,11 @@ def execute_symbolic_from_string_with_executor(
             return result
         except KeyError as ke:
             logger.error(f"KeyError in symbolic execution: {ke}")
-            # Return empty result on key error (common with tuple keys)
-            return {"paths": [], "error": f"KeyError: {ke}"}
+            # Raise RuntimeError for test compatibility while providing error info
+            raise RuntimeError(f"KeyError in symbolic execution: {ke}")
     except Exception as e:
         logger.error(f"Error in symbolic execution from string: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return {"paths": [], "error": f"Error: {str(e)}"}
+        # Raise RuntimeError for compatibility with tests
+        raise RuntimeError(f"Error in symbolic execution from string: {e}")

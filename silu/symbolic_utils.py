@@ -160,17 +160,31 @@ class AssignmentHandler(IRNodeHandler):
 
     def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         try:
+            from .symbolic.builtin_utils import create_concrete_value, create_symbolic_value
             _, var_name, value_ir, var_type = ir_node
-            value = executor._execute_ir(value_ir)
+
+            # Handle struct instance creation
+            if isinstance(var_type, str) and var_type.startswith("struct_"):
+                struct_name = var_type[7:]  # Remove 'struct_' prefix
+                if hasattr(executor, 'struct_types') and struct_name in executor.struct_types:
+                    # Create a symbolic value for the struct instance
+                    value = create_concrete_value(var_type)
+                else:
+                    # Unknown struct type, create a symbolic value
+                    value = create_symbolic_value(f"new_{var_type}")
+            else:
+                # Normal assignment
+                value = executor._execute_ir(value_ir) if value_ir is not None else create_concrete_value(None)
+
             executor.current_env.set_variable(var_name, value)
-            if var_type is not None:  # ('name', 'int')
+            if var_type is not None and not isinstance(var_type, str):  # ('name', 'int')
                 executor.current_env.set_variable_type(var_name, var_type[1])
 
             if executor.current_path:
                 simplified_value = executor._simplify_display(value)
                 executor.current_path.add_statement(f"{var_name} = {simplified_value}")
                 executor.current_path.variables[var_name] = value
-                if var_type is not None:
+                if var_type is not None and not isinstance(var_type, str):
                     executor.current_path.variable_types[var_name] = var_type[1]
 
             return value
