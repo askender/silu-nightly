@@ -69,6 +69,19 @@ def run_interpreter(source_code: str, **kwargs) -> None:
     except SyntaxError as e:
         print(f"Syntax Error: {e}", file=sys.stderr)
         sys.exit(1)
+    except AttributeError as e:
+        # Special handling for _fields attribute error which occurs with classes
+        # if "'ClassType' object has no attribute '_fields'" in str(e) or "'dict' object has no attribute '_fields'" in str(e):
+        #     print("Note: Class feature partially implemented, some operations may not work", file=sys.stderr)
+        #     sys.exit(1)
+        print(f"Runtime Error: {e}", file=sys.stderr)
+
+        if hasattr(args, "debug") and getattr(args, "debug", False):
+            import traceback
+
+            traceback.print_exc()
+
+        sys.exit(1)
     except Exception as e:
         print(f"Runtime Error: {e}", file=sys.stderr)
         sys.exit(1)

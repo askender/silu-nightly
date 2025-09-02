@@ -129,6 +129,55 @@ The toolkit includes a `check` command to verify if Python programs are compatib
 - **CI/CD integration**: Automated testing of Python code compatibility
 - **Educational tools**: Help users understand Silu's language subset and specific limitations
 
+## Implementation Note: Interpreter vs IR Interpreter
+
+When using the Silu CLI, it's important to understand which interpreter is being used by different commands:
+
+- `python -m silu.cli interpret`: Uses the AST-based `SiluInterpreter` class in `interpreter.py`
+- `python -m silu.cli ir`: Generates IR using `SiluIRGenerator` class in `ir_generator.py`
+- `python -m silu.cli exec`: Uses the IR-based `IRInterpreter` class in `ir_interpreter.py`
+
+When adding new language features, both interpreters need to be updated separately:
+1. `interpreter.py` for direct source code interpretation
+2. `ir_generator.py` for IR generation 
+3. `ir_interpreter.py` for IR-based execution
+
+Failure to update both interpreters can lead to situations where a feature works in one mode but not the other.
+
+### Class Definition Support
+
+Basic class support has been added to Silu, allowing definition of classes with attributes and inheritance. The implementation includes:
+
+1. **Class Definition**: Support for `class ClassName:` syntax with class attributes
+2. **Class Attributes**: Support for defining and accessing class attributes (e.g., `ClassName.attribute`)
+3. **Inheritance**: Basic inheritance support with attribute copying from parent classes
+4. **IR Generation**: Generation of IR format for classes with the `class_def` opcode
+
+#### Example
+```python
+class Person:
+    name = "Unknown"
+    age = 0
+
+class Student(Person):
+    grade = 1
+
+print(Student.name)  # Outputs: Unknown
+print(Student.grade)  # Outputs: 1
+```
+
+#### Implementation Details
+- Classes are represented as dictionaries in the interpreter
+- Class attributes are stored as key-value pairs in the dictionary
+- Inheritance works by copying attributes from base classes
+- Basic attribute access is supported via the attribute opcode
+
+#### Current Limitations
+- Instance creation is not fully supported
+- Method calls may not work correctly
+- Attribute assignment after class definition is not fully implemented
+- Some class features may only work in certain execution modes
+
 ## Closure Support
 
 The Silu interpreter now provides **pure closure** support, allowing functions to capture and read variables from their defining scope:
