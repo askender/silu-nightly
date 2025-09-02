@@ -272,8 +272,9 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         performance_mode = kwargs.get("performance_mode", False)
         debug = kwargs.get("debug", False)
         if debug:
-            logger.info(f"Running symbolic execution on {'file' if is_file else 'source'}: {source}")
-
+            logger.info(
+                f"Running symbolic execution on {'file' if is_file else 'source'}: {source}"
+            )
 
         simplify = kwargs.get("simplify", False)
         solve = kwargs.get("solve", False)
@@ -304,7 +305,9 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
 
                 # Handle error in symbolic execution
                 if "error" in ir_executor_result:
-                    logger.warning(f"Symbolic execution had errors: {ir_executor_result['error']}")
+                    logger.warning(
+                        f"Symbolic execution had errors: {ir_executor_result['error']}"
+                    )
 
                 # Transfer function analyses from IR executor to main executor
                 if "function_analyses" in ir_executor_result:
@@ -366,7 +369,9 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
             except Exception as e:
                 logger.error(f"Error generating report: {e}")
                 print(f"Error generating report: {e}", file=sys.stderr)
-                print(json.dumps({"error": str(e), "paths_count": len(paths)}, indent=2))
+                print(
+                    json.dumps({"error": str(e), "paths_count": len(paths)}, indent=2)
+                )
         else:
             print("No execution paths found.")
 
@@ -374,15 +379,16 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         print(f"Dictionary key error in symbolic execution: {ke}", file=sys.stderr)
         if debug:
             import traceback
+
             traceback.print_exc()
         print(json.dumps({"error": f"KeyError: {ke}"}, indent=2))
     except Exception as e:
         print(f"Error in symbolic execution: {e}", file=sys.stderr)
         if debug:
             import traceback
+
             traceback.print_exc()
         print(json.dumps({"error": str(e)}, indent=2))
-
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -755,6 +761,7 @@ def main() -> None:
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         import traceback
+
         logger.error(traceback.format_exc())
         if hasattr(args, "debug") and getattr(args, "debug", False):
             import traceback

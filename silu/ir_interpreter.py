@@ -101,7 +101,13 @@ class IRInterpreter:
                     self._fix_class_fields()
                     return self.execute(ir_node)  # Try again after fixing
                 elif opcode == "attribute" and len(ir_node) >= 3:
-                    obj_name = ir_node[1] if isinstance(ir_node[1], str) else ir_node[1][1] if isinstance(ir_node[1], tuple) and len(ir_node[1]) > 1 else str(ir_node[1])
+                    obj_name = (
+                        ir_node[1]
+                        if isinstance(ir_node[1], str)
+                        else ir_node[1][1]
+                        if isinstance(ir_node[1], tuple) and len(ir_node[1]) > 1
+                        else str(ir_node[1])
+                    )
                     attr_name = ir_node[2]
                     globals_info = f"Available globals: {', '.join(sorted(self.global_env.keys()))}"
                     error_msg = f"Error accessing attribute '{attr_name}' on '{obj_name}'. {globals_info}"
@@ -278,7 +284,9 @@ class IRInterpreter:
         except NameError:
             # Enhanced error message with available globals
             globals_list = ", ".join(sorted(self.global_env.keys()))
-            raise NameError(f"Name '{name}' is not defined. Available globals: {globals_list}")
+            raise NameError(
+                f"Name '{name}' is not defined. Available globals: {globals_list}"
+            )
 
     def _execute_assign(
         self, target: Union[str, Tuple], value: Any, annotation: Any
@@ -1092,7 +1100,7 @@ class IRInterpreter:
         elif hasattr(obj_val, attr):
             return getattr(obj_val, attr)
         # Special case for class objects where attributes might be stored differently
-        elif hasattr(obj_val, '__dict__') and attr in obj_val.__dict__:
+        elif hasattr(obj_val, "__dict__") and attr in obj_val.__dict__:
             return obj_val.__dict__[attr]
         else:
             # Failed to find attribute
@@ -1101,7 +1109,9 @@ class IRInterpreter:
                 raise AttributeError(f"struct object has no attribute '{attr}'")
             elif isinstance(obj_val, dict) and "__name__" in obj_val:
                 # For our class objects (stored as dictionaries)
-                raise AttributeError(f"'{obj_val['__name__']}' has no attribute '{attr}'")
+                raise AttributeError(
+                    f"'{obj_val['__name__']}' has no attribute '{attr}'"
+                )
             else:
                 obj_type = getattr(obj_val, "__name__", type(obj_val).__name__)
                 raise AttributeError(f"'{obj_type}' has no attribute '{attr}'")

@@ -8,8 +8,9 @@ from .symbolic_utils import (
     logger,
 )
 import logging
+
 # Fallback logger if not imported
-if 'logger' not in locals():
+if "logger" not in locals():
     logger = logging.getLogger(__name__)
 from .symbolic.condition_utils import PathCondition
 

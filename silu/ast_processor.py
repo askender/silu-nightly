@@ -414,7 +414,6 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         return self.process_control_flow("class_def", name=name, bases=bases, body=body)
 
 
-
 def create_processor(processor_type: str, **kwargs) -> BaseASTProcessor:
     """Factory function to create AST processors."""
     if processor_type == "interpreter":

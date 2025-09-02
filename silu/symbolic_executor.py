@@ -45,13 +45,15 @@ from .symbolic.report_utils import (
 
 from .symbolic_pathlib import PathManager, ExecutionPath
 
+
 # Helper functions for symbolic value type checking
 def is_symbolic(value: SymbolicValue) -> bool:
     """Check if a value is symbolic (not concrete)"""
     return hasattr(value, "type") and (
-        value.type == SymbolicValueType.SYMBOLIC or
-        value.type == SymbolicValueType.EXPRESSION
+        value.type == SymbolicValueType.SYMBOLIC
+        or value.type == SymbolicValueType.EXPRESSION
     )
+
 
 def is_concrete(value: SymbolicValue) -> bool:
     """Check if a value is concrete (not symbolic)"""
@@ -241,7 +243,9 @@ class SymbolicExecutor:
             "typedef_struct": self._execute_typedef_struct,
             "attribute": self._execute_attribute,
             # Add a fallback handler for any missing operations
-            "__missing__": lambda ir_node: create_symbolic_value(f"unimplemented_{ir_node[0]}"),
+            "__missing__": lambda ir_node: create_symbolic_value(
+                f"unimplemented_{ir_node[0]}"
+            ),
         }
 
         # Add binary operations to dispatch table
@@ -346,7 +350,7 @@ class SymbolicExecutor:
             _, name, fields = ir_node
 
             # Store the struct type definition
-            if not hasattr(self, 'struct_types'):
+            if not hasattr(self, "struct_types"):
                 self.struct_types = {}
             self.struct_types[name] = fields
 
@@ -355,7 +359,7 @@ class SymbolicExecutor:
         except Exception as e:
             logger.error(f"Error in _execute_typedef_struct: {e}")
             # Still initialize struct_types if needed
-            if not hasattr(self, 'struct_types'):
+            if not hasattr(self, "struct_types"):
                 self.struct_types = {}
             # Return None for error case
             return create_concrete_value(None)
@@ -378,8 +382,10 @@ class SymbolicExecutor:
                 return create_symbolic_value(f"attribute_access.{attr}")
 
             # If it's a struct type, create a placeholder value for the field
-            if hasattr(self, 'struct_types'):
-                obj_str = str(obj_val.value) if hasattr(obj_val, 'value') else str(obj_val)
+            if hasattr(self, "struct_types"):
+                obj_str = (
+                    str(obj_val.value) if hasattr(obj_val, "value") else str(obj_val)
+                )
 
                 # Check if this is a struct instance
                 for struct_name, fields in self.struct_types.items():
@@ -399,7 +405,11 @@ class SymbolicExecutor:
                                     return create_symbolic_value(f"{struct_id}.{attr}")
 
             # For concrete execution, try to access the attribute
-            if hasattr(obj_val, 'value') and isinstance(obj_val.value, dict) and attr in obj_val.value:
+            if (
+                hasattr(obj_val, "value")
+                and isinstance(obj_val.value, dict)
+                and attr in obj_val.value
+            ):
                 return create_concrete_value(obj_val.value[attr])
 
             # Default to a symbolic value when we can't determine the concrete value
@@ -1333,11 +1343,15 @@ class SymbolicExecutor:
             return create_concrete_value(ir_node)
 
         # For any other type, just create a concrete value with the original object
-        logger.warning(f"Handling unexpected non-tuple node type: {type(ir_node).__name__}")
+        logger.warning(
+            f"Handling unexpected non-tuple node type: {type(ir_node).__name__}"
+        )
         try:
             return create_concrete_value(ir_node)
         except Exception as e:
-            logger.error(f"Error creating concrete value for {type(ir_node).__name__}: {e}")
+            logger.error(
+                f"Error creating concrete value for {type(ir_node).__name__}: {e}"
+            )
             return create_symbolic_value(f"unknown_{type(ir_node).__name__}")
 
     # TODO: use it
@@ -1438,6 +1452,7 @@ def execute_symbolic_from_file_with_executor(
     except Exception as e:
         logger.error(f"Error in symbolic execution from file '{file_path}': {e}")
         import traceback
+
         logger.error(traceback.format_exc())
         # Raise RuntimeError for compatibility with tests
         raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
@@ -1470,6 +1485,7 @@ def execute_symbolic_from_string_with_executor(
     except Exception as e:
         logger.error(f"Error in symbolic execution from string: {e}")
         import traceback
+
         logger.error(traceback.format_exc())
         # Raise RuntimeError for compatibility with tests
         raise RuntimeError(f"Error in symbolic execution from string: {e}")

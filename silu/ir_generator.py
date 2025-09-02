@@ -110,7 +110,11 @@ class SiluIRGenerator(BaseASTProcessor):
             # Collect class attributes and methods
             class_attrs = {}
             for stmt in body:
-                if isinstance(stmt, tuple) and stmt[0] == "ann_assign" and len(stmt) >= 3:
+                if (
+                    isinstance(stmt, tuple)
+                    and stmt[0] == "ann_assign"
+                    and len(stmt) >= 3
+                ):
                     # Handle annotated assignments as class attributes
                     attr_name = stmt[1]
                     class_attrs[attr_name] = stmt

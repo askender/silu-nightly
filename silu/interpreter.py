@@ -335,7 +335,7 @@ class SiluInterpreter(BaseASTProcessor):
             # Create a class object using a dictionary
             cls = {
                 "_fields": [],  # For compatibility with tests
-                "__name__": kwargs["name"]
+                "__name__": kwargs["name"],
             }
 
             # Process base classes if any
@@ -378,7 +378,9 @@ class SiluInterpreter(BaseASTProcessor):
                             cls[attr_name] = attr_value
 
                 # If it's an annotated assignment, capture it as class attribute
-                elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                elif isinstance(stmt, ast.AnnAssign) and isinstance(
+                    stmt.target, ast.Name
+                ):
                     attr_name = stmt.target.id
                     if stmt.value:  # If there's a value
                         attr_value = self.visit(stmt.value)

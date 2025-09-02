@@ -286,7 +286,9 @@ class IRToSourceConverter:
         # Handle base classes if present
         bases_str = ""
         if bases:
-            bases_str = "(" + ", ".join(self._convert_expression(base) for base in bases) + ")"
+            bases_str = (
+                "(" + ", ".join(self._convert_expression(base) for base in bases) + ")"
+            )
 
         lines.append(f"{indent}class {name}{bases_str}:")
 
