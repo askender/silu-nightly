@@ -1079,8 +1079,7 @@ class SymbolicExecutor:
         """Generate Z3 constraint from condition"""
         if Z3_AVAILABLE and hasattr(condition, "value"):
             try:
-                logger.debug(f"Debug: Generating Z3 constraint for condition: {condition}")
-                logger.debug(f"Debug: Generating Z3 constraint z3_variables: {self.current_env.z3_variables}")
+                logger.debug(f"Gen Z3 constraint for cond: {condition} z3_vars: {self.current_env.z3_variables}")
                 ret = to_z3_expr(condition.value, self.current_env.z3_variables)
                 return ret
             except (TypeError, AttributeError, ValueError) as e:
@@ -1262,7 +1261,8 @@ def execute_symbolic_from_file_with_executor(
     debug: bool = False,
 ) -> Dict[str, Any]:
     """Execute symbolic analysis from an IR file and return paths with function analyses"""
-    try:
+    # try:
+    if 1:
         ir_program = parse_ir_from_file(file_path, encoding=Config.DEFAULT_ENCODING)
 
         executor = SymbolicExecutor(
@@ -1276,8 +1276,8 @@ def execute_symbolic_from_file_with_executor(
             result["function_analyses"] = executor.function_analyses
 
         return result
-    except Exception as e:
-        raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
+    # except Exception as e:
+    #     raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
 
 
 def execute_symbolic_from_string_with_executor(

@@ -251,7 +251,8 @@ def run_ir_to_source_converter(
 
 def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
     """Run symbolic execution on source code or IR."""
-    try:
+    # try:
+    if 1:
         performance_mode = kwargs.get("performance_mode", False)
         debug = kwargs.get("debug", False)
 
@@ -341,9 +342,9 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         else:
             print("No execution paths found.")
 
-    except Exception as e:
-        print(f"Error in symbolic execution: {e}", file=sys.stderr)
-        sys.exit(1)
+    # except Exception as e:
+    #     print(f"Error in symbolic execution: {e}", file=sys.stderr)
+        # sys.exit(1)
 
 
 def create_parser() -> argparse.ArgumentParser:

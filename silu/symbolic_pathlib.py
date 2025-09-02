@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
-import re
 
 # Import symbolic execution utilities
 from .symbolic_utils import (
@@ -19,6 +18,8 @@ from .symbolic.builtin_utils import SymbolicValue
 
 from .symbolic.report_utils import renumber_paths_sequentially
 
+if Z3_AVAILABLE:
+    import z3
 
 @dataclass
 class ExecutionPath:
@@ -29,11 +30,13 @@ class ExecutionPath:
     statements: List[str] = field(default_factory=list)
     return_value: Optional[SymbolicValue] = None
     variables: Dict[str, SymbolicValue] = field(default_factory=dict)
+    variable_types: Dict[str, str] = field(default_factory=dict)
     loop_iterations: Dict[str, int] = field(default_factory=dict)
     state: ExecutionPathState = ExecutionPathState.ACTIVE
     test_inputs: Dict[str, Any] = field(default_factory=dict)
     expected_outputs: Dict[str, Any] = field(default_factory=dict)
     z3_error: Optional[str] = None
+    satisfiable: Optional[bool] = None
 
     def add_statement(self, statement: str) -> None:
         """Add an executed statement"""
@@ -56,17 +59,46 @@ class ExecutionPath:
 
         # Use Z3-based satisfiability checking if available
         if Z3_AVAILABLE:
+            # logger.debug(f"Z3 condition self.conditions: {self.conditions}")
             condition_strs = [str(c) for c in self.conditions]
-            logger.debug(f"Z3 condition strings: {condition_strs}")
+            # logger.debug(f"Z3 condition strings: {condition_strs}")
 
-            is_sat_result, model_values = check_path_satisfiability(condition_strs)
-            logger.debug(f"Z3 satisfiability check result: {is_sat_result}")
+            variable_z3_map = {}
+            for k in self.variables:
+                if k in self.variable_types:
+                    atype = self.variable_types[k]
+                    if atype == 'int':
+                        variable_z3_map[k] = z3.Int(k)
+                    elif atype == 'float':
+                        variable_z3_map[k] = z3.Real(k)
+                    elif atype == 'bool':
+                        variable_z3_map[k] = z3.Bool(k)
+                    elif atype == 'str':
+                        variable_z3_map[k] = z3.String(k)
+                    # elif atype == 'list':
+                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    # elif atype == 'dict':
+                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    # elif atype == 'tuple':
+                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    # elif atype == 'set':
+                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                    # elif atype == 'frozenset':
+                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
+                else:
+                    variable_z3_map[k] = z3.Int(k)
+
+            is_sat_result, model_values = check_path_satisfiability(condition_strs, variable_z3_map)
+            # logger.debug(f"Z3 is_sat_result: {is_sat_result}")
             # # logger.debug(f"Z3 model values: {model_values}")
             if not is_sat_result:
                 self.state = ExecutionPathState.UNSATISFIABLE
             elif model_values:
                 self.test_inputs = model_values # Store test inputs from Z3 model
-            logger.debug(f"Z3 model values: {model_values}")
+            else:
+                # raise ValueError(f"Z3 model values are empty: {model_values}")
+                logger.trace(f"Z3 model values are empty: {model_values}")
+            # logger.debug(f"Z3 model values: {model_values}")
             return is_sat_result
 
         # Fallback to basic logical contradiction checking
@@ -84,13 +116,16 @@ class ExecutionPath:
         return True
 
     def to_dict(path: Any) -> Dict[str, Any]:
+        """Convert execution path to dictionary"""
+        if path.satisfiable is None:
+            path.satisfiable = path.is_satisfiable()
         path_dict = {
             "path_id": path.path_id,
             "conditions": [str(c) for c in path.conditions],
             "statements": path.statements,
             "return_value": path.return_value.value if hasattr(path.return_value, "value") else path.return_value,
-            # variables
-            "satisfiable": path.is_satisfiable(),
+            "variables": path.variables,
+            "satisfiable": path.satisfiable,
             "loop_iterations": path.loop_iterations,
             "state": path.state.value,
             "test_inputs": path.test_inputs,
@@ -120,9 +155,14 @@ class PathManager:
         if len(self.paths) >= self.max_paths:
             return False
 
-        if path.is_satisfiable() and path not in self.paths:
-            self.paths.append(path)
-            return True
+        if path not in self.paths:
+            path.satisfiable = path.is_satisfiable()
+            if path.satisfiable:
+                self.paths.append(path)
+                return True
+            else:
+                raise ValueError("Path is not satisfiable")
+                # TODO: if is_satisfiable is False, it is dead code?
         return False
 
     def copy_path(
@@ -133,6 +173,7 @@ class PathManager:
         new_path.conditions = source_path.conditions.copy()
         new_path.statements = source_path.statements.copy()
         new_path.variables = source_path.variables.copy()
+        new_path.variable_types = source_path.variable_types.copy()
         new_path.loop_iterations = source_path.loop_iterations.copy()
         new_path.state = source_path.state
         return new_path

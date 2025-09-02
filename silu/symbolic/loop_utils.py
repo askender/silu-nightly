@@ -345,22 +345,22 @@ class LoopAnalyzer:
 
         return None
 
-    def _extract_value(self, expr) -> Union[int, float, str, None]:
-        """Extract value from expression if possible (kept for backward compatibility)"""
-        if isinstance(expr, (int, float)):
-            return expr
+    # def _extract_value(self, expr) -> Union[int, float, str, None]:
+    #     """Extract value from expression if possible (kept for backward compatibility)"""
+    #     if isinstance(expr, (int, float)):
+    #         return expr
 
-        if Z3_AVAILABLE:
-            z3_expr = to_z3_expr(expr, self.variable_dict)
-            if z3_expr is not None:
-                const_val = extract_constant_value(z3_expr)
-                if const_val is not None:
-                    return const_val
+    #     if Z3_AVAILABLE:
+    #         z3_expr = to_z3_expr(expr, self.variable_dict)
+    #         if z3_expr is not None:
+    #             const_val = extract_constant_value(z3_expr)
+    #             if const_val is not None:
+    #                 return const_val
 
-        if isinstance(expr, str):
-            return expr
+    #     if isinstance(expr, str):
+    #         return expr
 
-        return None
+    #     return None
 
     def create_loop_summary(self, iterations: List[LoopIteration]) -> Dict[str, Any]:
         """

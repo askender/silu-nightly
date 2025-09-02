@@ -82,6 +82,7 @@ def test_symbolic_demo1_paths():
     )
 
     # Verify test inputs for large_positive (x > 10)
+    print(large_positive_path)
     print(
         type(large_positive_path.test_inputs["x"]), large_positive_path.test_inputs["x"]
     )

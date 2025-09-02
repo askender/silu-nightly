@@ -17,22 +17,7 @@ from .z3_utils import (
 def path_to_dict(path: Any) -> Dict[str, Any]:
     """Convert a path object to dictionary format"""
     # if hasattr(path, "to_dict"):
-    #     return path.to_dict()
-
-    path_dict = {
-        "path_id": path.path_id,
-        "conditions": [str(c) for c in path.conditions],
-        "statements": path.statements,
-        "return_value": path.return_value.value if hasattr(path.return_value, "value") else path.return_value,
-        # variables
-        "satisfiable": path.is_satisfiable(),
-        "loop_iterations": path.loop_iterations,
-        "state": path.state.value,
-        "test_inputs": path.test_inputs,
-        "expected_outputs": getattr(path, "expected_outputs", {}),
-        "z3_error": getattr(path, "z3_error", None),
-    }
-    return path_dict
+    return path.to_dict()
 
 def _build_path_metrics(paths: List[Any]) -> Dict[str, Any]:
     """Build path metrics information from paths"""

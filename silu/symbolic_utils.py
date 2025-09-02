@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 logger.remove()  # 移除默认的 handler
 logger.add(
     sink=sys.stderr,  # 或 sys.stdout
+    level="DEBUG",
     format=(
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
         "<level>{level: <8}</level> | "
@@ -39,6 +40,8 @@ logger.add(
     ),
     colorize=True,
 )
+
+# 可用等级： "TRACE" < "DEBUG" < "INFO" < "SUCCESS" < "WARNING" < "ERROR" < "CRITICAL"
 
 # Configuration Constants
 
@@ -63,15 +66,13 @@ class ExecutionPathState(Enum):
     UNSATISFIABLE = "unsatisfiable"
 
 
-
-
-
 class SymbolicEnvironment:
     """Environment for symbolic execution with improved encapsulation"""
 
     def __init__(self, parent: Optional["SymbolicEnvironment"] = None):
         self.parent = parent
         self.variables: Dict[str, SymbolicValue] = {}
+        self.variable_types: Dict[str, str] = {}
         self.functions: Dict[str, Any] = {}
         self.symbol_counter = 0
         self.z3_variables: Dict[str, Any] = {}
@@ -120,10 +121,15 @@ class SymbolicEnvironment:
         """Set a variable value"""
         self.variables[name] = value
 
+    def set_variable_type(self, name: str, var_type: str) -> None:
+        """Set a variable value"""
+        self.variable_types[name] = var_type
+
     def copy(self) -> "SymbolicEnvironment":
         """Create a deep copy of the environment"""
         new_env = SymbolicEnvironment(self.parent)
         new_env.variables = deepcopy(self.variables)
+        new_env.variable_types = deepcopy(self.variable_types)
         new_env.functions = deepcopy(self.functions)
         new_env.symbol_counter = self.symbol_counter
         new_env.z3_variables = self.z3_variables.copy()
@@ -154,14 +160,18 @@ class AssignmentHandler(IRNodeHandler):
 
     def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         try:
-            _, var_name, value_ir, _ = ir_node
+            _, var_name, value_ir, var_type = ir_node
             value = executor._execute_ir(value_ir)
             executor.current_env.set_variable(var_name, value)
+            if var_type is not None: # ('name', 'int')
+                executor.current_env.set_variable_type(var_name, var_type[1])
 
             if executor.current_path:
                 simplified_value = executor._simplify_display(value)
                 executor.current_path.add_statement(f"{var_name} = {simplified_value}")
                 executor.current_path.variables[var_name] = value
+                if var_type is not None:
+                    executor.current_path.variable_types[var_name] = var_type[1]
 
             return value
         except Exception as e:
@@ -268,11 +278,11 @@ class ConditionalHandler(IRNodeHandler):
         original_path = executor.current_path
         original_env = executor.current_env.copy()
 
-        # Generate Z3 constraint
-        logger.debug(f"Generating Z3 constraint for condition: {condition}")
-        logger.debug(f"Generating Z3 constraint for readable_condition: {readable_condition}")
-        z3_constraint = executor._generate_z3_constraint(condition)
-        logger.debug(f"Generated Z3 constraint: {z3_constraint}")
+        # TODO: Generate Z3 constraint
+        # logger.debug(f"Gen Z3 constraint for condition: {condition} readable: {readable_condition}")
+        # z3_constraint = executor._generate_z3_constraint(condition)
+        z3_constraint = None
+        # logger.debug(f"Generated Z3 constraint: {z3_constraint}")
 
         # Store all paths that are created from this if statement
         created_paths = []
@@ -380,9 +390,16 @@ class ConditionalHandler(IRNodeHandler):
 
         # Always add the current path to the path manager if it's satisfiable
         # This ensures that leaf paths (those without further nested conditions) are captured
-        if executor.current_path and executor.current_path.is_satisfiable():
-            if executor.current_path not in executor.path_manager.paths:
-                executor.path_manager.add_path(executor.current_path)
+        #
+        # logger.info(f"Adding path to path manager: {executor.current_path}")
+        if executor.current_path:
+            executor.current_path.satisfiable = executor.current_path.is_satisfiable()
+            # logger.info(f"path conds: {executor.current_path.satisfiable}")
+            # logger.info(f"path satisfiable: {executor.current_path.satisfiable}")
+            # logger.info(f"path test_inputs: {executor.current_path.test_inputs}")
+            if executor.current_path.satisfiable:
+                if executor.current_path not in executor.path_manager.paths:
+                    executor.path_manager.add_path(executor.current_path)
 
         return executor.current_path
 
@@ -464,7 +481,7 @@ class LoopHandler(IRNodeHandler):
             try:
                 executor._execute_ir(body_ir)
             except Exception as e:
-                logger.error(f"Error: {e}")
+                logger.error(f"Error: {e} of body_ir: {body_ir}")
                 if executor.current_path:
                     executor.current_path.add_statement(f"Error in loop body: {e}")
                     executor.current_path.state = ExecutionPathState.ERROR
@@ -613,13 +630,14 @@ class LoopHandler(IRNodeHandler):
                         break
 
                     # TODO: Generate Z3 constraints for condition if available
-                    if executor.z3_available:
-                        try:
-                            z3_cond = executor._generate_z3_constraint(condition)
-                            if z3_cond is not None:
-                                executor.current_constraints.append(z3_cond)
-                        except Exception:
-                            pass  # Continue without Z3 constraint
+                    # if executor.z3_available:
+                    #     try:
+                    #         z3_cond = executor._generate_z3_constraint(condition)
+                    #         if z3_cond is not None:
+                    #             executor.current_constraints.append(z3_cond)
+                    #     except Exception as e:
+                    #         raise
+                            # Continue without Z3 constraint
 
                 # Execute loop body
                 executor._execute_ir(body)

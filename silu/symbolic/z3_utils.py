@@ -36,9 +36,11 @@ try:
     )
 
     Z3_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    raise ImportError(f"Z3 is not available: {e}")
     Z3_AVAILABLE = False
 
+# print(f'Z3_AVAILABLE: {Z3_AVAILABLE}')
 
 # Operator mappings from AST to Z3 (only available when Z3 is imported)
 if Z3_AVAILABLE:
@@ -150,6 +152,8 @@ class RangeConstraintGenerator:
             var_dict = {}
 
         # Convert to Z3 expressions
+        # logger.info(f'start: {start} stop: {stop} step: {step}')
+        # start_expr = stop_expr = step_expr = None
         start_expr = RangeConstraintGenerator._to_z3_expr(start, var_dict)
         stop_expr = RangeConstraintGenerator._to_z3_expr(stop, var_dict)
         step_expr = RangeConstraintGenerator._to_z3_expr(
@@ -299,8 +303,6 @@ class Z3SafeOperations:
     #     except Exception:
     #         return None
 
-
-
 def get_vars_from_ast(node: ast.AST) -> Set[str]:
     """Extract all variable names from an AST node"""
     variables = set()
@@ -313,7 +315,6 @@ def get_vars_from_ast(node: ast.AST) -> Set[str]:
     collector = VariableCollector()
     collector.visit(node)
     return variables
-
 
 # Legacy function wrappers
 def check_path_satisfiability(
@@ -350,21 +351,24 @@ class PathSatisfiabilityChecker:
         if var_dict is None:
             var_dict = {}
 
-        try:
+        # try:
+        if 1:
             solver = Solver()
             program_variables = set(var_dict.keys())
+            # logger.debug(f"program_variables: {program_variables}")
 
             for condition_str in conditions:
-                try:
+                if 1:
+                # try:
                     constraint = self._parse_condition_string(
                         condition_str, var_dict, program_variables
                     )
-                    logger.debug(f"Adding constraint: {constraint}")
+                    # logger.debug(f"Adding constraint: {constraint}")
                     if constraint is not None:
                         solver.add(constraint)
-                except Exception as e:
-                    logger.error(f"Error parsing condition '{condition_str}': {e}")
-                    continue  # Skip unparseable conditions
+                # except Exception as e:
+                #     logger.error(f"Error parsing condition '{condition_str}': {e}")
+                #     continue  # Skip unparseable conditions
 
             result = solver.check()
             if result == sat:
@@ -375,11 +379,11 @@ class PathSatisfiabilityChecker:
                 return True, model_values
             else:
                 return False, None
-        except Exception as e:
-            logger.error(f"Error checking satisfiability: {e}")
-            return True, None
+        # except Exception as e:
+        #     logger.error(f"Error checking satisfiability: {e}")
+        #     return True, None
 
-    def _parse_condition_string(
+    def _parse_condition_string_bad(
         self, condition: str, var_dict: Dict[str, Any], program_variables: set
     ) -> Optional[Any]:
         """Parse a condition string into a Z3 constraint"""
@@ -395,27 +399,103 @@ class PathSatisfiabilityChecker:
         # Remove parentheses
         condition = condition.strip("()")
 
-        # Pattern for simple comparisons: left op right
-        pattern = r"(\w+)\s*([><=!]+)\s*(.+)"
+        if 'and' not in condition and 'or' not in condition and 'not' not in condition:
+            # Pattern for simple comparisons: left op right
+            pattern = r"(\w+)\s*([><=!]+)\s*(.+)"
+            match = re.match(pattern, condition)
+
+            if not match:
+                return None
+
+            left_str, op, right_str = match.groups()
+            left_str = left_str.strip()
+            right_str = right_str.strip()
+
+            # Convert to Z3 expressions
+            left_value = self._parse_value(left_str, var_dict, program_variables)
+            right_value = self._parse_value(right_str, var_dict, program_variables)
+
+            if left_value is None or right_value is None:
+                return None
+
+            # Create constraint
+            constraint = self.parser._create_comparison(left_value, op, right_value)
+            return Not(constraint) if negated else constraint
+        else:
+            raise ValueError("Invalid condition format")
+
+    def _parse_condition_string(self, condition: str, var_dict: dict, program_variables: set) -> Optional[Any]:
+        condition = condition.strip()
+        # logger.debug(f"condition: {condition} var_dict: {var_dict} program_variables: {program_variables} raw")
+
+        if condition.startswith("not "):
+            inner = condition[4:].strip()
+            return Not(self._parse_condition_string(inner, var_dict, program_variables))
+
+        # 移除外层括号
+        while condition.startswith("(") and condition.endswith(")"):
+            condition = condition[1:-1].strip()
+
+        # 处理 or
+        depth = 0
+        for i, c in enumerate(condition):
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+            elif depth == 0 and condition[i:i+4] == ' or ':
+                left = condition[:i].strip()
+                right = condition[i+4:].strip()
+                return Or(self._parse_condition_string(left, var_dict, program_variables),
+                        self._parse_condition_string(right, var_dict, program_variables))
+
+        # 处理 and
+        depth = 0
+        for i, c in enumerate(condition):
+            # logger.debug(f"i: {i}; c: {c} == {condition[i:i+3]}")
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+            elif depth == 0 and condition[i:i+3] == 'and':
+                left = condition[:i].strip()
+                right = condition[i+3:].strip()
+                logger.debug(f"left: {left}; right: {right}")
+                return And(self._parse_condition_string(left, var_dict, program_variables),
+                        self._parse_condition_string(right, var_dict, program_variables))
+
+
+        # logger.debug(f"program_variables: {program_variables} raw2")
+        # 单个比较
+        # logger.debug(f"condition: {condition}  repr:{repr(condition)}")
+        pattern = r"(\w+)\s*([%><=!]+)\s*(.+)"
         match = re.match(pattern, condition)
+        if match:
+            left_str, op, right_str = match.groups()
+            left_value = var_dict.get(left_str, None)
+            right_value = var_dict.get(right_str, None)
+            # logger.debug(f"left_str: {left_str}; right_str: {right_str} op: {op}")
+            # logger.debug(f"!! var_dict: {var_dict} left_value: {left_value} right_value: {right_value}")
+            # if left_value is None:
+            #     left_value = Real(left_str) if left_str in program_variables else None
+            #     logger.debug(f"left_value: {left_value} ~~~~")
+            # if right_value is None:
+            #     right_value = Real(right_str) if right_str in program_variables else None
+            #     logger.debug(f"right_value: {right_value} ~~~~")
 
-        if not match:
-            return None
+            left_value = self._parse_value(left_str, var_dict, program_variables)
+            right_value = self._parse_value(right_str, var_dict, program_variables)
 
-        left_str, op, right_str = match.groups()
-        left_str = left_str.strip()
-        right_str = right_str.strip()
+            if left_value is None or right_value is None:
+                return None
 
-        # Convert to Z3 expressions
-        left_value = self._parse_value(left_str, var_dict, program_variables)
-        right_value = self._parse_value(right_str, var_dict, program_variables)
+            # logger.debug(f"left_str: {left_str}; right_str: {right_str} op: {op}")
+            return self.parser._create_comparison(left_value, op, right_value)
+        else:
+            assert condition.lower() in  "true false".split()
+            one_value = self._parse_value(condition, var_dict, program_variables)
+            return one_value
 
-        if left_value is None or right_value is None:
-            return None
-
-        # Create constraint
-        constraint = self.parser._create_comparison(left_value, op, right_value)
-        return Not(constraint) if negated else constraint
 
     def _extract_model_values(self, model, var_dict, program_variables):
         """Extract model values for program variables"""
@@ -428,24 +508,29 @@ class PathSatisfiabilityChecker:
                     if (
                         hasattr(z3, "is_int_value")
                         and z3 is not None
-                        and z3.is_int_value(z3_value)
+                        and z3.is_int_value(z3_value) # IntNumRef
                     ):
                         model_values[var_name] = z3_value.as_long()
-                    elif (
-                        hasattr(z3, "is_real_value")
-                        and z3 is not None
-                        and z3.is_real_value(z3_value)
-                    ):
-                        raise ValueError("Error parsing Z3 value is_real")
-                        model_values[var_name] = str(float(z3_value.as_fraction()))
+                    elif isinstance(z3_value, z3.RatNumRef):
+                        num = z3_value.numerator_as_long()
+                        den = z3_value.denominator_as_long()
+                        if den == 0:  # 表示无穷大
+                            return float('inf') if num > 0 else float('-inf')
+                        elif den == 1:  # 表示整数
+                            model_values[var_name] = num
+                        else:
+                            # 转换为浮点 same as? float(z3_value.as_fraction())
+                            model_values[var_name] = num / den
                     elif (
                         hasattr(z3, "is_bool")
                         and z3 is not None
                         and z3.is_bool(z3_value)
                     ):
-                        raise ValueError("Error parsing Z3 value is_bool")
-                        model_values[var_name] = str(z3.is_true(z3_value)).lower()
+                        # raise ValueError("Error parsing Z3 value is_bool")
+                        # str(z3.is_true(z3_value)).lower()
+                        model_values[var_name] = z3.is_true(z3_value)
                     else:
+                        logger.error(f"Error var_name {var_name} z3_value: {z3_value} {type(z3_value)}")
                         raise ValueError("Error parsing Z3 value others")
                         model_values[var_name] = str(z3_value)
                 except Exception as e:
@@ -474,6 +559,7 @@ class PathSatisfiabilityChecker:
 
         # It's a variable
         if value_str not in var_dict:
+            logger.trace(f"Variable '{value_str}' not found in {var_dict}")
             var_dict[value_str] = create_z3_variable(value_str)
             program_variables.add(value_str)
         return var_dict[value_str]
@@ -487,14 +573,7 @@ class ExpressionParser:
 
     def _create_comparison(self, left, op: str, right):
         """Create Z3 comparison constraint"""
-        if not Z3_AVAILABLE:
-            return None
-
-        if op == "==":
-            return left == right
-        elif op == "!=":
-            return left != right
-        elif op == "<":
+        if op == "<":
             return left < right
         elif op == "<=":
             return left <= right
@@ -502,9 +581,13 @@ class ExpressionParser:
             return left > right
         elif op == ">=":
             return left >= right
-
+        if op == "==":
+            return left == right
+        elif op == "!=":
+            return left != right
+        elif op == "%":
+            return left % right
         return None
-
 
     # def _parse_basic_comparison(
     #     self, expr: str, var_map: Dict[str, Any]
