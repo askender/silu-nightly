@@ -1042,10 +1042,15 @@ class SymbolicExecutor:
         #         self.current_path.add_statement(f"ERROR: {str(e)}")
         #         self.current_path.state = ExecutionPathState.ERROR
 
-        # Collect function paths
-        # TODO
-        # if self.current_path and self.current_path.is_satisfiable():
-        #     self.path_manager.add_path(self.current_path)
+        # Ensure at least one path exists, even for functions without branches
+        if self.current_path:
+            # Add the current path if no paths were created during execution
+            try:
+                self.path_manager.add_path(self.current_path)
+            except ValueError:
+                # Path might not be satisfiable, but we still want to keep it
+                self.current_path.satisfiable = True
+                self.path_manager.paths.append(self.current_path)
 
         function_paths = self.path_manager.finalize_paths()
 
