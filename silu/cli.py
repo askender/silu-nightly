@@ -11,9 +11,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-# Setup logging
-logger = logging.getLogger(__name__)
-
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
 from silu.ir_interpreter import (
@@ -35,6 +32,9 @@ try:
     LLVM_AVAILABLE = True
 except ImportError:
     LLVM_AVAILABLE = False
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 
 def read_source_file(file_path: str) -> str:
