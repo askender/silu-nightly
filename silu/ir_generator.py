@@ -102,6 +102,16 @@ class SiluIRGenerator(BaseASTProcessor):
                 tuple(kwargs["args"]),
                 body,
             )
+        elif node_type == "class_def":
+            # Process class body statements
+            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
+            bases = tuple(base for base in kwargs["bases"])
+            return (
+                "class_def",
+                kwargs["name"],
+                bases,
+                body,
+            )
         elif node_type == "return":
             return ("return", kwargs["value"])
         elif node_type == "if":

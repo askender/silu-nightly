@@ -404,6 +404,14 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         body_node = node.body
         return self.process_lambda(params, body_node)
 
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        """Visit a class definition node."""
+        name = node.name
+        bases = [self.visit(base) for base in node.bases]
+        body = node.body
+        return self.process_control_flow("class_def", name=name, bases=bases, body=body)
+
+
 
 def create_processor(processor_type: str, **kwargs) -> BaseASTProcessor:
     """Factory function to create AST processors."""

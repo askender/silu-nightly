@@ -573,6 +573,34 @@ class IRInterpreter:
         # Also store in global environment for function name resolution
         self.global_env[name] = name
 
+    def _execute_class_def(
+        self,
+        name: str,
+        bases: Tuple,
+        body: Tuple,
+    ) -> None:
+        """Execute class definition."""
+        # Create a new environment for class attributes
+        class_env = {}
+
+        # Save current environment stack
+        old_env_stack = self.local_env_stack.copy()
+
+        # Create a temporary environment for class body execution
+        self.local_env_stack = [class_env]
+
+        # Execute class body to populate class attributes
+        for stmt in body:
+            self.execute(stmt)
+            if self.should_return:
+                break
+
+        # Restore original environment
+        self.local_env_stack = old_env_stack
+
+        # Store class in global environment
+        self.global_env[name] = class_env
+
     def _execute_return(self, value: Any) -> Any:
         """Execute return statement."""
         if value is not None:
