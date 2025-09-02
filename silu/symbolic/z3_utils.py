@@ -363,23 +363,8 @@ class PathSatisfiabilityChecker:
                         condition_str, var_dict, program_variables
                     )
                     # logger.debug(f"Adding constraint: {constraint}")
-                    # 保存原始条件字符串，用于生成测试输入
-                    if "_condition_strings" not in var_dict:
-                        var_dict["_condition_strings"] = []
-                    var_dict["_condition_strings"].append(condition_str)
-
                     if constraint is not None:
-                        # 确保约束是布尔值类型
-                        try:
-                            if z3.is_bool(constraint):
-                                solver.add(constraint)
-                            else:
-                                # 非布尔值转换为布尔表达式（与0比较）
-                                solver.add(constraint != 0)
-                        except Exception as e:
-                            logger.warning(f"Skipping invalid constraint '{constraint}': {e}")
-                    else:
-                        logger.debug(f"Skipping None constraint for condition: {condition_str}")
+                        solver.add(constraint)
                 # except Exception as e:
                 #     logger.error(f"Error parsing condition '{condition_str}': {e}")
                 #     continue  # Skip unparseable conditions
@@ -487,144 +472,40 @@ class PathSatisfiabilityChecker:
         # logger.debug(f"program_variables: {program_variables} raw2")
         # 单个比较
         # logger.debug(f"condition: {condition}  repr:{repr(condition)}")
-        # 修改正则表达式以支持结构体成员访问 (example: struct_CarModeResult.status)
-        pattern = r"([\w\.]+)\s*([%><=!]+)\s*(.+)"
+        pattern = r"(\w+)\s*([%><=!]+)\s*(.+)"
         match = re.match(pattern, condition)
         if match:
             left_str, op, right_str = match.groups()
-
-            # Log for debugging
-            logger.debug(f"Parsing condition: '{left_str} {op} {right_str}'")
-
-            # Ensure struct members are properly handled
-            left_str = left_str.strip()
-            right_str = right_str.strip()
-
-            # Handle struct members by adding them to program_variables
-            if "." in left_str and left_str not in program_variables:
-                program_variables.add(left_str)
-                # Also add the struct_name_field version for Z3
-                program_variables.add(left_str.replace(".", "_"))
-
-            if "." in right_str and right_str not in program_variables:
-                program_variables.add(right_str)
-                # Also add the struct_name_field version for Z3
-                program_variables.add(right_str.replace(".", "_"))
+            left_value = var_dict.get(left_str, None)
+            right_value = var_dict.get(right_str, None)
+            # logger.debug(f"left_str: {left_str}; right_str: {right_str} op: {op}")
+            # logger.debug(f"!! var_dict: {var_dict} left_value: {left_value} right_value: {right_value}")
+            # if left_value is None:
+            #     left_value = Real(left_str) if left_str in program_variables else None
+            #     logger.debug(f"left_value: {left_value} ~~~~")
+            # if right_value is None:
+            #     right_value = Real(right_str) if right_str in program_variables else None
+            #     logger.debug(f"right_value: {right_value} ~~~~")
 
             left_value = self._parse_value(left_str, var_dict, program_variables)
             right_value = self._parse_value(right_str, var_dict, program_variables)
 
-            # Add another fallback for numbers in right_str
-            if right_value is None:
-                try:
-                    if "." in right_str:  # Try as float
-                        right_value = RealVal(float(right_str))
-                    else:  # Try as int
-                        right_value = IntVal(int(right_str))
-                except ValueError:
-                    pass
-
             if left_value is None or right_value is None:
-                logger.warning(f"Could not parse values for condition: {left_str} {op} {right_str}")
                 return None
-
-            # 确保对应的Z3变量字典中只保留原始点号格式的键
-            if "." in left_str and left_str.replace(".", "_") in var_dict:
-                var_dict.pop(left_str.replace(".", "_"), None)
-            if "." in right_str and right_str.replace(".", "_") in var_dict:
-                var_dict.pop(right_str.replace(".", "_"), None)
 
             # logger.debug(f"left_str: {left_str}; right_str: {right_str} op: {op}")
             return self.parser._create_comparison(left_value, op, right_value)
         else:
-            logger.warning(f"Invalid condition: {condition}")
-            # 不再断言条件必须是true/false，而是尝试作为变量处理
-            try:
-                # 处理复合条件表达式，如 "VehSpd / 100 - 200 < 0"
-                # 尝试使用简单解析来处理常见的比较操作
-                for op in ["<=", ">=", "==", "!=", "<", ">"]:
-                    if op in condition:
-                        parts = condition.split(op, 1)
-                        if len(parts) == 2:
-                            left_expr = parts[0].strip()
-                            right_expr = parts[1].strip()
-                            # 递归解析左右表达式
-                            left_value = self._parse_condition_string(left_expr, var_dict, program_variables)
-                            if left_value is None:
-                                left_value = self._parse_value(left_expr, var_dict, program_variables)
-
-                            # 尝试将右侧解析为数值
-                            try:
-                                if "." in right_expr:
-                                    right_value = RealVal(float(right_expr))
-                                else:
-                                    right_value = IntVal(int(right_expr))
-                            except ValueError:
-                                right_value = self._parse_value(right_expr, var_dict, program_variables)
-
-                            if left_value is not None and right_value is not None:
-                                return self.parser._create_comparison(left_value, op, right_value)
-
-                # Handle struct member access directly in condition
-                if "." in condition and condition not in program_variables:
-                    # Create struct member variable
-                    struct_var = condition.replace(".", "_")
-                    program_variables.add(condition)
-                    if condition not in var_dict:
-                        # 创建Z3变量（使用下划线格式作为Z3变量名，但用点号格式作为键）
-                        var_dict[condition] = z3.Int(struct_var)
-                    return var_dict[condition] != 0  # Non-zero check as default condition
-
-                one_value = self._parse_value(condition, var_dict, program_variables)
-                # Ensure we return a boolean expression
-                if one_value is not None:
-                    if z3.is_bool(one_value):
-                        return one_value
-                    else:
-                        # Convert to boolean by comparing with 0
-                        return one_value != 0
-                else:
-                    return BoolVal(True)  # Default fallback
-            except Exception as e:
-                logger.error(f"Failed to parse condition '{condition}': {e}")
-                # 返回一个默认的True值，避免完全中断执行
-                return BoolVal(True)
+            assert condition.lower() in "true false".split()
+            one_value = self._parse_value(condition, var_dict, program_variables)
+            return one_value
 
     def _extract_model_values(self, model, var_dict, program_variables):
         """Extract model values for program variables"""
         model_values = {}
-
-        # 从条件字符串中提取变量和操作
-        condition_strings = var_dict.get("_condition_strings", [])
-        condition_vars = {}
-        for condition in condition_strings:
-            # 简单解析条件，提取变量名和操作
-            for op in ["==", "!=", ">=", "<=", ">", "<"]:
-                if op in condition:
-                    parts = condition.split(op, 1)
-                    if len(parts) == 2:
-                        var_name = parts[0].strip()
-                        value_str = parts[1].strip()
-                        if "not (" in var_name:
-                            var_name = var_name.replace("not (", "").strip()
-                        condition_vars[var_name] = (op, value_str)
-                        break
-
-        # 首先收集所有出现在条件中的变量及其Z3变量
-        relevant_vars = {}
-        for var_name, z3_var in var_dict.items():
-            # 只处理点号格式或原始变量名，跳过临时使用的下划线格式
-            if "_" in var_name and "." in var_name.replace("_", "."):
-                continue
-
-            # 收集所有有值的变量
-            if z3_var in model:
-                relevant_vars[var_name] = z3_var
-
-        # 从模型中提取值
-        for var_name, z3_var in relevant_vars.items():
-            if model[z3_var] is not None:
-                z3_value = model[z3_var]
+        for var_name in program_variables:
+            if var_name in var_dict and model[var_dict[var_name]] is not None:
+                z3_value = model[var_dict[var_name]]
                 # Convert Z3 value to Python value
                 try:
                     if (
@@ -637,7 +518,7 @@ class PathSatisfiabilityChecker:
                         num = z3_value.numerator_as_long()
                         den = z3_value.denominator_as_long()
                         if den == 0:  # 表示无穷大
-                            model_values[var_name] = float("inf") if num > 0 else float("-inf")
+                            return float("inf") if num > 0 else float("-inf")
                         elif den == 1:  # 表示整数
                             model_values[var_name] = num
                         else:
@@ -648,62 +529,25 @@ class PathSatisfiabilityChecker:
                         and z3 is not None
                         and z3.is_bool(z3_value)
                     ):
+                        # raise ValueError("Error parsing Z3 value is_bool")
+                        # str(z3.is_true(z3_value)).lower()
                         model_values[var_name] = z3.is_true(z3_value)
                     else:
-                        logger.debug(f"Using string representation for {var_name}: {z3_value} ({type(z3_value)})")
+                        logger.error(
+                            f"Error var_name {var_name} z3_value: {z3_value} {type(z3_value)}"
+                        )
+                        raise ValueError("Error parsing Z3 value others")
                         model_values[var_name] = str(z3_value)
                 except Exception as e:
-                    logger.warning(f"Error parsing Z3 value for {var_name}: {e}, using string representation")
+                    logger.error(f"Error parsing Z3 value: {e}")
+                    raise ValueError(f"Error parsing Z3 value: {e}")
                     model_values[var_name] = str(z3_value)
-
-        # 特殊处理结构体成员：如果是布尔类型的条件变量，确保有测试输入
-        for var_name in program_variables:
-            if var_name in condition_vars and var_name not in model_values:
-                op, value = condition_vars[var_name]
-
-                # 尝试转换值
-                try:
-                    if value.lower() == "true":
-                        parsed_value = True
-                    elif value.lower() == "false":
-                        parsed_value = False
-                    elif "." in value:
-                        parsed_value = float(value)
-                    else:
-                        parsed_value = int(value)
-
-                    # 根据操作符设置相应的值
-                    if op == "==":
-                        model_values[var_name] = parsed_value
-                    elif op == "!=":
-                        # 使用不同的值
-                        if isinstance(parsed_value, bool):
-                            model_values[var_name] = not parsed_value
-                        else:
-                            model_values[var_name] = parsed_value + 1
-                except:
-                    # 无法解析，使用默认值
-                    if "status" in var_name.lower() or "flag" in var_name.lower() or "bool" in var_name.lower():
-                        model_values[var_name] = False
-                    else:
-                        model_values[var_name] = 0
-
-            # 处理没有出现在条件中但有点号的变量（结构体成员）
-            elif "." in var_name and var_name not in model_values:
-                if "status" in var_name.lower() or "flag" in var_name.lower() or "bool" in var_name.lower():
-                    model_values[var_name] = False  # 默认布尔值
-                else:
-                    model_values[var_name] = 0  # 默认整数值
-
         return model_values
 
     def _parse_value(
         self, value_str: str, var_dict: Dict[str, Any], program_variables: set
     ):
         """Parse a value string to Z3 expression"""
-        # Strip whitespace
-        value_str = value_str.strip()
-
         # Try to parse as constant first
         try:
             return IntVal(int(value_str))
@@ -718,41 +562,7 @@ class PathSatisfiabilityChecker:
         if value_str.lower() in ["true", "false"]:
             return BoolVal(value_str.lower() == "true")
 
-        # 处理结构体成员访问 (例如: struct_CarModeResult.status)
-        if "." in value_str:
-            # 将结构体成员访问替换为合法的变量名（仅用于Z3内部处理）
-            struct_var = value_str.replace(".", "_")
-
-            # 仅添加原始点号格式到程序变量列表
-            program_variables.add(value_str)
-
-            if value_str not in var_dict:
-                logger.debug(f"Creating struct member variable: {value_str}")
-                try:
-                    # 尝试推断类型：如果名称中包含 status/flag/enable/disable 等，使用 Bool 类型
-                    if any(hint in value_str.lower() for hint in ["status", "flag", "enable", "disable", "active", "bool"]):
-                        # 创建Bool类型变量，但只使用临时下划线格式供Z3内部使用
-                        z3_var = z3.Bool(struct_var)
-                    else:
-                        # 默认使用整数类型
-                        z3_var = z3.Int(struct_var)
-
-                    # 只在var_dict中保存原始点号格式作为键
-                    var_dict[value_str] = z3_var
-                except Exception as e:
-                    logger.warning(f"Failed to create Z3 variable for {value_str}: {e}")
-                    # Create a fallback Int variable
-                    try:
-                        z3_var = z3.Int(f"fallback_{struct_var}")
-                        var_dict[value_str] = z3_var
-                    except Exception as e2:
-                        logger.error(f"Failed to create fallback Z3 variable: {e2}")
-                        # Last resort - use a constant
-                        var_dict[value_str] = z3.IntVal(0)
-
-            return var_dict[value_str]
-
-        # 普通变量
+        # It's a variable
         if value_str not in var_dict:
             logger.trace(f"Variable '{value_str}' not found in {var_dict}")
             var_dict[value_str] = create_z3_variable(value_str)
