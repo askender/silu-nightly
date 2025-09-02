@@ -171,12 +171,22 @@ print(Student.grade)  # Outputs: 1
 - Class attributes are stored as key-value pairs in the dictionary
 - Inheritance works by copying attributes from base classes
 - Basic attribute access is supported via the attribute opcode
+- Different implementations in `interpreter.py` and `ir_interpreter.py`
+- Enhanced error handling for `--debug` mode
 
 #### Current Limitations
 - Instance creation is not fully supported
-- Method calls may not work correctly
-- Attribute assignment after class definition is not fully implemented
-- Some class features may only work in certain execution modes
+- Method calls are not implemented yet
+- Attribute assignment after class definition is not supported in IR generation
+- No support for class decorators or metaclasses
+- Special methods (`__init__`, `__str__`, etc.) are not handled specially
+
+#### Implementation Notes
+- The interpreter (`interpreter.py`) and IR interpreter (`ir_interpreter.py`) have separate implementations
+- Both implementations use dictionary-like structures to represent classes
+- In the interpreter, class attributes are defined within the class body and stored in the class object
+- Method definitions are recognized but method calls are not fully implemented
+- The `_fields` attribute is provided for compatibility with existing code
 
 ## Closure Support
 

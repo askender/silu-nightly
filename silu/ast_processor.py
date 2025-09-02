@@ -407,7 +407,9 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     def visit_ClassDef(self, node: ast.ClassDef) -> Any:
         """Visit a class definition node."""
         name = node.name
-        bases = [self.visit(base) for base in node.bases]
+        # Just pass the base nodes directly to process_control_flow
+        # This prevents calling visit on dict objects that lack _fields
+        bases = node.bases
         body = node.body
         return self.process_control_flow("class_def", name=name, bases=bases, body=body)
 

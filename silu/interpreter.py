@@ -340,7 +340,14 @@ class SiluInterpreter(BaseASTProcessor):
 
             # Process base classes if any
             for base in kwargs.get("bases", []):
-                base_obj = self.visit(base)
+                # Handle when base is a Name node directly
+                if isinstance(base, ast.Name):
+                    base_name = base.id
+                    base_obj = self.env.get(base_name)
+                # Handle when base is already processed
+                else:
+                    base_obj = self.visit(base)
+
                 # Copy attributes from base classes
                 if isinstance(base_obj, dict):
                     for key, value in base_obj.items():
@@ -478,6 +485,10 @@ class SiluInterpreter(BaseASTProcessor):
 
     def process_attribute(self, obj: Any, attr: str) -> Any:
         """Process attribute access."""
+        # Handle string object (might be a class name)
+        if isinstance(obj, str) and obj in self.env.variables:
+            obj = self.env.get(obj)
+
         # If object is a dictionary (our class representation)
         if isinstance(obj, dict) and attr in obj:
             return obj[attr]

@@ -76,7 +76,7 @@ def run_interpreter(source_code: str, **kwargs) -> None:
         #     sys.exit(1)
         print(f"Runtime Error: {e}", file=sys.stderr)
 
-        if hasattr(args, "debug") and getattr(args, "debug", False):
+        if kwargs.get("debug", False):
             import traceback
 
             traceback.print_exc()
