@@ -144,13 +144,13 @@ class ExecutionPath:
             expressions[condition.expression] = condition.is_true
         return True
 
-    def to_dict(path: Any) -> Dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         """Convert execution path to dictionary"""
-        if path.satisfiable is None:
-            path.satisfiable = path.is_satisfiable()
+        if self.satisfiable is None:
+            self.satisfiable = self.is_satisfiable()
         # Convert variables to dictionary with string keys
         safe_variables = {}
-        for k, v in path.variables.items():
+        for k, v in self.variables.items():
             # Convert any non-string keys to strings
             key_str = str(k) if not isinstance(k, str) else k
             try:
@@ -165,21 +165,52 @@ class ExecutionPath:
                 safe_variables[key_str] = f"<error:{type(v).__name__}>"
 
         path_dict = {
-            "path_id": path.path_id,
-            "conditions": [str(c) for c in path.conditions],
-            "return_value": path.return_value.value
-            if hasattr(path.return_value, "value")
-            else path.return_value,
+            "path_id": self.path_id,
+            "conditions": [str(c) for c in self.conditions],
+            "return_value": _serialize_symbolic_value(self.return_value),
             "variables": safe_variables,
-            "satisfiable": path.satisfiable,
-            "test_inputs": path.test_inputs,
+            "satisfiable": self.satisfiable,
+            "test_inputs": self.test_inputs,
         }
-        # "state": path.state.value,
-        # "statements": path.statements,
-        # "loop_iterations": path.loop_iterations,
-        # "expected_outputs": getattr(path, "expected_outputs", {}),
-        # "z3_error": getattr(path, "z3_error", None),
+        # "state": self.state.value,
+        # "statements": self.statements,
+        # "loop_iterations": self.loop_iterations,
+        # "expected_outputs": getattr(self, "expected_outputs", {}),
+        # "z3_error": getattr(self, "z3_error", None),
         return path_dict
+
+
+def _serialize_symbolic_value(value) -> Any:
+    """Serialize a SymbolicValue for JSON output"""
+    if value is None:
+        return None
+
+    # Handle SymbolicValue objects
+    if hasattr(value, 'type'):
+        from silu.symbolic.builtin_utils import SymbolicValueType
+
+        if value.type == SymbolicValueType.CONCRETE:
+            return value.value
+        elif value.type == SymbolicValueType.SYMBOLIC:
+            # For symbolic values, use the name since value is None
+            return value.name
+        elif value.type == SymbolicValueType.EXPRESSION:
+            # For expressions, serialize the expression structure
+            return _serialize_expression(value.value)
+
+    # Fallback to string representation
+    return str(value)
+
+def _serialize_expression(expr) -> Any:
+    """Serialize an expression structure recursively"""
+    if isinstance(expr, (tuple, list)):
+        return [_serialize_expression(item) if hasattr(item, 'type') else
+                _serialize_symbolic_value(item) if hasattr(item, 'value') else item
+                for item in expr]
+    elif hasattr(expr, 'type'):
+        return _serialize_symbolic_value(expr)
+    else:
+        return expr
 
 
 class PathManager:
