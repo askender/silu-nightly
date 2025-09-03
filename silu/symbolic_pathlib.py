@@ -95,6 +95,7 @@ class ExecutionPath:
                     # elif atype == 'frozenset':
                     #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
                 else:
+                    logger.debug(f"Variable {k} has type {type(k)} which is not supported.")
                     variable_z3_map[k] = z3.Int(k)
 
             # try:

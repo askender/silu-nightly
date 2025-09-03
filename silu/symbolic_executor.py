@@ -429,12 +429,15 @@ class SymbolicExecutor:
     def _execute_func_def(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function definition"""
         # Handle both Silu format (4 elements) and C format (5-6 elements)
+        param_types = return_types = None
         if len(ir_node) == 4:
             # Silu format: ("func_def", name, params, body)
             _, func_name, params, body = ir_node
         elif len(ir_node) >= 5:
             # C format: ("func_def", name, params, body, param_types, [return_type])
             _, func_name, params, body = ir_node[:4]
+            param_types = ir_node[4]
+            return_types = ir_node[5]
         else:
             raise ValueError(
                 f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}"
@@ -446,13 +449,14 @@ class SymbolicExecutor:
             self.current_path.add_statement(f"def {func_name}({params_str}):")
 
         # Always analyze function for reporting purposes
-        function_paths = self._analyze_function_definition(func_name, params, body)
+        function_paths = self._analyze_function_definition(func_name, params, body, param_types, return_types)
         self.function_analyses[func_name] = function_paths
 
         return create_concrete_value(None)
 
     def _execute_call(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function call symbolically"""
+        # logger.warning(f"ir_node of _execute_call: {ir_node}")
         if len(ir_node) == 4:
             _, func_name, args_ir, kwargs_ir = ir_node
         else:
@@ -1118,7 +1122,8 @@ class SymbolicExecutor:
         pass
 
     def _analyze_function_definition(
-        self, func_name: str, params: List[str], body_ir: Any
+        self, func_name: str, params: List[str], body_ir: Any,
+        param_types: List[Any], return_types: List[Any]
     ) -> List[ExecutionPath]:
         """Analyze all paths within a function definition"""
         # Save current state
@@ -1132,10 +1137,24 @@ class SymbolicExecutor:
 
         # Create function environment with symbolic parameters
         func_env = SymbolicEnvironment(self.global_env)
-        for param in params:
-            symbol = func_env.create_symbol(param)
-            func_env.set_variable(param, symbol)
-            self.current_path.variables[param] = symbol
+        if not param_types:
+            # TODO: it is old style
+            for param in params:
+                symbol = func_env.create_symbol(param)
+                func_env.set_variable(param, symbol)
+                self.current_path.variables[param] = symbol
+        else:
+            for param, param_type in zip(params, param_types):
+                if param_type is None:
+                    symbol = func_env.create_symbol(param)
+                    func_env.set_variable(param, symbol)
+                    self.current_path.variables[param] = symbol
+                else:
+                    # TODO: Handle param_type[1]
+                    symbol = func_env.create_symbol(param, param_type[1])
+                    func_env.set_variable(param, symbol)
+                    self.current_path.variables[param] = symbol
+                    self.current_path.variable_types[param] = param_type[1]
 
         self.current_env = func_env
 
