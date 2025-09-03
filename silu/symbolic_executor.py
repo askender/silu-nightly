@@ -857,8 +857,7 @@ class SymbolicExecutor:
             return create_concrete_value(None)
 
         _, subject_ir, cases = ir_node
-        # subject_value =
-        self._execute_ir(subject_ir)
+        subject_value = self._execute_ir(subject_ir)
 
         if not cases:
             return create_concrete_value(None)
@@ -866,6 +865,15 @@ class SymbolicExecutor:
         # Store current path to create branches from
         original_path = self.current_path
         new_paths = []
+
+        # Collect all case values for default constraint generation
+        case_values = []
+        for case_ir in cases:
+            if (isinstance(case_ir, (tuple, list)) and len(case_ir) >= 3 and
+                case_ir[0] == "case"):
+                case_value = self._extract_case_value(case_ir[1])
+                if case_value is not None:
+                    case_values.append(case_value)
 
         # Process each case to create separate execution paths
         for i, case_ir in enumerate(cases):
@@ -892,8 +900,17 @@ class SymbolicExecutor:
             case_path = self.path_manager.copy_path(original_path, case_name)
 
             # Add pattern matching condition to the path
-            # For now, we don't add specific conditions for switch cases
-            # TODO: Add proper condition generation for switch cases
+            if case_type == "case" and pattern is not None:
+                # Add equality condition for specific case
+                condition_expr = self._create_switch_condition(subject_value, pattern)
+                if condition_expr:
+                    case_path.add_condition(PathCondition(condition_expr, True))
+            elif case_type == "default":
+                # Add negative conditions for default case (not equal to any specific case)
+                subject_name = self._get_variable_name(subject_value)
+                for case_value in case_values:
+                    condition_expr = f"{subject_name} != {case_value}"
+                    case_path.add_condition(PathCondition(condition_expr, True))
 
             # Check if this path is satisfiable
             if case_path.is_satisfiable():
@@ -915,6 +932,26 @@ class SymbolicExecutor:
         self.current_path = original_path
 
         return create_concrete_value(None)
+
+    def _extract_case_value(self, pattern: Any) -> Any:
+        """Extract the case value from a switch case pattern"""
+        if isinstance(pattern, (tuple, list)) and len(pattern) >= 2:
+            if pattern[0] == "const":
+                return pattern[1]
+        return None
+
+    def _create_switch_condition(self, subject_value: SymbolicValue, pattern: Any) -> str:
+        """Create a condition string for switch case matching"""
+        case_value = self._extract_case_value(pattern)
+        if case_value is not None:
+            subject_name = self._get_variable_name(subject_value)
+            # Format the case value properly for string literals
+            if isinstance(case_value, str):
+                formatted_value = f'"{case_value}"'
+            else:
+                formatted_value = str(case_value)
+            return f"{subject_name} == {formatted_value}"
+        return ""
 
     def _is_wildcard_pattern(self, pattern: Tuple) -> bool:
         """Check if pattern is a wildcard pattern (_)"""

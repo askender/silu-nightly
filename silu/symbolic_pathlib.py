@@ -73,8 +73,8 @@ class ExecutionPath:
             # logger.debug(f"Z3 condition strings: {condition_strs}")
 
             variable_z3_map = {}
-            logger.debug(f"Variable types: {self.variable_types}")
-            logger.debug(f"Variables: {self.variables}")
+            # logger.debug(f"Variable types: {self.variable_types}")
+            # logger.debug(f"Variables: {self.variables}")
             for k in self.variables:
                 if not isinstance(k, str):
                     continue
@@ -99,16 +99,16 @@ class ExecutionPath:
                     # elif atype == 'frozenset':
                     #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
                 else:
-                    logger.warning(f"Variable {k} has type {type(k)} which is not supported.")
+                    # logger.warning(f"Variable {k} has type {type(k)} which is not supported.")
                     variable_z3_map[k] = z3.Int(k)
 
             # try:
             if 1:
-                logger.warning(f"Z3 condition self.variables: {self.variables}")
-                logger.warning(f"Z3 condition self.conditions: {self.conditions}")
-                logger.warning(f"Z3 variable_z3_map: {variable_z3_map}")
-                if 'isAcu_Crashappen' in variable_z3_map:
-                    logger.warning(f"{type(variable_z3_map['isAcu_Crashappen'])}")
+                # logger.warning(f"Z3 condition self.variables: {self.variables}")
+                # logger.warning(f"Z3 condition self.conditions: {self.conditions}")
+                # logger.warning(f"Z3 variable_z3_map: {variable_z3_map}")
+                # if 'isAcu_Crashappen' in variable_z3_map:
+                #     logger.warning(f"{type(variable_z3_map['isAcu_Crashappen'])}")
                 is_sat_result, model_values = check_path_satisfiability(
                     condition_strs, variable_z3_map
                 )
@@ -255,7 +255,9 @@ class PathManager:
                     len(path.conditions) == 1
                     and " " not in path.conditions[0].expression
                 ):
-                    logger.warning("Path is not satisfiable. It is dead code?")
+                    pass
+                    # TODO
+                    # logger.warning("Path is not satisfiable. It is dead code?")
                 # raise ValueError("Path is not satisfiable")
                 # TODO: if is_satisfiable is False, it is dead code?
         return False
