@@ -496,5 +496,9 @@ def to_z3_expr_new(expr_str, env):
             raise NotImplementedError(f"Unsupported node: {ast.dump(n)}")
 
     r = convert(node)
+    # ✅ 在这里强制转换 ArithRef 为 BoolRef
+    if isinstance(r, ArithRef):
+        r = r != 0
+
     # logger.debug(f"Converted node: {node} to {r} {type(r)}")
     return r

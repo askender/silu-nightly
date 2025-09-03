@@ -104,9 +104,9 @@ class ExecutionPath:
 
             # try:
             if 1:
-                # logger.debug(f"Z3 condition self.variables: {self.variables}")
-                # logger.debug(f"Z3 condition self.conditions: {self.conditions}")
-                # logger.debug(f"Z3 variable_z3_map: {variable_z3_map}")
+                logger.error(f"Z3 condition self.variables: {self.variables}")
+                logger.error(f"Z3 condition self.conditions: {self.conditions}")
+                logger.error(f"Z3 variable_z3_map: {variable_z3_map}")
                 is_sat_result, model_values = check_path_satisfiability(
                     condition_strs, variable_z3_map
                 )

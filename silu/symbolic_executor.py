@@ -253,7 +253,7 @@ class SymbolicExecutor:
             "chained_compare": self._execute_chained_compare,
             "comparison": self._execute_comparison,
             "match": self._execute_match,
-            "switch": self._execute_match,
+            "switch": self._execute_switch,
             "c_for": self._execute_c_for,
             "p++": self._execute_post_increment,
             "p--": self._execute_post_decrement,
@@ -852,6 +852,71 @@ class SymbolicExecutor:
 
         return create_concrete_value(None)
 
+    def _execute_switch(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a switch statement symbolically by exploring all possible paths"""
+        if len(ir_node) < 3:
+            return create_concrete_value(None)
+
+        _, subject_ir, cases = ir_node
+        # subject_value =
+        self._execute_ir(subject_ir)
+
+        if not cases:
+            return create_concrete_value(None)
+
+        # Store current path to create branches from
+        original_path = self.current_path
+        new_paths = []
+
+        # Process each case to create separate execution paths
+        for i, case_ir in enumerate(cases):
+            if not isinstance(case_ir, (tuple, list)) or len(case_ir) < 2:
+                continue
+
+            case_type = case_ir[0]
+            if case_type == "case":
+                if len(case_ir) < 3:
+                    continue
+                pattern = case_ir[1]
+                body = case_ir[2]
+                case_name = f"case_{i}"
+            elif case_type == "default":
+                if len(case_ir) < 2:
+                    continue
+                pattern = None  # default case matches everything
+                body = case_ir[1]
+                case_name = f"default_{i}"
+            else:
+                continue
+
+            # Create a new path for this case
+            case_path = self.path_manager.copy_path(original_path, case_name)
+
+            # Add pattern matching condition to the path
+            # For now, we don't add specific conditions for switch cases
+            # TODO: Add proper condition generation for switch cases
+
+            # Check if this path is satisfiable
+            if case_path.is_satisfiable():
+                # Set this as current path and execute the body
+                self.current_path = case_path
+
+                # Execute the case body
+                if isinstance(body, (tuple, list)):
+                    for stmt in body:
+                        self._execute_ir(stmt)
+
+                new_paths.append(case_path)
+
+        # Add all new paths to the path manager
+        for path in new_paths:
+            self.path_manager.add_path(path)
+
+        # Restore original path context
+        self.current_path = original_path
+
+        return create_concrete_value(None)
+
     def _is_wildcard_pattern(self, pattern: Tuple) -> bool:
         """Check if pattern is a wildcard pattern (_)"""
         if not isinstance(pattern, (tuple, list)) or len(pattern) < 2:
@@ -1244,6 +1309,7 @@ class SymbolicExecutor:
         # 检查是否是条件语句
         is_if_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "if"
         is_match_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "match"
+        is_switch_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "switch"
 
         if is_if_stmt:
             # 保存当前状态
@@ -1278,12 +1344,12 @@ class SymbolicExecutor:
 
                 # 递归执行剩余语句
                 self._execute_statements_recursive(statements, start_index + 1)
-        elif is_match_stmt:
-            # 处理 match 语句，类似于 if 语句的处理
+        elif is_match_stmt or is_switch_stmt:
+            # 处理 match/switch 语句，类似于 if 语句的处理
             # 保存当前状态
             original_env = self.current_env.copy()
 
-            # 执行 match 语句（这会创建分支路径）
+            # 执行 match/switch 语句（这会创建分支路径）
             self._execute_ir(stmt)
 
             # 获取所有当前路径管理器中的路径（包括新创建的分支）
