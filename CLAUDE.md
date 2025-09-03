@@ -264,6 +264,32 @@ The symbolic executor has been significantly enhanced with advanced capabilities
 - **Improved Path Management**: Unified path handling with automatic constraint validation
 - **Graceful Degradation**: Full functionality with or without Z3 solver installed
 
+### IR Dispatch Architecture
+
+The symbolic executor uses a two-tier dispatch system for processing IR nodes:
+
+#### Handler-Based Dispatch (First Tier)
+1. **AssignmentHandler**: Processes "=" assignment operations with variable tracking
+2. **ConditionalHandler**: Handles "if" statements with automatic path forking and branch creation
+3. **LoopHandler**: Manages "while", "for", and "c_for" loops with iteration tracking
+
+#### Direct Dispatch (Second Tier)
+For operations not handled by specialized handlers:
+- **Binary Operations**: Arithmetic (+, -, *, /), comparisons (==, !=, <, >), logical (and, or)
+- **Function Operations**: func_def, call, return statements
+- **Data Access**: name (variables), const (constants), literal values
+- **Control Flow**: block (statement sequences)
+- **Type Operations**: typedef_enum, typedef_struct, attribute access
+- **C-style Operations**: p++, p--, ++, --, aug_assign
+
+#### Path Management
+- **ConditionalHandler** creates separate execution paths for true/false branches
+- **Return Statement Handling**: Paths with return statements should be marked as COMPLETED to prevent execution of subsequent statements
+- **Path Forking**: Each conditional creates independent paths with separate environments and variable states
+
+#### Current Limitation
+The return value issue occurs when paths containing return statements continue executing subsequent statements instead of being properly terminated. This happens in `_execute_statements_recursive` where COMPLETED paths are not being filtered out before continuing execution.
+
 ## Memory Protection
 
 The Silu interpreter includes built-in memory protection mechanisms to prevent out-of-memory conditions that could crash the system or consume excessive resources.

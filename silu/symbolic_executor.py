@@ -141,15 +141,22 @@ class SymbolicExecutor:
         return paths
 
     def _execute_ir(self, ir_node: Union[Tuple, str, Any]) -> SymbolicValue:
-        """Execute an IR node and return its symbolic value"""
+        """Execute an IR node and return its symbolic value
+
+        Execution flow:
+        1. Handle non-tuple nodes (primitives, strings, etc.)
+        2. Unwrap single-element tuples if needed
+        3. Try specialized handlers first (AssignmentHandler, ConditionalHandler, LoopHandler)
+        4. Fallback to direct dispatch for other operations
+        """
 
         if not isinstance(ir_node, (tuple, list)) or not ir_node:
-            # TODO: when this occur?
+            # Handle primitive values, strings, and empty nodes
             return self._handle_non_tuple_node(ir_node)
 
         # Handle wrapped statements - if we have a single-element tuple containing a statement
         # unwrap it to the actual statement
-        # TODO: check if real code have the situation
+        # This handles cases like [["return", value]] -> ["return", value]
         if (
             isinstance(ir_node, tuple)
             and len(ir_node) == 1
@@ -160,13 +167,18 @@ class SymbolicExecutor:
             unwrapped = ir_node[0]
             return self._execute_ir(unwrapped)
 
-        # Try handlers first
-        # logger.debug(f"self.handlers: {self.handlers}")
+        # Try specialized handlers first:
+        # - AssignmentHandler: handles "=" operations
+        # - ConditionalHandler: handles "if" statements with path forking
+        # - LoopHandler: handles "while", "for", "c_for" loops
         for handler in self.handlers:
             if handler.can_handle(ir_node):
                 return handler.handle(ir_node, self)
 
-        # Fallback to direct dispatch
+        # Fallback to direct dispatch for other operations:
+        # - Arithmetic: +, -, *, /, etc.
+        # - Comparisons: ==, !=, <, >, etc.
+        # - Function calls, returns, blocks, etc.
         return self._dispatch_ir_node(ir_node)
 
     def _is_part_of_chained_compare(self) -> bool:
@@ -194,7 +206,18 @@ class SymbolicExecutor:
         self._processing_chained_compare = value
 
     def _dispatch_ir_node(self, ir_node: Tuple) -> SymbolicValue:
-        """Dispatch IR node to appropriate handler method"""
+        """Dispatch IR node to appropriate handler method
+
+        This handles operations that are not covered by specialized handlers:
+        - Binary operations: +, -, *, /, ==, !=, <, >, and, or, etc.
+        - Function operations: func_def, call, return
+        - Control flow: block (statement sequences)
+        - Data access: name (variables), const (constants), literal
+        - Type operations: typedef_enum, typedef_struct, attribute
+        - C-style operations: p++, p--, ++, --, aug_assign, c_for
+
+        Note: "if" statements are handled by ConditionalHandler, not here.
+        """
         op = ir_node[0]
 
         # Binary operations that should use _execute_binary_op
@@ -1185,7 +1208,16 @@ class SymbolicExecutor:
             raise Exception("Function execution failed 2")
 
     def _execute_statements_recursive(self, statements, start_index):
-        """递归执行语句，处理条件分支的路径分叉"""
+        """递归执行语句，处理条件分支的路径分叉
+
+        这个方法是符号执行的核心，负责：
+        1. 检测 if 语句并创建分支路径
+        2. 为每个分支递归执行剩余语句
+        3. 正确处理 return 语句，避免继续执行后续语句
+
+        重要：当路径遇到 return 语句时，该路径应该被标记为 COMPLETED，
+        不再执行后续语句。这确保了条件分支中的 return 不会被覆盖。
+        """
         if start_index >= len(statements):
             # 到达函数末尾，添加当前路径到路径管理器
             if self.current_path and self.current_path not in self.path_manager.paths:
@@ -1223,6 +1255,13 @@ class SymbolicExecutor:
                     if hasattr(path, "environment") and path.environment
                     else original_env.copy()
                 )
+
+                # 关键修复：如果路径已经完成（遇到return），则不继续执行后续语句
+                if hasattr(path, 'state') and path.state == ExecutionPathState.COMPLETED:
+                    # 路径已完成，添加到路径管理器但不继续执行
+                    if path not in self.path_manager.paths:
+                        self.path_manager.add_path(path)
+                    continue
 
                 # 递归执行剩余语句
                 self._execute_statements_recursive(statements, start_index + 1)
