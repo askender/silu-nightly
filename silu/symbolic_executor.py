@@ -1510,9 +1510,17 @@ class SymbolicExecutor:
             ):
                 right_readable = right[1]
 
-            # Special handling for 'and' operator in chained comparisons
-            if op == "and":
-                return f"{left_readable} and {right_readable}"
+            # Add parentheses for and/or operators when operands are complex expressions
+            if op in ["and", "or"]:
+                # Check if left operand needs parentheses
+                if self._needs_parentheses_for_condition_precedence(left, op):
+                    left_readable = f"({left_readable})"
+
+                # Check if right operand needs parentheses
+                if self._needs_parentheses_for_condition_precedence(right, op):
+                    right_readable = f"({right_readable})"
+
+                return f"{left_readable} {op} {right_readable}"
             else:
                 return f"{left_readable} {op} {right_readable}"
 
@@ -1601,12 +1609,119 @@ class SymbolicExecutor:
                 op, left, right = expr
                 left_str = self._convert_expression_readable(left)
                 right_str = self._convert_expression_readable(right)
+
+                # Add parentheses for and/or operators when operands are complex expressions
+                if op in ["and", "or"]:
+                    # Check if left operand needs parentheses
+                    if self._needs_parentheses_for_precedence(left, op):
+                        left_str = f"({left_str})"
+
+                    # Check if right operand needs parentheses
+                    if self._needs_parentheses_for_precedence(right, op):
+                        right_str = f"({right_str})"
+
                 return f"{left_str} {op} {right_str}"
             elif len(expr) == 2 and isinstance(expr[0], str):
                 op, operand = expr
                 operand_str = self._convert_expression_readable(operand)
                 return f"{op}({operand_str})"
         return str(expr)
+
+    def _needs_parentheses_for_precedence(self, operand: Any, parent_op: str) -> bool:
+        """Check if operand needs parentheses when used with parent operator"""
+        # If operand is not a tuple expression, no parentheses needed
+        if not isinstance(operand, tuple) or len(operand) < 3:
+            return False
+
+        # If operand has a symbolic value with expression type, check its value
+        if hasattr(operand, "type") and hasattr(operand, "value"):
+            if operand.type == SymbolicValueType.EXPRESSION:
+                return self._needs_parentheses_for_precedence(operand.value, parent_op)
+            return False
+
+        # Check if operand is a binary operation
+        if len(operand) == 3 and isinstance(operand[0], str):
+            operand_op = operand[0]
+
+            # Define operator precedence (higher number = higher precedence)
+            precedence = {
+                "or": 1,
+                "and": 2,
+                "not": 3,
+                "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
+                "+": 5, "-": 5,
+                "*": 6, "/": 6, "%": 6
+            }
+
+            parent_prec = precedence.get(parent_op, 0)
+            operand_prec = precedence.get(operand_op, 0)
+
+            # Need parentheses if operand has lower precedence than parent
+            # or if both are the same precedence and mixing and/or operators
+            if operand_prec < parent_prec:
+                return True
+            elif operand_prec == parent_prec and parent_op in ["and", "or"] and operand_op in ["and", "or"]:
+                # For same precedence and/or operators, add parentheses for clarity
+                return parent_op != operand_op
+
+        return False
+
+    def _needs_parentheses_for_condition_precedence(self, operand: Any, parent_op: str) -> bool:
+        """Check if operand needs parentheses when used with parent operator in condition"""
+        # If operand has a symbolic value with expression type, check its value
+        if hasattr(operand, "type") and hasattr(operand, "value"):
+            if operand.type == SymbolicValueType.EXPRESSION:
+                return self._needs_parentheses_for_condition_precedence(operand.value, parent_op)
+            return False
+
+        # If operand is not a tuple expression, no parentheses needed
+        if not isinstance(operand, tuple) or len(operand) < 3:
+            if self.debug:
+                logger.debug(f"No parens needed - not tuple or too short: {operand}")
+            return False
+
+        # Check if operand is a binary operation - handle both raw tuples and SymbolicValue tuples
+        operand_op = None
+        if isinstance(operand[0], str):
+            operand_op = operand[0]
+        elif hasattr(operand[0], "type") and hasattr(operand[0], "value"):
+            # This might be a SymbolicValue containing the operator
+            if operand[0].type == SymbolicValueType.CONCRETE:
+                operand_op = operand[0].value
+
+        if operand_op and isinstance(operand_op, str):
+            # Define operator precedence (higher number = higher precedence)
+            precedence = {
+                "or": 1,
+                "and": 2,
+                "not": 3,
+                "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
+                "+": 5, "-": 5,
+                "*": 6, "/": 6, "%": 6
+            }
+
+            parent_prec = precedence.get(parent_op, 0)
+            operand_prec = precedence.get(operand_op, 0)
+
+            if self.debug:
+                logger.debug(f"Checking precedence: parent_op={parent_op} (prec={parent_prec}), operand_op={operand_op} (prec={operand_prec})")
+
+            # Need parentheses if operand has lower precedence than parent
+            # or if both are the same precedence and mixing and/or operators
+            if operand_prec < parent_prec:
+                if self.debug:
+                    logger.debug(f"Adding parens - lower precedence: {operand_op} < {parent_op}")
+                return True
+            elif operand_prec == parent_prec and parent_op in ["and", "or"] and operand_op in ["and", "or"]:
+                # For same precedence and/or operators, add parentheses for clarity
+                result = parent_op != operand_op
+                if self.debug:
+                    logger.debug(f"Same precedence and/or - adding parens: {result}")
+                return result
+
+        if self.debug:
+            logger.debug(f"No parens needed for: {operand} with parent {parent_op}")
+        return False
 
     def _handle_non_tuple_node(self, ir_node: Any) -> SymbolicValue:
         """Handle non-tuple IR nodes"""
