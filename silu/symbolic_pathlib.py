@@ -68,9 +68,9 @@ class ExecutionPath:
 
         # Use Z3-based satisfiability checking if available
         if Z3_AVAILABLE:
-            # logger.debug(f"Z3 condition self.conditions: {self.conditions}")
+            logger.debug(f"Z3 condition self.conditions: {self.conditions}")
             condition_strs = [str(c) for c in self.conditions]
-            # logger.debug(f"Z3 condition strings: {condition_strs}")
+            logger.debug(f"Z3 condition strings: {condition_strs}")
 
             variable_z3_map = {}
             for k in self.variables:
@@ -189,7 +189,8 @@ class PathManager:
                 self.paths.append(path)
                 return True
             else:
-                raise ValueError("Path is not satisfiable")
+                logger.warning("Path is not satisfiable. It is dead code?")
+                # raise ValueError("Path is not satisfiable")
                 # TODO: if is_satisfiable is False, it is dead code?
         return False
 

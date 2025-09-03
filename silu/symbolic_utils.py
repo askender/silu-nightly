@@ -420,13 +420,20 @@ class ConditionalHandler(IRNodeHandler):
         #
         # logger.info(f"Adding path to path manager: {executor.current_path}")
         if executor.current_path:
-            executor.current_path.satisfiable = executor.current_path.is_satisfiable()
+            pass
+            # TODO
+            # executor.current_path.satisfiable = executor.current_path.is_satisfiable()
+
             # logger.info(f"path conds: {executor.current_path.satisfiable}")
             # logger.info(f"path satisfiable: {executor.current_path.satisfiable}")
             # logger.info(f"path test_inputs: {executor.current_path.test_inputs}")
-            if executor.current_path.satisfiable:
-                if executor.current_path not in executor.path_manager.paths:
-                    executor.path_manager.add_path(executor.current_path)
+
+            # if executor.current_path.satisfiable:
+            #     if executor.current_path not in executor.path_manager.paths:
+            #         executor.path_manager.add_path(executor.current_path)
+
+            if executor.current_path not in executor.path_manager.paths:
+                executor.path_manager.add_path(executor.current_path)
 
         return executor.current_path
 

@@ -392,17 +392,30 @@ class PathSatisfiabilityChecker:
                     # Ensure constraint is boolean before adding to solver
                     if constraint is not None:
                         logger.debug(f"Adding constraint: {constraint}")
-                        solver.add(constraint)
                         # TODO
                         # bool_constraint = to_bool(constraint)
                         # if bool_constraint is not None:
                             # solver.add(bool_constraint)
+
+                        # Convert integer expressions to boolean comparisons when needed
+                        if z3 is not None and hasattr(z3, "is_expr") and z3.is_expr(constraint):
+                            # Check if this is a pure integer expression used in boolean context
+                            if z3.is_int(constraint) or z3.is_real(constraint):
+                                # Convert to boolean comparison (non-zero = True)
+                                constraint = constraint != 0
+                        else:
+                            logger.debug(f"Constraint is not a Z3 expression: {constraint}")
+                            raise ValueError(f"Constraint is not a Z3 expression: {constraint}")
+
+                        solver.add(constraint)
+                    else:
+                        logger.debug(f"Constraint is not a Z3 expression: {constraint}")
+                        raise ValueError(f"Constraint is not a Z3 expression: {constraint}")
+
                 except Exception as e:
                     logger.error(f"Error adding constraint for '{condition_str}': {e}")
+                    raise ValueError(f"Error adding constraint for '{condition_str}': {e}")
                     # Skip problematic constraints to allow execution to continue
-                # except Exception as e:
-                #     logger.error(f"Error parsing condition '{condition_str}': {e}")
-                #     continue  # Skip unparseable conditions
 
             result = solver.check()
             if result == sat:
@@ -416,47 +429,6 @@ class PathSatisfiabilityChecker:
         # except Exception as e:
         #     logger.error(f"Error checking satisfiability: {e}")
         #     return True, None
-
-    def _parse_condition_string_bad(
-        self, condition: str, var_dict: Dict[str, Any], program_variables: set
-    ) -> Optional[Any]:
-        """Parse a condition string into a Z3 constraint"""
-        if not Z3_AVAILABLE:
-            return None
-
-        # Remove "not " prefix and track negation
-        negated = False
-        if condition.startswith("not "):
-            negated = True
-            condition = condition[4:]
-
-        # Remove parentheses
-        condition = condition.strip("()")
-
-        if "and" not in condition and "or" not in condition and "not" not in condition:
-            # Pattern for simple comparisons: left op right
-            pattern = r"(\w+)\s*([><=!]+)\s*(.+)"
-            match = re.match(pattern, condition)
-
-            if not match:
-                return None
-
-            left_str, op, right_str = match.groups()
-            left_str = left_str.strip()
-            right_str = right_str.strip()
-
-            # Convert to Z3 expressions
-            left_value = self._parse_value(left_str, var_dict, program_variables)
-            right_value = self._parse_value(right_str, var_dict, program_variables)
-
-            if left_value is None or right_value is None:
-                return None
-
-            # Create constraint
-            constraint = self.parser._create_comparison(left_value, op, right_value)
-            return Not(constraint) if negated else constraint
-        else:
-            raise ValueError("Invalid condition format")
 
     def _parse_condition_string(
         self, condition: str, var_dict: dict, program_variables: set
@@ -533,34 +505,39 @@ class PathSatisfiabilityChecker:
 
             # logger.debug(f"left_str: {left_str}; right_str: {right_str} op: {op}")
             return self.parser._create_comparison(left_value, op, right_value)
-        else:
-            # Handle "true" and "false" literals
-            if condition.lower() in "true false".split():
-                one_value = self._parse_value(condition, var_dict, program_variables)
-                return one_value
-            # For any other condition, treat it as a basic comparison or variable
-            else:
-                try:
-                    # Try to handle it as a comparison condition
-                    for op in self.parser.comparison_ops:
-                        if op in condition:
-                            parts = condition.split(op, 1)
-                            if len(parts) == 2:
-                                left_str, right_str = parts[0].strip(), parts[1].strip()
-                                left_value = self._parse_value(left_str, var_dict, program_variables)
-                                right_value = self._parse_value(right_str, var_dict, program_variables)
-                                if left_value is not None and right_value is not None:
-                                    # Create boolean comparison
-                                    result = self.parser._create_comparison(left_value, op, right_value)
-                                    # logger.debug(f"Created comparison: {left_str} {op} {right_str} = {result}")
-                                    return result
 
-                    # If not a comparison, try to use it directly as a value
-                    return self._parse_value(condition, var_dict, program_variables)
-                except Exception as e:
-                    logger.error(f"Error parsing complex condition '{condition}': {e}")
-                    # Return None to skip this condition rather than failing
-                    return None
+        elif condition.lower() in "true false".split():
+            # Handle "true" and "false" literals
+            one_value = self._parse_value(condition, var_dict, program_variables)
+            return one_value
+        elif condition.count(' ')==0:
+            one_value = self._parse_bool(condition, var_dict, program_variables)
+            return one_value
+        else:
+            # For any other condition, treat it as a basic comparison or variable
+            raise ValueError(f"Invalid condition: {condition} {type(condition)}")
+            # try:
+            #     # Try to handle it as a comparison condition
+            #     for op in self.parser.comparison_ops:
+            #         if op in condition:
+            #             parts = condition.split(op, 1)
+            #             if len(parts) == 2:
+            #                 left_str, right_str = parts[0].strip(), parts[1].strip()
+            #                 left_value = self._parse_value(left_str, var_dict, program_variables)
+            #                 right_value = self._parse_value(right_str, var_dict, program_variables)
+            #                 if left_value is not None and right_value is not None:
+            #                     # Create boolean comparison
+            #                     result = self.parser._create_comparison(left_value, op, right_value)
+            #                     # logger.debug(f"Created comparison: {left_str} {op} {right_str} = {result}")
+            #                     return result
+
+            #     # If not a comparison, try to use it directly as a value
+            #     return self._parse_value(condition, var_dict, program_variables)
+            # except Exception as e:
+            #     logger.error(f"Error parsing complex condition '{condition}': {e}")
+            #     # Return None to skip this condition rather than failing
+            #     return None
+
 
     def _extract_model_values(self, model, var_dict, program_variables):
         """Extract model values for program variables"""
@@ -629,8 +606,17 @@ class PathSatisfiabilityChecker:
             logger.trace(f"Variable '{value_str}' not found in {var_dict}")
             var_dict[value_str] = create_z3_variable(value_str)
             program_variables.add(value_str)
+
         return var_dict[value_str]
 
+    def _parse_bool(
+        self, value_str: str, var_dict: Dict[str, Any], program_variables: set
+    ):
+        if value_str.count(" ")==0:
+            try:
+                return BoolVal(value_str)
+            except ValueError:
+                raise ValueError(f"Error parsing Z3 value: {value_str}")
 
 class ExpressionParser:
     """Helper class to parse expressions into Z3 constraints"""

@@ -101,6 +101,7 @@ silu symbolic program.si          # Symbolic analysis
 - Complete match/case statement support for structural pattern matching (Python 3.10+ syntax)
 - Package management with `uv` (recommended) or `pip`
 - Code formatting with `ruff`
+- Avoid hardcoding specific file paths, test cases, or conditions in the codebase
 
 ## IR to Source Conversion
 

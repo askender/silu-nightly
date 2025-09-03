@@ -561,8 +561,9 @@ class SymbolicExecutor:
                     # 添加条件到当前路径
                     # 只在非链式比较中添加条件，链式比较由 _execute_chained_compare 处理
                     # 这是避免条件重复的关键检查点之一
-                    if not self._is_part_of_chained_compare():
-                        self.current_path.add_condition(readable_condition)
+                    # TODO
+                    # if not self._is_part_of_chained_compare():
+                    #     self.current_path.add_condition(readable_condition)
 
             # Always create symbolic expressions for operations involving symbolic variables
             # This prevents boolean casting errors
@@ -788,15 +789,16 @@ class SymbolicExecutor:
             case_path = self.path_manager.copy_path(original_path, f"match_case_{i}")
 
             # Add pattern matching condition to the path
-            if self._is_wildcard_pattern(pattern):
-                # For wildcard, add constraints that x != all other match values
-                subject_name = self._get_variable_name(subject_value)
-                for value in match_values:
-                    case_path.add_condition(f"{subject_name} != {value}")
-            else:
-                condition_expr = self._create_match_condition(subject_value, pattern)
-                if condition_expr:
-                    case_path.add_condition(condition_expr)
+            # TODO
+            # if self._is_wildcard_pattern(pattern):
+            #     # For wildcard, add constraints that x != all other match values
+            #     subject_name = self._get_variable_name(subject_value)
+            #     for value in match_values:
+            #         case_path.add_condition(f"{subject_name} != {value}")
+            # else:
+            #     condition_expr = self._create_match_condition(subject_value, pattern)
+            #     if condition_expr:
+            #         case_path.add_condition(condition_expr)
 
             # Check if this path is satisfiable
             if case_path.is_satisfiable():
@@ -1432,140 +1434,6 @@ class SymbolicExecutor:
 
         return report
 
-    def enhance_paths_with_test_cases(self, paths: List[ExecutionPath]) -> List[ExecutionPath]:
-        """Enhance execution paths with Z3-generated test case information"""
-        if not Z3_AVAILABLE:
-            # Just return paths with a note that Z3 is not available
-            for path in paths:
-                if not hasattr(path, "z3_error") or getattr(path, "z3_error", None) is None:
-                    path.z3_error = (
-                        "Z3 solver not available. Install with: pip install z3-solver"
-                    )
-            return paths
-
-        enhanced_paths = []
-
-        for path in paths:
-            # Check if the path is already marked as satisfiable
-            satisfiable = getattr(path, "satisfiable", None)
-            if satisfiable is None:
-                # If not explicitly set, check path satisfiability
-                path.is_satisfiable()
-                satisfiable = path.satisfiable
-
-            # Initialize test inputs dictionary
-            test_inputs = {}
-
-            # If the path is satisfiable, get test inputs from the path
-            if satisfiable:
-                # Use existing test inputs if available
-                if hasattr(path, "test_inputs") and path.test_inputs:
-                    test_inputs = path.test_inputs
-                # Otherwise, generate simple test inputs based on conditions
-                else:
-                    # Extract unique variable names from conditions
-                    var_names = set()
-                    for condition in path.conditions:
-                        # Handle both PathCondition objects and string conditions
-                        if hasattr(condition, 'expression'):
-                            expr = condition.expression
-                        else:
-                            expr = str(condition)
-
-                        # Simple extraction of variable names from conditions
-                        parts = re.split(r'[<>=!]', expr)
-                        if parts and len(parts) > 0:
-                            var_name = parts[0].strip()
-                            if var_name and re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', var_name):
-                                var_names.add(var_name)
-
-                    # Add all variables from path.variables to ensure we don't miss any
-                    for var_name in path.variables:
-                        if isinstance(var_name, str) and re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', var_name):
-                            var_names.add(var_name)
-
-                    # Process all conditions to generate test inputs
-                    for condition in path.conditions:
-                        # Handle both PathCondition objects and string conditions
-                        if hasattr(condition, 'expression'):
-                            expr = condition.expression
-                            is_true = condition.is_true
-                        else:
-                            expr = str(condition)
-                            # For string conditions, assume they are true constraints
-                            is_true = True
-
-                        if is_true and ">" in expr:
-                            # For x > N conditions, set x to N+1
-                            parts = expr.split(">")
-                            if len(parts) == 2:
-                                var_name = parts[0].strip()
-                                try:
-                                    threshold = float(parts[1].strip())
-                                    test_inputs[var_name] = threshold + 1
-                                except ValueError:
-                                    pass
-                        elif is_true and "<" in expr:
-                            # For x < N conditions, set x to N-1
-                            parts = expr.split("<")
-                            if len(parts) == 2:
-                                var_name = parts[0].strip()
-                                try:
-                                    threshold = float(parts[1].strip())
-                                    test_inputs[var_name] = threshold - 1
-                                except ValueError:
-                                    pass
-                        elif is_true and "==" in expr:
-                            # For x == N conditions, set x to N
-                            parts = expr.split("==")
-                            if len(parts) == 2:
-                                var_name = parts[0].strip()
-                                try:
-                                    threshold = float(parts[1].strip())
-                                    test_inputs[var_name] = threshold
-                                except ValueError:
-                                    pass
-                        elif not is_true and "<" in expr:
-                            # For not (x < N) conditions, set x to N
-                            parts = expr.split("<")
-                            if len(parts) == 2:
-                                var_name = parts[0].strip()
-                                try:
-                                    threshold = float(parts[1].strip())
-                                    test_inputs[var_name] = threshold
-                                except ValueError:
-                                    pass
-
-                    # For classify_number specific test case handling
-                    # This handles the symbolic_demo1.si.ir.json paths for the test_symbolic_demo1_paths test
-                    if "large_positive" in str(path.return_value):
-                        # This is the path where x > 0 and x > 10
-                        if "x" not in test_inputs:
-                            test_inputs["x"] = 11
-                    elif "small_positive" in str(path.return_value):
-                        # This is the path where x > 0 and not (x > 10)
-                        if "x" not in test_inputs:
-                            test_inputs["x"] = 5
-                    elif "negative" in str(path.return_value):
-                        # This is the path where not (x > 0) and x < 0
-                        if "x" not in test_inputs:
-                            test_inputs["x"] = -5
-                    elif "zero" in str(path.return_value):
-                        # This is the path where not (x > 0) and not (x < 0)
-                        if "x" not in test_inputs:
-                            test_inputs["x"] = 0
-
-                    # Fill in any remaining variables with default values
-                    for var_name in var_names:
-                        if var_name not in test_inputs:
-                            test_inputs[var_name] = 0  # Default value
-
-            # Set test inputs in the path
-            path.test_inputs = test_inputs
-            enhanced_paths.append(path)
-
-        return enhanced_paths
-
 
 def execute_symbolic_from_file_with_executor(
     file_path: str,
@@ -1582,15 +1450,8 @@ def execute_symbolic_from_file_with_executor(
         )
         try:
             paths = executor.execute_program(ir_program)
-
-            # Enhance paths with test cases
-            enhanced_paths = executor.enhance_paths_with_test_cases(paths)
-
-            result = {"paths": enhanced_paths}
+            result = {"paths": paths}
             if hasattr(executor, "function_analyses") and executor.function_analyses:
-                # Also enhance function analysis paths
-                for func_name, func_paths in executor.function_analyses.items():
-                    executor.function_analyses[func_name] = executor.enhance_paths_with_test_cases(func_paths)
                 result["function_analyses"] = executor.function_analyses
 
             return result
@@ -1622,14 +1483,8 @@ def execute_symbolic_from_string_with_executor(
         try:
             paths = executor.execute_program(ir_program)
 
-            # Enhance paths with test cases
-            enhanced_paths = executor.enhance_paths_with_test_cases(paths)
-
-            result = {"paths": enhanced_paths}
+            result = {"paths": paths}
             if hasattr(executor, "function_analyses") and executor.function_analyses:
-                # Also enhance function analysis paths
-                for func_name, func_paths in executor.function_analyses.items():
-                    executor.function_analyses[func_name] = executor.enhance_paths_with_test_cases(func_paths)
                 result["function_analyses"] = executor.function_analyses
 
             return result
