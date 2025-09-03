@@ -82,8 +82,7 @@ def run_interpreter(source_code: str, **kwargs) -> None:
 
         if kwargs.get("debug", False):
             import traceback
-
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
 
         sys.exit(1)
     except Exception as e:
@@ -379,15 +378,13 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
         print(f"Dictionary key error in symbolic execution: {ke}", file=sys.stderr)
         if debug:
             import traceback
-
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
         print(json.dumps({"error": f"KeyError: {ke}"}, indent=2))
     except Exception as e:
         print(f"Error in symbolic execution: {e}", file=sys.stderr)
         if debug:
             import traceback
-
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
         print(json.dumps({"error": str(e)}, indent=2))
 
 
@@ -759,14 +756,10 @@ def main() -> None:
         print("\nInterrupted by user.", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"Unexpected error: {e}", file=sys.stderr)
-        import traceback
-
-        logger.error(traceback.format_exc())
-        if hasattr(args, "debug") and getattr(args, "debug", False):
-            import traceback
-
-            traceback.print_exc()
+        logger.error(f"Unexpected error: {e}", file=sys.stderr)
+        # if hasattr(args, "debug") and getattr(args, "debug", False):
+        #     import traceback
+        #     logger.error(traceback.format_exc())
         sys.exit(1)
 
 

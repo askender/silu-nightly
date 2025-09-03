@@ -294,7 +294,7 @@ class SymbolicExecutor:
         except Exception as e:
             logger.error(f"Error dispatching operation {op}: {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
             # Return a fallback symbolic value
             return create_symbolic_value(f"error_{op}")
 
@@ -1670,9 +1670,8 @@ def execute_symbolic_from_file_with_executor(
             raise RuntimeError(f"KeyError in symbolic execution: {ke}")
     except Exception as e:
         logger.error(f"Error in symbolic execution from file '{file_path}': {e}")
-        import traceback
-
-        logger.error(traceback.format_exc())
+        # import traceback
+        # logger.error(traceback.format_exc())
         # Raise RuntimeError for compatibility with tests
         raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
 
@@ -1704,7 +1703,6 @@ def execute_symbolic_from_string_with_executor(
     except Exception as e:
         logger.error(f"Error in symbolic execution from string: {e}")
         import traceback
-
         logger.error(traceback.format_exc())
         # Raise RuntimeError for compatibility with tests
         raise RuntimeError(f"Error in symbolic execution from string: {e}")

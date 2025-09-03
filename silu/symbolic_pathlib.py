@@ -104,9 +104,11 @@ class ExecutionPath:
 
             # try:
             if 1:
-                logger.error(f"Z3 condition self.variables: {self.variables}")
-                logger.error(f"Z3 condition self.conditions: {self.conditions}")
-                logger.error(f"Z3 variable_z3_map: {variable_z3_map}")
+                logger.warning(f"Z3 condition self.variables: {self.variables}")
+                logger.warning(f"Z3 condition self.conditions: {self.conditions}")
+                logger.warning(f"Z3 variable_z3_map: {variable_z3_map}")
+                if 'isAcu_Crashappen' in variable_z3_map:
+                    logger.warning(f"{type(variable_z3_map['isAcu_Crashappen'])}")
                 is_sat_result, model_values = check_path_satisfiability(
                     condition_strs, variable_z3_map
                 )

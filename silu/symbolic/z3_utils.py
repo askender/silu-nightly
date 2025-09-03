@@ -487,8 +487,11 @@ def to_z3_expr_new(expr_str, env):
                 return convert(n.operand)
         elif isinstance(n, ast.Name):
             v = env[n.id]
-            if bool_context and isinstance(v, ArithRef):
-                return v != 0
+            if bool_context:
+                if isinstance(v, ArithRef):
+                    return v != 0
+                elif isinstance(v, int):
+                    return BoolVal(v != 0)
             return v
         elif isinstance(n, ast.Constant):
             return n.value
@@ -499,6 +502,8 @@ def to_z3_expr_new(expr_str, env):
     # ✅ 在这里强制转换 ArithRef 为 BoolRef
     if isinstance(r, ArithRef):
         r = r != 0
+    elif isinstance(r, int):
+        r = BoolVal(r != 0)
 
     # logger.debug(f"Converted node: {node} to {r} {type(r)}")
     return r
