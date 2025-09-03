@@ -1242,7 +1242,7 @@ class SymbolicExecutor:
                 else:
                     # TODO: Handle param_type[1]
                     if isinstance(param_type, str):
-                        if param_type in ['enum', 'unsigned char', "int"]:
+                        if param_type in ['enum', 'unsigned char', "int", "_Bool"]:
                             symbol = func_env.create_symbol(param, "int")
                             func_env.set_variable(param, symbol)
                             self.current_path.variables[param] = symbol

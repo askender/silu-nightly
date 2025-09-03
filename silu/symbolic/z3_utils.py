@@ -494,7 +494,13 @@ def to_z3_expr_new(expr_str, env):
                     return BoolVal(v != 0)
             return v
         elif isinstance(n, ast.Constant):
-            return n.value
+            value = n.value
+            if bool_context:
+                if isinstance(value, int):
+                    return BoolVal(value != 0)
+                elif isinstance(value, bool):
+                    return BoolVal(value)
+            return value
         else:
             raise NotImplementedError(f"Unsupported node: {ast.dump(n)}")
 
