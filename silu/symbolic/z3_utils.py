@@ -28,6 +28,8 @@ try:
         Real,
         Bool,
         simplify,
+        BoolRef,
+        ArithRef,
         # If,
         # BoolSort,
         # ToReal,
@@ -235,7 +237,7 @@ class Z3SafeOperations:
         """Create a Z3 variable of the specified type"""
         if not Z3_AVAILABLE:
             return name  # Return name if Z3 not available
-
+        var_type = var_type.lower()
         if var_type == "int":
             return Int(name)
         elif var_type == "real":
@@ -384,14 +386,18 @@ class PathSatisfiabilityChecker:
             # logger.debug(f"program_variables: {program_variables}")
 
             for condition_str in conditions:
-                try:
-                    constraint = self._parse_condition_string(
-                        condition_str, var_dict, program_variables
-                    )
+                # try:
+                if 1:
+                    # constraint = self._parse_condition_string(
+                    #     condition_str, var_dict, program_variables
+                    # )
+                    logger.warning(f"condition_str: {condition_str}")
+                    logger.warning(f"var_dict: {var_dict}")
+                    constraint = to_z3_expr_new(condition_str, var_dict)
 
                     # Ensure constraint is boolean before adding to solver
                     if constraint is not None:
-                        logger.debug(f"Adding constraint: {constraint}")
+                        logger.debug(f"Adding constraint: {constraint} {type(constraint)}")
                         # TODO
                         # bool_constraint = to_bool(constraint)
                         # if bool_constraint is not None:
@@ -412,9 +418,9 @@ class PathSatisfiabilityChecker:
                         logger.debug(f"Constraint is not a Z3 expression: {constraint}")
                         raise ValueError(f"Constraint is not a Z3 expression: {constraint}")
 
-                except Exception as e:
-                    logger.error(f"Error adding constraint for '{condition_str}': {e}")
-                    raise ValueError(f"Error adding constraint for '{condition_str}': {e}")
+                # except Exception as e:
+                #     logger.error(f"Error adding constraint for '{condition_str}': {e}")
+                #     raise ValueError(f"Error adding constraint for '{condition_str}': {e}")
                     # Skip problematic constraints to allow execution to continue
 
             result = solver.check()
@@ -438,7 +444,16 @@ class PathSatisfiabilityChecker:
 
         if condition.startswith("not "):
             inner = condition[4:].strip()
-            return Not(self._parse_condition_string(inner, var_dict, program_variables))
+            # 对于其他情况，递归解析内部表达式
+            try:
+                inner_expr = self._parse_condition_string(inner, var_dict, program_variables)
+                return Not(inner_expr)
+            except Exception as e:
+                logger.error(f"Error parsing negated condition '{inner}': {e}")
+                # 如果解析失败，尝试基本处理
+                if inner not in var_dict:
+                    var_dict[inner] = Bool(inner)
+                return Not(var_dict[inner])
 
         # 移除外层括号
         while condition.startswith("(") and condition.endswith(")"):
@@ -516,6 +531,7 @@ class PathSatisfiabilityChecker:
         else:
             # For any other condition, treat it as a basic comparison or variable
             raise ValueError(f"Invalid condition: {condition} {type(condition)}")
+
             # try:
             #     # Try to handle it as a comparison condition
             #     for op in self.parser.comparison_ops:
@@ -612,11 +628,31 @@ class PathSatisfiabilityChecker:
     def _parse_bool(
         self, value_str: str, var_dict: Dict[str, Any], program_variables: set
     ):
-        if value_str.count(" ")==0:
-            try:
-                return BoolVal(value_str)
-            except ValueError:
-                raise ValueError(f"Error parsing Z3 value: {value_str}")
+        assert value_str.count(" ")==0
+        if value_str not in var_dict:
+            logger.trace(f"Variable '{value_str}' not found in {var_dict}")
+            var_dict[value_str] = create_z3_variable(value_str, "bool")
+            program_variables.add(value_str)
+            return var_dict[value_str]
+
+        # raise ValueError(f"!!!Variable '{value_str}' already exists in {var_dict} {var_dict[value_str]}, {type(var_dict[value_str])}")
+        assert value_str in program_variables
+        return Not(Not((var_dict[value_str] != 0)))
+
+        # 检查是否是布尔字面量
+        if value_str.lower() == "true":
+            return BoolVal(True)
+        elif value_str.lower() == "false":
+            return BoolVal(False)
+        # 检查是否是程序变量
+        elif value_str in program_variables:
+            if value_str not in var_dict:
+                var_dict[value_str] = Bool(value_str)
+            # raise ValueError(f"Invalid boolean value: {value_str} {var_dict[value_str]} {type(var_dict[value_str])}")
+            return var_dict[value_str]
+        # 其他情况
+        else:
+            raise ValueError(f"Invalid boolean value: {value_str}")
 
 class ExpressionParser:
     """Helper class to parse expressions into Z3 constraints"""
@@ -803,3 +839,78 @@ class ExpressionParser:
     #         return self._expr_to_z3_simple(operand, var_map)
 
     #     return None
+
+
+def to_z3_expr_new(expr_str, env):
+    node = ast.parse(expr_str, mode="eval").body
+
+    def convert(n, bool_context=False):
+        if isinstance(n, ast.BinOp):
+            left = convert(n.left)
+            right = convert(n.right)
+            if isinstance(n.op, ast.Add): return left + right
+            if isinstance(n.op, ast.Sub): return left - right
+            if isinstance(n.op, ast.Mult): return left * right
+            if isinstance(n.op, ast.Div): return left / right
+        elif isinstance(n, ast.Compare):
+            left = convert(n.left)
+            right = convert(n.comparators[0])
+            op = n.ops[0]
+
+            # 如果都是 Python 常量，直接返回 BoolVal
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                if isinstance(op, ast.Lt): return BoolVal(left < right)
+                if isinstance(op, ast.LtE): return BoolVal(left <= right)
+                if isinstance(op, ast.Gt): return BoolVal(left > right)
+                if isinstance(op, ast.GtE): return BoolVal(left >= right)
+                if isinstance(op, ast.Eq): return BoolVal(left == right)
+                if isinstance(op, ast.NotEq): return BoolVal(left != right)
+
+            # BoolRef 与 0/1 比较特殊处理
+            if isinstance(left, BoolRef) and isinstance(right, int):
+                if isinstance(op, ast.Lt):
+                    return left == False if right == 1 else NotImplemented
+                if isinstance(op, ast.LtE):
+                    if right == 0: return left == False
+                    if right == 1: return True
+                if isinstance(op, ast.Gt):
+                    return left == True if right == 0 else False
+                if isinstance(op, ast.GtE):
+                    if right == 0: return True
+                    if right == 1: return left == True
+                if isinstance(op, ast.Eq): return left == bool(right)
+                if isinstance(op, ast.NotEq): return left != bool(right)
+
+            # 普通比较
+            if isinstance(op, ast.Lt): return left < right
+            if isinstance(op, ast.LtE): return left <= right
+            if isinstance(op, ast.Gt): return left > right
+            if isinstance(op, ast.GtE): return left >= right
+            if isinstance(op, ast.Eq): return left == right
+            if isinstance(op, ast.NotEq): return left != right
+
+        elif isinstance(n, ast.BoolOp):
+            values = [convert(v, bool_context=True) for v in n.values]
+            if isinstance(n.op, ast.And): return And(*values)
+            if isinstance(n.op, ast.Or): return Or(*values)
+        elif isinstance(n, ast.UnaryOp):
+            if isinstance(n.op, ast.Not):
+                inner = convert(n.operand, bool_context=True)
+                if isinstance(inner, ArithRef):
+                    return inner == 0
+                return Not(inner)
+            if isinstance(n.op, ast.USub): return -convert(n.operand)
+            if isinstance(n.op, ast.UAdd): return convert(n.operand)
+        elif isinstance(n, ast.Name):
+            v = env[n.id]
+            if bool_context and isinstance(v, ArithRef):
+                return v != 0
+            return v
+        elif isinstance(n, ast.Constant):
+            return n.value
+        else:
+            raise NotImplementedError(f"Unsupported node: {ast.dump(n)}")
+
+    r = convert(node)
+    logger.debug(f"Converted node: {node} to {r} {type(r)}")
+    return r

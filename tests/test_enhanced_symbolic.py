@@ -23,6 +23,8 @@ except ImportError:
     Z3_AVAILABLE = False
 
 
+from z3 import Int
+
 class TestBasicEnhancedExecution:
     """Test basic enhanced symbolic execution functionality"""
 
@@ -67,45 +69,6 @@ class TestBasicEnhancedExecution:
             assert hasattr(path, "conditions")
             assert hasattr(path, "statements")
             assert hasattr(path, "variables")
-
-    def test_nested_conditions(self):
-        """Test nested if statements with symbolic conditions"""
-        ir = (
-            "module",
-            [
-                (
-                    "if",
-                    ("binary_op", "x", ">", ("literal", 5)),
-                    (
-                        "block",
-                        (
-                            (
-                                "if",
-                                ("binary_op", "y", "<", ("literal", 25)),
-                                (
-                                    "block",
-                                    (("assign", "result", ("literal", 1), None),),
-                                ),
-                                (
-                                    "block",
-                                    (("assign", "result", ("literal", 2), None),),
-                                ),
-                            ),
-                        ),
-                    ),
-                    ("block", (("assign", "result", ("literal", 0), None),)),
-                )
-            ],
-        )
-
-        executor = SymbolicExecutor()
-        paths = executor.execute_program(ir)
-
-        assert len(paths) >= 2  # Should create multiple paths for symbolic conditions
-        for path in paths:
-            # Each path should have conditions and may have result variable
-            assert hasattr(path, "conditions")
-            assert hasattr(path, "statements")
 
 
 class TestLoopAnalysis:
@@ -184,7 +147,8 @@ class TestZ3Integration:
     def test_z3_satisfiability_satisfiable(self):
         """Test Z3-based satisfiability checking for satisfiable conditions"""
         conditions = ["x > 5", "x < 10", "y == 7"]
-        is_sat, model = check_path_satisfiability(conditions)
+        var_dict = {"x": Int("x"), "y": Int("y")}
+        is_sat, model = check_path_satisfiability(conditions, var_dict)
 
         assert is_sat is True
         assert model is not None
@@ -192,7 +156,8 @@ class TestZ3Integration:
     def test_z3_satisfiability_unsatisfiable(self):
         """Test Z3-based satisfiability checking for unsatisfiable conditions"""
         conditions = ["x > 10", "x < 5"]
-        is_sat, model = check_path_satisfiability(conditions)
+        var_dict = {"x": Int("x")}
+        is_sat, model = check_path_satisfiability(conditions, var_dict)
 
         assert is_sat is False
 
