@@ -319,7 +319,7 @@ class ConditionalHandler(IRNodeHandler):
         original_current_env = original_env.copy()
 
         # Execute true path with a fresh copy of the original path and environment
-        true_path = self._execute_if_branch(
+        true_paths = self._execute_if_branch(
             executor,
             original_path,
             original_env.copy(),
@@ -329,15 +329,15 @@ class ConditionalHandler(IRNodeHandler):
             z3_constraint,
             "if",
         )
-        if true_path:
-            created_paths.append(true_path)
+        if true_paths:
+            created_paths.extend(true_paths)
 
         # Reset to original state before executing the false path
         executor.current_path = original_current_path
         executor.current_env = original_current_env.copy()
 
         # Execute false path with a fresh environment
-        false_path = self._execute_if_branch(
+        false_paths = self._execute_if_branch(
             executor,
             original_path,
             original_env.copy(),
@@ -347,12 +347,17 @@ class ConditionalHandler(IRNodeHandler):
             z3_constraint,
             "else",
         )
-        if false_path:
-            created_paths.append(false_path)
+        if false_paths:
+            created_paths.extend(false_paths)
 
         # Don't reset current_path to None - this breaks nested if statements
         # Instead, continue with one of the created paths for further execution
         if created_paths:
+            # 将所有创建的路径添加到路径管理器，供递归执行使用
+            for path in created_paths:
+                if path not in executor.path_manager.paths:
+                    executor.path_manager.add_path(path)
+            # 仍然保持一个当前路径以继续执行
             executor.current_path = created_paths[0]
         else:
             # If no paths created, restore the original path
@@ -428,14 +433,11 @@ class ConditionalHandler(IRNodeHandler):
             # logger.info(f"path satisfiable: {executor.current_path.satisfiable}")
             # logger.info(f"path test_inputs: {executor.current_path.test_inputs}")
 
-            # if executor.current_path.satisfiable:
-            #     if executor.current_path not in executor.path_manager.paths:
-            #         executor.path_manager.add_path(executor.current_path)
+            # 不需要在这里添加路径到路径管理器
+            # 这将由递归执行逻辑处理
 
-            if executor.current_path not in executor.path_manager.paths:
-                executor.path_manager.add_path(executor.current_path)
-
-        return executor.current_path
+            # 返回当前路径作为列表，与修改后的 _execute_symbolic_if 接口保持一致
+            return [executor.current_path] if executor.current_path else []
 
 
 class LoopHandler(IRNodeHandler):

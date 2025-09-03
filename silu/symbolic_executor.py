@@ -8,6 +8,7 @@ path constraints for functions with improved Z3 integration and loop handling.
 """
 
 import re
+import copy
 from typing import Any, Dict, List, Tuple, Optional, Union
 from .ir_utils import parse_ir_from_file
 from .ir_utils import parse_ir_from_json_string
@@ -133,7 +134,7 @@ class SymbolicExecutor:
         if self.current_path:
             self.path_manager.add_path(self.current_path)
 
-        paths = self.path_manager.finalize_paths()
+        paths = copy.deepcopy(self.path_manager.finalize_paths())
         # TODO: why renumber_paths_sequentially the paths out of finalize_paths is not good
         # paths = self.path_manager.paths
         # paths = renumber_paths_sequentially(paths)
@@ -1146,16 +1147,7 @@ class SymbolicExecutor:
         #         self.current_path.add_statement(f"ERROR: {str(e)}")
         #         self.current_path.state = ExecutionPathState.ERROR
 
-        # Ensure at least one path exists, even for functions without branches
-        if self.current_path:
-            # Add the current path if no paths were created during execution
-            try:
-                self.path_manager.add_path(self.current_path)
-            except ValueError:
-                # Path might not be satisfiable, but we still want to keep it
-                self.current_path.satisfiable = True
-                self.path_manager.paths.append(self.current_path)
-
+        # 函数体执行完毕后，获取所有完整路径
         function_paths = self.path_manager.finalize_paths()
 
         # Restore original state
@@ -1165,18 +1157,60 @@ class SymbolicExecutor:
         return function_paths
 
     def _execute_function_body(self, body_ir: Any) -> None:
-        """Execute function body statements"""
+        """Execute function body statements with proper path forking"""
         if isinstance(body_ir, (tuple, list)):
-            for stmt in body_ir:
-                if isinstance(stmt, str):  # Skip docstrings
-                    continue
-                self._execute_ir(stmt)
-                if self.current_path is None:  # Return statement ended path
-                    break
+            # 使用递归方式处理语句，确保所有路径都被正确处理
+            self._execute_statements_recursive(body_ir, 0)
         else:
             raise Exception("Function execution failed 2")
-            # TODO
-            self._execute_ir(body_ir)
+
+    def _execute_statements_recursive(self, statements, start_index):
+        """递归执行语句，处理条件分支的路径分叉"""
+        if start_index >= len(statements):
+            # 到达函数末尾，添加当前路径到路径管理器
+            if self.current_path and self.current_path not in self.path_manager.paths:
+                self.path_manager.add_path(self.current_path)
+            return
+
+        stmt = statements[start_index]
+        if isinstance(stmt, str):  # Skip docstrings
+            self._execute_statements_recursive(statements, start_index + 1)
+            return
+
+        # 检查是否是条件语句
+        is_if_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "if"
+
+        if is_if_stmt:
+            # 保存当前状态
+            original_path = self.current_path
+            original_env = self.current_env.copy()
+
+            # 执行条件语句（这会创建分支路径）
+            self._execute_ir(stmt)
+
+            # 获取所有当前路径管理器中的路径（包括新创建的分支）
+            current_paths = self.path_manager.paths.copy()
+
+            # 清空路径管理器，避免重复添加
+            self.path_manager.paths.clear()
+
+            # 为每个分支路径继续执行剩余语句
+            for path in current_paths:
+                # 设置当前路径
+                self.current_path = path
+                self.current_env = path.environment.copy() if hasattr(path, "environment") and path.environment else original_env.copy()
+
+                # 递归执行剩余语句
+                self._execute_statements_recursive(statements, start_index + 1)
+        else:
+            # 非条件语句，正常执行
+            self._execute_ir(stmt)
+            if self.current_path is None:  # Return statement ended path
+                # 如果路径被return语句终止，仍需要将其添加到路径管理器
+                return
+
+            # 继续执行剩余语句
+            self._execute_statements_recursive(statements, start_index + 1)
 
     def _make_condition_readable(self, condition: Any) -> str:
         """Convert IR condition to readable format with recursive tuple handling"""
@@ -1238,9 +1272,9 @@ class SymbolicExecutor:
         """Generate Z3 constraint from condition"""
         if Z3_AVAILABLE and hasattr(condition, "value"):
             try:
-                logger.debug(
-                    f"Gen Z3 constraint for cond: {condition} z3_vars: {self.current_env.z3_variables}"
-                )
+                # logger.debug(
+                #     f"Gen Z3 constraint for cond: {condition} z3_vars: {self.current_env.z3_variables}"
+                # )
                 ret = to_z3_expr(condition.value, self.current_env.z3_variables)
                 return ret
             except (TypeError, AttributeError, ValueError) as e:

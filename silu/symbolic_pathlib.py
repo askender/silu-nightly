@@ -68,9 +68,9 @@ class ExecutionPath:
 
         # Use Z3-based satisfiability checking if available
         if Z3_AVAILABLE:
-            logger.debug(f"Z3 condition self.conditions: {self.conditions}")
+            # logger.debug(f"Z3 condition self.conditions: {self.conditions}")
             condition_strs = [str(c) for c in self.conditions]
-            logger.debug(f"Z3 condition strings: {condition_strs}")
+            # logger.debug(f"Z3 condition strings: {condition_strs}")
 
             variable_z3_map = {}
             for k in self.variables:
@@ -99,9 +99,9 @@ class ExecutionPath:
 
             # try:
             if 1:
-                logger.warning(f"Z3 condition self.variables: {self.variables}")
-                logger.warning(f"Z3 condition self.conditions: {self.conditions}")
-                logger.warning(f"Z3 variable_z3_map: {variable_z3_map}")
+                # logger.debug(f"Z3 condition self.variables: {self.variables}")
+                # logger.debug(f"Z3 condition self.conditions: {self.conditions}")
+                # logger.debug(f"Z3 variable_z3_map: {variable_z3_map}")
                 is_sat_result, model_values = check_path_satisfiability(
                     condition_strs, variable_z3_map
                 )

@@ -315,13 +315,13 @@ class PathSatisfiabilityChecker:
                     # constraint = self._parse_condition_string(
                     #     condition_str, var_dict, program_variables
                     # )
-                    logger.warning(f"condition_str: {condition_str}")
-                    logger.warning(f"var_dict: {var_dict}")
+                    # logger.debug(f"condition_str: {condition_str}")
+                    # logger.debug(f"var_dict: {var_dict}")
                     constraint = to_z3_expr_new(condition_str, var_dict)
 
                     # Ensure constraint is boolean before adding to solver
                     if constraint is not None:
-                        logger.debug(f"Adding constraint: {constraint} {type(constraint)}")
+                        # logger.debug(f"Adding constraint: {constraint} {type(constraint)}")
                         # TODO
                         # bool_constraint = to_bool(constraint)
                         # if bool_constraint is not None:
@@ -334,12 +334,12 @@ class PathSatisfiabilityChecker:
                                 # Convert to boolean comparison (non-zero = True)
                                 constraint = constraint != 0
                         else:
-                            logger.debug(f"Constraint is not a Z3 expression: {constraint}")
+                            # logger.debug(f"Constraint is not a Z3 expression: {constraint}")
                             raise ValueError(f"Constraint is not a Z3 expression: {constraint}")
 
                         solver.add(constraint)
                     else:
-                        logger.debug(f"Constraint is not a Z3 expression: {constraint}")
+                        # logger.debug(f"Constraint is not a Z3 expression: {constraint}")
                         raise ValueError(f"Constraint is not a Z3 expression: {constraint}")
 
                 # except Exception as e:
@@ -475,5 +475,5 @@ def to_z3_expr_new(expr_str, env):
             raise NotImplementedError(f"Unsupported node: {ast.dump(n)}")
 
     r = convert(node)
-    logger.debug(f"Converted node: {node} to {r} {type(r)}")
+    # logger.debug(f"Converted node: {node} to {r} {type(r)}")
     return r
