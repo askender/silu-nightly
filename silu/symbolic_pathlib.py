@@ -213,7 +213,10 @@ class PathManager:
                 return True
             else:
                 # 只有在非简单单条件路径时才记录不可满足警告
-                if not (len(path.conditions) == 1 and " " not in path.conditions[0].expression):
+                if not (
+                    len(path.conditions) == 1
+                    and " " not in path.conditions[0].expression
+                ):
                     logger.warning("Path is not satisfiable. It is dead code?")
                 # raise ValueError("Path is not satisfiable")
                 # TODO: if is_satisfiable is False, it is dead code?

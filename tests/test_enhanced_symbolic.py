@@ -25,6 +25,7 @@ except ImportError:
 
 from z3 import Int
 
+
 class TestBasicEnhancedExecution:
     """Test basic enhanced symbolic execution functionality"""
 

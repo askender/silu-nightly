@@ -540,31 +540,31 @@ class SymbolicExecutor:
                 return create_concrete_value(None)
 
             # 特别处理 "and" 操作，确保变量名被正确提取
-            if op == "and" and self.current_path:
-                # 从原始IR中提取变量名
-                left_name = self._extract_variable_name(left_ir)
-                right_name = self._extract_variable_name(right_ir)
+            # if op == "and" and self.current_path:
+            # 从原始IR中提取变量名
+            # left_name = self._extract_variable_name(left_ir)
+            # right_name = self._extract_variable_name(right_ir)
 
-                # 如果成功提取了变量名，使用这些名称创建可读的条件
-                if left_name or right_name:
-                    left_str = (
-                        left_name
-                        if left_name
-                        else self._convert_expression_readable(left)
-                    )
-                    right_str = (
-                        right_name
-                        if right_name
-                        else self._convert_expression_readable(right)
-                    )
-                    readable_condition = f"{left_str} {op} {right_str}"
+            # 如果成功提取了变量名，使用这些名称创建可读的条件
+            # if left_name or right_name:
+            #     left_str = (
+            #         left_name
+            #         if left_name
+            #         else self._convert_expression_readable(left)
+            #     )
+            #     right_str = (
+            #         right_name
+            #         if right_name
+            #         else self._convert_expression_readable(right)
+            #     )
+            # readable_condition = f"{left_str} {op} {right_str}"
 
-                    # 添加条件到当前路径
-                    # 只在非链式比较中添加条件，链式比较由 _execute_chained_compare 处理
-                    # 这是避免条件重复的关键检查点之一
-                    # TODO
-                    # if not self._is_part_of_chained_compare():
-                    #     self.current_path.add_condition(readable_condition)
+            # 添加条件到当前路径
+            # 只在非链式比较中添加条件，链式比较由 _execute_chained_compare 处理
+            # 这是避免条件重复的关键检查点之一
+            # TODO
+            # if not self._is_part_of_chained_compare():
+            #     self.current_path.add_condition(readable_condition)
 
             # Always create symbolic expressions for operations involving symbolic variables
             # This prevents boolean casting errors
@@ -745,7 +745,8 @@ class SymbolicExecutor:
             return create_concrete_value(None)
 
         _, subject_ir, cases = ir_node
-        subject_value = self._execute_ir(subject_ir)
+        # subject_value =
+        self._execute_ir(subject_ir)
 
         if not cases:
             return create_concrete_value(None)
@@ -1182,7 +1183,7 @@ class SymbolicExecutor:
 
         if is_if_stmt:
             # 保存当前状态
-            original_path = self.current_path
+            # original_path = self.current_path
             original_env = self.current_env.copy()
 
             # 执行条件语句（这会创建分支路径）
@@ -1198,7 +1199,11 @@ class SymbolicExecutor:
             for path in current_paths:
                 # 设置当前路径
                 self.current_path = path
-                self.current_env = path.environment.copy() if hasattr(path, "environment") and path.environment else original_env.copy()
+                self.current_env = (
+                    path.environment.copy()
+                    if hasattr(path, "environment") and path.environment
+                    else original_env.copy()
+                )
 
                 # 递归执行剩余语句
                 self._execute_statements_recursive(statements, start_index + 1)
@@ -1417,7 +1422,7 @@ class SymbolicExecutor:
 
         for condition in conditions:
             # Handle both PathCondition objects and string conditions
-            if hasattr(condition, 'expression'):
+            if hasattr(condition, "expression"):
                 expr = condition.expression
                 is_true = condition.is_true
             else:

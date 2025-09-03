@@ -6,7 +6,6 @@ This module provides utilities for converting AST nodes to Z3 expressions,
 handling constraints, and performing satisfiability checking.
 """
 
-import re
 import ast
 import sys
 from typing import Any, Dict, List, Optional, Set, Union
@@ -30,10 +29,11 @@ try:
         simplify,
         BoolRef,
         ArithRef,
+        BoolSort,
         # If,
-        # BoolSort,
         # ToReal,
     )
+
     Z3_AVAILABLE = True
 except ImportError as e:
     Z3_AVAILABLE = False
@@ -155,6 +155,7 @@ class RangeConstraintGenerator:
         except Exception:
             return None
 
+
 # Legacy function wrappers
 def simplify_range_cond(
     k: int, start, stop, step=None, var_dict: Optional[Dict[str, Any]] = None
@@ -230,6 +231,7 @@ class Z3SafeOperations:
 
         return None
 
+
 def get_vars_from_ast(node: ast.AST) -> Set[str]:
     """Extract all variable names from an AST node"""
     variables = set()
@@ -243,32 +245,16 @@ def get_vars_from_ast(node: ast.AST) -> Set[str]:
     collector.visit(node)
     return variables
 
+
 def is_bool(expr):
     """Check if a Z3 expression is boolean type"""
     if expr is None:
         return False
     try:
         return expr.sort() == BoolSort()
-    except:
+    except Exception as e:
+        logger.warning(f"Error checking Z3 expression type: {e}")
         return isinstance(expr, bool)
-
-def del_to_bool(expr):
-    """Convert an expression to Z3 boolean if possible"""
-    if expr is None:
-        return None
-    if is_bool(expr):
-        return expr
-    if isinstance(expr, int):
-        return BoolVal(expr != 0)
-    try:
-        # Try to convert Z3 Int to Bool
-        return expr != 0
-    except:
-        # Fall back to Python bool conversion
-        try:
-            return BoolVal(bool(expr))
-        except:
-            return None
 
 
 # Legacy function wrappers
@@ -325,27 +311,35 @@ class PathSatisfiabilityChecker:
                         # TODO
                         # bool_constraint = to_bool(constraint)
                         # if bool_constraint is not None:
-                            # solver.add(bool_constraint)
+                        # solver.add(bool_constraint)
 
                         # Convert integer expressions to boolean comparisons when needed
-                        if z3 is not None and hasattr(z3, "is_expr") and z3.is_expr(constraint):
+                        if (
+                            z3 is not None
+                            and hasattr(z3, "is_expr")
+                            and z3.is_expr(constraint)
+                        ):
                             # Check if this is a pure integer expression used in boolean context
                             if z3.is_int(constraint) or z3.is_real(constraint):
                                 # Convert to boolean comparison (non-zero = True)
                                 constraint = constraint != 0
                         else:
                             # logger.debug(f"Constraint is not a Z3 expression: {constraint}")
-                            raise ValueError(f"Constraint is not a Z3 expression: {constraint}")
+                            raise ValueError(
+                                f"Constraint is not a Z3 expression: {constraint}"
+                            )
 
                         solver.add(constraint)
                     else:
                         # logger.debug(f"Constraint is not a Z3 expression: {constraint}")
-                        raise ValueError(f"Constraint is not a Z3 expression: {constraint}")
+                        raise ValueError(
+                            f"Constraint is not a Z3 expression: {constraint}"
+                        )
 
                 # except Exception as e:
                 #     logger.error(f"Error adding constraint for '{condition_str}': {e}")
                 #     raise ValueError(f"Error adding constraint for '{condition_str}': {e}")
-                    # Skip problematic constraints to allow execution to continue
+                # Skip problematic constraints to allow execution to continue
 
             result = solver.check()
             if result == sat:
@@ -404,6 +398,7 @@ class PathSatisfiabilityChecker:
                     model_values[var_name] = str(z3_value)
         return model_values
 
+
 def to_z3_expr_new(expr_str, env):
     node = ast.parse(expr_str, mode="eval").body
 
@@ -411,10 +406,14 @@ def to_z3_expr_new(expr_str, env):
         if isinstance(n, ast.BinOp):
             left = convert(n.left)
             right = convert(n.right)
-            if isinstance(n.op, ast.Add): return left + right
-            if isinstance(n.op, ast.Sub): return left - right
-            if isinstance(n.op, ast.Mult): return left * right
-            if isinstance(n.op, ast.Div): return left / right
+            if isinstance(n.op, ast.Add):
+                return left + right
+            if isinstance(n.op, ast.Sub):
+                return left - right
+            if isinstance(n.op, ast.Mult):
+                return left * right
+            if isinstance(n.op, ast.Div):
+                return left / right
         elif isinstance(n, ast.Compare):
             left = convert(n.left)
             right = convert(n.comparators[0])
@@ -422,48 +421,70 @@ def to_z3_expr_new(expr_str, env):
 
             # 如果都是 Python 常量，直接返回 BoolVal
             if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-                if isinstance(op, ast.Lt): return BoolVal(left < right)
-                if isinstance(op, ast.LtE): return BoolVal(left <= right)
-                if isinstance(op, ast.Gt): return BoolVal(left > right)
-                if isinstance(op, ast.GtE): return BoolVal(left >= right)
-                if isinstance(op, ast.Eq): return BoolVal(left == right)
-                if isinstance(op, ast.NotEq): return BoolVal(left != right)
+                if isinstance(op, ast.Lt):
+                    return BoolVal(left < right)
+                if isinstance(op, ast.LtE):
+                    return BoolVal(left <= right)
+                if isinstance(op, ast.Gt):
+                    return BoolVal(left > right)
+                if isinstance(op, ast.GtE):
+                    return BoolVal(left >= right)
+                if isinstance(op, ast.Eq):
+                    return BoolVal(left == right)
+                if isinstance(op, ast.NotEq):
+                    return BoolVal(left != right)
 
             # BoolRef 与 0/1 比较特殊处理
             if isinstance(left, BoolRef) and isinstance(right, int):
                 if isinstance(op, ast.Lt):
-                    return left == False if right == 1 else NotImplemented
+                    return left == False if right == 1 else NotImplemented  # noqa: E712
                 if isinstance(op, ast.LtE):
-                    if right == 0: return left == False
-                    if right == 1: return True
+                    if right == 0:
+                        return left == False  # noqa: E712
+                    if right == 1:
+                        return True
                 if isinstance(op, ast.Gt):
-                    return left == True if right == 0 else False
+                    return left == True if right == 0 else False  # noqa: E712
                 if isinstance(op, ast.GtE):
-                    if right == 0: return True
-                    if right == 1: return left == True
-                if isinstance(op, ast.Eq): return left == bool(right)
-                if isinstance(op, ast.NotEq): return left != bool(right)
+                    if right == 0:
+                        return True
+                    if right == 1:
+                        return left == True  # noqa: E712
+                if isinstance(op, ast.Eq):
+                    return left == bool(right)
+                if isinstance(op, ast.NotEq):
+                    return left != bool(right)
 
             # 普通比较
-            if isinstance(op, ast.Lt): return left < right
-            if isinstance(op, ast.LtE): return left <= right
-            if isinstance(op, ast.Gt): return left > right
-            if isinstance(op, ast.GtE): return left >= right
-            if isinstance(op, ast.Eq): return left == right
-            if isinstance(op, ast.NotEq): return left != right
+            if isinstance(op, ast.Lt):
+                return left < right
+            if isinstance(op, ast.LtE):
+                return left <= right
+            if isinstance(op, ast.Gt):
+                return left > right
+            if isinstance(op, ast.GtE):
+                return left >= right
+            if isinstance(op, ast.Eq):
+                return left == right
+            if isinstance(op, ast.NotEq):
+                return left != right
 
         elif isinstance(n, ast.BoolOp):
             values = [convert(v, bool_context=True) for v in n.values]
-            if isinstance(n.op, ast.And): return And(*values)
-            if isinstance(n.op, ast.Or): return Or(*values)
+            if isinstance(n.op, ast.And):
+                return And(*values)
+            if isinstance(n.op, ast.Or):
+                return Or(*values)
         elif isinstance(n, ast.UnaryOp):
             if isinstance(n.op, ast.Not):
                 inner = convert(n.operand, bool_context=True)
                 if isinstance(inner, ArithRef):
                     return inner == 0
                 return Not(inner)
-            if isinstance(n.op, ast.USub): return -convert(n.operand)
-            if isinstance(n.op, ast.UAdd): return convert(n.operand)
+            if isinstance(n.op, ast.USub):
+                return -convert(n.operand)
+            if isinstance(n.op, ast.UAdd):
+                return convert(n.operand)
         elif isinstance(n, ast.Name):
             v = env[n.id]
             if bool_context and isinstance(v, ArithRef):

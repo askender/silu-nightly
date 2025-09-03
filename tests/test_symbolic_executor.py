@@ -197,7 +197,6 @@ class TestSymbolicExecutor:
         assert "x" in str(paths[0].variables["z"])
         assert "y" in str(paths[0].variables["z"])
 
-
     def test_return_statement(self):
         """Test symbolic execution of return statement"""
         ir = ("module", (("return", 42),))
@@ -207,7 +206,6 @@ class TestSymbolicExecutor:
 
         assert len(paths) == 1
         assert paths[0].return_value.value == 42
-
 
     def test_builtin_functions(self):
         """Test symbolic execution with builtin functions"""
@@ -265,7 +263,6 @@ class TestSymbolicExecutor:
         assert "paths" in report
         # assert "summary" in report
         assert report["total_paths"] > 0
-
 
     # undefine
     # def test_path_limit(self):
