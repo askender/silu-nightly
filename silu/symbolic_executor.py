@@ -293,6 +293,8 @@ class SymbolicExecutor:
                 return create_concrete_value(op)
         except Exception as e:
             logger.error(f"Error dispatching operation {op}: {e}")
+            import traceback
+            traceback.print_exc()
             # Return a fallback symbolic value
             return create_symbolic_value(f"error_{op}")
 
@@ -1174,10 +1176,20 @@ class SymbolicExecutor:
                     self.current_path.variables[param] = symbol
                 else:
                     # TODO: Handle param_type[1]
-                    symbol = func_env.create_symbol(param, param_type[1])
-                    func_env.set_variable(param, symbol)
-                    self.current_path.variables[param] = symbol
-                    self.current_path.variable_types[param] = param_type[1]
+                    if isinstance(param_type, str):
+                        if param_type in ['enum', 'unsigned char', "int"]:
+                            symbol = func_env.create_symbol(param, "int")
+                            func_env.set_variable(param, symbol)
+                            self.current_path.variables[param] = symbol
+                            self.current_path.variable_types[param] = "int"
+                        else:
+                            raise ValueError(f"!!Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}")
+                    else:
+                        symbol = func_env.create_symbol(param, param_type[1])
+                        func_env.set_variable(param, symbol)
+                        self.current_path.variables[param] = symbol
+                        self.current_path.variable_types[param] = param_type[1]
+                        # raise NotImplementedError(f"SymbolicExecutor: param_type[1] not implemented. {param_type}")
 
         self.current_env = func_env
 
@@ -1231,6 +1243,7 @@ class SymbolicExecutor:
 
         # 检查是否是条件语句
         is_if_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "if"
+        is_match_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "match"
 
         if is_if_stmt:
             # 保存当前状态
@@ -1238,6 +1251,39 @@ class SymbolicExecutor:
             original_env = self.current_env.copy()
 
             # 执行条件语句（这会创建分支路径）
+            self._execute_ir(stmt)
+
+            # 获取所有当前路径管理器中的路径（包括新创建的分支）
+            current_paths = self.path_manager.paths.copy()
+
+            # 清空路径管理器，避免重复添加
+            self.path_manager.paths.clear()
+
+            # 为每个分支路径继续执行剩余语句
+            for path in current_paths:
+                # 设置当前路径
+                self.current_path = path
+                self.current_env = (
+                    path.environment.copy()
+                    if hasattr(path, "environment") and path.environment
+                    else original_env.copy()
+                )
+
+                # 关键修复：如果路径已经完成（遇到return），则不继续执行后续语句
+                if hasattr(path, 'state') and path.state == ExecutionPathState.COMPLETED:
+                    # 路径已完成，添加到路径管理器但不继续执行
+                    if path not in self.path_manager.paths:
+                        self.path_manager.add_path(path)
+                    continue
+
+                # 递归执行剩余语句
+                self._execute_statements_recursive(statements, start_index + 1)
+        elif is_match_stmt:
+            # 处理 match 语句，类似于 if 语句的处理
+            # 保存当前状态
+            original_env = self.current_env.copy()
+
+            # 执行 match 语句（这会创建分支路径）
             self._execute_ir(stmt)
 
             # 获取所有当前路径管理器中的路径（包括新创建的分支）

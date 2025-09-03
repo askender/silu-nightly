@@ -73,7 +73,11 @@ class ExecutionPath:
             # logger.debug(f"Z3 condition strings: {condition_strs}")
 
             variable_z3_map = {}
+            logger.debug(f"Variable types: {self.variable_types}")
+            logger.debug(f"Variables: {self.variables}")
             for k in self.variables:
+                if not isinstance(k, str):
+                    continue
                 if k in self.variable_types:
                     atype = self.variable_types[k]
                     if atype == "int":
@@ -95,7 +99,7 @@ class ExecutionPath:
                     # elif atype == 'frozenset':
                     #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
                 else:
-                    logger.debug(f"Variable {k} has type {type(k)} which is not supported.")
+                    logger.warning(f"Variable {k} has type {type(k)} which is not supported.")
                     variable_z3_map[k] = z3.Int(k)
 
             # try:

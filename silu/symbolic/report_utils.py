@@ -128,7 +128,6 @@ def generate_comprehensive_report(
             "path_satisfiability_checking": Z3_AVAILABLE,
         },
     }
-    print(f"len of summary: {len(summary)}")
     report = {
         "total_paths": len(paths),
         "satisfiable_paths": len(satisfiable_paths),
