@@ -165,7 +165,13 @@ class AssignmentHandler(IRNodeHandler):
                 create_symbolic_value,
             )
 
-            _, var_name, value_ir, var_type = ir_node
+            _, var_name_ir, value_ir, var_type = ir_node
+
+            # Extract actual variable name from IR node
+            if isinstance(var_name_ir, (tuple, list)) and len(var_name_ir) >= 2 and var_name_ir[0] == "name":
+                var_name = var_name_ir[1]
+            else:
+                var_name = var_name_ir
 
             # Handle struct instance creation
             if isinstance(var_type, str) and var_type.startswith("struct_"):

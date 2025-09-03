@@ -307,6 +307,9 @@ class SymbolicExecutor:
     def _execute_name(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a name (variable reference) IR node"""
         _, var_name = ir_node
+        # 优先检查当前路径中的变量（可能包含更新的值）
+        if self.current_path and var_name in self.current_path.variables:
+            return self.current_path.variables[var_name]
         # 检查变量是否在当前环境中
         if self.current_env.has_variable(var_name):
             return self.current_env.get_variable(var_name)
@@ -550,6 +553,7 @@ class SymbolicExecutor:
     def _execute_binary_op(self, ir_node: Tuple) -> SymbolicValue:
         """Execute binary operations with enhanced Z3 constraint generation"""
         try:
+
             # 解析二元操作的左右操作数
             left_ir = None
             right_ir = None
@@ -568,32 +572,7 @@ class SymbolicExecutor:
             else:
                 return create_concrete_value(None)
 
-            # 特别处理 "and" 操作，确保变量名被正确提取
-            # if op == "and" and self.current_path:
-            # 从原始IR中提取变量名
-            # left_name = self._extract_variable_name(left_ir)
-            # right_name = self._extract_variable_name(right_ir)
 
-            # 如果成功提取了变量名，使用这些名称创建可读的条件
-            # if left_name or right_name:
-            #     left_str = (
-            #         left_name
-            #         if left_name
-            #         else self._convert_expression_readable(left)
-            #     )
-            #     right_str = (
-            #         right_name
-            #         if right_name
-            #         else self._convert_expression_readable(right)
-            #     )
-            # readable_condition = f"{left_str} {op} {right_str}"
-
-            # 添加条件到当前路径
-            # 只在非链式比较中添加条件，链式比较由 _execute_chained_compare 处理
-            # 这是避免条件重复的关键检查点之一
-            # TODO
-            # if not self._is_part_of_chained_compare():
-            #     self.current_path.add_condition(readable_condition)
 
             # Always create symbolic expressions for operations involving symbolic variables
             # This prevents boolean casting errors
@@ -871,7 +850,7 @@ class SymbolicExecutor:
         for case_ir in cases:
             if (isinstance(case_ir, (tuple, list)) and len(case_ir) >= 3 and
                 case_ir[0] == "case"):
-                case_value = self._extract_case_value(case_ir[1])
+                case_value = self._resolve_case_value(case_ir[1])
                 if case_value is not None:
                     case_values.append(case_value)
 
@@ -938,6 +917,31 @@ class SymbolicExecutor:
         if isinstance(pattern, (tuple, list)) and len(pattern) >= 2:
             if pattern[0] == "const":
                 return pattern[1]
+            elif pattern[0] == "name":
+                # Handle enum names and other named constants
+                return pattern[1]
+        return None
+
+    def _resolve_case_value(self, pattern: Any) -> Any:
+        """Resolve case value, including enum name resolution"""
+        if isinstance(pattern, (tuple, list)) and len(pattern) >= 2:
+            if pattern[0] == "const":
+                return pattern[1]
+            elif pattern[0] == "name":
+                enum_name = pattern[1]
+                # Check both current and global environments for enum constants
+                if enum_name in self.current_env.variables:
+                    enum_value = self.current_env.variables[enum_name]
+                elif enum_name in self.global_env.variables:
+                    enum_value = self.global_env.variables[enum_name]
+                else:
+                    return None
+
+                # Extract the actual value
+                if hasattr(enum_value, 'value') and enum_value.value is not None:
+                    return enum_value.value
+                else:
+                    return enum_value
         return None
 
     def _create_switch_condition(self, subject_value: SymbolicValue, pattern: Any) -> str:
@@ -945,8 +949,29 @@ class SymbolicExecutor:
         case_value = self._extract_case_value(pattern)
         if case_value is not None:
             subject_name = self._get_variable_name(subject_value)
-            # Format the case value properly for string literals
-            if isinstance(case_value, str):
+            # Check if this is a pattern with name reference (like enum)
+            if isinstance(pattern, (tuple, list)) and len(pattern) >= 2 and pattern[0] == "name":
+                # For enum names, try to resolve to actual value
+                enum_name = case_value
+
+                # Check both current and global environments for enum constants
+                enum_value = None
+                if enum_name in self.current_env.variables:
+                    enum_value = self.current_env.variables[enum_name]
+                elif enum_name in self.global_env.variables:
+                    enum_value = self.global_env.variables[enum_name]
+
+                if enum_value is not None:
+                    # Get the actual enum value
+                    if hasattr(enum_value, 'value') and enum_value.value is not None:
+                        formatted_value = str(enum_value.value)
+                    else:
+                        formatted_value = str(enum_value)
+                else:
+                    # Fallback to enum name if not found
+                    formatted_value = enum_name
+            elif isinstance(case_value, str):
+                # For string literals, add quotes
                 formatted_value = f'"{case_value}"'
             else:
                 formatted_value = str(case_value)
@@ -1436,7 +1461,15 @@ class SymbolicExecutor:
             and len(condition) >= 2
             and condition[0] == "name"
         ):
-            return condition[1]  # 直接返回变量名
+            var_name = condition[1]
+            # Try to get the actual value from current path if available
+            if self.current_path and var_name in self.current_path.variables:
+                var_value = self.current_path.variables[var_name]
+                if hasattr(var_value, 'value') and var_value.value is not None:
+
+                    return str(var_value.value)
+
+            return var_name  # 直接返回变量名
 
         if condition is None:
             return "None"
@@ -1444,6 +1477,14 @@ class SymbolicExecutor:
             if condition.type == SymbolicValueType.EXPRESSION:
                 return self._make_condition_readable(condition.value)
             elif condition.type == SymbolicValueType.SYMBOLIC:
+                # Try to get actual value from current path
+                var_name = condition.name
+                if self.current_path and var_name and var_name in self.current_path.variables:
+                    var_value = self.current_path.variables[var_name]
+                    if hasattr(var_value, 'value') and var_value.value is not None:
+
+                        return str(var_value.value)
+
                 return condition.name or str(condition.value)
             elif condition.type == SymbolicValueType.CONCRETE:
                 return "None" if condition.value is None else str(condition.value)
