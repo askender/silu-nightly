@@ -774,8 +774,7 @@ class SymbolicExecutor:
             return create_concrete_value(None)
 
         _, subject_ir, cases = ir_node
-        # subject_value =
-        self._execute_ir(subject_ir)
+        subject_value = self._execute_ir(subject_ir)
 
         if not cases:
             return create_concrete_value(None)
@@ -820,16 +819,16 @@ class SymbolicExecutor:
             case_path = self.path_manager.copy_path(original_path, f"match_case_{i}")
 
             # Add pattern matching condition to the path
-            # TODO
-            # if self._is_wildcard_pattern(pattern):
-            #     # For wildcard, add constraints that x != all other match values
-            #     subject_name = self._get_variable_name(subject_value)
-            #     for value in match_values:
-            #         case_path.add_condition(f"{subject_name} != {value}")
-            # else:
-            #     condition_expr = self._create_match_condition(subject_value, pattern)
-            #     if condition_expr:
-            #         case_path.add_condition(condition_expr)
+            if self._is_wildcard_pattern(pattern):
+                # For wildcard, add constraints that subject != all other match values
+                subject_name = self._get_variable_name(subject_value)
+                for value in match_values:
+                    condition_expr = f"{subject_name} != {value}"
+                    case_path.add_condition(PathCondition(condition_expr, True))
+            else:
+                condition_expr = self._create_match_condition(subject_value, pattern)
+                if condition_expr:
+                    case_path.add_condition(PathCondition(condition_expr, True))
 
             # Check if this path is satisfiable
             if case_path.is_satisfiable():
@@ -958,7 +957,12 @@ class SymbolicExecutor:
                 if value_ir[0] == "const":
                     match_value = value_ir[1]
                     subject_name = self._get_variable_name(subject_value)
-                    return f"{subject_name} == {match_value}"
+                    # Format the match value properly for string literals
+                    if isinstance(match_value, str):
+                        formatted_value = f'"{match_value}"'
+                    else:
+                        formatted_value = str(match_value)
+                    return f"{subject_name} == {formatted_value}"
 
         return ""
 
