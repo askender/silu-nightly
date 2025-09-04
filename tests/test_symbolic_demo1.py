@@ -4,8 +4,8 @@ from pathlib import Path
 # Add parent directory to path to import Silu modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from silu.symbolic_executor import execute_symbolic_from_file_with_executor
 from silu.symbolic_executor import ExecutionPathState
+from silu.symbolic_executor_wrapper import execute_symbolic_from_file_with_executor
 
 """Test symbolic execution on symbolic_demo1.si.ir.json file."""
 

@@ -12,7 +12,7 @@ from silu.symbolic_executor import (
     PathCondition,
     ExecutionPath,
     SymbolicEnvironment,
-    execute_symbolic_from_string_with_executor,
+    # execute_symbolic_from_string_with_executor,
 )
 from silu.symbolic.condition_utils import (
     extract_variable_from_condition,
@@ -308,31 +308,6 @@ class TestSymbolicExecutor:
     #     assert len(paths) <= executor.max_paths
 
 
-class TestSymbolicExecutionFromString:
-    """Test symbolic execution from IR strings"""
-
-    def test_simple_ir_string(self):
-        """Test executing symbolic analysis from IR string"""
-        ir_string = '("module", (("assign", "x", 42, null),))'
-        paths = execute_symbolic_from_string_with_executor(ir_string)["paths"]
-
-        assert len(paths) == 1
-        # assert "x" in paths[0].variables
-
-    def test_json_ir_string(self):
-        """Test executing symbolic analysis from JSON IR string"""
-        ir_dict = ["module", [["assign", "x", 42, None]]]
-        ir_string = json.dumps(ir_dict)
-        paths = execute_symbolic_from_string_with_executor(ir_string)["paths"]
-
-        assert len(paths) == 1
-        # assert "x" in paths[0].variables
-
-    def test_invalid_ir_string(self):
-        """Test handling of invalid IR string"""
-        with pytest.raises(RuntimeError):
-            execute_symbolic_from_string_with_executor("invalid ir")["paths"]
-
 
 class TestIntegration:
     """Integration tests for symbolic execution"""
@@ -496,57 +471,6 @@ class TestConditionSimplification:
         assert len(groups["x"]) == 3  # x > 5, not (x > 10), x <= 3
         assert len(groups["y"]) == 1  # y < 0
         assert len(groups["z"]) == 1  # z >= 1
-
-    def test_merge_negative_conditions_basic(self):
-        """Test basic merging of negative conditions"""
-        # Test case: not (x > 10) and not (x > 0) should become x <= 0
-        conditions = [
-            PathCondition("x > 10", False),  # not (x > 10)
-            PathCondition("x > 0", False),  # not (x > 0)
-        ]
-
-        merged = self.executor._merge_negative_conditions("x", conditions)
-
-        assert len(merged) == 1
-        assert merged[0].expression == "x <= 0.0"
-        assert merged[0].is_true is True
-
-    def test_merge_negative_conditions_multiple_values(self):
-        """Test merging with multiple comparison values"""
-        # Test case: not (x > 15), not (x > 10), not (x > 5) should become x <= 5
-        conditions = [
-            PathCondition("x > 15", False),
-            PathCondition("x > 10", False),
-            PathCondition("x > 5", False),
-        ]
-
-        merged = self.executor._merge_negative_conditions("x", conditions)
-
-        assert len(merged) == 1
-        assert merged[0].expression == "x <= 5.0"
-        assert merged[0].is_true is True
-
-    def test_merge_negative_conditions_no_merge_needed(self):
-        """Test that single conditions are not unnecessarily changed"""
-        conditions = [
-            PathCondition("x > 5", False),
-        ]
-
-        merged = self.executor._merge_negative_conditions("x", conditions)
-
-        assert len(merged) == 1
-        assert merged == conditions  # Should return original
-
-    def test_merge_negative_conditions_non_numeric(self):
-        """Test handling of non-numeric comparison values"""
-        conditions = [
-            PathCondition("x > variable_y", False),
-            PathCondition("x > 10", False),
-        ]
-
-        # Should return original conditions when non-numeric values are present
-        merged = self.executor._merge_negative_conditions("x", conditions)
-        assert merged == conditions
 
 
 class TestFunctionAnalyses:

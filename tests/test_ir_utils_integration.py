@@ -11,12 +11,9 @@ import pytest
 
 # Import the modules we refactored
 from silu.ir_interpreter import execute_ir_from_file, execute_ir_from_string
-from silu.symbolic_executor import (
-    execute_symbolic_from_file_with_executor,
-    execute_symbolic_from_string_with_executor,
-)
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 from silu.silu_ir_to_llvm import SiluToLLVMConverter
+from silu.symbolic_executor_wrapper import execute_symbolic_from_file_with_executor
 
 
 class TestIRInterpreterIntegration:
@@ -70,30 +67,6 @@ class TestIRInterpreterIntegration:
 
 class TestSymbolicExecutorIntegration:
     """Test symbolic executor with ir_utils integration."""
-
-    def test_execute_symbolic_from_string(self):
-        """Test symbolic execution from IR string."""
-
-        # Simple IR for symbolic execution
-        ir_json = json.dumps(
-            [
-                "module",
-                [
-                    # ["assign", "x", ["input", "int"], None],
-                    ["assign", "x", ["const", 2], None],
-                    [
-                        "if",
-                        [">", ["name", "x"], ["const", 0]],
-                        [["print", ["const", "positive"]]],
-                        [["print", ["const", "non-positive"]]],
-                    ],
-                ],
-            ]
-        )
-
-        paths = execute_symbolic_from_string_with_executor(ir_json)["paths"]
-        # TODO: 2 paths?
-        assert len(paths) == 1, f"Expected 1 paths, got {len(paths)}"
 
     def test_execute_symbolic_from_file(self):
         """Test symbolic execution from IR file."""

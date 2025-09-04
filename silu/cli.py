@@ -19,11 +19,12 @@ from silu.ir_interpreter import (
 )
 from silu.symbolic_executor import (
     SymbolicExecutor,
-    execute_symbolic_from_file_with_executor,
-    execute_symbolic_from_string_with_executor,
+    # execute_symbolic_from_string_with_executor,
     #     execute_symbolic_from_file,
     #     execute_symbolic_from_string,
 )
+from silu.symbolic_executor_wrapper import execute_symbolic_from_file_with_executor
+
 from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
 
 try:
@@ -313,24 +314,25 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                     executor.function_analyses = ir_executor_result["function_analyses"]
 
         else:
+            raise ValueError("Invalid input source")
             # Execute from IR string
-            if source.strip().startswith(("[", "(")):
-                # IR string
-                ir_executor_result = execute_symbolic_from_string_with_executor(
-                    source,
-                    performance_mode=performance_mode,
-                    debug=debug,
-                )
-                paths = ir_executor_result["paths"]
-                # Transfer function analyses from IR executor to main executor
-                if "function_analyses" in ir_executor_result:
-                    executor.function_analyses = ir_executor_result["function_analyses"]
-            else:
-                # Silu source string - convert to IR first
-                tree = ast.parse(source)
-                ir_generator = SiluIRGenerator()
-                ir_result = ir_generator.visit(tree)
-                paths = executor.execute_program(ir_result)
+            # if source.strip().startswith(("[", "(")):
+            #     # IR string
+            #     ir_executor_result = execute_symbolic_from_string_with_executor(
+            #         source,
+            #         performance_mode=performance_mode,
+            #         debug=debug,
+            #     )
+            #     paths = ir_executor_result["paths"]
+            #     # Transfer function analyses from IR executor to main executor
+            #     if "function_analyses" in ir_executor_result:
+            #         executor.function_analyses = ir_executor_result["function_analyses"]
+            # else:
+            #     # Silu source string - convert to IR first
+            #     tree = ast.parse(source)
+            #     ir_generator = SiluIRGenerator()
+            #     ir_result = ir_generator.visit(tree)
+            #     paths = executor.execute_program(ir_result)
 
         # Apply condition simplification if requested
         if simplify:

@@ -6,12 +6,8 @@ This module provides symbolic execution capabilities for Silu programs,
 allowing analysis of all possible execution paths and generation of
 path constraints for functions with improved Z3 integration and loop handling.
 """
-
-import re
 import copy
 from typing import Any, Dict, List, Tuple, Optional, Union
-from .ir_utils import parse_ir_from_file
-from .ir_utils import parse_ir_from_json_string
 
 # Import symbolic execution utilities
 from .symbolic_utils import (
@@ -25,11 +21,6 @@ from .symbolic_utils import (
 )
 from .symbolic.loop_utils import LoopAnalyzer
 from .symbolic.condition_utils import PathCondition
-
-from .symbolic.z3_utils import (
-    Z3_AVAILABLE,
-    to_z3_expr,
-)
 
 from .symbolic.builtin_utils import (
     SymbolicValueType,
@@ -54,12 +45,6 @@ def is_symbolic(value: SymbolicValue) -> bool:
         value.type == SymbolicValueType.SYMBOLIC
         or value.type == SymbolicValueType.EXPRESSION
     )
-
-
-def is_concrete(value: SymbolicValue) -> bool:
-    """Check if a value is concrete (not symbolic)"""
-    return hasattr(value, "type") and value.type == SymbolicValueType.CONCRETE
-
 
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
@@ -102,6 +87,36 @@ class SymbolicExecutor:
         # # Initialize built-in functions
         self._init_builtins()
 
+    def execute_program(self, ir_program: Tuple) -> List[ExecutionPath]:
+        """Execute an IR program symbolically and return all paths"""
+        if not ir_program or ir_program[0] != "module":
+            raise ValueError("Invalid IR program format")
+
+        self.current_path = self.path_manager.create_path()
+        self.current_path._function_params = []  # 添加函数参数列表
+
+        self._execute_ir(ir_program)
+
+        if self.current_path:
+            self.path_manager.add_path(self.current_path)
+
+        paths = copy.deepcopy(self.path_manager.finalize_paths())
+        # TODO: why renumber_paths_sequentially the paths out of finalize_paths is not good
+        # paths = self.path_manager.paths
+        # paths = renumber_paths_sequentially(paths)
+        return paths
+
+    def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
+        """Generate a comprehensive report of symbolic execution results"""
+
+        report = generate_comprehensive_report(
+            paths=paths,
+            performance_mode=self.performance_mode,
+            global_env_functions=self.global_env.functions,
+            function_analyses=getattr(self, "function_analyses", None),
+        )
+        return report
+
     def _init_handlers(self):
         """Initialize IR node handlers"""
         self.handlers = [
@@ -114,31 +129,6 @@ class SymbolicExecutor:
         """Initialize built-in functions"""
         builtins = create_builtin_functions_dict(current_path=self.current_path)
         self.global_env.functions.update(builtins)
-
-    def execute_program(self, ir_program: Tuple) -> List[ExecutionPath]:
-        """Execute an IR program symbolically and return all paths"""
-        if not ir_program or ir_program[0] != "module":
-            raise ValueError("Invalid IR program format")
-
-        self.current_path = self.path_manager.create_path()
-        self.current_path._function_params = []  # 添加函数参数列表
-
-        self._execute_ir(ir_program)
-        # try:
-        # except Exception as e:
-        #     logger.error(f"Error in _execute_ir: {e}")
-        #     if self.current_path:
-        #         self.current_path.add_statement(f"Error: {e}")
-        #         self.current_path.state = ExecutionPathState.ERROR
-
-        if self.current_path:
-            self.path_manager.add_path(self.current_path)
-
-        paths = copy.deepcopy(self.path_manager.finalize_paths())
-        # TODO: why renumber_paths_sequentially the paths out of finalize_paths is not good
-        # paths = self.path_manager.paths
-        # paths = renumber_paths_sequentially(paths)
-        return paths
 
     def _execute_ir(self, ir_node: Union[Tuple, str, Any]) -> SymbolicValue:
         """Execute an IR node and return its symbolic value
@@ -180,19 +170,6 @@ class SymbolicExecutor:
         # - Comparisons: ==, !=, <, >, etc.
         # - Function calls, returns, blocks, etc.
         return self._dispatch_ir_node(ir_node)
-
-    def _is_part_of_chained_compare(self) -> bool:
-        """
-        检查是否在处理链式比较的一部分
-
-        用于防止在处理链式比较表达式（如 0 < x < 10）时条件被重复添加：
-        - 在 _execute_binary_op 中会为每个单独的比较部分添加条件
-        - 在 _execute_chained_compare 中会为整个链式比较添加组合条件
-
-        返回:
-            bool: 如果当前正在处理链式比较的一部分，则为 True
-        """
-        return self._processing_chained_compare
 
     def _set_processing_chained_compare(self, value: bool) -> None:
         """
@@ -1045,14 +1022,6 @@ class SymbolicExecutor:
         if init:
             self._execute_ir(init)
 
-        # Create loop context
-        # loop_context = {
-        #     "condition": condition,
-        #     "update": update,
-        #     "body": body,
-        #     "type": "c_for",
-        # }
-
         if self.current_path:
             # Add loop entry statement
             if init and condition and update:
@@ -1308,7 +1277,7 @@ class SymbolicExecutor:
                 else:
                     # TODO: Handle param_type[1]
                     if isinstance(param_type, str):
-                        if param_type in ['enum', 'unsigned char', "int", "_Bool"]:
+                        if param_type in ['enum', 'unsigned char', "int", "_Bool", "unsigned short int"]:
                             symbol = func_env.create_symbol(param, "int")
                             func_env.set_variable(param, symbol)
                             self.current_path.variables[param] = symbol
@@ -1323,15 +1292,7 @@ class SymbolicExecutor:
                         # raise NotImplementedError(f"SymbolicExecutor: param_type[1] not implemented. {param_type}")
 
         self.current_env = func_env
-
         self._execute_function_body(body_ir)
-        # try:
-        # except Exception as e:
-        #     logger.error(f"Error: {e}")
-        #     raise Exception(f"Error executing function {func_name}: {e}")
-        #     if self.current_path:
-        #         self.current_path.add_statement(f"ERROR: {str(e)}")
-        #         self.current_path.state = ExecutionPathState.ERROR
 
         # 函数体执行完毕后，获取所有完整路径
         function_paths = self.path_manager.finalize_paths()
@@ -1532,22 +1493,6 @@ class SymbolicExecutor:
             if self.debug:
                 logger.error(f"Debug: Condition readability conversion failed: {e}")
             return str(condition)
-
-    def _generate_z3_constraint(self, condition: SymbolicValue) -> Optional[Any]:
-        """Generate Z3 constraint from condition"""
-        if Z3_AVAILABLE and hasattr(condition, "value"):
-            try:
-                # logger.debug(
-                #     f"Gen Z3 constraint for cond: {condition} z3_vars: {self.current_env.z3_variables}"
-                # )
-                ret = to_z3_expr(condition.value, self.current_env.z3_variables)
-                return ret
-            except (TypeError, AttributeError, ValueError) as e:
-                # Z3 constraint generation failed, will proceed without constraint
-                logger.error(f"Error: {e}")
-                if self.debug:
-                    logger.error(f"Debug: Z3 constraint generation failed: {e}")
-        return None
 
     def _simplify_display(self, value: Any) -> str:
         """Simplify value display for better readability"""
@@ -1761,145 +1706,3 @@ class SymbolicExecutor:
                 f"Error creating concrete value for {type(ir_node).__name__}: {e}"
             )
             return create_symbolic_value(f"unknown_{type(ir_node).__name__}")
-
-    # TODO: use it
-    def _merge_conditions_for_variable(
-        self, variable: str, conditions: List[PathCondition]
-    ) -> List[PathCondition]:
-        """Merge conditions for a single variable"""
-        if len(conditions) <= 1:
-            return conditions
-
-        # Separate positive and negative conditions
-        positive_conditions = [c for c in conditions if c.is_true]
-        negative_conditions = [c for c in conditions if not c.is_true]
-
-        # Try to merge negative conditions
-        merged_negative = self._merge_negative_conditions(variable, negative_conditions)
-
-        result = positive_conditions + merged_negative
-        return result if result else conditions
-
-    def _merge_negative_conditions(
-        self, var_name: str, conditions: List[PathCondition]
-    ) -> List[PathCondition]:
-        """Merge negative conditions for the same variable"""
-        negative_gt_conditions = []
-        other_conditions = []
-
-        for condition in conditions:
-            # Handle both PathCondition objects and string conditions
-            if hasattr(condition, "expression"):
-                expr = condition.expression
-                is_true = condition.is_true
-            else:
-                expr = str(condition)
-                # For string conditions, assume they are true constraints
-                is_true = True
-
-            if not is_true and var_name in expr:
-                pattern = rf"{re.escape(var_name)}\s*>\s*(.+)"
-                match = re.search(pattern, expr)
-                if match:
-                    try:
-                        value = float(match.group(1))
-                        negative_gt_conditions.append((condition, value))
-                    except ValueError as e:
-                        logger.error(f"Error: {e}")
-                        other_conditions.append(condition)
-                else:
-                    other_conditions.append(condition)
-            else:
-                other_conditions.append(condition)
-
-        # If we have multiple "not (var > value)" conditions, merge them
-        if len(negative_gt_conditions) > 1:
-            min_value = min(value for _, value in negative_gt_conditions)
-            merged_condition = PathCondition(f"{var_name} <= {min_value}", True)
-            other_conditions.append(merged_condition)
-        elif len(negative_gt_conditions) == 1:
-            other_conditions.append(negative_gt_conditions[0][0])
-
-        return other_conditions
-
-    def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
-        """Generate a comprehensive report of symbolic execution results"""
-
-        report = generate_comprehensive_report(
-            paths=paths,
-            performance_mode=self.performance_mode,
-            global_env_functions=self.global_env.functions,
-            function_analyses=getattr(self, "function_analyses", None),
-        )
-
-        # TODO: Update symbolic variables count if available
-        if 0 and hasattr(self.current_env, "z3_variables"):
-            report["summary"]["constraint_analysis"]["symbolic_variables"] = len(
-                self.current_env.z3_variables
-            )
-
-        return report
-
-
-def execute_symbolic_from_file_with_executor(
-    file_path: str,
-    performance_mode: bool = False,
-    debug: bool = False,
-) -> Dict[str, Any]:
-    """Execute symbolic analysis from an IR file and return paths with function analyses"""
-    try:
-        ir_program = parse_ir_from_file(file_path, encoding=Config.DEFAULT_ENCODING)
-
-        executor = SymbolicExecutor(
-            performance_mode=performance_mode,
-            debug=debug,
-        )
-        try:
-            paths = executor.execute_program(ir_program)
-            result = {"paths": paths}
-            if hasattr(executor, "function_analyses") and executor.function_analyses:
-                result["function_analyses"] = executor.function_analyses
-
-            return result
-        except KeyError as ke:
-            logger.error(f"KeyError in symbolic execution: {ke}")
-            # Raise RuntimeError for test compatibility while providing error info
-            raise RuntimeError(f"KeyError in symbolic execution: {ke}")
-    except Exception as e:
-        logger.error(f"Error in symbolic execution from file '{file_path}': {e}")
-        # import traceback
-        # logger.error(traceback.format_exc())
-        # Raise RuntimeError for compatibility with tests
-        raise RuntimeError(f"Error in symbolic execution from file '{file_path}': {e}")
-
-
-def execute_symbolic_from_string_with_executor(
-    ir_string: str,
-    performance_mode: bool = False,
-    debug: bool = False,
-) -> Dict[str, Any]:
-    """Execute symbolic analysis from an IR string and return paths with function analyses"""
-    try:
-        ir_program = parse_ir_from_json_string(ir_string)
-        executor = SymbolicExecutor(
-            performance_mode=performance_mode,
-            debug=debug,
-        )
-        try:
-            paths = executor.execute_program(ir_program)
-
-            result = {"paths": paths}
-            if hasattr(executor, "function_analyses") and executor.function_analyses:
-                result["function_analyses"] = executor.function_analyses
-
-            return result
-        except KeyError as ke:
-            logger.error(f"KeyError in symbolic execution: {ke}")
-            # Raise RuntimeError for test compatibility while providing error info
-            raise RuntimeError(f"KeyError in symbolic execution: {ke}")
-    except Exception as e:
-        logger.error(f"Error in symbolic execution from string: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        # Raise RuntimeError for compatibility with tests
-        raise RuntimeError(f"Error in symbolic execution from string: {e}")
