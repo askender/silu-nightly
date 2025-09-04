@@ -8,11 +8,6 @@ symbolic execution results, including path analysis and test case generation.
 
 from typing import Any, Dict, List, Optional
 
-from .z3_utils import (
-    Z3_AVAILABLE,
-    # condition_to_z3,
-)
-
 
 def path_to_dict(path: Any) -> Dict[str, Any]:
     """Convert a path object to dictionary format"""
@@ -101,33 +96,33 @@ def generate_comprehensive_report(
     satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
 
     # Enhanced loop analysis
-    loop_info = _build_loop_analysis(paths)
+    # loop_info = _build_loop_analysis(paths)
 
     # Enhanced constraint analysis
-    constraint_analysis = _build_constraint_analysis(paths)
+    # constraint_analysis = _build_constraint_analysis(paths)
 
     # Path complexity metrics
-    path_metrics = _build_path_metrics(paths)
+    # path_metrics = _build_path_metrics(paths)
 
-    summary = {
-        "functions_analyzed": len(global_env_functions) if global_env_functions else 0,
-        "max_path_length": max(
-            (len(getattr(p, "statements", [])) for p in paths), default=0
-        ),
-        "max_conditions": max(
-            (len(getattr(p, "conditions", [])) for p in paths), default=0
-        ),
-        "z3_available": Z3_AVAILABLE,
-        "loop_analysis": loop_info,
-        "constraint_analysis": constraint_analysis,
-        "path_metrics": path_metrics,
-        "enhanced_features": {
-            "z3_constraint_generation": Z3_AVAILABLE,
-            "range_loop_precision": True,
-            "enhanced_ast_conversion": True,
-            "path_satisfiability_checking": Z3_AVAILABLE,
-        },
-    }
+    # summary = {
+    #     "functions_analyzed": len(global_env_functions) if global_env_functions else 0,
+    #     "max_path_length": max(
+    #         (len(getattr(p, "statements", [])) for p in paths), default=0
+    #     ),
+    #     "max_conditions": max(
+    #         (len(getattr(p, "conditions", [])) for p in paths), default=0
+    #     ),
+    #     "z3_available": Z3_AVAILABLE,
+    #     "loop_analysis": loop_info,
+    #     "constraint_analysis": constraint_analysis,
+    #     "path_metrics": path_metrics,
+    #     "enhanced_features": {
+    #         "z3_constraint_generation": Z3_AVAILABLE,
+    #         "range_loop_precision": True,
+    #         "enhanced_ast_conversion": True,
+    #         "path_satisfiability_checking": Z3_AVAILABLE,
+    #     },
+    # }
     report = {
         "total_paths": len(paths),
         "satisfiable_paths": len(satisfiable_paths),
