@@ -192,7 +192,7 @@ def _serialize_symbolic_value(value) -> Any:
         return None
 
     # Handle SymbolicValue objects
-    if hasattr(value, 'type'):
+    if hasattr(value, "type"):
         from silu.symbolic.builtin_utils import SymbolicValueType
 
         if value.type == SymbolicValueType.CONCRETE:
@@ -207,13 +207,19 @@ def _serialize_symbolic_value(value) -> Any:
     # Fallback to string representation
     return str(value)
 
+
 def _serialize_expression(expr) -> Any:
     """Serialize an expression structure recursively"""
     if isinstance(expr, (tuple, list)):
-        return [_serialize_expression(item) if hasattr(item, 'type') else
-                _serialize_symbolic_value(item) if hasattr(item, 'value') else item
-                for item in expr]
-    elif hasattr(expr, 'type'):
+        return [
+            _serialize_expression(item)
+            if hasattr(item, "type")
+            else _serialize_symbolic_value(item)
+            if hasattr(item, "value")
+            else item
+            for item in expr
+        ]
+    elif hasattr(expr, "type"):
         return _serialize_symbolic_value(expr)
     else:
         return expr

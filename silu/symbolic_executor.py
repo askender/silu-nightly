@@ -6,6 +6,7 @@ This module provides symbolic execution capabilities for Silu programs,
 allowing analysis of all possible execution paths and generation of
 path constraints for functions with improved Z3 integration and loop handling.
 """
+
 import copy
 from typing import Any, Dict, List, Tuple, Optional, Union
 
@@ -45,6 +46,7 @@ def is_symbolic(value: SymbolicValue) -> bool:
         value.type == SymbolicValueType.SYMBOLIC
         or value.type == SymbolicValueType.EXPRESSION
     )
+
 
 class SymbolicExecutor:
     """Enhanced symbolic execution engine for Silu IR with improved architecture"""
@@ -271,6 +273,7 @@ class SymbolicExecutor:
         except Exception as e:
             logger.error(f"Error dispatching operation {op}: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             # Return a fallback symbolic value
             return create_symbolic_value(f"error_{op}")
@@ -454,7 +457,9 @@ class SymbolicExecutor:
             self.current_path.add_statement(f"def {func_name}({params_str}):")
 
         # Always analyze function for reporting purposes
-        function_paths = self._analyze_function_definition(func_name, params, body, param_types, return_types)
+        function_paths = self._analyze_function_definition(
+            func_name, params, body, param_types, return_types
+        )
         self.function_analyses[func_name] = function_paths
 
         return create_concrete_value(None)
@@ -530,7 +535,6 @@ class SymbolicExecutor:
     def _execute_binary_op(self, ir_node: Tuple) -> SymbolicValue:
         """Execute binary operations with enhanced Z3 constraint generation"""
         try:
-
             # 解析二元操作的左右操作数
             left_ir = None
             right_ir = None
@@ -548,8 +552,6 @@ class SymbolicExecutor:
                 return create_expression_value(f"{op}{operand}")
             else:
                 return create_concrete_value(None)
-
-
 
             # Always create symbolic expressions for operations involving symbolic variables
             # This prevents boolean casting errors
@@ -825,8 +827,11 @@ class SymbolicExecutor:
         # Collect all case values for default constraint generation
         case_values = []
         for case_ir in cases:
-            if (isinstance(case_ir, (tuple, list)) and len(case_ir) >= 3 and
-                case_ir[0] == "case"):
+            if (
+                isinstance(case_ir, (tuple, list))
+                and len(case_ir) >= 3
+                and case_ir[0] == "case"
+            ):
                 case_value = self._resolve_case_value(case_ir[1])
                 if case_value is not None:
                     case_values.append(case_value)
@@ -915,19 +920,25 @@ class SymbolicExecutor:
                     return None
 
                 # Extract the actual value
-                if hasattr(enum_value, 'value') and enum_value.value is not None:
+                if hasattr(enum_value, "value") and enum_value.value is not None:
                     return enum_value.value
                 else:
                     return enum_value
         return None
 
-    def _create_switch_condition(self, subject_value: SymbolicValue, pattern: Any) -> str:
+    def _create_switch_condition(
+        self, subject_value: SymbolicValue, pattern: Any
+    ) -> str:
         """Create a condition string for switch case matching"""
         case_value = self._extract_case_value(pattern)
         if case_value is not None:
             subject_name = self._get_variable_name(subject_value)
             # Check if this is a pattern with name reference (like enum)
-            if isinstance(pattern, (tuple, list)) and len(pattern) >= 2 and pattern[0] == "name":
+            if (
+                isinstance(pattern, (tuple, list))
+                and len(pattern) >= 2
+                and pattern[0] == "name"
+            ):
                 # For enum names, try to resolve to actual value
                 enum_name = case_value
 
@@ -940,7 +951,7 @@ class SymbolicExecutor:
 
                 if enum_value is not None:
                     # Get the actual enum value
-                    if hasattr(enum_value, 'value') and enum_value.value is not None:
+                    if hasattr(enum_value, "value") and enum_value.value is not None:
                         formatted_value = str(enum_value.value)
                     else:
                         formatted_value = str(enum_value)
@@ -1247,8 +1258,12 @@ class SymbolicExecutor:
         pass
 
     def _analyze_function_definition(
-        self, func_name: str, params: List[str], body_ir: Any,
-        param_types: List[Any], return_types: List[Any]
+        self,
+        func_name: str,
+        params: List[str],
+        body_ir: Any,
+        param_types: List[Any],
+        return_types: List[Any],
     ) -> List[ExecutionPath]:
         """Analyze all paths within a function definition"""
         # Save current state
@@ -1277,13 +1292,21 @@ class SymbolicExecutor:
                 else:
                     # TODO: Handle param_type[1]
                     if isinstance(param_type, str):
-                        if param_type in ['enum', 'unsigned char', "int", "_Bool", "unsigned short int"]:
+                        if param_type in [
+                            "enum",
+                            "unsigned char",
+                            "int",
+                            "_Bool",
+                            "unsigned short int",
+                        ]:
                             symbol = func_env.create_symbol(param, "int")
                             func_env.set_variable(param, symbol)
                             self.current_path.variables[param] = symbol
                             self.current_path.variable_types[param] = "int"
                         else:
-                            raise ValueError(f"!!Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}")
+                            raise ValueError(
+                                f"!!Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}"
+                            )
                     else:
                         symbol = func_env.create_symbol(param, param_type[1])
                         func_env.set_variable(param, symbol)
@@ -1336,7 +1359,9 @@ class SymbolicExecutor:
         # 检查是否是条件语句
         is_if_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "if"
         is_match_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "match"
-        is_switch_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "switch"
+        is_switch_stmt = (
+            isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "switch"
+        )
 
         if is_if_stmt:
             # 保存当前状态
@@ -1363,7 +1388,10 @@ class SymbolicExecutor:
                 )
 
                 # 关键修复：如果路径已经完成（遇到return），则不继续执行后续语句
-                if hasattr(path, 'state') and path.state == ExecutionPathState.COMPLETED:
+                if (
+                    hasattr(path, "state")
+                    and path.state == ExecutionPathState.COMPLETED
+                ):
                     # 路径已完成，添加到路径管理器但不继续执行
                     if path not in self.path_manager.paths:
                         self.path_manager.add_path(path)
@@ -1396,7 +1424,10 @@ class SymbolicExecutor:
                 )
 
                 # 关键修复：如果路径已经完成（遇到return），则不继续执行后续语句
-                if hasattr(path, 'state') and path.state == ExecutionPathState.COMPLETED:
+                if (
+                    hasattr(path, "state")
+                    and path.state == ExecutionPathState.COMPLETED
+                ):
                     # 路径已完成，添加到路径管理器但不继续执行
                     if path not in self.path_manager.paths:
                         self.path_manager.add_path(path)
@@ -1426,8 +1457,7 @@ class SymbolicExecutor:
             # Try to get the actual value from current path if available
             if self.current_path and var_name in self.current_path.variables:
                 var_value = self.current_path.variables[var_name]
-                if hasattr(var_value, 'value') and var_value.value is not None:
-
+                if hasattr(var_value, "value") and var_value.value is not None:
                     return str(var_value.value)
 
             return var_name  # 直接返回变量名
@@ -1440,10 +1470,13 @@ class SymbolicExecutor:
             elif condition.type == SymbolicValueType.SYMBOLIC:
                 # Try to get actual value from current path
                 var_name = condition.name
-                if self.current_path and var_name and var_name in self.current_path.variables:
+                if (
+                    self.current_path
+                    and var_name
+                    and var_name in self.current_path.variables
+                ):
                     var_value = self.current_path.variables[var_name]
-                    if hasattr(var_value, 'value') and var_value.value is not None:
-
+                    if hasattr(var_value, "value") and var_value.value is not None:
                         return str(var_value.value)
 
                 return condition.name or str(condition.value)
@@ -1593,9 +1626,17 @@ class SymbolicExecutor:
                 "or": 1,
                 "and": 2,
                 "not": 3,
-                "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
-                "+": 5, "-": 5,
-                "*": 6, "/": 6, "%": 6
+                "==": 4,
+                "!=": 4,
+                "<": 4,
+                "<=": 4,
+                ">": 4,
+                ">=": 4,
+                "+": 5,
+                "-": 5,
+                "*": 6,
+                "/": 6,
+                "%": 6,
             }
 
             parent_prec = precedence.get(parent_op, 0)
@@ -1605,18 +1646,26 @@ class SymbolicExecutor:
             # or if both are the same precedence and mixing and/or operators
             if operand_prec < parent_prec:
                 return True
-            elif operand_prec == parent_prec and parent_op in ["and", "or"] and operand_op in ["and", "or"]:
+            elif (
+                operand_prec == parent_prec
+                and parent_op in ["and", "or"]
+                and operand_op in ["and", "or"]
+            ):
                 # For same precedence and/or operators, add parentheses for clarity
                 return parent_op != operand_op
 
         return False
 
-    def _needs_parentheses_for_condition_precedence(self, operand: Any, parent_op: str) -> bool:
+    def _needs_parentheses_for_condition_precedence(
+        self, operand: Any, parent_op: str
+    ) -> bool:
         """Check if operand needs parentheses when used with parent operator in condition"""
         # If operand has a symbolic value with expression type, check its value
         if hasattr(operand, "type") and hasattr(operand, "value"):
             if operand.type == SymbolicValueType.EXPRESSION:
-                return self._needs_parentheses_for_condition_precedence(operand.value, parent_op)
+                return self._needs_parentheses_for_condition_precedence(
+                    operand.value, parent_op
+                )
             return False
 
         # If operand is not a tuple expression, no parentheses needed
@@ -1640,24 +1689,40 @@ class SymbolicExecutor:
                 "or": 1,
                 "and": 2,
                 "not": 3,
-                "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
-                "+": 5, "-": 5,
-                "*": 6, "/": 6, "%": 6
+                "==": 4,
+                "!=": 4,
+                "<": 4,
+                "<=": 4,
+                ">": 4,
+                ">=": 4,
+                "+": 5,
+                "-": 5,
+                "*": 6,
+                "/": 6,
+                "%": 6,
             }
 
             parent_prec = precedence.get(parent_op, 0)
             operand_prec = precedence.get(operand_op, 0)
 
             if self.debug:
-                logger.debug(f"Checking precedence: parent_op={parent_op} (prec={parent_prec}), operand_op={operand_op} (prec={operand_prec})")
+                logger.debug(
+                    f"Checking precedence: parent_op={parent_op} (prec={parent_prec}), operand_op={operand_op} (prec={operand_prec})"
+                )
 
             # Need parentheses if operand has lower precedence than parent
             # or if both are the same precedence and mixing and/or operators
             if operand_prec < parent_prec:
                 if self.debug:
-                    logger.debug(f"Adding parens - lower precedence: {operand_op} < {parent_op}")
+                    logger.debug(
+                        f"Adding parens - lower precedence: {operand_op} < {parent_op}"
+                    )
                 return True
-            elif operand_prec == parent_prec and parent_op in ["and", "or"] and operand_op in ["and", "or"]:
+            elif (
+                operand_prec == parent_prec
+                and parent_op in ["and", "or"]
+                and operand_op in ["and", "or"]
+            ):
                 # For same precedence and/or operators, add parentheses for clarity
                 result = parent_op != operand_op
                 if self.debug:

@@ -96,8 +96,14 @@ class SiluIRGenerator(BaseASTProcessor):
         if node_type == "function_def":
             # Process function body statements
             body = tuple(self.visit(stmt) for stmt in kwargs["body"])
-            type_params = tuple(self.visit(stmt) if stmt else None for stmt in kwargs["type_params"])
-            returns = self.visit(kwargs["returns"]) if "returns" in kwargs and kwargs["returns"] else None
+            type_params = tuple(
+                self.visit(stmt) if stmt else None for stmt in kwargs["type_params"]
+            )
+            returns = (
+                self.visit(kwargs["returns"])
+                if "returns" in kwargs and kwargs["returns"]
+                else None
+            )
             return (
                 "func_def",
                 kwargs["name"],

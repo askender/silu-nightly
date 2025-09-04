@@ -4,7 +4,6 @@ Unit tests for the symbolic execution engine.
 """
 
 import pytest
-import json
 from silu.symbolic_executor import (
     SymbolicExecutor,
     SymbolicValue,
@@ -306,7 +305,6 @@ class TestSymbolicExecutor:
 
     #     # Should be limited by max_paths
     #     assert len(paths) <= executor.max_paths
-
 
 
 class TestIntegration:

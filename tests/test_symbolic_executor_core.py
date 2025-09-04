@@ -257,7 +257,6 @@ def test_while_loop():
     assert len(paths) >= 2
 
 
-
 # class TestSymbolicExecutionFromString:
 #     """Test symbolic execution from IR strings"""
 
@@ -284,7 +283,6 @@ def test_while_loop():
 #             execute_symbolic_from_string_with_executor("invalid ir")["paths"]
 
 
-
 # def test_execute_symbolic_from_string():
 #     """Test symbolic execution from IR string."""
 
@@ -306,7 +304,6 @@ def test_while_loop():
 
 #     paths = execute_symbolic_from_string_with_executor(ir_json)["paths"]
 #     assert len(paths) == 1, f"Expected 1 paths, got {len(paths)}"
-
 
 
 # def test_merge_negative_conditions_basic():

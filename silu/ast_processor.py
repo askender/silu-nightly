@@ -251,8 +251,12 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         type_params = [arg.annotation for arg in node.args.args]
         returns = node.returns if hasattr(node, "returns") else None
         return self.process_control_flow(
-            "function_def", name=node.name, args=args, body=body,
-            type_params=type_params, returns=returns,
+            "function_def",
+            name=node.name,
+            args=args,
+            body=body,
+            type_params=type_params,
+            returns=returns,
         )
 
     def visit_Return(self, node: ast.Return) -> Any:

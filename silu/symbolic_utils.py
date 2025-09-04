@@ -168,7 +168,11 @@ class AssignmentHandler(IRNodeHandler):
             _, var_name_ir, value_ir, var_type = ir_node
 
             # Extract actual variable name from IR node
-            if isinstance(var_name_ir, (tuple, list)) and len(var_name_ir) >= 2 and var_name_ir[0] == "name":
+            if (
+                isinstance(var_name_ir, (tuple, list))
+                and len(var_name_ir) >= 2
+                and var_name_ir[0] == "name"
+            ):
                 var_name = var_name_ir[1]
             else:
                 var_name = var_name_ir
