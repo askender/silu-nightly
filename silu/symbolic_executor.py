@@ -1300,6 +1300,10 @@ class SymbolicExecutor:
                             func_env.set_variable(param, symbol)
                             self.current_path.variables[param] = symbol
                             self.current_path.variable_types[param] = "int"
+                            # TODO
+                            if param_type == "unsigned char":
+                                self.current_path.add_condition(PathCondition(f"0 <= {param} < 256", True))
+
                         else:
                             raise ValueError(
                                 f"!!Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}"
