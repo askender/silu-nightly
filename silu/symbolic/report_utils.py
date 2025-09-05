@@ -8,67 +8,6 @@ symbolic execution results, including path analysis and test case generation.
 
 from typing import Any, Dict, List, Optional
 
-
-def path_to_dict(path: Any) -> Dict[str, Any]:
-    """Convert a path object to dictionary format"""
-    # if hasattr(path, "to_dict"):
-    return path.to_dict()
-
-
-def _build_path_metrics(paths: List[Any]) -> Dict[str, Any]:
-    """Build path metrics information from paths"""
-    return {
-        "average_path_length": sum(len(getattr(p, "statements", [])) for p in paths)
-        / len(paths)
-        if paths
-        else 0,
-        "average_conditions_per_path": sum(
-            len(getattr(p, "conditions", [])) for p in paths
-        )
-        / len(paths)
-        if paths
-        else 0,
-        "paths_with_loops": sum(1 for p in paths if getattr(p, "loop_iterations", {})),
-        "paths_with_returns": sum(
-            1 for p in paths if getattr(p, "return_value", None) is not None
-        ),
-    }
-
-
-def _build_constraint_analysis(paths: List[Any]) -> Dict[str, Any]:
-    """Build constraint analysis information from paths"""
-    satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
-
-    return {
-        "total_constraints": sum(len(getattr(p, "conditions", [])) for p in paths),
-        "z3_constraints": sum(
-            1
-            for p in paths
-            for c in getattr(p, "conditions", [])
-            if getattr(c, "z3_constraint", None) is not None
-        ),
-        "symbolic_variables": 0,  # Will be set by caller if available
-        "satisfiable_constraint_ratio": len(satisfiable_paths) / len(paths)
-        if paths
-        else 0,
-    }
-
-
-def _build_loop_analysis(paths: List[Any]) -> Dict[str, Dict[str, int]]:
-    """Build loop analysis information from paths"""
-    loop_info = {}
-    for path in paths:
-        loop_iterations = getattr(path, "loop_iterations", {})
-        for loop_id, iteration in loop_iterations.items():
-            if loop_id not in loop_info:
-                loop_info[loop_id] = {"max_iteration": 0, "paths": 0}
-            loop_info[loop_id]["max_iteration"] = max(
-                loop_info[loop_id]["max_iteration"], iteration
-            )
-            loop_info[loop_id]["paths"] += 1
-    return loop_info
-
-
 def generate_comprehensive_report(
     paths: List[Any],
     performance_mode: bool = False,
@@ -94,39 +33,10 @@ def generate_comprehensive_report(
         )
 
     satisfiable_paths = [p for p in paths if getattr(p, "satisfiable", True)]
-
-    # Enhanced loop analysis
-    # loop_info = _build_loop_analysis(paths)
-
-    # Enhanced constraint analysis
-    # constraint_analysis = _build_constraint_analysis(paths)
-
-    # Path complexity metrics
-    # path_metrics = _build_path_metrics(paths)
-
-    # summary = {
-    #     "functions_analyzed": len(global_env_functions) if global_env_functions else 0,
-    #     "max_path_length": max(
-    #         (len(getattr(p, "statements", [])) for p in paths), default=0
-    #     ),
-    #     "max_conditions": max(
-    #         (len(getattr(p, "conditions", [])) for p in paths), default=0
-    #     ),
-    #     "z3_available": Z3_AVAILABLE,
-    #     "loop_analysis": loop_info,
-    #     "constraint_analysis": constraint_analysis,
-    #     "path_metrics": path_metrics,
-    #     "enhanced_features": {
-    #         "z3_constraint_generation": Z3_AVAILABLE,
-    #         "range_loop_precision": True,
-    #         "enhanced_ast_conversion": True,
-    #         "path_satisfiability_checking": Z3_AVAILABLE,
-    #     },
-    # }
     report = {
         "total_paths": len(paths),
         "satisfiable_paths": len(satisfiable_paths),
-        "paths": [path_to_dict(path) for path in paths],
+        "paths": [path.to_dict() for path in paths],
     }
 
     # Add function analysis details if available
@@ -138,7 +48,7 @@ def generate_comprehensive_report(
                 "satisfiable_paths": len(
                     [p for p in func_paths if getattr(p, "satisfiable", True)]
                 ),
-                "paths": [path_to_dict(path) for path in func_paths],
+                "paths": [path.to_dict() for path in func_paths],
             }
 
     return report
@@ -155,7 +65,7 @@ def generate_fast_comprehensive_report(
     report = {
         "total_paths": len(paths),
         "satisfiable_paths": len(satisfiable_paths),
-        "paths": [path_to_dict(path) for path in paths],
+        "paths": [path.to_dict() for path in paths],
         "summary": {
             "functions_analyzed": len(global_env_functions)
             if global_env_functions
@@ -179,7 +89,7 @@ def generate_fast_comprehensive_report(
                 "satisfiable_paths": len(
                     [p for p in func_paths if getattr(p, "satisfiable", True)]
                 ),
-                "paths": [path_to_dict(path) for path in func_paths],
+                "paths": [path.to_dict() for path in func_paths],
             }
 
     return report
