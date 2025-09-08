@@ -267,11 +267,12 @@ def run_ir_to_source_converter(
         sys.exit(1)
 
 
-def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
+def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> dict[str, Any]:
     """Run symbolic execution on source code or IR."""
+    debug = kwargs.get("debug", False)
+    report = {}
     try:
         performance_mode = kwargs.get("performance_mode", False)
-        debug = kwargs.get("debug", False)
         if debug:
             logger.info(
                 f"Running symbolic execution on {'file' if is_file else 'source'}: {source}"
@@ -376,7 +377,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
                 )
         else:
             print("No execution paths found.")
-
+        return report
     except KeyError as ke:
         print(f"Dictionary key error in symbolic execution: {ke}", file=sys.stderr)
         if debug:
@@ -391,7 +392,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> None:
 
             logger.error(traceback.format_exc())
         print(json.dumps({"error": str(e)}, indent=2))
-
+    return report
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
@@ -745,17 +746,19 @@ def main() -> None:
             }
 
             # Execute symbolic execution with better error handling
+            report = {}
             if args.source:
                 # Symbolic execution from command line source
-                run_symbolic_executor(args.source, is_file=False, **symbolic_kwargs)
+                report = run_symbolic_executor(args.source, is_file=False, **symbolic_kwargs)
             else:
                 # Symbolic execution from file
-                run_symbolic_executor(args.file, is_file=True, **symbolic_kwargs)
+                report = run_symbolic_executor(args.file, is_file=True, **symbolic_kwargs)
 
-            # TODO: Handle output file and format options if needed
             if hasattr(args, "output") and args.output:
-                # Save symbolic execution report to file - to be implemented
-                pass
+                # Save symbolic execution report to file
+                with open(args.output, "w") as f:
+                    report_str = json.dumps(report, indent=2, default=str)
+                    f.write(report_str)
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.", file=sys.stderr)
