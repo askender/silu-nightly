@@ -166,11 +166,8 @@ class ExecutionPath:
             # Convert any non-string keys to strings
             key_str = str(k) if not isinstance(k, str) else k
             try:
-                # Try to convert value to a serializable format
-                if hasattr(v, "value"):
-                    safe_variables[key_str] = v.value
-                else:
-                    safe_variables[key_str] = str(v)
+                # Use the helper function to correctly serialize the value
+                safe_variables[key_str] = _serialize_symbolic_value(v)
             except Exception as e:
                 # Fallback for any serialization errors
                 logger.error(f"Error serializing variable {k}: {e}")
