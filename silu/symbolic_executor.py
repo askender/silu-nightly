@@ -1462,8 +1462,7 @@ class SymbolicExecutor:
             # Try to get the actual value from current path if available
             if self.current_path and var_name in self.current_path.variables:
                 var_value = self.current_path.variables[var_name]
-                if hasattr(var_value, "value") and var_value.value is not None:
-                    return str(var_value.value)
+                return self._make_condition_readable(var_value)
 
             return var_name  # 直接返回变量名
 
@@ -1481,8 +1480,8 @@ class SymbolicExecutor:
                     and var_name in self.current_path.variables
                 ):
                     var_value = self.current_path.variables[var_name]
-                    if hasattr(var_value, "value") and var_value.value is not None:
-                        return str(var_value.value)
+                    if var_value is not condition:
+                        return self._make_condition_readable(var_value)
 
                 return condition.name or str(condition.value)
             elif condition.type == SymbolicValueType.CONCRETE:

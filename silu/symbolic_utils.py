@@ -232,47 +232,10 @@ class ConditionalHandler(IRNodeHandler):
             _, condition_ir, then_block = ir_node
             else_block = None
 
-        # 从IR中直接提取变量名，用于改进条件生成
-        if isinstance(condition_ir, tuple) and len(condition_ir) > 0:
-            # 处理and操作
-            if condition_ir[0] == "and" and len(condition_ir) >= 3:
-                # 提取左右操作数
-                left_ir = condition_ir[1]
-                right_ir = condition_ir[2]
-
-                # 处理比较操作如 "<", "=="
-                if (
-                    isinstance(left_ir, tuple)
-                    and len(left_ir) >= 3
-                    and left_ir[0] in ["<", "==", ">", "<=", ">=", "!="]
-                ):
-                    left_var = executor._extract_variable_name(left_ir[1])
-                    left_op = left_ir[0]
-                    left_val = left_ir[2]
-                    if isinstance(left_val, tuple) and left_val[0] == "const":
-                        left_val = left_val[1]
-
-                if (
-                    isinstance(right_ir, tuple)
-                    and len(right_ir) >= 3
-                    and right_ir[0] in ["<", "==", ">", "<=", ">=", "!="]
-                ):
-                    right_var = executor._extract_variable_name(right_ir[1])
-                    right_op = right_ir[0]
-                    right_val = right_ir[2]
-                    if isinstance(right_val, tuple) and right_val[0] == "const":
-                        right_val = right_val[1]
-
-                # 构建更准确的条件字符串
-                if "left_var" in locals() and "right_var" in locals():
-                    readable_condition = f"{left_var} {left_op} {left_val} and {right_var} {right_op} {right_val}"
-
         # 执行条件求值
         condition = executor._execute_ir(condition_ir)
 
-        # 如果上面没有生成readable_condition，使用默认方法
-        if "readable_condition" not in locals():
-            readable_condition = executor._make_condition_readable(condition)
+        readable_condition = executor._make_condition_readable(condition)
 
         # Handle concrete conditions directly
         if condition.type == SymbolicValueType.CONCRETE:
