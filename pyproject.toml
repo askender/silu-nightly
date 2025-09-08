@@ -6,10 +6,10 @@ version = "0.1.2"
 description = "A simple AI programming language"
 readme = "README.md"
 authors = [{ name = "askender", email = "askender43@gmail.com" }]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 requires-python = ">=3.11"
