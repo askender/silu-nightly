@@ -40,6 +40,7 @@ class ExecutionPath:
     statements: List[str] = field(default_factory=list)
     return_value: Optional[SymbolicValue] = None
     variables: Dict[str, SymbolicValue] = field(default_factory=dict)
+    variable_raw_types: Dict[str, str] = field(default_factory=dict)
     variable_types: Dict[str, str] = field(default_factory=dict)
     loop_iterations: Dict[str, int] = field(default_factory=dict)
     state: ExecutionPathState = ExecutionPathState.ACTIVE
@@ -154,6 +155,11 @@ class ExecutionPath:
         """Convert execution path to dictionary"""
         if self.satisfiable is None:
             self.satisfiable = self.is_satisfiable()
+
+        variable_types = {}
+        for k, v in self.variable_raw_types.items():
+            variable_types[k] = v
+
         # Convert variables to dictionary with string keys
         safe_variables = {}
         for k, v in self.variables.items():
@@ -175,6 +181,7 @@ class ExecutionPath:
             "conditions": [str(c) for c in self.conditions],
             "return_value": _serialize_symbolic_value(self.return_value),
             "variables": safe_variables,
+            "variable_types": variable_types,
             "satisfiable": self.satisfiable,
             "test_inputs": self.test_inputs,
         }
@@ -277,6 +284,7 @@ class PathManager:
         new_path.statements = source_path.statements.copy()
         new_path.variables = source_path.variables.copy()
         new_path.variable_types = source_path.variable_types.copy()
+        new_path.variable_raw_types = source_path.variable_raw_types.copy()
         new_path.loop_iterations = source_path.loop_iterations.copy()
         new_path.state = source_path.state
         return new_path

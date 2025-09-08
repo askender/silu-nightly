@@ -1300,6 +1300,10 @@ class SymbolicExecutor:
                             func_env.set_variable(param, symbol)
                             self.current_path.variables[param] = symbol
                             self.current_path.variable_types[param] = "int"
+                            if param_type == 'enum': # TODO: get real enum range
+                                self.current_path.variable_raw_types[param] = "int"
+                            else:
+                                self.current_path.variable_raw_types[param] = param_type
                             # TODO
                             if param_type == "unsigned char":
                                 self.current_path.add_condition(PathCondition(f"0 <= {param} < 256", True))
