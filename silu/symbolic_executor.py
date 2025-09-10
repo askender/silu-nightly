@@ -1510,18 +1510,14 @@ class SymbolicExecutor:
                 right_readable = right[1]
 
             # Add parentheses for and/or operators when operands are complex expressions
-            if op in ["and", "or"]:
-                # Check if left operand needs parentheses
-                if self._needs_parentheses_for_condition_precedence(left, op):
-                    left_readable = f"({left_readable})"
+            if self._needs_parentheses_for_condition_precedence(left, op):
+                left_readable = f"({left_readable})"
 
-                # Check if right operand needs parentheses
-                if self._needs_parentheses_for_condition_precedence(right, op):
-                    right_readable = f"({right_readable})"
+            # Check if right operand needs parentheses
+            if self._needs_parentheses_for_condition_precedence(right, op):
+                right_readable = f"({right_readable})"
 
-                return f"{left_readable} {op} {right_readable}"
-            else:
-                return f"{left_readable} {op} {right_readable}"
+            return f"{left_readable} {op} {right_readable}"
 
         try:
             return self._convert_expression_readable(condition)
@@ -1594,14 +1590,12 @@ class SymbolicExecutor:
                 right_str = self._convert_expression_readable(right)
 
                 # Add parentheses for and/or operators when operands are complex expressions
-                if op in ["and", "or"]:
-                    # Check if left operand needs parentheses
-                    if self._needs_parentheses_for_precedence(left, op):
-                        left_str = f"({left_str})"
+                if self._needs_parentheses_for_precedence(left, op):
+                    left_str = f"({left_str})"
 
-                    # Check if right operand needs parentheses
-                    if self._needs_parentheses_for_precedence(right, op):
-                        right_str = f"({right_str})"
+                # Check if right operand needs parentheses
+                if self._needs_parentheses_for_precedence(right, op):
+                    right_str = f"({right_str})"
 
                 return f"{left_str} {op} {right_str}"
             elif len(expr) == 2 and isinstance(expr[0], str):
@@ -1643,7 +1637,9 @@ class SymbolicExecutor:
                 "-": 5,
                 "*": 6,
                 "/": 6,
+                "//": 6,
                 "%": 6,
+                "**": 7,
             }
 
             parent_prec = precedence.get(parent_op, 0)
@@ -1706,7 +1702,9 @@ class SymbolicExecutor:
                 "-": 5,
                 "*": 6,
                 "/": 6,
+                "//": 6,
                 "%": 6,
+                "**": 7,
             }
 
             parent_prec = precedence.get(parent_op, 0)

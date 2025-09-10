@@ -18,6 +18,7 @@ dependencies = [
  "mlir>=0.0.1",
  "pycparser>=2.21",
  "z3-solver>=4.12.0",
+ "loguru>=0.7.2",
 ]
 
 [project.scripts]
