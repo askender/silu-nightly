@@ -546,7 +546,7 @@ class SymbolicExecutor:
             elif len(ir_node) == 2:
                 op, operand_ir = ir_node
                 operand = self._execute_ir(operand_ir)
-                return create_expression_value(f"{op}{operand}")
+                return create_expression_value((op, operand))
             else:
                 return create_concrete_value(None)
 
@@ -1606,6 +1606,8 @@ class SymbolicExecutor:
             elif len(expr) == 2 and isinstance(expr[0], str):
                 op, operand = expr
                 operand_str = self._convert_expression_readable(operand)
+                if op == '-':
+                    return f"-({operand_str})"
                 return f"{op}({operand_str})"
         return str(expr)
 
