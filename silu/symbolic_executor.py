@@ -1317,6 +1317,7 @@ class SymbolicExecutor:
                         func_env.set_variable(param, symbol)
                         self.current_path.variables[param] = symbol
                         self.current_path.variable_types[param] = param_type[1]
+                        self.current_path.variable_raw_types[param] = param_type[1]
                         # raise NotImplementedError(f"SymbolicExecutor: param_type[1] not implemented. {param_type}")
 
         self.current_env = func_env

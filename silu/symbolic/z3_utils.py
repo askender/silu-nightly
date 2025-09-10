@@ -294,6 +294,7 @@ class PathSatisfiabilityChecker:
             solver = Solver()
             program_variables = set(var_dict.keys())
             # logger.debug(f"program_variables: {program_variables}")
+            logger.debug(f"conditions: {conditions}")
 
             for condition_str in conditions:
                 # try:
@@ -304,6 +305,7 @@ class PathSatisfiabilityChecker:
                     # logger.debug(f"condition_str: {condition_str}")
                     # logger.debug(f"var_dict: {var_dict}")
                     constraint = to_z3_expr_new(condition_str, var_dict)
+                    logger.debug(f"constraint: {constraint}")
 
                     # Ensure constraint is boolean before adding to solver
                     if constraint is not None:
@@ -414,6 +416,28 @@ def to_z3_expr_new(expr_str, env):
                 return left * right
             if isinstance(n.op, ast.Div):
                 return left / right
+
+            if isinstance(n.op, ast.FloorDiv):
+                return left / right  # 或 z3.IntDiv(left, right) 更严谨
+            if isinstance(n.op, ast.Mod):
+                return left % right
+
+            if isinstance(n.op, ast.Pow):
+                return left ** right
+            # 可选：位运算符
+            if isinstance(n.op, ast.LShift):
+                return left << right
+            if isinstance(n.op, ast.RShift):
+                return left >> right
+            if isinstance(n.op, ast.BitAnd):
+                return left & right
+            if isinstance(n.op, ast.BitOr):
+                return left | right
+            if isinstance(n.op, ast.BitXor):
+                return left ^ right
+
+            raise NotImplementedError(f"Unsupported operator: {n.op}")
+
         elif isinstance(n, ast.Compare):
             left = convert(n.left)
             right = convert(n.comparators[0])
