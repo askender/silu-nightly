@@ -16,7 +16,44 @@ from .symbolic.z3_utils import (
     check_path_satisfiability,
 )
 
-from .symbolic.builtin_utils import SymbolicValue
+from .symbolic.builtin_utils import SymbolicValue, SymbolicValueType
+
+
+def _contains_division_by_zero(expr: Any) -> bool:
+    """Recursively check for division by zero in a symbolic expression."""
+    if expr is None:
+        return False
+
+    # If it's a SymbolicValue, check its type and value
+    if hasattr(expr, 'type') and hasattr(expr, 'value'):
+        if expr.type == SymbolicValueType.EXPRESSION:
+            return _contains_division_by_zero(expr.value)
+        else:
+            # CONCRETE or SYMBOLIC values don't contain operations themselves
+            return False
+
+    # If it's a tuple representing an operation
+    if isinstance(expr, (tuple, list)) and len(expr) == 3:
+        op, left, right = expr
+        # Check for division by zero: op is '/' or '//' and right is a constant zero
+        if op in ('/', '//'):
+            is_zero = False
+            if hasattr(right, 'type') and right.type == SymbolicValueType.CONCRETE and right.value == 0:
+                is_zero = True
+            if is_zero:
+                return True
+
+        # Recurse into left and right operands
+        if _contains_division_by_zero(left) or _contains_division_by_zero(right):
+            return True
+
+    # If it's a tuple/list, recurse into its elements
+    elif isinstance(expr, (tuple, list)):
+        for item in expr:
+            if _contains_division_by_zero(item):
+                return True
+
+    return False
 
 from .symbolic.report_utils import renumber_paths_sequentially
 
@@ -174,6 +211,7 @@ class ExecutionPath:
             "path_id": self.path_id,
             "conditions": [str(c) for c in self.conditions],
             "return_value": _serialize_symbolic_value(self.return_value),
+            "has_division_by_zero": _contains_division_by_zero(self.return_value),
             "variables": safe_variables,
             "variable_types": variable_types,
             "satisfiable": self.satisfiable,
