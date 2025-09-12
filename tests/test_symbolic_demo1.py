@@ -13,7 +13,7 @@ from silu.symbolic_executor_wrapper import execute_symbolic_from_file_with_execu
 def test_symbolic_demo1_paths():
     """Test that symbolic_demo1.si.ir.json has the expected paths and conditions."""
     # Path to the IR file
-    ir_file = Path(__file__).parent.parent / "symbolic_demo1.si.ir.json"
+    ir_file = Path(__file__).parent.parent / "tests" / "symbolic_demo1.si.ir.json"
     assert ir_file.exists(), f"Test file {ir_file} not found"
 
     # Execute symbolic analysis
