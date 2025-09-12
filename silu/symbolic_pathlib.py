@@ -19,41 +19,43 @@ from .symbolic.z3_utils import (
 from .symbolic.builtin_utils import SymbolicValue, SymbolicValueType
 
 
-def _contains_division_by_zero(expr: Any) -> bool:
-    """Recursively check for division by zero in a symbolic expression."""
+def _find_potential_division_by_zero(expr: Any) -> List[Any]:
+    """Recursively find expressions that could cause division by zero."""
+    conditions = []
     if expr is None:
-        return False
+        return conditions
 
-    # If it's a SymbolicValue, check its type and value
+    # If it's a SymbolicValue, analyze its type and value
     if hasattr(expr, 'type') and hasattr(expr, 'value'):
         if expr.type == SymbolicValueType.EXPRESSION:
-            return _contains_division_by_zero(expr.value)
-        else:
-            # CONCRETE or SYMBOLIC values don't contain operations themselves
-            return False
+            conditions.extend(_find_potential_division_by_zero(expr.value))
+        return conditions  # No further analysis needed for CONCRETE/SYMBOLIC at this level
 
     # If it's a tuple representing an operation
     if isinstance(expr, (tuple, list)) and len(expr) == 3:
         op, left, right = expr
-        # Check for division by zero: op is '/' or '//' and right is a constant zero
+        # Check for division operator
         if op in ('/', '//'):
-            is_zero = False
-            if hasattr(right, 'type') and right.type == SymbolicValueType.CONCRETE and right.value == 0:
-                is_zero = True
-            if is_zero:
-                return True
+            # Analyze the divisor (right-hand side)
+            is_literal_nonzero = (
+                hasattr(right, 'type')
+                and right.type == SymbolicValueType.CONCRETE
+                and right.value != 0
+            )
+            # If the divisor is not a literal non-zero constant, it's a potential problem.
+            if not is_literal_nonzero:
+                conditions.append(right)  # Add the divisor expression itself
 
-        # Recurse into left and right operands
-        if _contains_division_by_zero(left) or _contains_division_by_zero(right):
-            return True
+        # Recurse into left and right operands to find nested divisions
+        conditions.extend(_find_potential_division_by_zero(left))
+        conditions.extend(_find_potential_division_by_zero(right))
 
-    # If it's a tuple/list, recurse into its elements
+    # If it's another type of tuple/list, recurse into its elements
     elif isinstance(expr, (tuple, list)):
         for item in expr:
-            if _contains_division_by_zero(item):
-                return True
+            conditions.extend(_find_potential_division_by_zero(item))
 
-    return False
+    return conditions
 
 from .symbolic.report_utils import renumber_paths_sequentially
 
@@ -207,11 +209,15 @@ class ExecutionPath:
                 logger.error(f"Error serializing variable {k}: {e}")
                 safe_variables[key_str] = f"<error:{type(v).__name__}>"
 
+        div_by_zero_conds = _find_potential_division_by_zero(self.return_value)
+
         path_dict = {
             "path_id": self.path_id,
             "conditions": [str(c) for c in self.conditions],
             "return_value": _serialize_symbolic_value(self.return_value),
-            "has_division_by_zero": _contains_division_by_zero(self.return_value),
+            "division_by_zero_conditions": [
+                _serialize_expression(cond) for cond in div_by_zero_conds
+            ],
             "variables": safe_variables,
             "variable_types": variable_types,
             "satisfiable": self.satisfiable,
