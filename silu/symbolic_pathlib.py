@@ -265,7 +265,7 @@ def _expression_to_string(expr: Any) -> str:
             if _needs_parentheses_for_precedence(right, op):
                 right_str = f"({right_str})"
 
-            return f"{left_str} {op} {right_str}"
+            return f"({left_str} {op} {right_str})"
         elif len(expr) == 2 and isinstance(expr[0], str):
             op, operand = expr
             operand_str = _expression_to_string(operand)
