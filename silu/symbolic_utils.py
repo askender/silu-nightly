@@ -290,6 +290,7 @@ class ConditionalHandler(IRNodeHandler):
             executor,
             original_path,
             original_env.copy(),
+            condition,
             readable_condition,
             True,
             then_block,
@@ -308,6 +309,7 @@ class ConditionalHandler(IRNodeHandler):
             executor,
             original_path,
             original_env.copy(),
+            condition,
             readable_condition,
             False,
             else_block,
@@ -338,6 +340,7 @@ class ConditionalHandler(IRNodeHandler):
         executor,
         original_path,
         original_env,
+        condition,
         readable_condition,
         is_true_branch,
         block,
@@ -350,7 +353,10 @@ class ConditionalHandler(IRNodeHandler):
 
         # Add condition
         condition_obj = PathCondition(
-            readable_condition, is_true_branch, z3_constraint=z3_constraint
+            readable_condition,
+            is_true_branch,
+            raw_expression=condition,
+            z3_constraint=z3_constraint,
         )
         branch_path.add_condition(condition_obj)
 
@@ -457,7 +463,7 @@ class LoopHandler(IRNodeHandler):
         # or ExecutionPath("temp")
         exit_path = executor.path_manager.copy_path(original_path)
 
-        exit_condition = PathCondition(readable_condition, False)
+        exit_condition = PathCondition(readable_condition, False, raw_expression=condition)
         exit_path.add_condition(exit_condition)
         exit_path.add_statement("# Loop not entered/exited")
 
@@ -469,7 +475,7 @@ class LoopHandler(IRNodeHandler):
             # or ExecutionPath("temp")
             iter_path = executor.path_manager.copy_path(original_path)
 
-            iter_condition = PathCondition(readable_condition, True)
+            iter_condition = PathCondition(readable_condition, True, raw_expression=condition)
             iter_path.add_condition(iter_condition)
             iter_path.add_statement(f"# Loop iteration {i}")
             iter_path.loop_iterations[f"while_{id(ir_node)}"] = i

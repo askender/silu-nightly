@@ -209,15 +209,23 @@ class ExecutionPath:
                 logger.error(f"Error serializing variable {k}: {e}")
                 safe_variables[key_str] = f"<error:{type(v).__name__}>"
 
-        div_by_zero_conds = _find_potential_division_by_zero(self.return_value)
+        # Check for division by zero in return value and all conditions
+        all_div_conds = _find_potential_division_by_zero(self.return_value)
+        for path_cond in self.conditions:
+            if path_cond.raw_expression:
+                all_div_conds.extend(
+                    _find_potential_division_by_zero(path_cond.raw_expression)
+                )
+
+        # Convert raw expressions to unique strings
+        string_conds = [_expression_to_string(cond) for cond in all_div_conds]
+        unique_string_conds = list(dict.fromkeys(string_conds))
 
         path_dict = {
             "path_id": self.path_id,
             "conditions": [str(c) for c in self.conditions],
             "return_value": _serialize_symbolic_value(self.return_value),
-            "division_by_zero_conditions": [
-                _expression_to_string(cond) for cond in div_by_zero_conds
-            ],
+            "division_by_zero_conditions": unique_string_conds,
             "variables": safe_variables,
             "variable_types": variable_types,
             "satisfiable": self.satisfiable,

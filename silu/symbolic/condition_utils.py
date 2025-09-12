@@ -26,6 +26,7 @@ class PathCondition:
 
     expression: str
     is_true: bool
+    raw_expression: Optional[Any] = None
     source_line: Optional[int] = None
     z3_constraint: Optional[Any] = None
 
@@ -101,6 +102,7 @@ class PathCondition:
             return PathCondition(
                 expression=self.expression,
                 is_true=False,
+                raw_expression=self.raw_expression,
                 source_line=self.source_line,
                 z3_constraint=negated_constraint,
             )
@@ -116,6 +118,7 @@ class PathCondition:
                 return PathCondition(
                     expression=inner_expr,
                     is_true=True,
+                    raw_expression=self.raw_expression, # Keep original raw expression
                     source_line=self.source_line,
                     z3_constraint=negated_constraint,
                 )
@@ -124,6 +127,7 @@ class PathCondition:
                 return PathCondition(
                     expression=self.expression,
                     is_true=True,
+                    raw_expression=self.raw_expression, # Keep original raw expression
                     source_line=self.source_line,
                     z3_constraint=negated_constraint,
                 )
@@ -279,7 +283,7 @@ def merge_negative_conditions(
         formatted_value = int(min_value) if min_value.is_integer() else min_value
         converted_conditions.append(
             PathCondition(
-                f"{variable} <= {formatted_value}", True, original_condition.source_line
+                f"{variable} <= {formatted_value}", True, original_condition.raw_expression, original_condition.source_line
             )
         )
 
@@ -290,7 +294,7 @@ def merge_negative_conditions(
         formatted_value = int(max_value) if max_value.is_integer() else max_value
         converted_conditions.append(
             PathCondition(
-                f"{variable} >= {formatted_value}", True, original_condition.source_line
+                f"{variable} >= {formatted_value}", True, original_condition.raw_expression, original_condition.source_line
             )
         )
 
@@ -335,12 +339,12 @@ def _convert_negative_condition_to_positive(
             new_expr = f"{variable} {new_op} {value_str}"
 
             return PathCondition(
-                new_expr, True, condition.source_line, condition.z3_constraint
+                new_expr, True, condition.raw_expression, condition.source_line, condition.z3_constraint
             )
 
     # If no pattern matches, return the condition unchanged but marked as problematic
     return PathCondition(
-        f"not ({expr})", True, condition.source_line, condition.z3_constraint
+        f"not ({expr})", True, condition.raw_expression, condition.source_line, condition.z3_constraint
     )
 
 
@@ -532,7 +536,7 @@ def normalize_condition(condition: PathCondition) -> PathCondition:
         if inner_expr.startswith("(") and inner_expr.endswith(")"):
             inner_expr = inner_expr[1:-1].strip()
         return PathCondition(
-            inner_expr, True, condition.source_line, condition.z3_constraint
+            inner_expr, True, condition.raw_expression, condition.source_line, condition.z3_constraint
         )
 
     # Handle case where expression doesn't start with "not" but is_true=False
@@ -550,7 +554,7 @@ def normalize_condition(condition: PathCondition) -> PathCondition:
     simplified_expr = make_condition_readable(expr)
 
     return PathCondition(
-        simplified_expr, is_true, condition.source_line, condition.z3_constraint
+        simplified_expr, is_true, condition.raw_expression, condition.source_line, condition.z3_constraint
     )
 
 
