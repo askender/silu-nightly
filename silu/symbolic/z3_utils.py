@@ -294,7 +294,6 @@ class PathSatisfiabilityChecker:
             solver = Solver()
             program_variables = set(var_dict.keys())
             # logger.debug(f"program_variables: {program_variables}")
-            logger.debug(f"conditions: {conditions}")
 
             for condition_str in conditions:
                 # try:
@@ -305,7 +304,6 @@ class PathSatisfiabilityChecker:
                     # logger.debug(f"condition_str: {condition_str}")
                     # logger.debug(f"var_dict: {var_dict}")
                     constraint = to_z3_expr_new(condition_str, var_dict)
-                    logger.debug(f"constraint: {constraint}")
 
                     # Ensure constraint is boolean before adding to solver
                     if constraint is not None:

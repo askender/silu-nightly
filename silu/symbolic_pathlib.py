@@ -7,11 +7,8 @@ from .symbolic_utils import (
     ExecutionPathState,
     logger,
 )
-import logging
 
-# Fallback logger if not imported
-if "logger" not in locals():
-    logger = logging.getLogger(__name__)
+
 from .symbolic.condition_utils import PathCondition
 
 from .symbolic.z3_utils import (
@@ -261,13 +258,11 @@ class PathManager:
                 return True
             else:
                 # 只有在非简单单条件路径时才记录不可满足警告
-                if not (
-                    len(path.conditions) == 1
-                    and " " not in path.conditions[0].expression
-                ):
-                    pass
-                    # TODO
-                    # logger.warning("Path is not satisfiable. It is dead code?")
+                # if not (
+                #     len(path.conditions) == 1
+                #     and " " not in path.conditions[0].expression
+                # ):
+                logger.error("Path is not satisfiable. It is dead code?")
                 # raise ValueError("Path is not satisfiable")
                 # TODO: if is_satisfiable is False, it is dead code?
         return False

@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from silu.symbolic_executor import SymbolicExecutor
 
-
 logger.remove()  # 移除默认的 handler
 logger.add(
     sink=sys.stderr,  # 或 sys.stdout
@@ -45,7 +44,6 @@ logger.add(
 
 # Configuration Constants
 
-
 class Config:
     """Configuration constants for symbolic execution"""
 
@@ -56,7 +54,6 @@ class Config:
     DEFAULT_PATH_PREFIX = "path_"
     DEFAULT_ENCODING = "utf-8"
 
-
 class ExecutionPathState(Enum):
     """Enumeration of execution path states"""
 
@@ -64,7 +61,6 @@ class ExecutionPathState(Enum):
     COMPLETED = "completed"
     ERROR = "error"
     UNSATISFIABLE = "unsatisfiable"
-
 
 class SymbolicEnvironment:
     """Environment for symbolic execution with improved encapsulation"""
@@ -135,7 +131,6 @@ class SymbolicEnvironment:
         new_env.z3_variables = self.z3_variables.copy()
         return new_env
 
-
 class IRNodeHandler(ABC):
     """Abstract base class for IR node handlers"""
 
@@ -148,7 +143,6 @@ class IRNodeHandler(ABC):
     def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         """Handle the IR node and return its symbolic value"""
         pass
-
 
 class AssignmentHandler(IRNodeHandler):
     """Handler for assignment operations"""
@@ -218,7 +212,6 @@ class AssignmentHandler(IRNodeHandler):
                 executor.current_path.state = ExecutionPathState.ERROR
             return create_concrete_value(None)
 
-
 class ConditionalHandler(IRNodeHandler):
     """Handler for if/elif/else statements"""
 
@@ -267,6 +260,7 @@ class ConditionalHandler(IRNodeHandler):
             if then_block:
                 executor._execute_ir(then_block)
         else:
+            logger.error("condition is False. It is dead code?")
             if else_block:
                 executor._execute_ir(else_block)
         return create_concrete_value(None)
@@ -411,7 +405,6 @@ class ConditionalHandler(IRNodeHandler):
 
             # 返回当前路径作为列表，与修改后的 _execute_symbolic_if 接口保持一致
             return [executor.current_path] if executor.current_path else []
-
 
 class LoopHandler(IRNodeHandler):
     """Handler for loop operations"""
