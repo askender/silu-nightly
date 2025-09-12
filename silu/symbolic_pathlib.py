@@ -216,7 +216,7 @@ class ExecutionPath:
             "conditions": [str(c) for c in self.conditions],
             "return_value": _serialize_symbolic_value(self.return_value),
             "division_by_zero_conditions": [
-                _serialize_expression(cond) for cond in div_by_zero_conds
+                _expression_to_string(cond) for cond in div_by_zero_conds
             ],
             "variables": safe_variables,
             "variable_types": variable_types,
@@ -230,6 +230,70 @@ class ExecutionPath:
         # "z3_error": getattr(self, "z3_error", None),
         return path_dict
 
+
+def _expression_to_string(expr: Any) -> str:
+    """Converts a symbolic expression to a readable string."""
+    if expr is None:
+        return "None"
+    if isinstance(expr, str):
+        return expr
+    elif isinstance(expr, (int, float, bool)):
+        return str(expr)
+    elif hasattr(expr, "type") and hasattr(expr, "value"):
+        if expr.type == SymbolicValueType.SYMBOLIC:
+            return expr.name or str(expr.value)
+        elif expr.type == SymbolicValueType.CONCRETE:
+            return "None" if expr.value is None else str(expr.value)
+        elif expr.type == SymbolicValueType.EXPRESSION:
+            return _expression_to_string(expr.value)
+    elif isinstance(expr, tuple) and len(expr) >= 1:
+        if len(expr) == 3 and isinstance(expr[0], str):
+            op, left, right = expr
+            left_str = _expression_to_string(left)
+            right_str = _expression_to_string(right)
+
+            if _needs_parentheses_for_precedence(left, op):
+                left_str = f"({left_str})"
+            if _needs_parentheses_for_precedence(right, op):
+                right_str = f"({right_str})"
+
+            return f"{left_str} {op} {right_str}"
+        elif len(expr) == 2 and isinstance(expr[0], str):
+            op, operand = expr
+            operand_str = _expression_to_string(operand)
+            if op == '-':
+                return f"-({operand_str})"
+            return f"{op}({operand_str})"
+    return str(expr)
+
+def _needs_parentheses_for_precedence(operand: Any, parent_op: str) -> bool:
+    """Checks if an operand needs parentheses for correct operator precedence."""
+    if not isinstance(operand, tuple) or len(operand) < 3:
+        return False
+
+    if hasattr(operand, "type") and hasattr(operand, "value"):
+        if operand.type == SymbolicValueType.EXPRESSION:
+            return _needs_parentheses_for_precedence(operand.value, parent_op)
+        return False
+
+    if len(operand) == 3 and isinstance(operand[0], str):
+        operand_op = operand[0]
+        precedence = {
+            "or": 1, "and": 2, "not": 3,
+            "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
+            "+": 5, "-": 5,
+            "*": 6, "/": 6, "//": 6, "%": 6,
+            "**": 7,
+        }
+        parent_prec = precedence.get(parent_op, 0)
+        operand_prec = precedence.get(operand_op, 0)
+
+        if operand_prec < parent_prec:
+            return True
+        elif (operand_prec == parent_prec and parent_op in ["and", "or"] and operand_op in ["and", "or"]):
+            return parent_op != operand_op
+
+    return False
 
 def _serialize_symbolic_value(value) -> Any:
     """Serialize a SymbolicValue for JSON output"""
