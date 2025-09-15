@@ -31,8 +31,13 @@ def get_ret_from_json(json_file_path):
     with open(json_file_path, 'r') as f:
         data = json.load(f)
 
-    raw_code_file = json_file_path.replace('.ir.json.ret.json', '.c')
-    raw_code_file = json_file_path.replace('.sym.json', '.c')
+    raw_code_file = json_file_path.replace('.sym.json', '')
+    lang = None
+    if raw_code_file.endswith('.c'):
+        lang = 'c'
+    elif raw_code_file.endswith('.py'):
+        lang = 'python'
+    assert lang
     raw_code = open(raw_code_file, 'r').read()
 
 
@@ -49,12 +54,9 @@ def get_ret_from_json(json_file_path):
         raw_h_code = raw_h_code.replace("#include <stdbool.h>", "")
         raw_h_code = raw_h_code.replace("#include <stdint.h>", '#include "stdint.h"')
 
-    # new_d = {}
     function_analyses = data['function_analyses']
 
     for func_name, func_info in function_analyses.items():
-        # new_d[func_name] = {}
-        # new_d[func_name]['paths'] = []
         print(f"\n📋 函数: {func_name}")
         paths = func_info['paths']
         for path in paths:
@@ -141,23 +143,42 @@ def get_ret_from_json(json_file_path):
 
             # print(ret)
             return_value = path['return_value']
-            if return_value == ret:
-                # print('ok 1')
-                continue
 
             if isinstance(return_value, int):
-                raise ValueError(f"Expected int: {ret} but got {return_value}")
-
-
-            if return_value in test_inputs:
+                if return_value == ret:
+                    # print('ok 1')
+                    pass
+                else:
+                    raise ValueError(f"Expected int: {ret} but got {return_value}")
+            elif return_value in test_inputs:
                 return_value = test_inputs[return_value]
                 assert return_value == ret, f"Expected {return_value} but got {ret}"
                 # print('ok 2')
-                continue
-            assert return_value.startswith('struct_')
-            path['output'] = ret
+                # continue
+            else:
+                assert return_value.startswith('struct_')
 
-            print(data)
+            # path['output'] = ret
+            # print(data)
+
+            case = {}
+            case["case_type"] = "type3"
+            case["func_name"] = func_name
+
+            param = []
+            init = []
+            for k, atype in variable_types.items():
+                v = test_inputs[k]
+                param.append(k)
+                init.append(f"{atype} {k} = {v};")
+
+            param = ", ".join(param)
+            init = "\n".join(init)
+            case["param"] = param
+            case["init"] = init
+            case["output"] = ret
+            print(case)
+            # fout.write(json.dumps(case) + "\n")
 
 def main():
     if len(sys.argv) != 2:

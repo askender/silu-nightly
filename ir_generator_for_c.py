@@ -763,10 +763,8 @@ def main():
     output_file = args.output
     if not output_file:
         input_path = args.input_file
-        if input_path.endswith(".c"):
-            output_file = input_path[:-2] + ".ir.json"
-        else:
-            output_file = input_path + ".ir.json"
+        assert input_path.endswith(".c")
+        output_file = input_path + ".ir.json"
 
     try:
         # Generate IR
