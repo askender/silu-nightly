@@ -32,7 +32,22 @@ def get_ret_from_json(json_file_path):
         data = json.load(f)
 
     raw_code_file = json_file_path.replace('.ir.json.ret.json', '.c')
+    raw_code_file = json_file_path.replace('.sym.json', '.c')
     raw_code = open(raw_code_file, 'r').read()
+
+
+    raw_code = raw_code.replace("#include <stdio.h>", "")
+    raw_code = raw_code.replace("#include <stdbool.h>", "")
+    raw_code = raw_code.replace("#include <stdint.h>", '#include "stdint.h"')
+
+    raw_h_code = None
+    raw_h_file = raw_code_file[:-2]+'.h'
+    if os.path.isfile(raw_h_file):
+        raw_h_code = open(raw_h_file, 'r').read()
+
+        raw_h_code = raw_h_code.replace("#include <stdio.h>", "")
+        raw_h_code = raw_h_code.replace("#include <stdbool.h>", "")
+        raw_h_code = raw_h_code.replace("#include <stdint.h>", '#include "stdint.h"')
 
     # new_d = {}
     function_analyses = data['function_analyses']
@@ -51,10 +66,10 @@ def get_ret_from_json(json_file_path):
             test_inputs = path['test_inputs']
             # variables = path['variables']
             variable_types = path['variable_types']
-            for k, v in test_inputs.items():
-                t = variable_types[k]
+            for k, t in variable_types.items():
+                v = test_inputs[k]
                 assign = f'{t} {k} = {v};'
-                # print(assign)
+                # print(f"assign: {assign}")
                 main_code.append(assign)
                 l_var.append(k)
             l_var = ', '.join(l_var)
@@ -100,6 +115,8 @@ def get_ret_from_json(json_file_path):
 
             raw_code_file = 'raw_code.c'
             with open(raw_code_file, 'w') as f:
+                if raw_h_code:
+                    f.write(raw_h_code+'\n')
                 f.write(raw_code+'\n'+c_code)
 
             cmd = [
@@ -127,6 +144,11 @@ def get_ret_from_json(json_file_path):
             if return_value == ret:
                 # print('ok 1')
                 continue
+
+            if isinstance(return_value, int):
+                raise ValueError(f"Expected int: {ret} but got {return_value}")
+
+
             if return_value in test_inputs:
                 return_value = test_inputs[return_value]
                 assert return_value == ret, f"Expected {return_value} but got {ret}"
