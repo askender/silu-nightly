@@ -32,6 +32,8 @@ def get_ret_from_json(json_file_path):
         data = json.load(f)
 
     raw_code_file = json_file_path.replace('.sym.json', '')
+    testcases_file = json_file_path.replace('.sym.json', '.cases.jsonl')
+    testcases_file_handler = open(testcases_file, "w")
     lang = None
     if raw_code_file.endswith('.c'):
         lang = 'c'
@@ -39,7 +41,6 @@ def get_ret_from_json(json_file_path):
         lang = 'python'
     assert lang
     raw_code = open(raw_code_file, 'r').read()
-
 
     raw_code = raw_code.replace("#include <stdio.h>", "")
     raw_code = raw_code.replace("#include <stdbool.h>", "")
@@ -65,6 +66,8 @@ def get_ret_from_json(json_file_path):
             print("-" * 50)
             # print(f"路径: {path}")
             return_type = path['return_type']
+            assert return_type is not None, f"Return type {_return_type} is not valid"
+
             test_inputs = path['test_inputs']
             # variables = path['variables']
             variable_types = path['variable_types']
@@ -78,14 +81,24 @@ def get_ret_from_json(json_file_path):
 
             prefix = 'void main(){'
             _return_type = return_type
-            if return_type.startswith('struct_'):
-                _return_type = return_type[7:]
+            # if return_type.startswith('struct_'):
+            #     _return_type = return_type[7:]
 
+            if isinstance(return_type, dict):
+                _return_type = return_type['name']
+                # struct_def = f'struct {return_type["name"]} {{\n'
+                # for field in return_type['fields']:
+                #     struct_def += f'    {field["type"]} {field["name"]};\n'
+                # struct_def += '};\n'
+
+            output_type = None
             if return_type == 'int':
+                output_type = 'int'
                 prefix = 'int main(){'
             # print(prefix)
 
             main_code.append(prefix)
+            assert _return_type is not None, f"Return type {_return_type} is not valid"
             exec_code = f'  {_return_type} ret = {func_name}({l_var});'
             # print(exec_code)
             main_code.append(exec_code)
@@ -94,11 +107,17 @@ def get_ret_from_json(json_file_path):
             #     print_code = f'  printf("%d", ret);'
             # else:
             #     print_code = f'  printf("%s", ret);'
-            #
-            if return_type.startswith('struct_'):
+
+            # if return_type.startswith('struct_'):
+            if isinstance(return_type, dict):
+                assert return_type['kind'] == 'struct'
+                output_type = 'struct'
                 print_code = ''
-                print_code += f'\n  printf("ret.status = %d\\n", ret.status);'
-                print_code += f'\n  printf("ret.VehSpdabs = %d\\n", ret.VehSpdabs);'
+                # print_code += f'\n  printf("ret.status = %d\\n", ret.status);'
+                # print_code += f'\n  printf("ret.VehSpdabs = %d\\n", ret.VehSpdabs);'
+                return_fields = return_type['fields']
+                for name,atype in return_fields:
+                    print_code += f'\n  printf("ret.{name} = %d\\n", ret.{name});'
                 main_code.append(print_code)
 
             # print(print_code)
@@ -115,8 +134,8 @@ def get_ret_from_json(json_file_path):
             raw_code = raw_code.replace('../mystdint/', '')
             raw_code = raw_code.replace("#include <stdio.h>", "")
 
-            raw_code_file = 'raw_code.c'
-            with open(raw_code_file, 'w') as f:
+            merged_code_file = 'gen_merged_code.c'
+            with open(merged_code_file, 'w') as f:
                 if raw_h_code:
                     f.write(raw_h_code+'\n')
                 f.write(raw_code+'\n'+c_code)
@@ -126,16 +145,19 @@ def get_ret_from_json(json_file_path):
                 "-E",
                 "-Imystdint",
                 "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include",
-                raw_code_file,
+                merged_code_file,
             ]
             # print(' '.join(cmd))
             result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             assert result.returncode == 0, f"[Error1] cpp failed on {raw_code_file} with return code {result.returncode}"
             c_code = result.stdout
+            if os.path.exists(merged_code_file):
+                os.remove(merged_code_file)
+
 
             c_ir = generate_ir_from_c_code(c_code)
+            assert c_ir, f"[Error] c_ir is empty"
             c_ir = json.dumps(c_ir, indent=2, default=str)
-            # print(c_ir)
             # ret = execute_ir_from_string(c_ir)
             captured_output, ret = capture_print(execute_ir_from_string, c_ir)
             if ret is None:
@@ -177,8 +199,13 @@ def get_ret_from_json(json_file_path):
             case["param"] = param
             case["init"] = init
             case["output"] = ret
+            case["output_type"] = output_type
+            if output_type == 'struct':
+                case["output_name"] = return_type['name']
+                case["output_fields"] = return_type['fields']
             print(case)
-            # fout.write(json.dumps(case) + "\n")
+            testcases_file_handler.write(json.dumps(case) + "\n")
+    print(f'testcases_file generated ok: {testcases_file}')
 
 def main():
     if len(sys.argv) != 2:

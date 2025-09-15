@@ -1273,8 +1273,20 @@ class SymbolicExecutor:
         self.current_path = self.path_manager.create_path(f"func_{func_name}_")
 
         if return_type == 'enum':
-            return_type = 'int'
-        self.current_path.return_type = return_type
+            self.current_path.return_type = 'int'
+        elif return_type.startswith('struct_'):
+            return_name = return_type[7:]
+            # self.struct_types[name]
+            assert return_name in self.struct_types, f"Struct type {return_name} not found"
+            # print(self.struct_types[return_name])
+            self.current_path.return_type = {
+                'kind': "struct",
+                'name': return_name,
+                'fields': self.struct_types[return_name]
+            }
+            # raise
+        else:
+            raise ValueError(f"Return type {return_type} is not valid")
 
         # Create function environment with symbolic parameters
         func_env = SymbolicEnvironment(self.global_env)

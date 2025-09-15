@@ -78,7 +78,7 @@ class ExecutionPath:
     variables: Dict[str, SymbolicValue] = field(default_factory=dict)
     variable_raw_types: Dict[str, str] = field(default_factory=dict)
     variable_types: Dict[str, str] = field(default_factory=dict)
-    return_type: Optional[str] = None
+    return_type: Optional[Any] = None
     loop_iterations: Dict[str, int] = field(default_factory=dict)
     state: ExecutionPathState = ExecutionPathState.ACTIVE
     test_inputs: Dict[str, Any] = field(default_factory=dict)
