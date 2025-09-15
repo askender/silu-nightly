@@ -5,6 +5,8 @@ from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple, Union
 from abc import ABC, abstractmethod
 
+from z3.z3 import Option
+
 from .symbolic.condition_utils import PathCondition
 
 from .symbolic.builtin_utils import (
@@ -69,6 +71,7 @@ class SymbolicEnvironment:
         self.parent = parent
         self.variables: Dict[str, SymbolicValue] = {}
         self.variable_types: Dict[str, str] = {}
+        self.return_type: Optional[str] = None
         self.functions: Dict[str, Any] = {}
         self.symbol_counter = 0
         self.z3_variables: Dict[str, Any] = {}
@@ -126,6 +129,7 @@ class SymbolicEnvironment:
         new_env = SymbolicEnvironment(self.parent)
         new_env.variables = deepcopy(self.variables)
         new_env.variable_types = deepcopy(self.variable_types)
+        new_env.return_type = deepcopy(self.return_type)
         new_env.functions = deepcopy(self.functions)
         new_env.symbol_counter = self.symbol_counter
         new_env.z3_variables = self.z3_variables.copy()

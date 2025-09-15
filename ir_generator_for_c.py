@@ -618,8 +618,8 @@ def generate_ir_from_c_code(c_code: str, record_types: bool = True) -> Tuple | N
             print(f"Error2 parsing C code: {e}")  # , file=sys.stderr
             return
 
-        print("ast.show:")
-        ast.show()
+        # print("ast.show:")
+        # ast.show()
 
         generator = CIRGenerator(record_types=record_types)
         ir = generator.visit(ast)

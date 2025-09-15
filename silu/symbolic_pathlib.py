@@ -78,6 +78,7 @@ class ExecutionPath:
     variables: Dict[str, SymbolicValue] = field(default_factory=dict)
     variable_raw_types: Dict[str, str] = field(default_factory=dict)
     variable_types: Dict[str, str] = field(default_factory=dict)
+    return_type: Optional[str] = None
     loop_iterations: Dict[str, int] = field(default_factory=dict)
     state: ExecutionPathState = ExecutionPathState.ACTIVE
     test_inputs: Dict[str, Any] = field(default_factory=dict)
@@ -228,6 +229,7 @@ class ExecutionPath:
             "division_by_zero_conditions": unique_string_conds,
             "variables": safe_variables,
             "variable_types": variable_types,
+            "return_type": self.return_type,
             "satisfiable": self.satisfiable,
             "test_inputs": self.test_inputs,
         }
@@ -392,6 +394,7 @@ class PathManager:
         new_path.statements = source_path.statements.copy()
         new_path.variables = source_path.variables.copy()
         new_path.variable_types = source_path.variable_types.copy()
+        new_path.return_type = source_path.return_type
         new_path.variable_raw_types = source_path.variable_raw_types.copy()
         new_path.loop_iterations = source_path.loop_iterations.copy()
         new_path.state = source_path.state

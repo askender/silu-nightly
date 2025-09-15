@@ -434,7 +434,7 @@ class SymbolicExecutor:
     def _execute_func_def(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a function definition"""
         # Handle both Silu format (4 elements) and C format (5-6 elements)
-        param_types = return_types = None
+        param_types = return_type = None
         if len(ir_node) == 4:
             # Silu format: ("func_def", name, params, body)
             _, func_name, params, body = ir_node
@@ -442,7 +442,7 @@ class SymbolicExecutor:
             # C format: ("func_def", name, params, body, param_types, [return_type])
             _, func_name, params, body = ir_node[:4]
             param_types = ir_node[4]
-            return_types = ir_node[5]
+            return_type = ir_node[5]
         else:
             raise ValueError(
                 f"Invalid func_def format: expected 4+ elements, got {len(ir_node)}"
@@ -455,7 +455,7 @@ class SymbolicExecutor:
 
         # Always analyze function for reporting purposes
         function_paths = self._analyze_function_definition(
-            func_name, params, body, param_types, return_types
+            func_name, params, body, param_types, return_type
         )
         self.function_analyses[func_name] = function_paths
 
@@ -1260,7 +1260,7 @@ class SymbolicExecutor:
         params: List[str],
         body_ir: Any,
         param_types: List[Any],
-        return_types: List[Any],
+        return_type: Any,
     ) -> List[ExecutionPath]:
         """Analyze all paths within a function definition"""
         # Save current state
@@ -1271,6 +1271,10 @@ class SymbolicExecutor:
         # Reset for function analysis
         self.path_manager = PathManager()
         self.current_path = self.path_manager.create_path(f"func_{func_name}_")
+
+        if return_type == 'enum':
+            return_type = 'int'
+        self.current_path.return_type = return_type
 
         # Create function environment with symbolic parameters
         func_env = SymbolicEnvironment(self.global_env)
