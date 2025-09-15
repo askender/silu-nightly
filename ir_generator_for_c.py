@@ -11,6 +11,7 @@ import sys
 from typing import List, Optional, Tuple
 import re
 import os
+import subprocess
 
 # 继承当前环境
 env = os.environ.copy()
@@ -642,20 +643,35 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
         IR tuple representing the C program
     """
     try:
+        assert file_path.endswith(".c")
+        h_code = None
+        h_file_path = file_path[:-2]+'.h'
+        if os.path.isfile(h_file_path):
+            with open(h_file_path, "r", encoding="utf-8") as f:
+                h_code = f.read()
+                h_code = h_code.replace("#include <stdio.h>", "")
+                h_code = h_code.replace("#include <stdbool.h>", "")
+                h_code = h_code.replace("#include <stdint.h>", '#include "stdint.h"')
+
+
         tmp_file = f"{file_path}.v2.c"
         with open(file_path, "r", encoding="utf-8") as f:
+            # 处理存在同名的头文件
+
             c_code = f.read()
             c_code = c_code.replace("#include <stdio.h>", "")
+            c_code = c_code.replace("#include <stdbool.h>", "")
+            c_code = c_code.replace("#include <stdint.h>", '#include "stdint.h"')
+
             # c_code = re.sub(r'#include\s+<[^>]+>', '', c_code)
             with open(tmp_file, "w", encoding="utf-8") as f:
+                if h_code:
+                    f.write(h_code)
                 f.write(c_code)
 
-        import os
         # if os.path.isfile(f"{file_path}.i"):
         #     with open(f"{file_path}.i", 'r', encoding='utf-8') as f:
         #         c_code = f.read()
-
-        import subprocess
 
         # "-nostdinc", "-nostdlib", cpp gcc clang
         # "-nostdinc", "-Iutils/fake_libc_include",
