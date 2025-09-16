@@ -60,10 +60,11 @@ def get_ret_from_json(json_file_path):
     for func_name, func_info in function_analyses.items():
         print(f"\n📋 函数: {func_name}")
         paths = func_info['paths']
+        case = None
         for path in paths:
             main_code = []
             l_var = []
-            print("-" * 50)
+            # print("-" * 50)
             # print(f"路径: {path}")
             return_type = path['return_type']
             assert return_type is not None, f"Return type {_return_type} is not valid"
@@ -203,8 +204,9 @@ def get_ret_from_json(json_file_path):
             if output_type == 'struct':
                 case["output_name"] = return_type['name']
                 case["output_fields"] = return_type['fields']
-            print(case)
+            # print(case)
             testcases_file_handler.write(json.dumps(case) + "\n")
+        print(f'case example: {case}')
     print(f'testcases_file generated ok: {testcases_file}')
 
 def main():

@@ -772,15 +772,15 @@ def main():
         ir = generate_ir_from_c_file(args.input_file, record_types=not args.no_types)
 
         # Save IR
-        print(f"Saving IR to {output_file}...")
+        # print(f"Saving IR to {output_file}...")
         save_ir_to_file(ir, output_file, args.format)
 
         print(f"IR generation complete. Output saved to {output_file}")
-
-        # Print summary
-        print("\nIR Summary:")
-        print(f"  Format: {args.format}")
-        print(f"  Type info: {'No' if args.no_types else 'Yes'}")
+        if 0:
+            # Print summary
+            print("\nIR Summary:")
+            print(f"  Format: {args.format}")
+            print(f"  Type info: {'No' if args.no_types else 'Yes'}")
 
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)

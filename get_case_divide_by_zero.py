@@ -78,7 +78,6 @@ def solve_division_by_zero_cases(json_file_path: str) -> List[Dict]:
             if not division_by_zero_conditions:
                 continue
 
-
             if debug:
                 print(f"\n🛤️  路径 {path_idx + 1}:")
                 if conditions:
@@ -166,7 +165,12 @@ def solve_division_by_zero_cases(json_file_path: str) -> List[Dict]:
                     for cond in all_conditions:
                         print(f"      • {cond}")
 
-        print(f"\n📊 函数 {func_name} 总计: {func_div_zero_count} 个可能的除零情况")
+        alert = ''
+        if func_div_zero_count > 0:
+            alert = '⚠️⚠️⚠️'
+        print(f"\n📊 函数 {func_name} 总计: {alert} {func_div_zero_count} 个可能的除零情况")
+        if func_div_zero_count > 0:
+            sys.exit(1)
 
     if debug:
         # 输出总结和测试用例

@@ -368,7 +368,9 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> dict[s
             # Generate and print report for all files
             try:
                 report = executor.generate_report(paths)
-                print(json.dumps(report, indent=2, default=str))
+                output = kwargs.get("output", False)
+                if debug or not output:
+                    print(json.dumps(report, indent=2, default=str))
             except Exception as e:
                 logger.error(f"Error generating report: {e}")
                 print(f"Error generating report: {e}", file=sys.stderr)
@@ -743,6 +745,7 @@ def main() -> None:
                 "solve": getattr(args, "solve", False),
                 "performance_mode": getattr(args, "performance_mode", False),
                 "debug": getattr(args, "debug", False),
+                "output": getattr(args, "output", False),
             }
 
             # Execute symbolic execution with better error handling
