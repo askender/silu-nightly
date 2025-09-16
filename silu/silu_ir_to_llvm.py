@@ -1064,7 +1064,7 @@ def main():
 
     try:
         # Read Silu IR
-        with open(input_file, "r") as f:
+        with open(input_file, "r", encoding="utf-8") as f:
             ir_json = f.read()
 
         # Convert to LLVM IR

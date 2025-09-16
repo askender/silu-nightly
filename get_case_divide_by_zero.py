@@ -52,7 +52,7 @@ def solve_division_by_zero_cases(json_file_path: str) -> List[Dict]:
     分析除零条件并使用Z3求解器找到具体的变量值
     """
     bug_cases = []
-    with open(json_file_path, 'r') as f:
+    with open(json_file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     function_analyses = data['function_analyses']

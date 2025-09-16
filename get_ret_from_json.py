@@ -28,7 +28,7 @@ def capture_print(func, *args, **kwargs):
     return output, result
 
 def get_ret_from_json(json_file_path):
-    with open(json_file_path, 'r') as f:
+    with open(json_file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     raw_code_file = json_file_path.replace('.sym.json', '')
@@ -40,7 +40,7 @@ def get_ret_from_json(json_file_path):
     elif raw_code_file.endswith('.py'):
         lang = 'python'
     assert lang
-    raw_code = open(raw_code_file, 'r').read()
+    raw_code = open(raw_code_file, 'r', encoding='utf-8').read()
 
     raw_code = raw_code.replace("#include <stdio.h>", "")
     raw_code = raw_code.replace("#include <stdbool.h>", "")
@@ -49,7 +49,7 @@ def get_ret_from_json(json_file_path):
     raw_h_code = None
     raw_h_file = raw_code_file[:-2]+'.h'
     if os.path.isfile(raw_h_file):
-        raw_h_code = open(raw_h_file, 'r').read()
+        raw_h_code = open(raw_h_file, 'r', encoding='utf-8').read()
 
         raw_h_code = raw_h_code.replace("#include <stdio.h>", "")
         raw_h_code = raw_h_code.replace("#include <stdbool.h>", "")

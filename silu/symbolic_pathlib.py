@@ -380,7 +380,10 @@ class PathManager:
                 #     len(path.conditions) == 1
                 #     and " " not in path.conditions[0].expression
                 # ):
-                logger.error("Path is not satisfiable. It is dead code?")
+                logger.warning(f"Path is not satisfiable. It is dead code? conditions:")
+                # for cond in path.conditions:
+                    # print(cond)
+                    # logger.error(f"cond: {cond}")
                 # raise ValueError("Path is not satisfiable")
                 # TODO: if is_satisfiable is False, it is dead code?
         return False
