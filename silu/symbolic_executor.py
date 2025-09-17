@@ -1053,48 +1053,73 @@ class SymbolicExecutor:
         """Execute a C-style for loop: for(init; condition; update) body"""
         _, init, condition, update, body = ir_node
 
-        # Execute initialization
-        if init:
-            self._execute_ir(init)
+        original_path = self.current_path
+        original_env = self.current_env.copy()
 
-        if self.current_path:
-            # Add loop entry statement
-            if init and condition and update:
-                init_str = self._ir_to_readable_string(init)
-                cond_str = self._ir_to_readable_string(condition)
-                update_str = self._ir_to_readable_string(update)
-                self.current_path.add_statement(
-                    f"for ({init_str}; {cond_str}; {update_str}):"
-                )
-            else:
-                self.current_path.add_statement("for loop:")
+        # This is a simplification, assuming the condition is always `i < a`
+        if (isinstance(condition, (list, tuple)) and len(condition) == 3 and
+            condition[0] == '<' and condition[1][0] == 'name' and condition[2][0] == 'name'):
 
-        # Simple fallback execution
-        max_iterations = self.max_loop_iterations
-        iterations = 0
+            loop_var_name = condition[1][1]
+            bound_var_name = condition[2][1]
 
-        while iterations < max_iterations:
-                # Check condition
+            # Path 1: Loop does not execute at all (a <= 0)
+            no_loop_path = self.path_manager.copy_path(original_path, "loop_skip")
+            self.current_path = no_loop_path
+            self.current_env = original_env.copy()
+            if init:
+                self._execute_ir(init)
+
+            condition_str = f"{bound_var_name} <= 0"
+            no_loop_path.add_condition(PathCondition(condition_str, True))
+            no_loop_path.add_statement(f"# Loop not entered: {condition_str}")
+            if no_loop_path.is_satisfiable():
+                self.path_manager.add_path(no_loop_path)
+
+            # Paths for 1 to max_loop_iterations
+            for i in range(1, self.max_loop_iterations + 1):
+                iter_path = self.path_manager.copy_path(original_path, f"loop_{i}_times")
+                self.current_path = iter_path
+                self.current_env = original_env.copy()
+
+                if init:
+                    self._execute_ir(init)
+
+                if i < self.max_loop_iterations:
+                    condition_str = f"{bound_var_name} == {i}"
+                else: # Last path handles all larger values
+                    condition_str = f"{bound_var_name} >= {i}"
+
+                iter_path.add_condition(PathCondition(condition_str, True))
+                iter_path.add_statement(f"# Loop executes {i} time(s): {condition_str}")
+
+                if iter_path.is_satisfiable():
+                    for k in range(i):
+                        self._execute_ir(body)
+                        self._execute_ir(update)
+
+                    if self.current_path.state != ExecutionPathState.ERROR:
+                        self.path_manager.add_path(self.current_path)
+
+            self.current_path = None
+            return create_concrete_value(None)
+
+        # Fallback to old implementation for complex conditions
+        else:
+            if init:
+                self._execute_ir(init)
+            max_iterations = self.max_loop_iterations
+            iterations = 0
+            while iterations < max_iterations:
                 if condition:
                     cond_result = self._execute_ir(condition)
                     if hasattr(cond_result, "value") and not cond_result.value:
                         break
-
-                # Execute body
                 self._execute_ir(body)
-
-                # Execute update
                 if update:
                     self._execute_ir(update)
-
                 iterations += 1
-
-                # Track loop iterations
-                if self.current_path and hasattr(self.current_path, "loop_iterations"):
-                    loop_id = f"c_for_{id(ir_node)}"
-                    self.current_path.loop_iterations[loop_id] = iterations
-
-        return create_concrete_value(None)
+            return create_concrete_value(None)
 
     def _execute_post_increment(self, ir_node: Tuple) -> SymbolicValue:
         """Execute post-increment operation (var++)"""
