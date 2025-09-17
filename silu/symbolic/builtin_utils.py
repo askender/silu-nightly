@@ -246,6 +246,18 @@ def symbolic_range(*args) -> SymbolicValue:
 
     return create_expression_value(f"range({args_str})")
 
+def symbolic_sqrt(value: SymbolicValue) -> SymbolicValue:
+    """Symbolic version of sqrt function"""
+    if value.type == SymbolicValueType.CONCRETE:
+        try:
+            import math
+            converted = math.sqrt(value.value)
+            return create_concrete_value(converted)
+        except (ValueError, TypeError, OverflowError, AttributeError):
+            return create_expression_value(f"sqrt({value})")
+    else:
+        return create_expression_value(f"sqrt({value})")
+
 
 def simplify_args_display(args) -> str:
     """
@@ -292,6 +304,7 @@ def create_builtin_functions_dict(current_path=None):
         "max": symbolic_max,
         "min": symbolic_min,
         "range": symbolic_range,
+        "sqrt": symbolic_sqrt,
         "print": lambda *args: symbolic_print(
             *args,
             current_path=current_path,
@@ -314,6 +327,7 @@ def is_builtin_function(name: str) -> bool:
         "max",
         "min",
         "range",
+        "sqrt",
         "print",
     }
     return name in builtins

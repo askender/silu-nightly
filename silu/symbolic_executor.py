@@ -469,6 +469,9 @@ class SymbolicExecutor:
         else:
             _, func_name, args_ir = ir_node
 
+        if isinstance(func_name, (list, tuple)) and func_name[0] == 'name':
+            func_name = func_name[1]
+
         args = [self._execute_ir(arg) for arg in args_ir]
 
         # 记录函数调用语句，不管是否为内置函数
@@ -1050,76 +1053,28 @@ class SymbolicExecutor:
         return str(ir_node)
 
     def _execute_c_for(self, ir_node: Tuple) -> SymbolicValue:
-        """Execute a C-style for loop: for(init; condition; update) body"""
+        """Execute a C-style for loop by transforming it to a while loop."""
         _, init, condition, update, body = ir_node
 
-        original_path = self.current_path
-        original_env = self.current_env.copy()
+        # 1. Execute init
+        if init:
+            self._execute_ir(init)
 
-        # This is a simplification, assuming the condition is always `i < a`
-        if (isinstance(condition, (list, tuple)) and len(condition) == 3 and
-            condition[0] == '<' and condition[1][0] == 'name' and condition[2][0] == 'name'):
+        # 2. Create a new body for the while loop that includes the original body and the update
+        new_body_stmts = list(body)
+        if update:
+            if isinstance(update, (list, tuple)) and update[0] == 'block':
+                new_body_stmts.extend(update[1])
+            else:
+                new_body_stmts.append(update)
 
-            loop_var_name = condition[1][1]
-            bound_var_name = condition[2][1]
+        new_body_block = ('block', tuple(new_body_stmts))
 
-            # Path 1: Loop does not execute at all (a <= 0)
-            no_loop_path = self.path_manager.copy_path(original_path, "loop_skip")
-            self.current_path = no_loop_path
-            self.current_env = original_env.copy()
-            if init:
-                self._execute_ir(init)
+        # 3. Create a while loop IR node
+        while_loop_ir = ("while", condition, new_body_block)
 
-            condition_str = f"{bound_var_name} <= 0"
-            no_loop_path.add_condition(PathCondition(condition_str, True))
-            no_loop_path.add_statement(f"# Loop not entered: {condition_str}")
-            if no_loop_path.is_satisfiable():
-                self.path_manager.add_path(no_loop_path)
-
-            # Paths for 1 to max_loop_iterations
-            for i in range(1, self.max_loop_iterations + 1):
-                iter_path = self.path_manager.copy_path(original_path, f"loop_{i}_times")
-                self.current_path = iter_path
-                self.current_env = original_env.copy()
-
-                if init:
-                    self._execute_ir(init)
-
-                if i < self.max_loop_iterations:
-                    condition_str = f"{bound_var_name} == {i}"
-                else: # Last path handles all larger values
-                    condition_str = f"{bound_var_name} >= {i}"
-
-                iter_path.add_condition(PathCondition(condition_str, True))
-                iter_path.add_statement(f"# Loop executes {i} time(s): {condition_str}")
-
-                if iter_path.is_satisfiable():
-                    for k in range(i):
-                        self._execute_ir(body)
-                        self._execute_ir(update)
-
-                    if self.current_path.state != ExecutionPathState.ERROR:
-                        self.path_manager.add_path(self.current_path)
-
-            self.current_path = None
-            return create_concrete_value(None)
-
-        # Fallback to old implementation for complex conditions
-        else:
-            if init:
-                self._execute_ir(init)
-            max_iterations = self.max_loop_iterations
-            iterations = 0
-            while iterations < max_iterations:
-                if condition:
-                    cond_result = self._execute_ir(condition)
-                    if hasattr(cond_result, "value") and not cond_result.value:
-                        break
-                self._execute_ir(body)
-                if update:
-                    self._execute_ir(update)
-                iterations += 1
-            return create_concrete_value(None)
+        # 4. Execute the while loop
+        return self._execute_ir(while_loop_ir)
 
     def _execute_post_increment(self, ir_node: Tuple) -> SymbolicValue:
         """Execute post-increment operation (var++)"""
@@ -1455,8 +1410,11 @@ class SymbolicExecutor:
         is_switch_stmt = (
             isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "switch"
         )
+        is_while_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "while"
+        is_for_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "for"
+        is_c_for_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "c_for"
 
-        if is_if_stmt:
+        if is_if_stmt or is_match_stmt or is_switch_stmt or is_while_stmt or is_for_stmt or is_c_for_stmt:
             # 保存当前状态
             # original_path = self.current_path
             original_env = self.current_env.copy()

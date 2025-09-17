@@ -30,8 +30,8 @@ try:
         BoolRef,
         ArithRef,
         BoolSort,
-        # If,
-        # ToReal,
+        ToReal,
+        Sqrt,
     )
 
     Z3_AVAILABLE = True
@@ -523,6 +523,16 @@ def to_z3_expr_new(expr_str, env):
                 elif isinstance(value, bool):
                     return BoolVal(value)
             return value
+        elif isinstance(n, ast.Call):
+            if isinstance(n.func, ast.Name) and n.func.id == 'sqrt':
+                if len(n.args) == 1:
+                    arg = convert(n.args[0])
+                    if isinstance(arg, (int, float)):
+                        arg = RealVal(arg)
+                    elif z3.is_int(arg):
+                        arg = ToReal(arg)
+                    return Sqrt(arg)
+            raise NotImplementedError(f"Unsupported function call: {ast.dump(n)}")
         else:
             raise NotImplementedError(f"Unsupported node: {ast.dump(n)}")
 

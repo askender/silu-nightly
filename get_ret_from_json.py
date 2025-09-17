@@ -44,6 +44,7 @@ def get_ret_from_json(json_file_path):
 
     raw_code = raw_code.replace("#include <stdio.h>", "")
     raw_code = raw_code.replace("#include <stdbool.h>", "")
+    raw_code = raw_code.replace("#include <math.h>", "")
     raw_code = raw_code.replace("#include <stdint.h>", '#include "stdint.h"')
 
     raw_h_code = None
@@ -53,6 +54,7 @@ def get_ret_from_json(json_file_path):
 
         raw_h_code = raw_h_code.replace("#include <stdio.h>", "")
         raw_h_code = raw_h_code.replace("#include <stdbool.h>", "")
+        raw_h_code = raw_h_code.replace("#include <math.h>", "")
         raw_h_code = raw_h_code.replace("#include <stdint.h>", '#include "stdint.h"')
 
     function_analyses = data['function_analyses']
@@ -172,6 +174,7 @@ def get_ret_from_json(json_file_path):
                     # print('ok 1')
                     pass
                 else:
+                    # pass
                     raise ValueError(f"Expected int: {ret} but got {return_value}")
             elif return_value in test_inputs:
                 return_value = test_inputs[return_value]

@@ -466,47 +466,38 @@ class LoopHandler(IRNodeHandler):
     def _execute_while_iterations(
         self, executor, ir_node, condition, readable_condition, body_ir
     ):
-        """Execute while loop iterations"""
+        """Execute while loop by creating a path for exit and a path for iterations."""
         original_path = executor.current_path
-        original_env = executor.current_env.copy()
 
-        # Create exit path (condition false)
-        # or ExecutionPath("temp")
-        exit_path = executor.path_manager.copy_path(original_path)
-
-        exit_condition = PathCondition(readable_condition, False, raw_expression=condition)
-        exit_path.add_condition(exit_condition)
-        exit_path.add_statement("# Loop not entered/exited")
-
+        # Path where loop condition is false
+        exit_path = executor.path_manager.copy_path(original_path, "while_exit")
+        exit_cond = PathCondition(readable_condition, False, raw_expression=condition)
+        exit_path.add_condition(exit_cond)
         if exit_path.is_satisfiable():
             executor.path_manager.add_path(exit_path)
 
-        # Create iteration paths
-        for i in range(executor.max_loop_iterations):
-            # or ExecutionPath("temp")
-            iter_path = executor.path_manager.copy_path(original_path)
+        # Path where loop condition is true
+        entry_path = executor.path_manager.copy_path(original_path, "while_entry")
+        entry_cond = PathCondition(readable_condition, True, raw_expression=condition)
+        entry_path.add_condition(entry_cond)
 
-            iter_condition = PathCondition(readable_condition, True, raw_expression=condition)
-            iter_path.add_condition(iter_condition)
-            iter_path.add_statement(f"# Loop iteration {i}")
-            iter_path.loop_iterations[f"while_{id(ir_node)}"] = i
-
-            if not iter_path.is_satisfiable():
-                continue
-
-            executor.current_path = iter_path
-            executor.current_env = original_env.copy()
-
-            try:
+        if entry_path.is_satisfiable():
+            # Unroll the loop for a few iterations on this path
+            executor.current_path = entry_path
+            for i in range(executor.max_loop_iterations):
                 executor._execute_ir(body_ir)
-            except Exception as e:
-                logger.error(f"Error: {e} of body_ir: {body_ir}")
-                if executor.current_path:
-                    executor.current_path.add_statement(f"Error in loop body: {e}")
-                    executor.current_path.state = ExecutionPathState.ERROR
+                if executor.current_path.state == ExecutionPathState.COMPLETED:
+                    break
 
-            if executor.current_path and executor.current_path.is_satisfiable():
-                executor.path_manager.add_path(executor.current_path)
+            # After unrolling, this path is considered to have exited the loop.
+            # We add the exit condition again.
+            cond_after_loop = executor._execute_ir(ir_node[1])
+            readable_cond_after = executor._make_condition_readable(cond_after_loop)
+            exit_cond_after = PathCondition(readable_cond_after, False, raw_expression=cond_after_loop)
+            entry_path.add_condition(exit_cond_after)
+
+            if entry_path.is_satisfiable():
+                executor.path_manager.add_path(entry_path)
 
         executor.current_path = None
         return create_concrete_value(None)

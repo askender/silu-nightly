@@ -660,6 +660,7 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
                 h_code = f.read()
                 h_code = h_code.replace("#include <stdio.h>", "")
                 h_code = h_code.replace("#include <stdbool.h>", "")
+                h_code = h_code.replace("#include <math.h>", "")
                 h_code = h_code.replace("#include <stdint.h>", '#include "stdint.h"')
 
 
@@ -670,6 +671,7 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
             c_code = f.read()
             c_code = c_code.replace("#include <stdio.h>", "")
             c_code = c_code.replace("#include <stdbool.h>", "")
+            c_code = c_code.replace("#include <math.h>", "")
             c_code = c_code.replace("#include <stdint.h>", '#include "stdint.h"')
 
             # c_code = re.sub(r'#include\s+<[^>]+>', '', c_code)
