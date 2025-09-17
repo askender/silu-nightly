@@ -118,6 +118,15 @@ class CIRGenerator(c_ast.NodeVisitor):
 
         return ("assign", name, value, type_info)
 
+    def visit_DeclList(self, node: c_ast.DeclList) -> Tuple:
+        """Convert declaration list to a tuple of assignment IRs."""
+        decls = []
+        for decl in node.decls:
+            result = self.visit(decl)
+            if result:
+                decls.append(result)
+        return tuple(decls)
+
     def visit_Typedef(self, node: c_ast.Typedef) -> Optional[Tuple]:
         """Convert typedef declaration to IR."""
         if not node.name:

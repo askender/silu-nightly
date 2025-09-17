@@ -187,12 +187,16 @@ def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> No
 def run_ir_interpreter(ir_source: str, **kwargs) -> None:
     """Run the IR interpreter on IR code."""
     try:
+        result = None
         if ir_source.strip().startswith(("[", "(")):
             # Direct IR string
-            execute_ir_from_string(ir_source)
+            result = execute_ir_from_string(ir_source)
         else:
             # Treat as filename
-            execute_ir_from_file(ir_source)
+            result = execute_ir_from_file(ir_source)
+
+        if result is not None:
+            print(result)
     except Exception as e:
         print(f"Error executing IR: {e}", file=sys.stderr)
         sys.exit(1)

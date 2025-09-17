@@ -612,6 +612,40 @@ class IRInterpreter:
 
         return result
 
+    def _execute_c_for(self, init: Any, cond: Any, step: Any, body: Tuple) -> Any:
+        """Execute a C-style for loop."""
+        result = None
+        self._push_local_env()
+        try:
+            # Execute the initializer block
+            if init:
+                self._execute_block(init)
+
+            while self.execute(cond):
+                # Execute the loop body
+                result = self._execute_block(body)
+
+                if self.should_return:
+                    break
+                if self.should_break:
+                    self.should_break = False
+                    break
+
+                # Reset continue flag after it has been handled by _execute_block
+                if self.should_continue:
+                    self.should_continue = False
+
+                # The step is always executed at the end of the iteration
+                if step:
+                    if isinstance(step, list):
+                        self._execute_block(tuple(step))
+                    else:
+                        self.execute(step)
+
+            return result
+        finally:
+            self._pop_local_env()
+
     def _execute_func_def(
         self,
         name: str,
@@ -1322,12 +1356,25 @@ class IRInterpreter:
         raise NameError(f"Name '{name}' is not defined")
 
     def _set_variable(self, name: str, value: Any) -> None:
-        """Set variable in the current environment."""
+        """Set variable in the current environment.
+        If the variable exists in an outer scope, it is updated there.
+        Otherwise, it is created in the innermost scope.
+        """
+        # Search local environments from innermost to outermost to find existing var
+        for env in reversed(self.local_env_stack):
+            if name in env:
+                env[name] = value
+                return
+
+        # Check global scope
+        if name in self.global_env:
+            self.global_env[name] = value
+            return
+
+        # If not found, create in the innermost scope
         if self.local_env_stack:
-            # Set in the innermost local environment
             self.local_env_stack[-1][name] = value
         else:
-            # Set in global environment
             self.global_env[name] = value
 
     def _is_identifier(self, value: str) -> bool:
