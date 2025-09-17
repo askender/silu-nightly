@@ -1272,7 +1272,7 @@ class SymbolicExecutor:
         self.path_manager = PathManager()
         self.current_path = self.path_manager.create_path(f"func_{func_name}_")
 
-        if return_type == 'enum':
+        if return_type in 'int enum'.split():
             self.current_path.return_type = 'int'
         elif return_type.startswith('struct_'):
             return_name = return_type[7:]
