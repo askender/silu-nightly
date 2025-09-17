@@ -518,18 +518,18 @@ class LoopHandler(IRNodeHandler):
         if len(ir_node) < 4:
             return create_concrete_value(None)
 
-        _, var_name, iter_expr, body_ir = ir_node[:4]
+        _, var_name_ir, iter_expr, body_ir = ir_node[:4]
+
+        if isinstance(var_name_ir, tuple) and var_name_ir[0] == 'name':
+            var_name = var_name_ir[1]
+        else:
+            var_name = str(var_name_ir)
 
         if executor.current_path:
-            executor.current_path.add_statement(f"for {var_name} in {iter_expr}:")
+            executor.current_path.add_statement(f"for {var_name} in ...:") # Simplified iter_expr
 
         # Check if it's a range call
-        if (
-            isinstance(iter_expr, tuple)
-            and len(iter_expr) >= 3
-            and iter_expr[0] == "call"
-            and iter_expr[1] == "range"
-        ):
+        if executor.loop_analyzer._is_range_expression(iter_expr):
             bounds = executor.loop_analyzer.extract_range_bounds(iter_expr)
             if bounds:
                 return self._execute_range_loop(
@@ -544,62 +544,110 @@ class LoopHandler(IRNodeHandler):
         original_path = executor.current_path
         original_env = executor.current_env.copy()
 
-        # Extract literal values
-        start_val = self._extract_literal(bounds.start) if bounds.start else 0
-        stop_val = self._extract_literal(bounds.stop) if bounds.stop else 0
-        step_val = self._extract_literal(bounds.step) if bounds.step else 1
+        stop_val_ir = bounds.stop
 
-        for k in range(executor.max_loop_iterations):
-            # Check if iteration is valid
-            if not self._is_valid_iteration(k, start_val, stop_val, step_val):
-                break
-            # or ExecutionPath("temp")
-            iter_path = executor.path_manager.copy_path(original_path)
+        # Handle symbolic stop value
+        if stop_val_ir[0] == 'name':
+            stop_val_symbol = executor._execute_ir(stop_val_ir)
+            stop_val_name = stop_val_symbol.name
 
-            # Calculate iteration value
-            iter_val = (
-                start_val + k * step_val
-                if isinstance(start_val, int) and isinstance(step_val, int)
-                else f"{start_val} + {k} * {step_val}"
-            )
-            loop_var = (
-                create_concrete_value(iter_val)
-                if isinstance(iter_val, int)
-                else create_expression_value(iter_val)
-            )
-            loop_var.name = var_name
+            # Path 1: Loop does not execute at all (stop_val <= 0)
+            no_loop_path = executor.path_manager.copy_path(original_path, "loop_skip")
+            condition_str = f"{stop_val_name} <= 0"
+            no_loop_path.add_condition(PathCondition(condition_str, True))
+            no_loop_path.add_statement(f"# Loop not entered: {condition_str}")
+            if no_loop_path.is_satisfiable():
+                executor.path_manager.add_path(no_loop_path)
 
-            iter_path.variables[var_name] = loop_var
-            iter_path.add_statement(f"# Range iteration {k}: {var_name} = {iter_val}")
-            iter_path.loop_iterations[f"for_{id(loop_node)}"] = k
+            # Paths 2 to max_loop_iterations + 1: Loop executes 1 to max_loop_iterations times
+            for i in range(1, executor.max_loop_iterations + 1):
+                iter_path = executor.path_manager.copy_path(original_path, f"loop_{i}_times")
 
-            if not iter_path.is_satisfiable():
-                continue
+                if i < executor.max_loop_iterations:
+                    condition_str = f"{stop_val_name} == {i}"
+                else: # Last path handles all larger values
+                    condition_str = f"{stop_val_name} >= {i}"
 
-            executor.current_path = iter_path
-            executor.current_env = original_env.copy()
-            executor.current_env.set_variable(var_name, loop_var)
+                iter_path.add_condition(PathCondition(condition_str, True))
+                iter_path.add_statement(f"# Loop executes {i} time(s): {condition_str}")
 
-            try:
-                self._execute_loop_body(executor, body_ir)
-            except Exception as e:
-                logger.error(f"Error: {e}")
-                if executor.current_path:
-                    executor.current_path.add_statement(f"Error in loop body: {e}")
-                    executor.current_path.state = ExecutionPathState.ERROR
+                if iter_path.is_satisfiable():
+                    executor.current_path = iter_path
+                    executor.current_env = original_env.copy()
 
-            if executor.current_path and executor.current_path.is_satisfiable():
+                    # Simulate loop execution for 'i' iterations
+                    for k in range(i):
+                        loop_var = create_concrete_value(k)
+                        loop_var.name = var_name
+                        executor.current_env.set_variable(var_name, loop_var)
+                        executor.current_path.variables[var_name] = loop_var
+
+                        try:
+                            self._execute_loop_body(executor, body_ir)
+                        except Exception as e:
+                            logger.error(f"Error in loop body execution: {e}")
+                            if executor.current_path:
+                                executor.current_path.add_statement(f"Error in loop body: {e}")
+                                executor.current_path.state = ExecutionPathState.ERROR
+                            break
+
+                    if executor.current_path.state != ExecutionPathState.ERROR:
+                        executor.path_manager.add_path(executor.current_path)
+
+            executor.current_path = None
+            return create_concrete_value(None)
+
+        # Handle concrete stop value
+        else:
+            start_val = self._extract_literal(bounds.start)
+            stop_val = self._extract_literal(bounds.stop)
+            step_val = self._extract_literal(bounds.step)
+
+            if not all(isinstance(x, int) for x in [start_val, stop_val, step_val]):
+                 return create_concrete_value(None)
+
+            loop_path = executor.path_manager.copy_path(original_path)
+            executor.current_path = loop_path
+
+            last_k = None
+            for k in range(start_val, stop_val, step_val):
+                last_k = k
+                loop_var = create_concrete_value(k)
+                loop_var.name = var_name
+                executor.current_env.set_variable(var_name, loop_var)
+                executor.current_path.variables[var_name] = loop_var
+
+                try:
+                    self._execute_loop_body(executor, body_ir)
+                except Exception as e:
+                    logger.error(f"Error in loop body execution: {e}")
+                    if executor.current_path:
+                        executor.current_path.add_statement(f"Error in loop body: {e}")
+                        executor.current_path.state = ExecutionPathState.ERROR
+                    break
+
+            if last_k is not None:
+                 loop_var = create_concrete_value(last_k)
+                 loop_var.name = var_name
+                 executor.current_path.variables[var_name] = loop_var
+            elif start_val is not None:
+                 loop_var = create_concrete_value(start_val)
+                 loop_var.name = var_name
+                 executor.current_path.variables[var_name] = loop_var
+
+            if executor.current_path.state != ExecutionPathState.ERROR:
                 executor.path_manager.add_path(executor.current_path)
 
-        executor.current_path = None
-        return create_concrete_value(None)
+            executor.current_path = None
+            return create_concrete_value(None)
 
     def _extract_literal(self, expr) -> Union[int, Any]:
         """Extract literal value from expression"""
         if isinstance(expr, int):
             return expr
-        if isinstance(expr, tuple) and len(expr) >= 2 and expr[0] == "literal":
-            return expr[1]
+        if isinstance(expr, (tuple, list)) and len(expr) >= 2:
+            if expr[0] == "literal" or expr[0] == "const":
+                return expr[1]
         return expr
 
     def _is_valid_iteration(self, k: int, start: Any, stop: Any, step: Any) -> bool:

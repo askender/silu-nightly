@@ -199,47 +199,38 @@ class LoopAnalyzer:
     def extract_range_bounds(self, range_expr) -> Optional[LoopBound]:
         """
         Extract bounds from a range expression.
-
-        Args:
-            range_expr: Range expression (could be IR tuple or other format)
-
-        Returns:
-            LoopBound object or None if extraction fails
         """
-        if not isinstance(range_expr, (tuple, list)):
+        if not self._is_range_expression(range_expr):
             return None
 
-        if len(range_expr) == 0:
-            return None
+        args = range_expr[2]
 
-        # Handle different range formats
-        if isinstance(range_expr, tuple) and range_expr[0] == "call":
-            # ("call", "range", (args...), ())
-            if len(range_expr) >= 3 and range_expr[1] == "range":
-                args = range_expr[2] if isinstance(range_expr[2], (list, tuple)) else ()
-
-                if len(args) == 1:
-                    # range(stop)
-                    return LoopBound(start=0, stop=args[0], step=1)
-                elif len(args) == 2:
-                    # range(start, stop)
-                    return LoopBound(start=args[0], stop=args[1], step=1)
-                elif len(args) == 3:
-                    # range(start, stop, step)
-                    return LoopBound(start=args[0], stop=args[1], step=args[2])
+        if len(args) == 1:
+            # range(stop)
+            return LoopBound(start=('const', 0), stop=args[0], step=('const', 1))
+        elif len(args) == 2:
+            # range(start, stop)
+            return LoopBound(start=args[0], stop=args[1], step=('const', 1))
+        elif len(args) == 3:
+            # range(start, stop, step)
+            return LoopBound(start=args[0], stop=args[1], step=args[2])
 
         return None
 
     def _is_range_expression(self, expr) -> bool:
         """Check if expression represents a range() call"""
-        if not isinstance(expr, tuple):
+        if not isinstance(expr, (tuple, list)) or len(expr) < 3 or expr[0] != "call":
             return False
 
-        return (
-            len(expr) >= 3
-            and expr[0] == "call"
-            and (expr[1] == "range" if isinstance(expr[1], str) else False)
-        )
+        # New format: ('call', ('name', 'range'), ...)
+        if isinstance(expr[1], (tuple, list)) and len(expr[1]) == 2 and expr[1][0] == 'name' and expr[1][1] == 'range':
+            return True
+
+        # Old format: ('call', 'range', ...)
+        if isinstance(expr[1], str) and expr[1] == 'range':
+            return True
+
+        return False
 
     def generate_loop_constraints(
         self, loop_type: LoopType, loop_data: Dict[str, Any]

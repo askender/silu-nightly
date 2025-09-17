@@ -1311,6 +1311,11 @@ class SymbolicExecutor:
         self.path_manager = PathManager()
         self.current_path = self.path_manager.create_path(f"func_{func_name}_")
 
+        if isinstance(return_type, tuple):
+            type1, type2 = return_type
+            assert type1 == 'name'
+            return_type = type2
+
         if return_type is None:
             self.current_path.return_type = None
         elif return_type in 'int enum'.split():
