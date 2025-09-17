@@ -16,6 +16,7 @@ class IRInterpreter:
 
     def __init__(self):
         """Initialize the IR interpreter with built-in functions and empty environment."""
+        self.c_mode = False
         self.global_env = {}
         self.local_env_stack = []
         self.functions = {}
@@ -614,6 +615,7 @@ class IRInterpreter:
 
     def _execute_c_for(self, init: Any, cond: Any, step: Any, body: Tuple) -> Any:
         """Execute a C-style for loop."""
+        self.c_mode = True
         result = None
         self._push_local_env()
         try:
@@ -1356,26 +1358,27 @@ class IRInterpreter:
         raise NameError(f"Name '{name}' is not defined")
 
     def _set_variable(self, name: str, value: Any) -> None:
-        """Set variable in the current environment.
-        If the variable exists in an outer scope, it is updated there.
-        Otherwise, it is created in the innermost scope.
-        """
-        # Search local environments from innermost to outermost to find existing var
-        for env in reversed(self.local_env_stack):
-            if name in env:
-                env[name] = value
+        """Set variable in the current environment."""
+        if self.c_mode:
+            # C-style scoping: update outer scope if var exists
+            for env in reversed(self.local_env_stack):
+                if name in env:
+                    env[name] = value
+                    return
+            if name in self.global_env:
+                self.global_env[name] = value
                 return
-
-        # Check global scope
-        if name in self.global_env:
-            self.global_env[name] = value
-            return
-
-        # If not found, create in the innermost scope
-        if self.local_env_stack:
-            self.local_env_stack[-1][name] = value
+            # If not found, create in the innermost scope
+            if self.local_env_stack:
+                self.local_env_stack[-1][name] = value
+            else:
+                self.global_env[name] = value
         else:
-            self.global_env[name] = value
+            # Python-style scoping: always set in innermost scope
+            if self.local_env_stack:
+                self.local_env_stack[-1][name] = value
+            else:
+                self.global_env[name] = value
 
     def _is_identifier(self, value: str) -> bool:
         """Check if a string represents an identifier (variable name)."""
