@@ -1022,6 +1022,33 @@ class SymbolicExecutor:
         else:
             return str(symbolic_value)
 
+    def _ir_to_readable_string(self, ir_node: Any) -> str:
+        """Converts an IR node to a readable string for display."""
+        if isinstance(ir_node, (list, tuple)):
+            if not ir_node:
+                return ""
+            op = ir_node[0]
+            if op == "name":
+                return ir_node[1]
+            if op == "const":
+                return str(ir_node[1])
+            if op == "assign":
+                target = self._ir_to_readable_string(ir_node[1])
+                value = self._ir_to_readable_string(ir_node[2])
+                # Simplified, doesn't show type
+                return f"{target} = {value}"
+            if op in {"<", ">", "==", "!=", "<=", ">=", "+", "-", "*", "/"}:
+                left = self._ir_to_readable_string(ir_node[1])
+                right = self._ir_to_readable_string(ir_node[2])
+                return f"{left} {op} {right}"
+            if op in {"p++", "p--"}:
+                var = self._ir_to_readable_string(ir_node[1])
+                return f"{var}{op[1:]}"
+            # For blocks like init
+            if isinstance(op, (list, tuple)):
+                return "; ".join([self._ir_to_readable_string(n) for n in ir_node])
+        return str(ir_node)
+
     def _execute_c_for(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a C-style for loop: for(init; condition; update) body"""
         _, init, condition, update, body = ir_node
@@ -1042,17 +1069,11 @@ class SymbolicExecutor:
             else:
                 self.current_path.add_statement("for loop:")
 
-        # Handle the loop using existing loop handler
-        if self.loop_handler:
-            return self.loop_handler._handle_c_for_loop(
-                self, condition, update, body, ir_node
-            )
-        else:
-            # Simple fallback execution
-            max_iterations = 5  # Limit iterations for symbolic execution
-            iterations = 0
+        # Simple fallback execution
+        max_iterations = self.max_loop_iterations
+        iterations = 0
 
-            while iterations < max_iterations:
+        while iterations < max_iterations:
                 # Check condition
                 if condition:
                     cond_result = self._execute_ir(condition)
@@ -1092,10 +1113,14 @@ class SymbolicExecutor:
                 ):
                     new_val = create_concrete_value(old_val.value + 1)
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
                 else:
                     # Create symbolic increment
                     new_val = self.current_env.create_symbol(f"{var_name}_inc")
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
 
         if self.current_path:
             var_str = self._ir_to_readable_string(var_expr)
@@ -1121,10 +1146,14 @@ class SymbolicExecutor:
                 ):
                     new_val = create_concrete_value(old_val.value - 1)
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
                 else:
                     # Create symbolic decrement
                     new_val = self.current_env.create_symbol(f"{var_name}_dec")
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
 
         if self.current_path:
             var_str = self._ir_to_readable_string(var_expr)
@@ -1147,10 +1176,14 @@ class SymbolicExecutor:
                 ):
                     new_val = create_concrete_value(old_val.value + 1)
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
                 else:
                     # Create symbolic increment
                     new_val = self.current_env.create_symbol(f"{var_name}_preinc")
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
                 return new_val
 
         if self.current_path:
@@ -1173,10 +1206,14 @@ class SymbolicExecutor:
                 ):
                     new_val = create_concrete_value(old_val.value - 1)
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
                 else:
                     # Create symbolic decrement
                     new_val = self.current_env.create_symbol(f"{var_name}_predec")
                     self.current_env.variables[var_name] = new_val
+                    if self.current_path:
+                        self.current_path.variables[var_name] = new_val
                 return new_val
 
         if self.current_path:
@@ -1240,6 +1277,8 @@ class SymbolicExecutor:
 
         # Update variable
         self.current_env.variables[var_name] = new_val
+        if self.current_path:
+            self.current_path.variables[var_name] = new_val
 
         if self.current_path:
             target_str = self._ir_to_readable_string(target)

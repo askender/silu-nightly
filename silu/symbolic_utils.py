@@ -117,7 +117,14 @@ class SymbolicEnvironment:
             return symbol
 
     def set_variable(self, name: str, value: SymbolicValue) -> None:
-        """Set a variable value"""
+        """Set a variable value, respecting scope."""
+        env = self
+        while env:
+            if name in env.variables:
+                env.variables[name] = value
+                return
+            env = env.parent
+        # If not found, set in current env
         self.variables[name] = value
 
     def set_variable_type(self, name: str, var_type: str) -> None:
