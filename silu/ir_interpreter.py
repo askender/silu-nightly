@@ -8,6 +8,7 @@ and modularity compared to directly interpreting the AST.
 
 from typing import Any, Dict, List, Tuple, Union, Optional
 import sys
+import math
 from .ir_utils import parse_ir_from_file, parse_ir_from_json_string, IRParseError
 
 
@@ -50,6 +51,7 @@ class IRInterpreter:
             "max": self._builtin_max,
             "round": self._builtin_round,
             "strlen": self._builtin_strlen,
+            "sqrt": self._builtin_sqrt,
         }
 
     # ================== Main Execution Methods ==================
@@ -1524,6 +1526,10 @@ class IRInterpreter:
     def _builtin_strlen(self, s: str) -> int:
         """Built-in strlen function - returns length of string."""
         return len(s)
+
+    def _builtin_sqrt(self, x: Any) -> float:
+        """Built-in sqrt function."""
+        return math.sqrt(x)
 
     def _execute_post_increment(self, operand: Any) -> int:
         """Execute post-increment operation (var++). Returns old value, increments variable."""
