@@ -166,8 +166,8 @@ def get_ret_from_json(json_file_path):
 
             # print(ret)
             return_value = path['return_value']
-            print(f'return_value {return_value}')
-            print(f'test_inputs {test_inputs}')
+            # print(f'return_value {return_value}')
+            # print(f'test_inputs {test_inputs}')
 
             if isinstance(return_value, int):
                 if return_value == ret:
