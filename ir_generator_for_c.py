@@ -658,6 +658,7 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
         if os.path.isfile(h_file_path):
             with open(h_file_path, "r", encoding="utf-8") as f:
                 h_code = f.read()
+                h_code = h_code.replace("#include <stdlib.h>", '')
                 h_code = h_code.replace("#include <stdio.h>", "")
                 h_code = h_code.replace("#include <stdbool.h>", "")
                 h_code = h_code.replace("#include <math.h>", "")
@@ -669,6 +670,7 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
             # 处理存在同名的头文件
 
             c_code = f.read()
+            c_code = c_code.replace("#include <stdlib.h>", '')
             c_code = c_code.replace("#include <stdio.h>", "")
             c_code = c_code.replace("#include <stdbool.h>", "")
             c_code = c_code.replace("#include <math.h>", "")
@@ -692,6 +694,7 @@ def generate_ir_from_c_file(file_path: str, record_types: bool = True) -> Tuple:
             "-E",
             "-Imystdint",
             "-I./.venv/lib/python3.13/site-packages/pycparser/utils/fake_libc_include",
+            # "-I./fake_libc_include",
             tmp_file,
         ]
         # print(' '.join(cmd))

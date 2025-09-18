@@ -1344,6 +1344,10 @@ class SymbolicExecutor:
                             self.current_path.variable_types[param] = "int"
                             if param_type == 'enum': # TODO: get real enum range
                                 self.current_path.variable_raw_types[param] = "int"
+                                self.current_path.add_condition(PathCondition(f"0 <= {param}", True))
+                            elif param_type == 'int':
+                                self.current_path.variable_raw_types[param] = "int"
+                                self.current_path.add_condition(PathCondition(f"-2147483648 <= {param} <= 2147483647", True))
                             else:
                                 self.current_path.variable_raw_types[param] = param_type
                             # TODO
