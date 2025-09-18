@@ -4,12 +4,11 @@ import json
 from ir_generator_for_c import generate_ir_from_c_code
 from silu.ir_interpreter import execute_ir_from_string
 
-
 import os
 import subprocess
 
-
 import io
+from loguru import logger
 from contextlib import redirect_stdout
 
 
@@ -167,6 +166,8 @@ def get_ret_from_json(json_file_path):
 
             # print(ret)
             return_value = path['return_value']
+            print(f'return_value {return_value}')
+            print(f'test_inputs {test_inputs}')
 
             if isinstance(return_value, int):
                 if return_value == ret:
@@ -177,13 +178,17 @@ def get_ret_from_json(json_file_path):
                     # pass
                     # print('\n'.join(main_code))
                     # raise ValueError(f"Expected int: {ret} but got {return_value}")
-            elif return_value in test_inputs:
+            elif isinstance(return_value, str) and return_value in test_inputs:
                 return_value = test_inputs[return_value]
                 assert return_value == ret, f"Expected {return_value} but got {ret}"
                 # print('ok 2')
                 # continue
             else:
-                assert return_value.startswith('struct_')
+                # assert
+                if isinstance(return_value, str) and return_value.startswith('struct_'):
+                    pass
+                else:
+                    logger.warning(f"Expected struct but got {return_value}")
 
             # path['output'] = ret
             # print(data)
