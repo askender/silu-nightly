@@ -238,6 +238,29 @@ class SiluIRGenerator(BaseASTProcessor):
             # Single target - use the base class implementation
             return super().visit_Assign(node)
 
+    def visit_If(self, node: ast.If) -> Any:
+        """
+        Custom If visitor to ignore `if __name__ == '__main__'` blocks.
+        """
+        # Check for the specific AST pattern of `if __name__ == '__main__':`
+        is_main_check = False
+        if isinstance(node.test, ast.Compare):
+            test = node.test
+            if (isinstance(test.left, ast.Name) and test.left.id == '__name__' and
+                len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq) and
+                len(test.comparators) == 1 and
+                isinstance(test.comparators[0], ast.Constant) and
+                test.comparators[0].value == '__main__'):
+                is_main_check = True
+
+        if is_main_check:
+            # It's the `if __name__ == '__main__'` block, so we generate a pass statement
+            # which is effectively a no-op.
+            return ('pass',)
+        else:
+            # If it's not the special case, fall back to the original behavior.
+            return super().visit_If(node)
+
     # ================== Additional IR Generation Methods ==================
 
     def visit_AugAssign(self, node: ast.AugAssign) -> Tuple:
