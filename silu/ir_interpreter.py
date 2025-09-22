@@ -160,6 +160,12 @@ class IRInterpreter:
             print(*args)
             return None
 
+        # Handle import operation, temp skip it.
+        if opcode == "import":
+            return None
+        if opcode == "from_import":
+            return None
+
         # Handle unknown opcodes
         raise NotImplementedError(f"IR opcode not implemented: {opcode}")
 

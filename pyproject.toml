@@ -1,7 +1,7 @@
 [build-system]
 requires = ["setuptools>=45", "wheel"]
 [project]
-name = "silu"
+name = "pysilu"
 version = "0.1.6"
 description = "A simple AI programming language"
 readme = "README.md"
