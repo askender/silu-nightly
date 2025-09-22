@@ -93,6 +93,7 @@ class Environment:
         """Register all built-in functions and types."""
         self.vars.update(
             {
+                "__name__": "__main__",
                 "print": lambda *args: print(*args),
                 "type": type,
                 "isinstance": self._isinstance,
