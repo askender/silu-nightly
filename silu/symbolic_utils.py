@@ -271,7 +271,7 @@ class ConditionalHandler(IRNodeHandler):
             if then_block:
                 executor._execute_ir(then_block)
         else:
-            logger.error("condition is False. It is dead code?")
+            # logger.warning("condition is False. It is dead code?")
             if else_block:
                 executor._execute_ir(else_block)
         return create_concrete_value(None)

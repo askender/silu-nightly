@@ -486,14 +486,43 @@ class SymbolicExecutor:
                 result = func_handler(*args)
                 return result
             else:
-                # User-defined function - create symbolic return value
-                return_symbol = self.current_env.create_symbol(f"{func_name}_return")
+                # User-defined function
+                params, body = func_handler
+
+                # Save original environment
+                original_env = self.current_env
+
+                # Create a new environment for the function call
+                func_env = SymbolicEnvironment(parent=original_env)
+                for param_name, arg_value in zip(params, args):
+                    func_env.set_variable(param_name, arg_value)
+
+                self.current_env = func_env
+
+                # Preserve path state
+                original_path_state = self.current_path.state if self.current_path else None
+                original_return_value = self.current_path.return_value if self.current_path else None
                 if self.current_path:
-                    args_str = ", ".join(str(arg) for arg in args)
-                    self.current_path.add_statement(
-                        f"{return_symbol} = {func_name}({args_str})"
-                    )
-                return return_symbol
+                    self.current_path.return_value = None # Reset for the call
+
+                # Execute function body statements
+                for stmt in body:
+                    self._execute_ir(stmt)
+                    if self.current_path and self.current_path.state == ExecutionPathState.COMPLETED:
+                        break
+
+                # Get return value
+                return_value = self.current_path.return_value if self.current_path else create_concrete_value(None)
+                if return_value is None: # Ensure we always return a SymbolicValue
+                    return_value = create_concrete_value(None)
+
+                # Restore environment and path state
+                self.current_env = original_env
+                if self.current_path:
+                    self.current_path.state = original_path_state
+                    self.current_path.return_value = original_return_value
+
+                return return_value
         else:
             # Unknown function
             result = self.current_env.create_symbol(f"unknown_{func_name}")
