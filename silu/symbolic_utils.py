@@ -443,64 +443,47 @@ class LoopHandler(IRNodeHandler):
     def _handle_while_loop(
         self, ir_node: Tuple, executor: "SymbolicExecutor"
     ) -> SymbolicValue:
-        """Handle while loop with enhanced constraint analysis"""
+        """Handle while loop by desugaring it into nested if statements."""
         _, condition_ir, body_ir = ir_node
-        condition = executor._execute_ir(condition_ir)
-        readable_condition = executor._make_condition_readable(condition)
 
-        if executor.current_path:
-            executor.current_path.add_statement(f"while {readable_condition}:")
+        # Create a nested structure of 'if' statements to simulate the loop
+        # up to max_loop_iterations.
+        # while C: B  -> if C: (B; if C: (B; ...))
 
-        # For concrete false conditions, skip the loop entirely
-        if condition.type == SymbolicValueType.CONCRETE and not condition.value:
+        # The innermost part is nothing, representing the loop finally terminating.
+        recursive_if = None
+
+        for _ in range(executor.max_loop_iterations):
+            # The body of the if is the user's loop body followed by the next iteration (recursive_if)
+            new_body = list(body_ir)
+            if recursive_if:
+                new_body.append(recursive_if)
+
+            # Create the new 'if' statement.
+            # The 'else' block is empty, representing the loop terminating at this iteration.
+            recursive_if = ("if", condition_ir, tuple(new_body), ())
+
+        # If max_loop_iterations > 0, we have a structure to execute.
+        if recursive_if:
+            # Add a statement to indicate the start of the unrolled loop analysis
             if executor.current_path:
-                executor.current_path.add_statement(
-                    "# Loop not entered (condition false)"
-                )
+                condition_str = executor._make_condition_readable(executor._execute_ir(condition_ir))
+                executor.current_path.add_statement(f"# Analyzing unrolled while loop: while {condition_str}")
+
+            # Execute the top-level 'if' statement we constructed.
+            # The ConditionalHandler will take care of all branching.
+            return executor._execute_ir(recursive_if)
+        else:
+            # This happens if max_loop_iterations is 0. We should still check the exit condition.
+            condition = executor._execute_ir(condition_ir)
+            readable_condition = executor._make_condition_readable(condition)
+            exit_path = executor.path_manager.copy_path(executor.current_path, "while_exit")
+            exit_cond = PathCondition(readable_condition, False, raw_expression=condition)
+            exit_path.add_condition(exit_cond)
+            if exit_path.is_satisfiable():
+                executor.path_manager.add_path(exit_path)
+            executor.current_path = None
             return create_concrete_value(None)
-
-        return self._execute_while_iterations(
-            executor, ir_node, condition, readable_condition, body_ir
-        )
-
-    def _execute_while_iterations(
-        self, executor, ir_node, condition, readable_condition, body_ir
-    ):
-        """Execute while loop by creating a path for exit and a path for iterations."""
-        original_path = executor.current_path
-
-        # Path where loop condition is false
-        exit_path = executor.path_manager.copy_path(original_path, "while_exit")
-        exit_cond = PathCondition(readable_condition, False, raw_expression=condition)
-        exit_path.add_condition(exit_cond)
-        if exit_path.is_satisfiable():
-            executor.path_manager.add_path(exit_path)
-
-        # Path where loop condition is true
-        entry_path = executor.path_manager.copy_path(original_path, "while_entry")
-        entry_cond = PathCondition(readable_condition, True, raw_expression=condition)
-        entry_path.add_condition(entry_cond)
-
-        if entry_path.is_satisfiable():
-            # Unroll the loop for a few iterations on this path
-            executor.current_path = entry_path
-            for i in range(executor.max_loop_iterations):
-                executor._execute_ir(body_ir)
-                if executor.current_path.state == ExecutionPathState.COMPLETED:
-                    break
-
-            # After unrolling, this path is considered to have exited the loop.
-            # We add the exit condition again.
-            cond_after_loop = executor._execute_ir(ir_node[1])
-            readable_cond_after = executor._make_condition_readable(cond_after_loop)
-            exit_cond_after = PathCondition(readable_cond_after, False, raw_expression=cond_after_loop)
-            entry_path.add_condition(exit_cond_after)
-
-            if entry_path.is_satisfiable():
-                executor.path_manager.add_path(entry_path)
-
-        executor.current_path = None
-        return create_concrete_value(None)
 
     def _handle_for_loop(
         self, ir_node: Tuple, executor: "SymbolicExecutor"
