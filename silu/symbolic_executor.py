@@ -1500,8 +1500,13 @@ class SymbolicExecutor:
             # 继续执行剩余语句
             self._execute_statements_recursive(statements, start_index + 1)
 
-    def _make_condition_readable(self, condition: Any) -> str:
+    def _make_condition_readable(
+        self, condition: Any, visited: Optional[set] = None
+    ) -> str:
         """Convert IR condition to readable format with recursive tuple handling"""
+        if visited is None:
+            visited = set()
+
         # 处理IR节点的特殊情况 - 直接提取变量名
         if (
             isinstance(condition, tuple)
@@ -1509,10 +1514,15 @@ class SymbolicExecutor:
             and condition[0] == "name"
         ):
             var_name = condition[1]
+            if var_name in visited:
+                return var_name  # Cycle detected
+
             # Try to get the actual value from current path if available
             if self.current_path and var_name in self.current_path.variables:
                 var_value = self.current_path.variables[var_name]
-                return self._make_condition_readable(var_value)
+                new_visited = visited.copy()
+                new_visited.add(var_name)
+                return self._make_condition_readable(var_value, visited=new_visited)
 
             return var_name  # 直接返回变量名
 
@@ -1520,10 +1530,13 @@ class SymbolicExecutor:
             return "None"
         if hasattr(condition, "value") and hasattr(condition, "type"):
             if condition.type == SymbolicValueType.EXPRESSION:
-                return self._make_condition_readable(condition.value)
+                return self._make_condition_readable(condition.value, visited=visited)
             elif condition.type == SymbolicValueType.SYMBOLIC:
                 # Try to get actual value from current path
                 var_name = condition.name
+                if var_name in visited:
+                    return var_name  # Cycle detected
+
                 if (
                     self.current_path
                     and var_name
@@ -1531,7 +1544,11 @@ class SymbolicExecutor:
                 ):
                     var_value = self.current_path.variables[var_name]
                     if var_value is not condition:
-                        return self._make_condition_readable(var_value)
+                        new_visited = visited.copy()
+                        new_visited.add(var_name)
+                        return self._make_condition_readable(
+                            var_value, visited=new_visited
+                        )
 
                 return condition.name or str(condition.value)
             elif condition.type == SymbolicValueType.CONCRETE:
@@ -1541,8 +1558,8 @@ class SymbolicExecutor:
 
         elif isinstance(condition, tuple) and len(condition) >= 3:
             op, left, right = condition[0], condition[1], condition[2]
-            left_readable = self._make_condition_readable(left)
-            right_readable = self._make_condition_readable(right)
+            left_readable = self._make_condition_readable(left, visited=visited)
+            right_readable = self._make_condition_readable(right, visited=visited)
 
             # 确保变量名不是 "None"
             if (
