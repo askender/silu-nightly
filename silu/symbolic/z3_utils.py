@@ -32,6 +32,10 @@ try:
         BoolSort,
         ToReal,
         Sqrt,
+        String,
+        StringVal,
+        IntSort,
+        StringSort,
     )
 
     Z3_AVAILABLE = True
@@ -386,12 +390,12 @@ class PathSatisfiabilityChecker:
                         # raise ValueError("Error parsing Z3 value is_bool")
                         # str(z3.is_true(z3_value)).lower()
                         model_values[var_name] = z3.is_true(z3_value)
-                    else:
-                        logger.error(
-                            f"Error var_name {var_name} z3_value: {z3_value} {type(z3_value)}"
-                        )
-                        raise ValueError("Error parsing Z3 value others")
-                        model_values[var_name] = str(z3_value)
+                    elif (
+                        hasattr(z3, "is_string_value")
+                        and z3 is not None
+                        and z3.is_string_value(z3_value)
+                    ):
+                        model_values[var_name] = z3_value.as_string()
                 except Exception as e:
                     logger.error(f"Error parsing Z3 value: {e}")
                     raise ValueError(f"Error parsing Z3 value: {e}")
@@ -437,6 +441,28 @@ def to_z3_expr_new(expr_str, env):
             raise NotImplementedError(f"Unsupported operator: {n.op}")
 
         elif isinstance(n, ast.Compare):
+            # Type inference hack for string comparisons
+            if len(n.ops) == 1 and isinstance(n.ops[0], (ast.Eq, ast.NotEq)):
+                is_name_const_str = (
+                    isinstance(n.left, ast.Name)
+                    and isinstance(n.comparators[0], ast.Constant)
+                    and isinstance(n.comparators[0].value, str)
+                )
+                is_const_str_name = (
+                    isinstance(n.comparators[0], ast.Name)
+                    and isinstance(n.left, ast.Constant)
+                    and isinstance(n.left.value, str)
+                )
+
+                if is_name_const_str:
+                    var_name = n.left.id
+                    if var_name in env and env[var_name].sort() == IntSort():
+                        env[var_name] = String(var_name)
+                elif is_const_str_name:
+                    var_name = n.comparators[0].id
+                    if var_name in env and env[var_name].sort() == IntSort():
+                        env[var_name] = String(var_name)
+
             left = convert(n.left)
             right = convert(n.comparators[0])
             op = n.ops[0]
@@ -517,6 +543,8 @@ def to_z3_expr_new(expr_str, env):
             return v
         elif isinstance(n, ast.Constant):
             value = n.value
+            if isinstance(value, str):
+                return StringVal(value)
             if bool_context:
                 if isinstance(value, int):
                     return BoolVal(value != 0)

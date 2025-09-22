@@ -1579,7 +1579,13 @@ class SymbolicExecutor:
 
                 return condition.name or str(condition.value)
             elif condition.type == SymbolicValueType.CONCRETE:
-                return "None" if condition.value is None else str(condition.value)
+                if condition.value is None:
+                    return "None"
+                # If the concrete value is a string, wrap it in quotes for readability.
+                if isinstance(condition.value, str):
+                    # Use repr() to handle quotes and escapes correctly.
+                    return repr(condition.value)
+                return str(condition.value)
             else:
                 return str(condition)
 
