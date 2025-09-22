@@ -375,12 +375,14 @@ class PathManager:
                 self.paths.append(path)
                 return True
             else:
+                pass
                 # 只有在非简单单条件路径时才记录不可满足警告
                 # if not (
                 #     len(path.conditions) == 1
                 #     and " " not in path.conditions[0].expression
                 # ):
-                logger.warning(f"Path is not satisfiable. It is dead code? conditions:")
+                # 如果运行的是调用的子函数，则只会执行一个分支，因此，先关闭这里的告警
+                # logger.warning(f"Path is not satisfiable. It is dead code? conditions:")
                 # for cond in path.conditions:
                     # print(cond)
                     # logger.error(f"cond: {cond}")
