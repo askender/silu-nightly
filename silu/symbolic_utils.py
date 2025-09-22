@@ -341,7 +341,7 @@ class ConditionalHandler(IRNodeHandler):
             executor.current_path = created_paths[0]
         else:
             # If no paths created, restore the original path
-            executor.current_path = original_current_path
+            executor.current_path = original_path
             executor.current_env = original_current_env.copy()
 
         return create_concrete_value(None)
@@ -597,8 +597,9 @@ class LoopHandler(IRNodeHandler):
             if not all(isinstance(x, int) for x in [start_val, stop_val, step_val]):
                  return create_concrete_value(None)
 
-            loop_path = executor.path_manager.copy_path(original_path)
-            executor.current_path = loop_path
+            # For a concrete loop, we don't create new paths. We simply execute
+            # the loop on the current path.
+            executor.current_path = original_path
 
             last_k = None
             for k in range(start_val, stop_val, step_val):
@@ -617,19 +618,17 @@ class LoopHandler(IRNodeHandler):
                         executor.current_path.state = ExecutionPathState.ERROR
                     break
 
+            # Update the final value of the loop variable for the path
             if last_k is not None:
                  loop_var = create_concrete_value(last_k)
                  loop_var.name = var_name
                  executor.current_path.variables[var_name] = loop_var
-            elif start_val is not None:
+            elif start_val is not None: # Case for an empty loop
                  loop_var = create_concrete_value(start_val)
                  loop_var.name = var_name
                  executor.current_path.variables[var_name] = loop_var
 
-            if executor.current_path.state != ExecutionPathState.ERROR:
-                executor.path_manager.add_path(executor.current_path)
-
-            executor.current_path = None
+            # We return, and the recursive execution will continue on this modified path.
             return create_concrete_value(None)
 
     def _extract_literal(self, expr) -> Union[int, Any]:

@@ -91,18 +91,17 @@ class SymbolicExecutor:
         if not ir_program or ir_program[0] != "module":
             raise ValueError("Invalid IR program format")
 
-        self.current_path = self.path_manager.create_path()
-        self.current_path._function_params = []  # 添加函数参数列表
+        # Create a single initial path for the whole module execution.
+        initial_path = self.path_manager.create_path()
+        self.path_manager.paths.append(initial_path)
+        self.current_path = initial_path
 
-        self._execute_ir(ir_program)
+        # The recursive execution will now start with this single path
+        # and fork it as needed.
+        self._execute_statements_recursive(ir_program[1], 0)
 
-        if self.current_path:
-            self.path_manager.add_path(self.current_path)
-
+        # After recursion, the path_manager should contain all forked and completed paths.
         paths = copy.deepcopy(self.path_manager.finalize_paths())
-        # TODO: why renumber_paths_sequentially the paths out of finalize_paths is not good
-        # paths = self.path_manager.paths
-        # paths = renumber_paths_sequentially(paths)
         return paths
 
     def generate_report(self, paths: List[ExecutionPath]) -> Dict[str, Any]:
@@ -277,8 +276,7 @@ class SymbolicExecutor:
 
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a module IR node"""
-        for stmt in ir_node[1]:
-            self._execute_ir(stmt)
+        self._execute_statements_recursive(ir_node[1], 0)
         return create_concrete_value(None)
 
     def _execute_name(self, ir_node: Tuple) -> SymbolicValue:

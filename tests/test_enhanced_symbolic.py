@@ -132,6 +132,15 @@ class TestLoopAnalysis:
             ],
         )
 
+        ir = ('module',
+        (('assign', 'sum_val', ('const', 0), None),
+        ('for',
+        ('name', 'i'),
+        ('call', ('name', 'range'), (('const', 0), ('const', 3), ('const', 1)), ()),
+        (('assign', 'sum_val', ('+', ('name', 'sum_val'), ('name', 'i')), None),),
+        ())))
+
+
         executor = SymbolicExecutor()
         paths = executor.execute_program(ir)
 
