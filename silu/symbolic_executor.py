@@ -245,6 +245,7 @@ class SymbolicExecutor:
             "typedef": self._execute_typedef,
             "typedef_struct": self._execute_typedef_struct,
             "attribute": self._execute_attribute,
+            "subscript": self._execute_subscript,
             # Add a fallback handler for any missing operations
             "__missing__": lambda ir_node: create_symbolic_value(
                 f"unimplemented_{ir_node[0]}"
@@ -426,6 +427,28 @@ class SymbolicExecutor:
             logger.error(f"Error in _execute_attribute: {e}")
             # Return a fallback symbolic value for the attribute
             return create_symbolic_value(f"error_attr_{attr}")
+
+    def _execute_subscript(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a subscript operation (e.g., array[index])."""
+        _, target_ir, index_ir = ir_node
+
+        target_val = self._execute_ir(target_ir)
+        index_val = self._execute_ir(index_ir)
+
+        target_name = self._get_variable_name(target_val) or "array"
+
+        if index_val.type == SymbolicValueType.CONCRETE:
+            index_concrete = index_val.value
+            # Create a new symbolic variable for the accessed element
+            element_symbol_name = f"{target_name}_{index_concrete}"
+            # We need to create a new symbol that Z3 will know about.
+            # The environment of the function analysis should handle this.
+            return self.current_env.create_symbol(element_symbol_name)
+        else:
+            # Symbolic index is more complex, for now, create a generic symbol
+            index_name = self._get_variable_name(index_val) or "idx"
+            element_symbol_name = f"{target_name}_symbolic_{index_name}"
+            return self.current_env.create_symbol(element_symbol_name)
 
     def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a literal IR node"""

@@ -143,6 +143,14 @@ class SymbolicEnvironment:
         new_env.z3_variables = self.z3_variables.copy()
         return new_env
 
+    def get_all_z3_variables(self) -> Dict[str, Any]:
+        """Collect all Z3 variables from this environment and its parents."""
+        all_vars = {}
+        if self.parent:
+            all_vars.update(self.parent.get_all_z3_variables())
+        all_vars.update(self.z3_variables)
+        return all_vars
+
 class IRNodeHandler(ABC):
     """Abstract base class for IR node handlers"""
 
@@ -382,6 +390,7 @@ class ConditionalHandler(IRNodeHandler):
         # Execute block with proper path context
         executor.current_path = branch_path
         executor.current_env = original_env.copy()
+        branch_path.environment = executor.current_env  # Associate the new env with the path
 
         # Store the current path count before executing the block
         # initial_path_count = len(executor.path_manager.paths)

@@ -111,34 +111,8 @@ class ExecutionPath:
             # logger.debug(f"Z3 condition strings: {condition_strs}")
 
             variable_z3_map = {}
-            # logger.debug(f"Variable types: {self.variable_types}")
-            # logger.debug(f"Variables: {self.variables}")
-            for k in self.variables:
-                if not isinstance(k, str):
-                    continue
-                if k in self.variable_types:
-                    atype = self.variable_types[k]
-                    if atype == "int":
-                        variable_z3_map[k] = z3.Int(k)
-                    elif atype == "float":
-                        variable_z3_map[k] = z3.Real(k)
-                    elif atype == "bool":
-                        variable_z3_map[k] = z3.Bool(k)
-                    elif atype == "str":
-                        variable_z3_map[k] = z3.String(k)
-                    # elif atype == 'list':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
-                    # elif atype == 'dict':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
-                    # elif atype == 'tuple':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
-                    # elif atype == 'set':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
-                    # elif atype == 'frozenset':
-                    #     variable_z3_map[k] = z3.Array(k, z3.IntSort(), z3.IntSort())
-                else:
-                    # logger.warning(f"Variable {k} has type {type(k)} which is not supported.")
-                    variable_z3_map[k] = z3.Int(k)
+            if self.environment:
+                variable_z3_map = self.environment.get_all_z3_variables()
 
             # try:
             if 1:
