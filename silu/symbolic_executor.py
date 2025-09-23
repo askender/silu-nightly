@@ -1246,41 +1246,23 @@ class SymbolicExecutor:
         current_val = self.current_env.variables.get(var_name, create_concrete_value(0))
 
         # Perform the operation
-        if op == "+=":
-            if (
-                hasattr(current_val, "value")
-                and hasattr(value_result, "value")
-                and isinstance(current_val.value, (int, float))
-                and isinstance(value_result.value, (int, float))
-            ):
-                new_val = create_concrete_value(current_val.value + value_result.value)
-            else:
-                new_val = self.current_env.create_symbol(f"{var_name}_add")
-        elif op == "-=":
-            if (
-                hasattr(current_val, "value")
-                and hasattr(value_result, "value")
-                and isinstance(current_val.value, (int, float))
-                and isinstance(value_result.value, (int, float))
-            ):
-                new_val = create_concrete_value(current_val.value - value_result.value)
-            else:
-                new_val = self.current_env.create_symbol(f"{var_name}_sub")
-        elif op == "*=":
-            if (
-                hasattr(current_val, "value")
-                and hasattr(value_result, "value")
-                and isinstance(current_val.value, (int, float))
-                and isinstance(value_result.value, (int, float))
-            ):
-                new_val = create_concrete_value(current_val.value * value_result.value)
-            else:
-                new_val = self.current_env.create_symbol(f"{var_name}_mul")
-        else:
-            # Generic handling for other operators
-            new_val = self.current_env.create_symbol(
-                f"{var_name}_{op.replace('=', '')}"
+        op_char = op.strip('=')
+        if (
+            current_val.type == SymbolicValueType.CONCRETE
+            and value_result.type == SymbolicValueType.CONCRETE
+        ):
+            # Attempt concrete evaluation
+            concrete_result = self._try_concrete_operation(
+                op_char, current_val.value, value_result.value
             )
+            if concrete_result is not None:
+                new_val = create_concrete_value(concrete_result)
+            else:
+                # Fallback to expression if concrete fails (e.g., division by zero)
+                new_val = create_expression_value((op_char, current_val, value_result))
+        else:
+            # For symbolic execution, create an expression
+            new_val = create_expression_value((op_char, current_val, value_result))
 
         # Update variable
         self.current_env.variables[var_name] = new_val
