@@ -1,5 +1,8 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
+
+if TYPE_CHECKING:
+    from .symbolic_utils import SymbolicEnvironment
 
 # Import symbolic execution utilities
 from .symbolic_utils import (
@@ -81,6 +84,7 @@ class ExecutionPath:
     return_type: Optional[Any] = None
     loop_iterations: Dict[str, int] = field(default_factory=dict)
     state: ExecutionPathState = ExecutionPathState.ACTIVE
+    environment: Optional["SymbolicEnvironment"] = None
     test_inputs: Dict[str, Any] = field(default_factory=dict)
     expected_outputs: Dict[str, Any] = field(default_factory=dict)
     z3_error: Optional[str] = None
@@ -110,9 +114,18 @@ class ExecutionPath:
             condition_strs = [str(c) for c in self.conditions]
             # logger.debug(f"Z3 condition strings: {condition_strs}")
 
-            variable_z3_map = {}
             if self.environment:
                 variable_z3_map = self.environment.get_all_z3_variables()
+            else:
+                variable_z3_map = {}
+
+            # Fallback for unit tests or cases without a full environment
+            for var_name in self.variables:
+                if var_name not in variable_z3_map:
+                    logger.warning(
+                        f"Variable '{var_name}' not found in environment, creating default Z3 Int for it."
+                    )
+                    variable_z3_map[var_name] = z3.Int(var_name)
 
             # try:
             if 1:
