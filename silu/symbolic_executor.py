@@ -8,6 +8,7 @@ path constraints for functions with improved Z3 integration and loop handling.
 """
 
 import copy
+import sys
 from typing import Any, Dict, List, Tuple, Optional, Union
 
 # Import symbolic execution utilities
@@ -521,6 +522,8 @@ class SymbolicExecutor:
                             f"Recursion depth exceeded for function '{func_name}'. "
                             f"Limit is {self.max_recursion_depth}."
                         )
+                        # raise RecursionError(f"Recursion depth exceeded limit of {self.max_recursion_depth}")
+                        sys.exit(1)
                         if self.current_path:
                             self.current_path.add_statement(
                                 f"Error: Recursion depth exceeded limit of {self.max_recursion_depth}"
@@ -1413,7 +1416,11 @@ class SymbolicExecutor:
                                 self.current_path.add_condition(PathCondition(f"0 <= {param}", True))
                             elif param_type == 'int':
                                 self.current_path.variable_raw_types[param] = "int"
-                                self.current_path.add_condition(PathCondition(f"-2147483648 <= {param} <= 2147483647", True))
+                                # self.current_path.add_condition(PathCondition(f"-2147483648 <= {param} <= 2147483647", True))
+                                # self.current_path.add_condition(PathCondition(f"-1000 <= {param} <= 1000", True)) # for fast testing
+                                # self.current_path.add_condition(PathCondition(f"-10 <= {param} <= 10", True)) # for fast testing
+                                self.current_path.add_condition(PathCondition(f"-32767 <= {param} <= 32767", True)) # for fast testing
+
                             else:
                                 self.current_path.variable_raw_types[param] = param_type
                             # TODO
@@ -1430,6 +1437,12 @@ class SymbolicExecutor:
                         self.current_path.variables[param] = symbol
                         self.current_path.variable_types[param] = param_type[1]
                         self.current_path.variable_raw_types[param] = param_type[1]
+
+                        # print(f"symbol: {symbol}")
+                        if param_type[1] == 'int':
+                            # TODO
+                            # self.current_path.add_condition(PathCondition(f"-10 <= {param} <= 10", True)) # for fast testing
+                            self.current_path.add_condition(PathCondition(f"-32767 <= {param} <= 32767", True)) # for fast testing
                         # raise NotImplementedError(f"SymbolicExecutor: param_type[1] not implemented. {param_type}")
 
         self.current_env = func_env

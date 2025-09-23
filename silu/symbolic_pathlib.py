@@ -122,9 +122,7 @@ class ExecutionPath:
             # Fallback for unit tests or cases without a full environment
             for var_name in self.variables:
                 if var_name not in variable_z3_map:
-                    logger.warning(
-                        f"Variable '{var_name}' not found in environment, creating default Z3 Int for it."
-                    )
+                    # logger.warning(f"Var '{var_name}' not found in env, creating default Z3 Int for it.")
                     variable_z3_map[var_name] = z3.Int(var_name)
 
             # try:
