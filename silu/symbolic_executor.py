@@ -76,6 +76,10 @@ class SymbolicExecutor:
         )
         self.loop_analyzer = LoopAnalyzer(max_iterations=self.max_loop_iterations)
 
+        # Initialize recursion tracking
+        self.max_recursion_depth = Config.DEFAULT_MAX_RECURSION_DEPTH
+        self.call_stack = []
+
         # 初始化链式比较处理标志
         # 此标志用于避免在处理链式比较（如 0 < x < 10）时
         # 同时在 _execute_binary_op 和 _execute_chained_compare 中重复添加条件
@@ -485,42 +489,72 @@ class SymbolicExecutor:
                 return result
             else:
                 # User-defined function
-                params, body = func_handler
+                self.call_stack.append(func_name)
 
-                # Save original environment
-                original_env = self.current_env
+                try:
+                    # Check recursion depth
+                    if len(self.call_stack) > self.max_recursion_depth:
+                        logger.error(
+                            f"Recursion depth exceeded for function '{func_name}'. "
+                            f"Limit is {self.max_recursion_depth}."
+                        )
+                        if self.current_path:
+                            self.current_path.add_statement(
+                                f"Error: Recursion depth exceeded limit of {self.max_recursion_depth}"
+                            )
+                            self.current_path.state = ExecutionPathState.ERROR
+                        return create_symbolic_value(f"error_recursion_depth")
 
-                # Create a new environment for the function call
-                func_env = SymbolicEnvironment(parent=original_env)
-                for param_name, arg_value in zip(params, args):
-                    func_env.set_variable(param_name, arg_value)
+                    params, body = func_handler
 
-                self.current_env = func_env
+                    # Save original environment
+                    original_env = self.current_env
 
-                # Preserve path state
-                original_path_state = self.current_path.state if self.current_path else None
-                original_return_value = self.current_path.return_value if self.current_path else None
-                if self.current_path:
-                    self.current_path.return_value = None # Reset for the call
+                    # Create a new environment for the function call
+                    func_env = SymbolicEnvironment(parent=original_env)
+                    for param_name, arg_value in zip(params, args):
+                        func_env.set_variable(param_name, arg_value)
 
-                # Execute function body statements
-                for stmt in body:
-                    self._execute_ir(stmt)
-                    if self.current_path and self.current_path.state == ExecutionPathState.COMPLETED:
-                        break
+                    self.current_env = func_env
 
-                # Get return value
-                return_value = self.current_path.return_value if self.current_path else create_concrete_value(None)
-                if return_value is None: # Ensure we always return a SymbolicValue
-                    return_value = create_concrete_value(None)
+                    # Preserve path state
+                    original_path_state = (
+                        self.current_path.state if self.current_path else None
+                    )
+                    original_return_value = (
+                        self.current_path.return_value if self.current_path else None
+                    )
+                    if self.current_path:
+                        self.current_path.return_value = None  # Reset for the call
 
-                # Restore environment and path state
-                self.current_env = original_env
-                if self.current_path:
-                    self.current_path.state = original_path_state
-                    self.current_path.return_value = original_return_value
+                    # Execute function body statements
+                    for stmt in body:
+                        self._execute_ir(stmt)
+                        if (
+                            self.current_path
+                            and self.current_path.state == ExecutionPathState.COMPLETED
+                        ):
+                            break
 
-                return return_value
+                    # Get return value
+                    return_value = (
+                        self.current_path.return_value
+                        if self.current_path
+                        else create_concrete_value(None)
+                    )
+                    if return_value is None:  # Ensure we always return a SymbolicValue
+                        return_value = create_concrete_value(None)
+
+                    # Restore environment and path state
+                    self.current_env = original_env
+                    if self.current_path:
+                        self.current_path.state = original_path_state
+                        self.current_path.return_value = original_return_value
+
+                    return return_value
+                finally:
+                    if self.call_stack:
+                        self.call_stack.pop()
         else:
             # Unknown function
             result = self.current_env.create_symbol(f"unknown_{func_name}")
