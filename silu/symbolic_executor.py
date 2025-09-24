@@ -571,8 +571,6 @@ class SymbolicExecutor:
                             f"Recursion depth exceeded for function '{func_name}'. "
                             f"Limit is {self.max_recursion_depth}."
                         )
-                        # raise RecursionError(f"Recursion depth exceeded limit of {self.max_recursion_depth}")
-                        sys.exit(1)
                         if self.current_path:
                             self.current_path.add_statement(
                                 f"Error: Recursion depth exceeded limit of {self.max_recursion_depth}"
