@@ -1510,7 +1510,7 @@ class SymbolicExecutor:
                             real_type = avalue
                         elif atype == 'subscript':
                             atype, atype2, info = param_type
-                            if atype2[1] == 'List':
+                            if atype2[1].lower() == 'list':
                                 real_type = 'list'
                             elif atype2[1] == 'Union':
                                 info = info[1]
