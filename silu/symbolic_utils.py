@@ -693,6 +693,10 @@ class LoopHandler(IRNodeHandler):
                 executor.break_flag = False # Reset flag
                 break
 
+        # After loop execution, ensure the current path is added to path manager
+        if executor.current_path and executor.current_path not in executor.path_manager.paths:
+            executor.path_manager.add_path(executor.current_path)
+
         return create_concrete_value(None)
     def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
         """Handle C-style for loop with enhanced analysis"""

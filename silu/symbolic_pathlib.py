@@ -104,7 +104,6 @@ class ExecutionPath:
 
     def is_satisfiable(self) -> bool:
         """Check if the path conditions are satisfiable using enhanced Z3 checking"""
-        print(f"DEBUG_IS_SAT: Checking path {self.path_id} with conditions: {self.conditions}")
         if not self.conditions:
             return True
 

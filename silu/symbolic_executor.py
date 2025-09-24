@@ -647,14 +647,14 @@ class SymbolicExecutor:
 
         if self.current_path:
             self.current_path.return_value = value
-            print(f"DEBUG_RETURN: Path {self.current_path.path_id} entering return processing.")
+
             try:
                 display_val = self._simplify_display(value)
             except RecursionError:
-                print("FATAL_RECURSION_ERROR: Stack overflow in _simplify_display. Expression too complex.")
+
                 display_val = "<expression too complex to display>"
 
-            print(f"DEBUG_RETURN: Path {self.current_path.path_id} processed display value.")
+
             self.current_path.add_statement(f"return {display_val}")
             self.current_path.state = ExecutionPathState.COMPLETED
 
@@ -1582,16 +1582,16 @@ class SymbolicExecutor:
         重要：当路径遇到 return 语句时，该路径应该被标记为 COMPLETED，
         不再执行后续语句。这确保了条件分支中的 return 不会被覆盖。
         """
-        print(f"DEBUG_RECURSIVE: index={start_index}, stmts={len(statements)}")
+
         if start_index >= len(statements):
             # 到达函数末尾，添加当前路径到路径管理器
             if self.current_path and self.current_path not in self.path_manager.paths:
-                print(f"DEBUG_RECURSIVE: End of block, adding path {self.current_path.path_id}")
+
                 self.path_manager.add_path(self.current_path)
             return
 
         stmt = statements[start_index]
-        print(f"DEBUG_RECURSIVE: Processing statement: {stmt}")
+
         if isinstance(stmt, str):  # Skip docstrings
             self._execute_statements_recursive(statements, start_index + 1)
             return
@@ -1695,6 +1695,20 @@ class SymbolicExecutor:
         if visited is None:
             visited = set()
 
+        # Handle SymbolicValue objects first
+        if hasattr(condition, "type") and hasattr(condition, "value"):
+            if condition.type == SymbolicValueType.CONCRETE:
+                if condition.value is None:
+                    return "None"
+                if isinstance(condition.value, str):
+                    return repr(condition.value)
+                return str(condition.value)
+            elif condition.type == SymbolicValueType.SYMBOLIC:
+                return condition.name or f"sym_{id(condition)}"
+            elif condition.type == SymbolicValueType.EXPRESSION:
+                # Recursively process the expression value
+                return self._make_condition_readable(condition.value, visited=visited)
+
         # 处理IR节点的特殊情况 - 直接提取变量名
         if (
             isinstance(condition, tuple)
@@ -1716,39 +1730,6 @@ class SymbolicExecutor:
 
         if condition is None:
             return "None"
-        if hasattr(condition, "value") and hasattr(condition, "type"):
-            if condition.type == SymbolicValueType.EXPRESSION:
-                return self._make_condition_readable(condition.value, visited=visited)
-            elif condition.type == SymbolicValueType.SYMBOLIC:
-                # Try to get actual value from current path
-                var_name = condition.name
-                if var_name in visited:
-                    return var_name  # Cycle detected
-
-                if (
-                    self.current_path
-                    and var_name
-                    and var_name in self.current_path.variables
-                ):
-                    var_value = self.current_path.variables[var_name]
-                    if var_value is not condition:
-                        new_visited = visited.copy()
-                        new_visited.add(var_name)
-                        return self._make_condition_readable(
-                            var_value, visited=new_visited
-                        )
-
-                return condition.name or str(condition.value)
-            elif condition.type == SymbolicValueType.CONCRETE:
-                if condition.value is None:
-                    return "None"
-                # If the concrete value is a string, wrap it in quotes for readability.
-                if isinstance(condition.value, str):
-                    # Use repr() to handle quotes and escapes correctly.
-                    return repr(condition.value)
-                return str(condition.value)
-            else:
-                return str(condition)
 
         elif isinstance(condition, tuple) and len(condition) > 0:
             op = condition[0]
@@ -1758,7 +1739,6 @@ class SymbolicExecutor:
                 true_str = self._make_condition_readable(true_val, visited=visited)
                 false_str = self._make_condition_readable(false_val, visited=visited)
                 result_str = f"({true_str} if {cond_str} else {false_str})"
-                print(f"DEBUG_ITE_STRING: {result_str}")
                 return result_str
             elif len(condition) >= 3:
                 op, left, right = condition[0], condition[1], condition[2]

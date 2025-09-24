@@ -287,7 +287,7 @@ class PathSatisfiabilityChecker:
         Returns:
             Tuple of (is_satisfiable, model_values)
         """
-        print(f"DEBUG_CHECK_SAT: Conditions sent to solver: {conditions}")
+
         if not Z3_AVAILABLE:
             return True, None
 
@@ -405,9 +405,9 @@ class PathSatisfiabilityChecker:
 
 
 def to_z3_expr_new(expr_str, env):
-    print(f"DEBUG_Z3_INPUT: {expr_str}")
+
     node = ast.parse(expr_str, mode="eval").body
-    print(f"DEBUG_Z3_AST: {ast.dump(node)}")
+
 
     def convert(n, bool_context=False):
         if isinstance(n, ast.BinOp):

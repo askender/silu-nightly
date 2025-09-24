@@ -190,7 +190,20 @@ def symbolic_max(*args) -> SymbolicValue:
         # If arguments are symbolic, create a conditional expression
         if len(args) == 2:
             arg1, arg2 = args
-            return create_expression_value(('ite', ('>', arg1, arg2), arg1, arg2))
+            # Extract the actual values for comparison to avoid nested SymbolicValue objects
+            def extract_value(arg):
+                if hasattr(arg, 'type') and hasattr(arg, 'value'):
+                    if arg.type == SymbolicValueType.CONCRETE:
+                        return arg.value
+                    elif arg.type == SymbolicValueType.SYMBOLIC:
+                        return arg.name
+                    elif arg.type == SymbolicValueType.EXPRESSION:
+                        return arg.value
+                return arg
+
+            val1 = extract_value(arg1)
+            val2 = extract_value(arg2)
+            return create_expression_value(('ite', ('>', val1, val2), val1, val2))
 
         return create_expression_value(f"max({args_str})")
 
@@ -230,7 +243,20 @@ def symbolic_min(*args) -> SymbolicValue:
         # If arguments are symbolic, create a conditional expression
         if len(args) == 2:
             arg1, arg2 = args
-            return create_expression_value(('ite', ('<', arg1, arg2), arg1, arg2))
+            # Extract the actual values for comparison to avoid nested SymbolicValue objects
+            def extract_value(arg):
+                if hasattr(arg, 'type') and hasattr(arg, 'value'):
+                    if arg.type == SymbolicValueType.CONCRETE:
+                        return arg.value
+                    elif arg.type == SymbolicValueType.SYMBOLIC:
+                        return arg.name
+                    elif arg.type == SymbolicValueType.EXPRESSION:
+                        return arg.value
+                return arg
+
+            val1 = extract_value(arg1)
+            val2 = extract_value(arg2)
+            return create_expression_value(('ite', ('<', val1, val2), val1, val2))
 
         return create_expression_value(f"min({args_str})")
 
