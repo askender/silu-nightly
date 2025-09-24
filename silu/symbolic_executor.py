@@ -247,6 +247,7 @@ class SymbolicExecutor:
             "typedef_struct": self._execute_typedef_struct,
             "attribute": self._execute_attribute,
             "subscript": self._execute_subscript,
+            "tuple_assign": self._execute_tuple_assign,
             # Add a fallback handler for any missing operations
             "__missing__": lambda ir_node: create_symbolic_value(
                 f"unimplemented_{ir_node[0]}"
@@ -451,6 +452,32 @@ class SymbolicExecutor:
             index_name = self._get_variable_name(index_val) or "idx"
             element_symbol_name = f"{target_name}_symbolic_{index_name}"
             return self.current_env.create_symbol(element_symbol_name)
+
+    def _execute_tuple_assign(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a tuple assignment IR node."""
+        _, var_names, values_tuple = ir_node
+
+        # values_tuple is ('tuple', (('const', 5), ('const', 0)))
+        value_exprs = values_tuple[1]
+
+        if len(var_names) != len(value_exprs):
+            raise ValueError("Mismatched number of variables and values in tuple assignment")
+
+        for i in range(len(var_names)):
+            var_name = var_names[i]
+            value_ir = value_exprs[i]
+            value = self._execute_ir(value_ir)
+
+            self.current_env.set_variable(var_name, value)
+            if self.current_path:
+                self.current_path.variables[var_name] = value
+                simplified_value = self._simplify_display(value)
+                # This is not a perfect representation, but it's better than nothing.
+                # A more accurate representation would require knowing the full tuple assignment statement.
+                self.current_path.add_statement(f"{var_name} = {simplified_value} (from tuple)")
+
+
+        return create_concrete_value(None)
 
     def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a literal IR node"""
