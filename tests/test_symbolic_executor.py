@@ -312,6 +312,15 @@ class TestIntegration:
 
     def test_factorial_function_symbolic(self):
         """Test symbolic execution of factorial function"""
+        code = """
+def factorial(n):
+    if n <= 1:
+        return 1
+    else:
+        return n * factorial(n - 1)
+
+result = factorial(5)
+        """
         ir = (
             "module",
             (
