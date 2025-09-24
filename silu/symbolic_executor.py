@@ -278,7 +278,8 @@ class SymbolicExecutor:
 
             logger.error(traceback.format_exc())
             # Return a fallback symbolic value
-            return create_symbolic_value(f"error_{op}")
+            raise ValueError(f"Error dispatching operation {op}: {e}")
+            # return create_symbolic_value(f"error_{op}")
 
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a module IR node"""
@@ -1128,6 +1129,7 @@ class SymbolicExecutor:
                 # Simplified, doesn't show type
                 return f"{target} = {value}"
             if op in {"<", ">", "==", "!=", "<=", ">=", "+", "-", "*", "/"}:
+                # TODO
                 left = self._ir_to_readable_string(ir_node[1])
                 right = self._ir_to_readable_string(ir_node[2])
                 return f"{left} {op} {right}"
@@ -1361,14 +1363,24 @@ class SymbolicExecutor:
         self.current_path = self.path_manager.create_path(f"func_{func_name}_")
 
         if isinstance(return_type, tuple):
-            type1, type2 = return_type
-            assert type1 == 'name'
-            return_type = type2
+            type1, type2 = return_type[:2]
+            if type1 == 'name':
+                return_type = type2
+            else:
+                return_type = 'any'
 
         if return_type is None:
             self.current_path.return_type = None
         elif return_type in 'int enum'.split():
             self.current_path.return_type = 'int'
+        elif return_type in 'bool'.split():
+            self.current_path.return_type = 'bool'
+        elif return_type in 'float'.split():
+            self.current_path.return_type = 'float'
+        elif return_type in 'any'.split():
+            self.current_path.return_type = 'any'
+        elif return_type in 'str'.split():
+            self.current_path.return_type = 'str'
         elif return_type.startswith('struct_'):
             return_name = return_type[7:]
             # self.struct_types[name]
@@ -1417,9 +1429,9 @@ class SymbolicExecutor:
                             elif param_type == 'int':
                                 self.current_path.variable_raw_types[param] = "int"
                                 # self.current_path.add_condition(PathCondition(f"-2147483648 <= {param} <= 2147483647", True))
-                                # self.current_path.add_condition(PathCondition(f"-1000 <= {param} <= 1000", True)) # for fast testing
                                 # self.current_path.add_condition(PathCondition(f"-10 <= {param} <= 10", True)) # for fast testing
-                                self.current_path.add_condition(PathCondition(f"-32767 <= {param} <= 32767", True)) # for fast testing
+                                self.current_path.add_condition(PathCondition(f"-1000 <= {param} <= 1000", True)) # for fast testing
+                                # self.current_path.add_condition(PathCondition(f"-32767 <= {param} <= 32767", True)) # for fast testing
 
                             else:
                                 self.current_path.variable_raw_types[param] = param_type
@@ -1432,17 +1444,48 @@ class SymbolicExecutor:
                                 f"!!Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}"
                             )
                     else:
-                        symbol = func_env.create_symbol(param, param_type[1])
+                        # style1
+                        ('name', 'int')
+                        # style2
+                        # ('subscript',
+                        #  ('name', 'Union'),
+                        #  ('tuple', (('name', 'float'), ('name', 'int'))))
+
+                        atype, avalue = param_type[:2]
+                        real_type = None
+                        if atype == 'name':
+                            real_type = avalue
+                        elif atype == 'subscript':
+                            atype, atype2, info = param_type
+                            if atype2[1] == 'List':
+                                real_type = 'list'
+                            elif atype2[1] == 'Union':
+                                info = info[1]
+                                info = [j[1] for j in info]
+                                if 'float' in info:
+                                    real_type = 'float'
+                                elif 'int' in info:
+                                    real_type = 'int'
+                                else:
+                                    raise ValueError(f"Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}")
+                            else:
+                                raise ValueError(f"Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}")
+
+                        symbol = func_env.create_symbol(param, real_type)
                         func_env.set_variable(param, symbol)
                         self.current_path.variables[param] = symbol
                         self.current_path.variable_types[param] = param_type[1]
                         self.current_path.variable_raw_types[param] = param_type[1]
 
                         # print(f"symbol: {symbol}")
-                        if param_type[1] == 'int':
+                        if real_type == 'int':
                             # TODO
                             # self.current_path.add_condition(PathCondition(f"-10 <= {param} <= 10", True)) # for fast testing
                             self.current_path.add_condition(PathCondition(f"-32767 <= {param} <= 32767", True)) # for fast testing
+
+                        elif real_type == 'float':
+                            self.current_path.add_condition(PathCondition(f"-240.5 <= {param} <= 240.5", True)) # for fast testing
+
                         # raise NotImplementedError(f"SymbolicExecutor: param_type[1] not implemented. {param_type}")
 
         self.current_env = func_env

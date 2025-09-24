@@ -53,6 +53,10 @@ class Config:
     DEFAULT_MAX_LOOP_ITERATIONS = 5
     DEFAULT_MAX_RECURSION_DEPTH = 50
 
+    DEFAULT_MAX_PATHS = 50
+    DEFAULT_MAX_LOOP_ITERATIONS = 3
+    DEFAULT_MAX_RECURSION_DEPTH = 10
+
     PERFORMANCE_MAX_PATHS = 50
     PERFORMANCE_MAX_LOOP_ITERATIONS = 3
     PERFORMANCE_MAX_RECURSION_DEPTH = 10
@@ -96,7 +100,6 @@ class SymbolicEnvironment:
     def _create_z3_variable(self, name: str, var_type: str) -> Any:
         """Create Z3 variable based on type"""
         from .symbolic.z3_utils import create_z3_variable
-
         return create_z3_variable(name, var_type)
 
     def has_variable(self, name: str) -> bool:
