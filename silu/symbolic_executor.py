@@ -481,6 +481,9 @@ class SymbolicExecutor:
             # Check if the iterable is a function parameter by checking the context
             is_param = hasattr(self, 'current_function_params') and iterable_name in self.current_function_params
 
+            if is_param and self.current_path:
+                self.current_path.unpack_mapping[iterable_name] = var_names
+
             for i, var_name in enumerate(var_names):
                 # If unpacking a function parameter, use the variable name directly for the symbol.
                 # Otherwise, create a name like "iterable_0".
