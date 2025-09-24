@@ -1175,10 +1175,13 @@ class SymbolicExecutor:
                 # Simplified, doesn't show type
                 return f"{target} = {value}"
             if op in {"<", ">", "==", "!=", "<=", ">=", "+", "-", "*", "/"}:
-                # TODO
-                left = self._ir_to_readable_string(ir_node[1])
-                right = self._ir_to_readable_string(ir_node[2])
-                return f"{left} {op} {right}"
+                if len(ir_node) == 3:
+                    left = self._ir_to_readable_string(ir_node[1])
+                    right = self._ir_to_readable_string(ir_node[2])
+                    return f"{left} {op} {right}"
+                elif len(ir_node) == 2:
+                    operand = self._ir_to_readable_string(ir_node[1])
+                    return f"{op}{operand}"
             if op in {"p++", "p--"}:
                 var = self._ir_to_readable_string(ir_node[1])
                 return f"{var}{op[1:]}"
