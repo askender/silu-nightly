@@ -179,6 +179,26 @@ class ExecutionPath:
         if self.satisfiable is None:
             self.satisfiable = self.is_satisfiable()
 
+        final_inputs = self.test_inputs.copy()
+        if self.unpack_mapping:
+            reconstructed_inputs = {}
+            unpacked_keys = set()
+
+            for param_name, unpacked_vars in self.unpack_mapping.items():
+                reconstructed_list = []
+                for var_name in unpacked_vars:
+                    # Use .get() to safely access the value, defaulting to None if not found
+                    reconstructed_list.append(self.test_inputs.get(var_name))
+                    unpacked_keys.add(var_name)
+                reconstructed_inputs[param_name] = reconstructed_list
+
+            # Add any remaining test_inputs that were not part of the unpacking
+            for key, value in self.test_inputs.items():
+                if key not in unpacked_keys:
+                    reconstructed_inputs[key] = value
+
+            final_inputs = reconstructed_inputs
+
         variable_types = {}
         for k, v in self.variable_raw_types.items():
             variable_types[k] = v
@@ -217,7 +237,7 @@ class ExecutionPath:
             "variable_types": variable_types,
             "return_type": self.return_type,
             "satisfiable": self.satisfiable,
-            "test_inputs": self.test_inputs,
+            "test_inputs": final_inputs,  # Use the reconstructed inputs
         }
         # "state": self.state.value,
         # "statements": self.statements,
