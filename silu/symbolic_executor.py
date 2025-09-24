@@ -1408,6 +1408,7 @@ class SymbolicExecutor:
 
         # Store current function parameters for context
         self.current_function_params = params
+        self.current_path.parameters = list(params)
 
         # Reset for function analysis
         self.path_manager = PathManager()
@@ -1539,6 +1540,7 @@ class SymbolicExecutor:
 
                         # raise NotImplementedError(f"SymbolicExecutor: param_type[1] not implemented. {param_type}")
 
+        self.current_path.parameters = list(params)
         self.current_env = func_env
         self._execute_function_body(body_ir)
 

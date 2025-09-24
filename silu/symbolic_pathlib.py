@@ -80,6 +80,7 @@ class ExecutionPath:
     return_value: Optional[SymbolicValue] = None
     variables: Dict[str, SymbolicValue] = field(default_factory=dict)
     unpack_mapping: Dict[str, List[str]] = field(default_factory=dict)  # Added field
+    parameters: List[str] = field(default_factory=list) # To store function parameter names
     variable_raw_types: Dict[str, str] = field(default_factory=dict)
     variable_types: Dict[str, str] = field(default_factory=dict)
     return_type: Optional[Any] = None
@@ -175,56 +176,35 @@ class ExecutionPath:
         return True
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert execution path to dictionary"""
+        """Convert execution path to dictionary with reconstructed test inputs."""
         if self.satisfiable is None:
             self.satisfiable = self.is_satisfiable()
 
-        final_inputs = self.test_inputs.copy()
+        # Reconstruct test_inputs to be complete and structured
+        final_inputs = {}
+        handled_params = set()
+
+        # 1. Handle unpacked parameters first
         if self.unpack_mapping:
-            reconstructed_inputs = {}
-            unpacked_keys = set()
-
             for param_name, unpacked_vars in self.unpack_mapping.items():
-                reconstructed_list = []
-                for var_name in unpacked_vars:
-                    # Use .get() to safely access the value, defaulting to None if not found
-                    reconstructed_list.append(self.test_inputs.get(var_name))
-                    unpacked_keys.add(var_name)
-                reconstructed_inputs[param_name] = reconstructed_list
+                reconstructed_list = [self.test_inputs.get(var) for var in unpacked_vars]
+                final_inputs[param_name] = reconstructed_list
+                handled_params.add(param_name)
 
-            # Add any remaining test_inputs that were not part of the unpacking
-            for key, value in self.test_inputs.items():
-                if key not in unpacked_keys:
-                    reconstructed_inputs[key] = value
+        # 2. Handle simple parameters (used or unused)
+        if self.parameters:
+            for param_name in self.parameters:
+                if param_name not in handled_params:
+                    # If it was solved by Z3, use that value, otherwise default to None.
+                    final_inputs[param_name] = self.test_inputs.get(param_name, None)
 
-            final_inputs = reconstructed_inputs
+        variable_types = {k: v for k, v in self.variable_raw_types.items()}
+        safe_variables = {str(k): _serialize_symbolic_value(v) for k, v in self.variables.items()}
 
-        variable_types = {}
-        for k, v in self.variable_raw_types.items():
-            variable_types[k] = v
-
-        # Convert variables to dictionary with string keys
-        safe_variables = {}
-        for k, v in self.variables.items():
-            # Convert any non-string keys to strings
-            key_str = str(k) if not isinstance(k, str) else k
-            try:
-                # Use the helper function to correctly serialize the value
-                safe_variables[key_str] = _serialize_symbolic_value(v)
-            except Exception as e:
-                # Fallback for any serialization errors
-                logger.error(f"Error serializing variable {k}: {e}")
-                safe_variables[key_str] = f"<error:{type(v).__name__}>"
-
-        # Check for division by zero in return value and all conditions
         all_div_conds = _find_potential_division_by_zero(self.return_value)
         for path_cond in self.conditions:
             if path_cond.raw_expression:
-                all_div_conds.extend(
-                    _find_potential_division_by_zero(path_cond.raw_expression)
-                )
-
-        # Convert raw expressions to unique strings
+                all_div_conds.extend(_find_potential_division_by_zero(path_cond.raw_expression))
         string_conds = [_expression_to_string(cond) for cond in all_div_conds]
         unique_string_conds = list(dict.fromkeys(string_conds))
 
@@ -237,15 +217,9 @@ class ExecutionPath:
             "variable_types": variable_types,
             "return_type": self.return_type,
             "satisfiable": self.satisfiable,
-            "test_inputs": final_inputs,  # Use the reconstructed inputs
+            "test_inputs": final_inputs, # Use the fully reconstructed inputs
         }
-        # "state": self.state.value,
-        # "statements": self.statements,
-        # "loop_iterations": self.loop_iterations,
-        # "expected_outputs": getattr(self, "expected_outputs", {}),
-        # "z3_error": getattr(self, "z3_error", None),
         return path_dict
-
 
 def _expression_to_string(expr: Any) -> str:
     """Converts a symbolic expression to a readable string."""
@@ -405,6 +379,7 @@ class PathManager:
         new_path.statements = source_path.statements.copy()
         new_path.variables = source_path.variables.copy()
         new_path.unpack_mapping = source_path.unpack_mapping.copy() # Ensure unpack_mapping is copied
+        new_path.parameters = source_path.parameters.copy() # Ensure parameters are copied
         new_path.variable_types = source_path.variable_types.copy()
         new_path.return_type = source_path.return_type
         new_path.variable_raw_types = source_path.variable_raw_types.copy()
