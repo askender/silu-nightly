@@ -658,17 +658,35 @@ class LoopHandler(IRNodeHandler):
             executor._execute_ir(body_ir)
 
     def _execute_generic_for(self, executor, var_name, iter_expr, body_ir):
-        """Execute generic for loop (fallback)"""
-        loop_var = executor.current_env.create_symbol(f"{var_name}_iter")
-        executor.current_env.set_variable(var_name, loop_var)
+        """Execute generic for loop by unrolling for symbolic iterables."""
+        if not (isinstance(iter_expr, tuple) and len(iter_expr) == 2 and iter_expr[0] == 'name'):
+            # Fallback for complex iterables we don't handle yet
+            loop_var = executor.current_env.create_symbol(f"{var_name}_iter_unknown")
+            executor.current_env.set_variable(var_name, loop_var)
+            self._execute_loop_body(executor, body_ir)
+            return create_concrete_value(None)
 
-        if executor.current_path:
-            executor.current_path.add_statement(
-                f"# Generic for loop: {var_name} = {loop_var}"
-            )
+        iterable_name = iter_expr[1]
 
-        self._execute_loop_body(executor, body_ir)
-        return create_concrete_value(None)
+        # Unroll the loop up to the symbolic loop iteration limit
+        for i in range(executor.max_loop_iterations):
+            if executor.current_path is None or executor.current_path.state != ExecutionPathState.ACTIVE:
+                # Path was terminated in a previous iteration, stop unrolling.
+                break
+
+            # Create a new symbolic variable for the element of this iteration
+            element_var_name = f"{iterable_name}_{i}"
+            # Assume int type based on the list[int] type hint from the IR
+            element_symbol = executor.current_env.create_symbol(element_var_name, 'int')
+
+            # Set the loop variable 'j' to this new symbol for this iteration's scope
+            executor.current_env.set_variable(var_name, element_symbol)
+            if executor.current_path:
+                executor.current_path.variables[var_name] = element_symbol
+                executor.current_path.add_statement(f"# Unrolling loop iteration {i}: {var_name} = {element_symbol.name}")
+
+            # Execute the loop body
+            self._execute_loop_body(executor, body_ir)
 
     def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
         """Handle C-style for loop with enhanced analysis"""

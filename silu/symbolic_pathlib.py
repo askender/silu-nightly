@@ -191,26 +191,27 @@ class ExecutionPath:
                 final_inputs[param_name] = reconstructed_list
                 handled_params.add(param_name)
 
-        # 2. Handle simple parameters (used or unused)
+        # 2. Handle simple parameters and reassemble lists from loop unrolling
         if self.parameters:
             for param_name in self.parameters:
-                if param_name not in handled_params:
-                    if param_name in self.test_inputs:
-                        final_inputs[param_name] = self.test_inputs[param_name]
-                    else:
-                        # Get type and provide a better default
-                        param_type = self.variable_raw_types.get(param_name)
-                        if param_type == 'bool':
-                            default_value = False
-                        elif param_type == 'int':
-                            default_value = 0
-                        elif param_type == 'str':
-                            default_value = ""
-                        elif param_type == 'float':
-                            default_value = 0.0
-                        else:
-                            default_value = None
-                        final_inputs[param_name] = default_value
+                if param_name in handled_params:
+                    continue
+
+                # Check if this parameter was iterated over by looking for indexed variables
+                is_iterated_list = False
+                list_values = []
+                i = 0
+                # A bit of a hack, but effective: check for solved variables like 'param_name_0'
+                while f"{param_name}_{i}" in self.test_inputs:
+                    is_iterated_list = True
+                    list_values.append(self.test_inputs[f"{param_name}_{i}"])
+                    i += 1
+
+                if is_iterated_list:
+                    final_inputs[param_name] = list_values
+                else:
+                    # Fallback for simple, non-iterated parameters (used or unused)
+                    final_inputs[param_name] = self.test_inputs.get(param_name, None)
 
         variable_types = {k: v for k, v in self.variable_raw_types.items()}
         safe_variables = {str(k): _serialize_symbolic_value(v) for k, v in self.variables.items()}
