@@ -455,27 +455,45 @@ class SymbolicExecutor:
 
     def _execute_tuple_assign(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a tuple assignment IR node."""
-        _, var_names, values_tuple = ir_node
+        _, var_names, values_ir = ir_node
 
-        # values_tuple is ('tuple', (('const', 5), ('const', 0)))
-        value_exprs = values_tuple[1]
+        if values_ir[0] == 'tuple':
+            # Case 1: Unpacking a literal tuple, e.g., a, b = (1, 2)
+            value_exprs = values_ir[1]
+            if len(var_names) != len(value_exprs):
+                raise ValueError("Mismatched number of variables and values in tuple assignment")
 
-        if len(var_names) != len(value_exprs):
-            raise ValueError("Mismatched number of variables and values in tuple assignment")
+            for i in range(len(var_names)):
+                var_name = var_names[i]
+                value_ir = value_exprs[i]
+                value = self._execute_ir(value_ir)
 
-        for i in range(len(var_names)):
-            var_name = var_names[i]
-            value_ir = value_exprs[i]
-            value = self._execute_ir(value_ir)
+                self.current_env.set_variable(var_name, value)
+                if self.current_path:
+                    self.current_path.variables[var_name] = value
+                    simplified_value = self._simplify_display(value)
+                    self.current_path.add_statement(f"{var_name} = {simplified_value} (from tuple)")
 
-            self.current_env.set_variable(var_name, value)
-            if self.current_path:
-                self.current_path.variables[var_name] = value
-                simplified_value = self._simplify_display(value)
-                # This is not a perfect representation, but it's better than nothing.
-                # A more accurate representation would require knowing the full tuple assignment statement.
-                self.current_path.add_statement(f"{var_name} = {simplified_value} (from tuple)")
+        elif values_ir[0] == 'name':
+            # Case 2: Unpacking a variable, e.g., a, b = my_list
+            iterable_name = values_ir[1]
 
+            # Check if the iterable is a function parameter by checking the context
+            is_param = hasattr(self, 'current_function_params') and iterable_name in self.current_function_params
+
+            for i, var_name in enumerate(var_names):
+                # If unpacking a function parameter, use the variable name directly for the symbol.
+                # Otherwise, create a name like "iterable_0".
+                symbol_name = var_name if is_param else f"{iterable_name}_{i}"
+                element_symbol = self.current_env.create_symbol(symbol_name)
+
+                self.current_env.set_variable(var_name, element_symbol)
+                if self.current_path:
+                    self.current_path.variables[var_name] = element_symbol
+                    display_name = var_name if is_param else f"{iterable_name}[{i}]"
+                    self.current_path.add_statement(f"{var_name} = {display_name} (symbolic unpack)")
+        else:
+            raise NotImplementedError(f"Tuple assignment from type '{values_ir[0]}' is not supported.")
 
         return create_concrete_value(None)
 
@@ -1385,6 +1403,9 @@ class SymbolicExecutor:
         original_current_path = self.current_path
         original_env = self.current_env
 
+        # Store current function parameters for context
+        self.current_function_params = params
+
         # Reset for function analysis
         self.path_manager = PathManager()
         self.current_path = self.path_manager.create_path(f"func_{func_name}_")
@@ -1525,6 +1546,7 @@ class SymbolicExecutor:
         self.path_manager = original_path_manager
         self.current_path = original_current_path
         self.current_env = original_env
+        self.current_function_params = []  # Clear current function params
         return function_paths
 
     def _execute_function_body(self, body_ir: Any) -> None:
