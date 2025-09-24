@@ -79,6 +79,7 @@ class ExecutionPath:
     statements: List[str] = field(default_factory=list)
     return_value: Optional[SymbolicValue] = None
     variables: Dict[str, SymbolicValue] = field(default_factory=dict)
+    unpack_mapping: Dict[str, List[str]] = field(default_factory=dict)  # Added field
     variable_raw_types: Dict[str, str] = field(default_factory=dict)
     variable_types: Dict[str, str] = field(default_factory=dict)
     return_type: Optional[Any] = None
@@ -383,6 +384,7 @@ class PathManager:
         new_path.conditions = source_path.conditions.copy()
         new_path.statements = source_path.statements.copy()
         new_path.variables = source_path.variables.copy()
+        new_path.unpack_mapping = source_path.unpack_mapping.copy() # Ensure unpack_mapping is copied
         new_path.variable_types = source_path.variable_types.copy()
         new_path.return_type = source_path.return_type
         new_path.variable_raw_types = source_path.variable_raw_types.copy()
