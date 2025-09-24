@@ -195,8 +195,22 @@ class ExecutionPath:
         if self.parameters:
             for param_name in self.parameters:
                 if param_name not in handled_params:
-                    # If it was solved by Z3, use that value, otherwise default to None.
-                    final_inputs[param_name] = self.test_inputs.get(param_name, None)
+                    if param_name in self.test_inputs:
+                        final_inputs[param_name] = self.test_inputs[param_name]
+                    else:
+                        # Get type and provide a better default
+                        param_type = self.variable_raw_types.get(param_name)
+                        if param_type == 'bool':
+                            default_value = False
+                        elif param_type == 'int':
+                            default_value = 0
+                        elif param_type == 'str':
+                            default_value = ""
+                        elif param_type == 'float':
+                            default_value = 0.0
+                        else:
+                            default_value = None
+                        final_inputs[param_name] = default_value
 
         variable_types = {k: v for k, v in self.variable_raw_types.items()}
         safe_variables = {str(k): _serialize_symbolic_value(v) for k, v in self.variables.items()}
