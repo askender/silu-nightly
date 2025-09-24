@@ -253,7 +253,13 @@ class ConditionalHandler(IRNodeHandler):
         # 执行条件求值
         condition = executor._execute_ir(condition_ir)
 
-        readable_condition = executor._make_condition_readable(condition)
+        # Execute symbolic if with path splitting
+        try:
+            readable_condition = executor._make_condition_readable(condition)
+        except RecursionError:
+            logger.critical("FATAL: Recursion limit hit in _make_condition_readable. Expression is too complex.")
+            # Return a value to prevent crashing, even though this path is now broken.
+            return create_concrete_value(None)
 
         # Handle concrete conditions directly
         if condition.type == SymbolicValueType.CONCRETE:
@@ -671,23 +677,23 @@ class LoopHandler(IRNodeHandler):
         # Unroll the loop up to the symbolic loop iteration limit
         for i in range(executor.max_loop_iterations):
             if executor.current_path is None or executor.current_path.state != ExecutionPathState.ACTIVE:
-                # Path was terminated in a previous iteration, stop unrolling.
                 break
 
             # Create a new symbolic variable for the element of this iteration
             element_var_name = f"{iterable_name}_{i}"
-            # Assume int type based on the list[int] type hint from the IR
             element_symbol = executor.current_env.create_symbol(element_var_name, 'int')
 
-            # Set the loop variable 'j' to this new symbol for this iteration's scope
             executor.current_env.set_variable(var_name, element_symbol)
             if executor.current_path:
                 executor.current_path.variables[var_name] = element_symbol
-                executor.current_path.add_statement(f"# Unrolling loop iteration {i}: {var_name} = {element_symbol.name}")
 
-            # Execute the loop body
             self._execute_loop_body(executor, body_ir)
 
+            if executor.break_flag:
+                executor.break_flag = False # Reset flag
+                break
+
+        return create_concrete_value(None)
     def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
         """Handle C-style for loop with enhanced analysis"""
         max_iterations = getattr(executor, "max_loop_iterations", 10)

@@ -287,6 +287,7 @@ class PathSatisfiabilityChecker:
         Returns:
             Tuple of (is_satisfiable, model_values)
         """
+        print(f"DEBUG_CHECK_SAT: Conditions sent to solver: {conditions}")
         if not Z3_AVAILABLE:
             return True, None
 
@@ -404,7 +405,9 @@ class PathSatisfiabilityChecker:
 
 
 def to_z3_expr_new(expr_str, env):
+    print(f"DEBUG_Z3_INPUT: {expr_str}")
     node = ast.parse(expr_str, mode="eval").body
+    print(f"DEBUG_Z3_AST: {ast.dump(node)}")
 
     def convert(n, bool_context=False):
         if isinstance(n, ast.BinOp):
@@ -533,6 +536,11 @@ def to_z3_expr_new(expr_str, env):
                 return -convert(n.operand)
             if isinstance(n.op, ast.UAdd):
                 return convert(n.operand)
+        elif isinstance(n, ast.IfExp):
+            test = convert(n.test, bool_context=True)
+            body = convert(n.body)
+            orelse = convert(n.orelse)
+            return z3.If(test, body, orelse)
         elif isinstance(n, ast.Name):
             v = env[n.id]
             if bool_context:
@@ -552,14 +560,25 @@ def to_z3_expr_new(expr_str, env):
                     return BoolVal(value)
             return value
         elif isinstance(n, ast.Call):
-            if isinstance(n.func, ast.Name) and n.func.id == 'sqrt':
-                if len(n.args) == 1:
+            if isinstance(n.func, ast.Name):
+                if n.func.id == 'sqrt' and len(n.args) == 1:
                     arg = convert(n.args[0])
                     if isinstance(arg, (int, float)):
                         arg = RealVal(arg)
                     elif z3.is_int(arg):
                         arg = ToReal(arg)
                     return Sqrt(arg)
+
+                if n.func.id == 'min' and len(n.args) == 2:
+                    arg1 = convert(n.args[0])
+                    arg2 = convert(n.args[1])
+                    return z3.If(arg1 < arg2, arg1, arg2)
+
+                if n.func.id == 'max' and len(n.args) == 2:
+                    arg1 = convert(n.args[0])
+                    arg2 = convert(n.args[1])
+                    return z3.If(arg1 > arg2, arg1, arg2)
+
             raise NotImplementedError(f"Unsupported function call: {ast.dump(n)}")
         else:
             raise NotImplementedError(f"Unsupported node: {ast.dump(n)}")

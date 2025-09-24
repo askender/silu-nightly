@@ -80,6 +80,7 @@ class SymbolicExecutor:
         # Initialize recursion tracking
         self.max_recursion_depth = Config.DEFAULT_MAX_RECURSION_DEPTH
         self.call_stack = []
+        self.break_flag = False # Flag for break statements
 
         # 初始化链式比较处理标志
         # 此标志用于避免在处理链式比较（如 0 < x < 10）时
@@ -248,6 +249,7 @@ class SymbolicExecutor:
             "attribute": self._execute_attribute,
             "subscript": self._execute_subscript,
             "tuple_assign": self._execute_tuple_assign,
+            "break": self._execute_break, # Add break handler
             # Add a fallback handler for any missing operations
             "__missing__": lambda ir_node: create_symbolic_value(
                 f"unimplemented_{ir_node[0]}"
@@ -258,29 +260,20 @@ class SymbolicExecutor:
         for binary_op in binary_ops:
             dispatch_table[binary_op] = self._execute_binary_op
 
-        try:
-            if op in dispatch_table:
-                return dispatch_table[op](ir_node)
-            elif isinstance(op, str) and op.isdigit():
-                # Handle integer literals
-                return create_concrete_value(int(op))
-            elif isinstance(op, str):
-                # Try to handle as variable reference
-                if self.current_env.has_variable(op):
-                    return self.current_env.get_variable(op)
-                # Create a symbolic value for unknown variables
-                return create_symbolic_value(f"unknown_{op}")
-            else:
-                # Fallback for other cases
-                return create_concrete_value(op)
-        except Exception as e:
-            logger.error(f"Error dispatching operation {op}: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
-            # Return a fallback symbolic value
-            raise ValueError(f"Error dispatching operation {op}: {e}")
-            # return create_symbolic_value(f"error_{op}")
+        if op in dispatch_table:
+            return dispatch_table[op](ir_node)
+        elif isinstance(op, str) and op.isdigit():
+            # Handle integer literals
+            return create_concrete_value(int(op))
+        elif isinstance(op, str):
+            # Try to handle as variable reference
+            if self.current_env.has_variable(op):
+                return self.current_env.get_variable(op)
+            # Create a symbolic value for unknown variables
+            return create_symbolic_value(f"unknown_{op}")
+        else:
+            # Fallback for other cases
+            return create_concrete_value(op)
 
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a module IR node"""
@@ -500,6 +493,13 @@ class SymbolicExecutor:
 
         return create_concrete_value(None)
 
+    def _execute_break(self, ir_node: Tuple) -> SymbolicValue:
+        """Handle a break statement."""
+        self.break_flag = True
+        if self.current_path:
+            self.current_path.add_statement("break")
+        return create_concrete_value(None)
+
     def _execute_literal(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a literal IR node"""
         if len(ir_node) > 1:
@@ -647,7 +647,15 @@ class SymbolicExecutor:
 
         if self.current_path:
             self.current_path.return_value = value
-            self.current_path.add_statement(f"return {self._simplify_display(value)}")
+            print(f"DEBUG_RETURN: Path {self.current_path.path_id} entering return processing.")
+            try:
+                display_val = self._simplify_display(value)
+            except RecursionError:
+                print("FATAL_RECURSION_ERROR: Stack overflow in _simplify_display. Expression too complex.")
+                display_val = "<expression too complex to display>"
+
+            print(f"DEBUG_RETURN: Path {self.current_path.path_id} processed display value.")
+            self.current_path.add_statement(f"return {display_val}")
             self.current_path.state = ExecutionPathState.COMPLETED
 
         return value
@@ -1574,13 +1582,16 @@ class SymbolicExecutor:
         重要：当路径遇到 return 语句时，该路径应该被标记为 COMPLETED，
         不再执行后续语句。这确保了条件分支中的 return 不会被覆盖。
         """
+        print(f"DEBUG_RECURSIVE: index={start_index}, stmts={len(statements)}")
         if start_index >= len(statements):
             # 到达函数末尾，添加当前路径到路径管理器
             if self.current_path and self.current_path not in self.path_manager.paths:
+                print(f"DEBUG_RECURSIVE: End of block, adding path {self.current_path.path_id}")
                 self.path_manager.add_path(self.current_path)
             return
 
         stmt = statements[start_index]
+        print(f"DEBUG_RECURSIVE: Processing statement: {stmt}")
         if isinstance(stmt, str):  # Skip docstrings
             self._execute_statements_recursive(statements, start_index + 1)
             return
@@ -1739,34 +1750,44 @@ class SymbolicExecutor:
             else:
                 return str(condition)
 
-        elif isinstance(condition, tuple) and len(condition) >= 3:
-            op, left, right = condition[0], condition[1], condition[2]
-            left_readable = self._make_condition_readable(left, visited=visited)
-            right_readable = self._make_condition_readable(right, visited=visited)
+        elif isinstance(condition, tuple) and len(condition) > 0:
+            op = condition[0]
+            if op == 'ite':
+                _, cond, true_val, false_val = condition
+                cond_str = self._make_condition_readable(cond, visited=visited)
+                true_str = self._make_condition_readable(true_val, visited=visited)
+                false_str = self._make_condition_readable(false_val, visited=visited)
+                result_str = f"({true_str} if {cond_str} else {false_str})"
+                print(f"DEBUG_ITE_STRING: {result_str}")
+                return result_str
+            elif len(condition) >= 3:
+                op, left, right = condition[0], condition[1], condition[2]
+                left_readable = self._make_condition_readable(left, visited=visited)
+                right_readable = self._make_condition_readable(right, visited=visited)
 
-            # 确保变量名不是 "None"
-            if (
-                left_readable == "None"
-                and isinstance(left, tuple)
-                and left[0] == "name"
-            ):
-                left_readable = left[1]
-            if (
-                right_readable == "None"
-                and isinstance(right, tuple)
-                and right[0] == "name"
-            ):
-                right_readable = right[1]
+                # 确保变量名不是 "None"
+                if (
+                    left_readable == "None"
+                    and isinstance(left, tuple)
+                    and left[0] == "name"
+                ):
+                    left_readable = left[1]
+                if (
+                    right_readable == "None"
+                    and isinstance(right, tuple)
+                    and right[0] == "name"
+                ):
+                    right_readable = right[1]
 
-            # Add parentheses for and/or operators when operands are complex expressions
-            if self._needs_parentheses_for_condition_precedence(left, op):
-                left_readable = f"({left_readable})"
+                # Add parentheses for and/or operators when operands are complex expressions
+                if self._needs_parentheses_for_condition_precedence(left, op):
+                    left_readable = f"({left_readable})"
 
-            # Check if right operand needs parentheses
-            if self._needs_parentheses_for_condition_precedence(right, op):
-                right_readable = f"({right_readable})"
+                # Check if right operand needs parentheses
+                if self._needs_parentheses_for_condition_precedence(right, op):
+                    right_readable = f"({right_readable})"
 
-            return f"{left_readable} {op} {right_readable}"
+                return f"{left_readable} {op} {right_readable}"
 
         try:
             return self._convert_expression_readable(condition)

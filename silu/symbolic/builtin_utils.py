@@ -187,6 +187,11 @@ def symbolic_max(*args) -> SymbolicValue:
             except (ValueError, TypeError, OverflowError):
                 pass
 
+        # If arguments are symbolic, create a conditional expression
+        if len(args) == 2:
+            arg1, arg2 = args
+            return create_expression_value(('ite', ('>', arg1, arg2), arg1, arg2))
+
         return create_expression_value(f"max({args_str})")
 
 
@@ -221,6 +226,11 @@ def symbolic_min(*args) -> SymbolicValue:
                 return create_concrete_value(result)
             except (ValueError, TypeError, OverflowError):
                 pass
+
+        # If arguments are symbolic, create a conditional expression
+        if len(args) == 2:
+            arg1, arg2 = args
+            return create_expression_value(('ite', ('<', arg1, arg2), arg1, arg2))
 
         return create_expression_value(f"min({args_str})")
 
