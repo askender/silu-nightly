@@ -105,6 +105,8 @@ class Environment:
                 "dict": dict,
                 "len": len,
                 "range": range,
+                "min": min,
+                "max": max,
                 "int_type": int,
                 "float_type": float,
                 "str_type": str,
