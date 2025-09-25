@@ -29,19 +29,21 @@ def _find_potential_division_by_zero(expr: Any) -> List[Any]:
         return conditions
 
     # If it's a SymbolicValue, analyze its type and value
-    if hasattr(expr, 'type') and hasattr(expr, 'value'):
+    if hasattr(expr, "type") and hasattr(expr, "value"):
         if expr.type == SymbolicValueType.EXPRESSION:
             conditions.extend(_find_potential_division_by_zero(expr.value))
-        return conditions  # No further analysis needed for CONCRETE/SYMBOLIC at this level
+        return (
+            conditions  # No further analysis needed for CONCRETE/SYMBOLIC at this level
+        )
 
     # If it's a tuple representing an operation
     if isinstance(expr, (tuple, list)) and len(expr) == 3:
         op, left, right = expr
         # Check for division operator
-        if op in ('/', '//'):
+        if op in ("/", "//"):
             # Analyze the divisor (right-hand side)
             is_literal_nonzero = (
-                hasattr(right, 'type')
+                hasattr(right, "type")
                 and right.type == SymbolicValueType.CONCRETE
                 and right.value != 0
             )
@@ -59,6 +61,7 @@ def _find_potential_division_by_zero(expr: Any) -> List[Any]:
             conditions.extend(_find_potential_division_by_zero(item))
 
     return conditions
+
 
 from .symbolic.report_utils import renumber_paths_sequentially
 
@@ -80,7 +83,9 @@ class ExecutionPath:
     return_value: Optional[SymbolicValue] = None
     variables: Dict[str, SymbolicValue] = field(default_factory=dict)
     unpack_mapping: Dict[str, List[str]] = field(default_factory=dict)  # Added field
-    parameters: List[str] = field(default_factory=list) # To store function parameter names
+    parameters: List[str] = field(
+        default_factory=list
+    )  # To store function parameter names
     variable_raw_types: Dict[str, str] = field(default_factory=dict)
     variable_types: Dict[str, str] = field(default_factory=dict)
     return_type: Optional[Any] = None
@@ -187,7 +192,9 @@ class ExecutionPath:
         # 1. Handle unpacked parameters first
         if self.unpack_mapping:
             for param_name, unpacked_vars in self.unpack_mapping.items():
-                reconstructed_list = [self.test_inputs.get(var) for var in unpacked_vars]
+                reconstructed_list = [
+                    self.test_inputs.get(var) for var in unpacked_vars
+                ]
                 final_inputs[param_name] = reconstructed_list
                 handled_params.add(param_name)
 
@@ -207,6 +214,32 @@ class ExecutionPath:
                     list_values.append(self.test_inputs[f"{param_name}_{i}"])
                     i += 1
 
+                # If no Z3 solutions but we detect loop unrolling in variables, generate defaults
+                if not is_iterated_list:
+                    # Check if variables reference this parameter with indices (e.g., nums_0, nums_1)
+                    max_index = -1
+                    for var_name, var_value in self.variables.items():
+                        # Handle both string values and SymbolicValue objects
+                        value_str = None
+                        if isinstance(var_value, str):
+                            value_str = var_value
+                        elif hasattr(var_value, "name") and var_value.name:
+                            value_str = var_value.name
+                        elif hasattr(var_value, "__str__"):
+                            value_str = str(var_value)
+
+                        if value_str and value_str.startswith(f"{param_name}_"):
+                            try:
+                                index = int(value_str.split("_")[-1])
+                                max_index = max(max_index, index)
+                                is_iterated_list = True
+                            except ValueError:
+                                continue
+
+                    # Generate default values for detected loop iterations
+                    if is_iterated_list and max_index >= 0:
+                        list_values = [0] * (max_index + 1)  # Default to zeros
+
                 if is_iterated_list:
                     final_inputs[param_name] = list_values
                 else:
@@ -216,25 +249,29 @@ class ExecutionPath:
                     else:
                         # Get type and provide a better default
                         param_type = self.variable_raw_types.get(param_name)
-                        if param_type == 'bool':
+                        if param_type == "bool":
                             default_value = False
-                        elif param_type == 'int':
+                        elif param_type == "int":
                             default_value = 0
-                        elif param_type == 'str':
+                        elif param_type == "str":
                             default_value = ""
-                        elif param_type == 'float':
+                        elif param_type == "float":
                             default_value = 0.0
                         else:
                             default_value = None
                         final_inputs[param_name] = default_value
 
         variable_types = {k: v for k, v in self.variable_raw_types.items()}
-        safe_variables = {str(k): _serialize_symbolic_value(v) for k, v in self.variables.items()}
+        safe_variables = {
+            str(k): _serialize_symbolic_value(v) for k, v in self.variables.items()
+        }
 
         all_div_conds = _find_potential_division_by_zero(self.return_value)
         for path_cond in self.conditions:
             if path_cond.raw_expression:
-                all_div_conds.extend(_find_potential_division_by_zero(path_cond.raw_expression))
+                all_div_conds.extend(
+                    _find_potential_division_by_zero(path_cond.raw_expression)
+                )
         string_conds = [_expression_to_string(cond) for cond in all_div_conds]
         unique_string_conds = list(dict.fromkeys(string_conds))
 
@@ -247,9 +284,10 @@ class ExecutionPath:
             "variable_types": variable_types,
             "return_type": self.return_type,
             "satisfiable": self.satisfiable,
-            "test_inputs": final_inputs, # Use the fully reconstructed inputs
+            "test_inputs": final_inputs,  # Use the fully reconstructed inputs
         }
         return path_dict
+
 
 def _expression_to_string(expr: Any) -> str:
     """Converts a symbolic expression to a readable string."""
@@ -281,10 +319,11 @@ def _expression_to_string(expr: Any) -> str:
         elif len(expr) == 2 and isinstance(expr[0], str):
             op, operand = expr
             operand_str = _expression_to_string(operand)
-            if op == '-':
+            if op == "-":
                 return f"-({operand_str})"
             return f"{op}({operand_str})"
     return str(expr)
+
 
 def _needs_parentheses_for_precedence(operand: Any, parent_op: str) -> bool:
     """Checks if an operand needs parentheses for correct operator precedence."""
@@ -299,10 +338,21 @@ def _needs_parentheses_for_precedence(operand: Any, parent_op: str) -> bool:
     if len(operand) == 3 and isinstance(operand[0], str):
         operand_op = operand[0]
         precedence = {
-            "or": 1, "and": 2, "not": 3,
-            "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
-            "+": 5, "-": 5,
-            "*": 6, "/": 6, "//": 6, "%": 6,
+            "or": 1,
+            "and": 2,
+            "not": 3,
+            "==": 4,
+            "!=": 4,
+            "<": 4,
+            "<=": 4,
+            ">": 4,
+            ">=": 4,
+            "+": 5,
+            "-": 5,
+            "*": 6,
+            "/": 6,
+            "//": 6,
+            "%": 6,
             "**": 7,
         }
         parent_prec = precedence.get(parent_op, 0)
@@ -310,10 +360,15 @@ def _needs_parentheses_for_precedence(operand: Any, parent_op: str) -> bool:
 
         if operand_prec < parent_prec:
             return True
-        elif (operand_prec == parent_prec and parent_op in ["and", "or"] and operand_op in ["and", "or"]):
+        elif (
+            operand_prec == parent_prec
+            and parent_op in ["and", "or"]
+            and operand_op in ["and", "or"]
+        ):
             return parent_op != operand_op
 
     return False
+
 
 def _serialize_symbolic_value(value) -> Any:
     """Serialize a SymbolicValue for JSON output"""
@@ -394,8 +449,8 @@ class PathManager:
                 # 如果运行的是调用的子函数，则只会执行一个分支，因此，先关闭这里的告警
                 # logger.warning(f"Path is not satisfiable. It is dead code? conditions:")
                 # for cond in path.conditions:
-                    # print(cond)
-                    # logger.error(f"cond: {cond}")
+                # print(cond)
+                # logger.error(f"cond: {cond}")
                 # raise ValueError("Path is not satisfiable")
                 # TODO: if is_satisfiable is False, it is dead code?
         return False
@@ -408,8 +463,12 @@ class PathManager:
         new_path.conditions = source_path.conditions.copy()
         new_path.statements = source_path.statements.copy()
         new_path.variables = source_path.variables.copy()
-        new_path.unpack_mapping = source_path.unpack_mapping.copy() # Ensure unpack_mapping is copied
-        new_path.parameters = source_path.parameters.copy() # Ensure parameters are copied
+        new_path.unpack_mapping = (
+            source_path.unpack_mapping.copy()
+        )  # Ensure unpack_mapping is copied
+        new_path.parameters = (
+            source_path.parameters.copy()
+        )  # Ensure parameters are copied
         new_path.variable_types = source_path.variable_types.copy()
         new_path.return_type = source_path.return_type
         new_path.variable_raw_types = source_path.variable_raw_types.copy()

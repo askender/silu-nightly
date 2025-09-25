@@ -80,7 +80,7 @@ class SymbolicExecutor:
         # Initialize recursion tracking
         self.max_recursion_depth = Config.DEFAULT_MAX_RECURSION_DEPTH
         self.call_stack = []
-        self.break_flag = False # Flag for break statements
+        self.break_flag = False  # Flag for break statements
 
         # 初始化链式比较处理标志
         # 此标志用于避免在处理链式比较（如 0 < x < 10）时
@@ -249,7 +249,7 @@ class SymbolicExecutor:
             "attribute": self._execute_attribute,
             "subscript": self._execute_subscript,
             "tuple_assign": self._execute_tuple_assign,
-            "break": self._execute_break, # Add break handler
+            "break": self._execute_break,  # Add break handler
             # Add a fallback handler for any missing operations
             "__missing__": lambda ir_node: create_symbolic_value(
                 f"unimplemented_{ir_node[0]}"
@@ -450,11 +450,13 @@ class SymbolicExecutor:
         """Execute a tuple assignment IR node."""
         _, var_names, values_ir = ir_node
 
-        if values_ir[0] == 'tuple':
+        if values_ir[0] == "tuple":
             # Case 1: Unpacking a literal tuple, e.g., a, b = (1, 2)
             value_exprs = values_ir[1]
             if len(var_names) != len(value_exprs):
-                raise ValueError("Mismatched number of variables and values in tuple assignment")
+                raise ValueError(
+                    "Mismatched number of variables and values in tuple assignment"
+                )
 
             for i in range(len(var_names)):
                 var_name = var_names[i]
@@ -465,14 +467,19 @@ class SymbolicExecutor:
                 if self.current_path:
                     self.current_path.variables[var_name] = value
                     simplified_value = self._simplify_display(value)
-                    self.current_path.add_statement(f"{var_name} = {simplified_value} (from tuple)")
+                    self.current_path.add_statement(
+                        f"{var_name} = {simplified_value} (from tuple)"
+                    )
 
-        elif values_ir[0] == 'name':
+        elif values_ir[0] == "name":
             # Case 2: Unpacking a variable, e.g., a, b = my_list
             iterable_name = values_ir[1]
 
             # Check if the iterable is a function parameter by checking the context
-            is_param = hasattr(self, 'current_function_params') and iterable_name in self.current_function_params
+            is_param = (
+                hasattr(self, "current_function_params")
+                and iterable_name in self.current_function_params
+            )
 
             if is_param and self.current_path:
                 self.current_path.unpack_mapping[iterable_name] = var_names
@@ -487,9 +494,13 @@ class SymbolicExecutor:
                 if self.current_path:
                     self.current_path.variables[var_name] = element_symbol
                     display_name = var_name if is_param else f"{iterable_name}[{i}]"
-                    self.current_path.add_statement(f"{var_name} = {display_name} (symbolic unpack)")
+                    self.current_path.add_statement(
+                        f"{var_name} = {display_name} (symbolic unpack)"
+                    )
         else:
-            raise NotImplementedError(f"Tuple assignment from type '{values_ir[0]}' is not supported.")
+            raise NotImplementedError(
+                f"Tuple assignment from type '{values_ir[0]}' is not supported."
+            )
 
         return create_concrete_value(None)
 
@@ -544,7 +555,7 @@ class SymbolicExecutor:
         else:
             _, func_name, args_ir = ir_node
 
-        if isinstance(func_name, (list, tuple)) and func_name[0] == 'name':
+        if isinstance(func_name, (list, tuple)) and func_name[0] == "name":
             func_name = func_name[1]
 
         args = [self._execute_ir(arg) for arg in args_ir]
@@ -651,9 +662,7 @@ class SymbolicExecutor:
             try:
                 display_val = self._simplify_display(value)
             except RecursionError:
-
                 display_val = "<expression too complex to display>"
-
 
             self.current_path.add_statement(f"return {display_val}")
             self.current_path.state = ExecutionPathState.COMPLETED
@@ -1209,12 +1218,12 @@ class SymbolicExecutor:
         # 2. Create a new body for the while loop that includes the original body and the update
         new_body_stmts = list(body)
         if update:
-            if isinstance(update, (list, tuple)) and update[0] == 'block':
+            if isinstance(update, (list, tuple)) and update[0] == "block":
                 new_body_stmts.extend(update[1])
             else:
                 new_body_stmts.append(update)
 
-        new_body_block = ('block', tuple(new_body_stmts))
+        new_body_block = ("block", tuple(new_body_stmts))
 
         # 3. Create a while loop IR node
         while_loop_ir = ("while", condition, new_body_block)
@@ -1365,7 +1374,7 @@ class SymbolicExecutor:
         current_val = self.current_env.variables.get(var_name, create_concrete_value(0))
 
         # Perform the operation
-        op_char = op.strip('=')
+        op_char = op.strip("=")
         if (
             current_val.type == SymbolicValueType.CONCRETE
             and value_result.type == SymbolicValueType.CONCRETE
@@ -1417,40 +1426,44 @@ class SymbolicExecutor:
 
         # Store current function parameters for context
         self.current_function_params = params
-        self.current_path.parameters = list(params)
 
         # Reset for function analysis
         self.path_manager = PathManager()
         self.current_path = self.path_manager.create_path(f"func_{func_name}_")
 
+        # Set parameters after creating new path
+        self.current_path.parameters = list(params)
+
         if isinstance(return_type, tuple):
             type1, type2 = return_type[:2]
-            if type1 == 'name':
+            if type1 == "name":
                 return_type = type2
             else:
-                return_type = 'any'
+                return_type = "any"
 
         if return_type is None:
             self.current_path.return_type = None
-        elif return_type in 'int enum'.split():
-            self.current_path.return_type = 'int'
-        elif return_type in 'bool'.split():
-            self.current_path.return_type = 'bool'
-        elif return_type in 'float'.split():
-            self.current_path.return_type = 'float'
-        elif return_type in 'any'.split():
-            self.current_path.return_type = 'any'
-        elif return_type in 'str'.split():
-            self.current_path.return_type = 'str'
-        elif return_type.startswith('struct_'):
+        elif return_type in "int enum".split():
+            self.current_path.return_type = "int"
+        elif return_type in "bool".split():
+            self.current_path.return_type = "bool"
+        elif return_type in "float".split():
+            self.current_path.return_type = "float"
+        elif return_type in "any".split():
+            self.current_path.return_type = "any"
+        elif return_type in "str".split():
+            self.current_path.return_type = "str"
+        elif return_type.startswith("struct_"):
             return_name = return_type[7:]
             # self.struct_types[name]
-            assert return_name in self.struct_types, f"Struct type {return_name} not found"
+            assert return_name in self.struct_types, (
+                f"Struct type {return_name} not found"
+            )
             # print(self.struct_types[return_name])
             self.current_path.return_type = {
-                'kind': "struct",
-                'name': return_name,
-                'fields': self.struct_types[return_name]
+                "kind": "struct",
+                "name": return_name,
+                "fields": self.struct_types[return_name],
             }
             # raise
         else:
@@ -1484,21 +1497,27 @@ class SymbolicExecutor:
                             func_env.set_variable(param, symbol)
                             self.current_path.variables[param] = symbol
                             self.current_path.variable_types[param] = "int"
-                            if param_type == 'enum': # TODO: get real enum range
+                            if param_type == "enum":  # TODO: get real enum range
                                 self.current_path.variable_raw_types[param] = "int"
-                                self.current_path.add_condition(PathCondition(f"0 <= {param}", True))
-                            elif param_type == 'int':
+                                self.current_path.add_condition(
+                                    PathCondition(f"0 <= {param}", True)
+                                )
+                            elif param_type == "int":
                                 self.current_path.variable_raw_types[param] = "int"
                                 # self.current_path.add_condition(PathCondition(f"-2147483648 <= {param} <= 2147483647", True))
                                 # self.current_path.add_condition(PathCondition(f"-10 <= {param} <= 10", True)) # for fast testing
-                                self.current_path.add_condition(PathCondition(f"-1000 <= {param} <= 1000", True)) # for fast testing
+                                self.current_path.add_condition(
+                                    PathCondition(f"-1000 <= {param} <= 1000", True)
+                                )  # for fast testing
                                 # self.current_path.add_condition(PathCondition(f"-32767 <= {param} <= 32767", True)) # for fast testing
 
                             else:
                                 self.current_path.variable_raw_types[param] = param_type
                             # TODO
                             if param_type == "unsigned char":
-                                self.current_path.add_condition(PathCondition(f"0 <= {param} < 256", True))
+                                self.current_path.add_condition(
+                                    PathCondition(f"0 <= {param} < 256", True)
+                                )
 
                         else:
                             raise ValueError(
@@ -1506,7 +1525,7 @@ class SymbolicExecutor:
                             )
                     else:
                         # style1
-                        ('name', 'int')
+                        ("name", "int")
                         # style2
                         # ('subscript',
                         #  ('name', 'Union'),
@@ -1514,23 +1533,27 @@ class SymbolicExecutor:
 
                         atype, avalue = param_type[:2]
                         real_type = None
-                        if atype == 'name':
+                        if atype == "name":
                             real_type = avalue
-                        elif atype == 'subscript':
+                        elif atype == "subscript":
                             atype, atype2, info = param_type
-                            if atype2[1].lower() == 'list':
-                                real_type = 'list'
-                            elif atype2[1] == 'Union':
+                            if atype2[1].lower() == "list":
+                                real_type = "list"
+                            elif atype2[1] == "Union":
                                 info = info[1]
                                 info = [j[1] for j in info]
-                                if 'float' in info:
-                                    real_type = 'float'
-                                elif 'int' in info:
-                                    real_type = 'int'
+                                if "float" in info:
+                                    real_type = "float"
+                                elif "int" in info:
+                                    real_type = "int"
                                 else:
-                                    raise ValueError(f"Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}")
+                                    raise ValueError(
+                                        f"Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}"
+                                    )
                             else:
-                                raise ValueError(f"Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}")
+                                raise ValueError(
+                                    f"Invalid param_type: {param_type} {repr(param_type)} {type(param_type)} for {param}"
+                                )
 
                         symbol = func_env.create_symbol(param, real_type)
                         func_env.set_variable(param, symbol)
@@ -1539,13 +1562,17 @@ class SymbolicExecutor:
                         self.current_path.variable_raw_types[param] = param_type[1]
 
                         # print(f"symbol: {symbol}")
-                        if real_type == 'int':
+                        if real_type == "int":
                             # TODO
                             # self.current_path.add_condition(PathCondition(f"-10 <= {param} <= 10", True)) # for fast testing
-                            self.current_path.add_condition(PathCondition(f"-32767 <= {param} <= 32767", True)) # for fast testing
+                            self.current_path.add_condition(
+                                PathCondition(f"-32767 <= {param} <= 32767", True)
+                            )  # for fast testing
 
-                        elif real_type == 'float':
-                            self.current_path.add_condition(PathCondition(f"-240.5 <= {param} <= 240.5", True)) # for fast testing
+                        elif real_type == "float":
+                            self.current_path.add_condition(
+                                PathCondition(f"-240.5 <= {param} <= 240.5", True)
+                            )  # for fast testing
 
                         # raise NotImplementedError(f"SymbolicExecutor: param_type[1] not implemented. {param_type}")
 
@@ -1586,7 +1613,6 @@ class SymbolicExecutor:
         if start_index >= len(statements):
             # 到达函数末尾，添加当前路径到路径管理器
             if self.current_path and self.current_path not in self.path_manager.paths:
-
                 self.path_manager.add_path(self.current_path)
             return
 
@@ -1606,7 +1632,14 @@ class SymbolicExecutor:
         is_for_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "for"
         is_c_for_stmt = isinstance(stmt, tuple) and len(stmt) > 0 and stmt[0] == "c_for"
 
-        if is_if_stmt or is_match_stmt or is_switch_stmt or is_while_stmt or is_for_stmt or is_c_for_stmt:
+        if (
+            is_if_stmt
+            or is_match_stmt
+            or is_switch_stmt
+            or is_while_stmt
+            or is_for_stmt
+            or is_c_for_stmt
+        ):
             # 保存当前状态
             # original_path = self.current_path
             original_env = self.current_env.copy()
@@ -1733,7 +1766,7 @@ class SymbolicExecutor:
 
         elif isinstance(condition, tuple) and len(condition) > 0:
             op = condition[0]
-            if op == 'ite':
+            if op == "ite":
                 _, cond, true_val, false_val = condition
                 cond_str = self._make_condition_readable(cond, visited=visited)
                 true_str = self._make_condition_readable(true_val, visited=visited)
@@ -1851,7 +1884,7 @@ class SymbolicExecutor:
             elif len(expr) == 2 and isinstance(expr[0], str):
                 op, operand = expr
                 operand_str = self._convert_expression_readable(operand)
-                if op == '-':
+                if op == "-":
                     return f"-({operand_str})"
                 return f"{op}({operand_str})"
         return str(expr)
