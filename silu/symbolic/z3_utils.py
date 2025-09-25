@@ -405,9 +405,7 @@ class PathSatisfiabilityChecker:
 
 
 def to_z3_expr_new(expr_str, env):
-
     node = ast.parse(expr_str, mode="eval").body
-
 
     def convert(n, bool_context=False):
         if isinstance(n, ast.BinOp):
@@ -428,7 +426,7 @@ def to_z3_expr_new(expr_str, env):
                 return left % right
 
             if isinstance(n.op, ast.Pow):
-                return left ** right
+                return left**right
             # 可选：位运算符
             if isinstance(n.op, ast.LShift):
                 return left << right
@@ -561,7 +559,7 @@ def to_z3_expr_new(expr_str, env):
             return value
         elif isinstance(n, ast.Call):
             if isinstance(n.func, ast.Name):
-                if n.func.id == 'sqrt' and len(n.args) == 1:
+                if n.func.id == "sqrt" and len(n.args) == 1:
                     arg = convert(n.args[0])
                     if isinstance(arg, (int, float)):
                         arg = RealVal(arg)
@@ -569,15 +567,19 @@ def to_z3_expr_new(expr_str, env):
                         arg = ToReal(arg)
                     return Sqrt(arg)
 
-                if n.func.id == 'min' and len(n.args) == 2:
-                    arg1 = convert(n.args[0])
-                    arg2 = convert(n.args[1])
-                    return z3.If(arg1 < arg2, arg1, arg2)
+                if n.func.id == "min" and len(n.args) >= 2:
+                    args = [convert(arg) for arg in n.args]
+                    result = args[0]
+                    for i in range(1, len(args)):
+                        result = z3.If(result < args[i], result, args[i])
+                    return result
 
-                if n.func.id == 'max' and len(n.args) == 2:
-                    arg1 = convert(n.args[0])
-                    arg2 = convert(n.args[1])
-                    return z3.If(arg1 > arg2, arg1, arg2)
+                if n.func.id == "max" and len(n.args) >= 2:
+                    args = [convert(arg) for arg in n.args]
+                    result = args[0]
+                    for i in range(1, len(args)):
+                        result = z3.If(result > args[i], result, args[i])
+                    return result
 
             raise NotImplementedError(f"Unsupported function call: {ast.dump(n)}")
         else:
