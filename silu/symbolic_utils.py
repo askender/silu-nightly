@@ -46,6 +46,7 @@ logger.add(
 
 # Configuration Constants
 
+
 class Config:
     """Configuration constants for symbolic execution"""
 
@@ -63,6 +64,7 @@ class Config:
     DEFAULT_PATH_PREFIX = "path_"
     DEFAULT_ENCODING = "utf-8"
 
+
 class ExecutionPathState(Enum):
     """Enumeration of execution path states"""
 
@@ -70,6 +72,7 @@ class ExecutionPathState(Enum):
     COMPLETED = "completed"
     ERROR = "error"
     UNSATISFIABLE = "unsatisfiable"
+
 
 class SymbolicEnvironment:
     """Environment for symbolic execution with improved encapsulation"""
@@ -100,6 +103,7 @@ class SymbolicEnvironment:
     def _create_z3_variable(self, name: str, var_type: str) -> Any:
         """Create Z3 variable based on type"""
         from .symbolic.z3_utils import create_z3_variable
+
         return create_z3_variable(name, var_type)
 
     def has_variable(self, name: str) -> bool:
@@ -156,6 +160,7 @@ class SymbolicEnvironment:
         all_vars.update(self.z3_variables)
         return all_vars
 
+
 class IRNodeHandler(ABC):
     """Abstract base class for IR node handlers"""
 
@@ -168,6 +173,7 @@ class IRNodeHandler(ABC):
     def handle(self, ir_node: Tuple, executor: "SymbolicExecutor") -> SymbolicValue:
         """Handle the IR node and return its symbolic value"""
         pass
+
 
 class AssignmentHandler(IRNodeHandler):
     """Handler for assignment operations"""
@@ -193,6 +199,8 @@ class AssignmentHandler(IRNodeHandler):
                 and var_name_ir[0] == "name"
             ):
                 var_name = var_name_ir[1]
+            elif isinstance(var_name_ir, (tuple, list)):
+                var_name = str(var_name_ir)
             else:
                 var_name = var_name_ir
 
@@ -237,6 +245,7 @@ class AssignmentHandler(IRNodeHandler):
                 executor.current_path.state = ExecutionPathState.ERROR
             return create_concrete_value(None)
 
+
 class ConditionalHandler(IRNodeHandler):
     """Handler for if/elif/else statements"""
 
@@ -257,7 +266,9 @@ class ConditionalHandler(IRNodeHandler):
         try:
             readable_condition = executor._make_condition_readable(condition)
         except RecursionError:
-            logger.critical("FATAL: Recursion limit hit in _make_condition_readable. Expression is too complex.")
+            logger.critical(
+                "FATAL: Recursion limit hit in _make_condition_readable. Expression is too complex."
+            )
             # Return a value to prevent crashing, even though this path is now broken.
             return create_concrete_value(None)
 
@@ -401,7 +412,9 @@ class ConditionalHandler(IRNodeHandler):
         # Execute block with proper path context
         executor.current_path = branch_path
         executor.current_env = original_env.copy()
-        branch_path.environment = executor.current_env  # Associate the new env with the path
+        branch_path.environment = (
+            executor.current_env
+        )  # Associate the new env with the path
 
         # Store the current path count before executing the block
         # initial_path_count = len(executor.path_manager.paths)
@@ -443,6 +456,7 @@ class ConditionalHandler(IRNodeHandler):
 
             # 返回当前路径作为列表，与修改后的 _execute_symbolic_if 接口保持一致
             return [executor.current_path] if executor.current_path else []
+
 
 class LoopHandler(IRNodeHandler):
     """Handler for loop operations"""
@@ -488,8 +502,12 @@ class LoopHandler(IRNodeHandler):
         if recursive_if:
             # Add a statement to indicate the start of the unrolled loop analysis
             if executor.current_path:
-                condition_str = executor._make_condition_readable(executor._execute_ir(condition_ir))
-                executor.current_path.add_statement(f"# Analyzing unrolled while loop: while {condition_str}")
+                condition_str = executor._make_condition_readable(
+                    executor._execute_ir(condition_ir)
+                )
+                executor.current_path.add_statement(
+                    f"# Analyzing unrolled while loop: while {condition_str}"
+                )
 
             # Execute the top-level 'if' statement we constructed.
             # The ConditionalHandler will take care of all branching.
@@ -498,8 +516,12 @@ class LoopHandler(IRNodeHandler):
             # This happens if max_loop_iterations is 0. We should still check the exit condition.
             condition = executor._execute_ir(condition_ir)
             readable_condition = executor._make_condition_readable(condition)
-            exit_path = executor.path_manager.copy_path(executor.current_path, "while_exit")
-            exit_cond = PathCondition(readable_condition, False, raw_expression=condition)
+            exit_path = executor.path_manager.copy_path(
+                executor.current_path, "while_exit"
+            )
+            exit_cond = PathCondition(
+                readable_condition, False, raw_expression=condition
+            )
             exit_path.add_condition(exit_cond)
             if exit_path.is_satisfiable():
                 executor.path_manager.add_path(exit_path)
@@ -515,13 +537,15 @@ class LoopHandler(IRNodeHandler):
 
         _, var_name_ir, iter_expr, body_ir = ir_node[:4]
 
-        if isinstance(var_name_ir, tuple) and var_name_ir[0] == 'name':
+        if isinstance(var_name_ir, tuple) and var_name_ir[0] == "name":
             var_name = var_name_ir[1]
         else:
             var_name = str(var_name_ir)
 
         if executor.current_path:
-            executor.current_path.add_statement(f"for {var_name} in ...:") # Simplified iter_expr
+            executor.current_path.add_statement(
+                f"for {var_name} in ...:"
+            )  # Simplified iter_expr
 
         # Check if it's a range call
         if executor.loop_analyzer._is_range_expression(iter_expr):
@@ -542,7 +566,7 @@ class LoopHandler(IRNodeHandler):
         stop_val_ir = bounds.stop
 
         # Handle symbolic stop value
-        if stop_val_ir[0] == 'name':
+        if stop_val_ir[0] == "name":
             stop_val_symbol = executor._execute_ir(stop_val_ir)
             stop_val_name = stop_val_symbol.name
 
@@ -556,11 +580,13 @@ class LoopHandler(IRNodeHandler):
 
             # Paths 2 to max_loop_iterations + 1: Loop executes 1 to max_loop_iterations times
             for i in range(1, executor.max_loop_iterations + 1):
-                iter_path = executor.path_manager.copy_path(original_path, f"loop_{i}_times")
+                iter_path = executor.path_manager.copy_path(
+                    original_path, f"loop_{i}_times"
+                )
 
                 if i < executor.max_loop_iterations:
                     condition_str = f"{stop_val_name} == {i}"
-                else: # Last path handles all larger values
+                else:  # Last path handles all larger values
                     condition_str = f"{stop_val_name} >= {i}"
 
                 iter_path.add_condition(PathCondition(condition_str, True))
@@ -582,7 +608,9 @@ class LoopHandler(IRNodeHandler):
                         except Exception as e:
                             logger.error(f"Error in loop body execution: {e}")
                             if executor.current_path:
-                                executor.current_path.add_statement(f"Error in loop body: {e}")
+                                executor.current_path.add_statement(
+                                    f"Error in loop body: {e}"
+                                )
                                 executor.current_path.state = ExecutionPathState.ERROR
                             break
 
@@ -599,7 +627,7 @@ class LoopHandler(IRNodeHandler):
             step_val = self._extract_literal(bounds.step)
 
             if not all(isinstance(x, int) for x in [start_val, stop_val, step_val]):
-                 return create_concrete_value(None)
+                return create_concrete_value(None)
 
             # For a concrete loop, we don't create new paths. We simply execute
             # the loop on the current path.
@@ -624,13 +652,13 @@ class LoopHandler(IRNodeHandler):
 
             # Update the final value of the loop variable for the path
             if last_k is not None:
-                 loop_var = create_concrete_value(last_k)
-                 loop_var.name = var_name
-                 executor.current_path.variables[var_name] = loop_var
-            elif start_val is not None: # Case for an empty loop
-                 loop_var = create_concrete_value(start_val)
-                 loop_var.name = var_name
-                 executor.current_path.variables[var_name] = loop_var
+                loop_var = create_concrete_value(last_k)
+                loop_var.name = var_name
+                executor.current_path.variables[var_name] = loop_var
+            elif start_val is not None:  # Case for an empty loop
+                loop_var = create_concrete_value(start_val)
+                loop_var.name = var_name
+                executor.current_path.variables[var_name] = loop_var
 
             # We return, and the recursive execution will continue on this modified path.
             return create_concrete_value(None)
@@ -665,7 +693,11 @@ class LoopHandler(IRNodeHandler):
 
     def _execute_generic_for(self, executor, var_name, iter_expr, body_ir):
         """Execute generic for loop by unrolling for symbolic iterables."""
-        if not (isinstance(iter_expr, tuple) and len(iter_expr) == 2 and iter_expr[0] == 'name'):
+        if not (
+            isinstance(iter_expr, tuple)
+            and len(iter_expr) == 2
+            and iter_expr[0] == "name"
+        ):
             # Fallback for complex iterables we don't handle yet
             loop_var = executor.current_env.create_symbol(f"{var_name}_iter_unknown")
             executor.current_env.set_variable(var_name, loop_var)
@@ -676,12 +708,15 @@ class LoopHandler(IRNodeHandler):
 
         # Unroll the loop up to the symbolic loop iteration limit
         for i in range(executor.max_loop_iterations):
-            if executor.current_path is None or executor.current_path.state != ExecutionPathState.ACTIVE:
+            if (
+                executor.current_path is None
+                or executor.current_path.state != ExecutionPathState.ACTIVE
+            ):
                 break
 
             # Create a new symbolic variable for the element of this iteration
             element_var_name = f"{iterable_name}_{i}"
-            element_symbol = executor.current_env.create_symbol(element_var_name, 'int')
+            element_symbol = executor.current_env.create_symbol(element_var_name, "int")
 
             executor.current_env.set_variable(var_name, element_symbol)
             if executor.current_path:
@@ -690,14 +725,18 @@ class LoopHandler(IRNodeHandler):
             self._execute_loop_body(executor, body_ir)
 
             if executor.break_flag:
-                executor.break_flag = False # Reset flag
+                executor.break_flag = False  # Reset flag
                 break
 
         # After loop execution, ensure the current path is added to path manager
-        if executor.current_path and executor.current_path not in executor.path_manager.paths:
+        if (
+            executor.current_path
+            and executor.current_path not in executor.path_manager.paths
+        ):
             executor.path_manager.add_path(executor.current_path)
 
         return create_concrete_value(None)
+
     def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
         """Handle C-style for loop with enhanced analysis"""
         max_iterations = getattr(executor, "max_loop_iterations", 10)
