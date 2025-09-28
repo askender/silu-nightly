@@ -250,6 +250,7 @@ class SymbolicExecutor:
             "subscript": self._execute_subscript,
             "tuple_assign": self._execute_tuple_assign,
             "break": self._execute_break,  # Add break handler
+            "raise": self._execute_raise,
             # Add a fallback handler for any missing operations
             "__missing__": lambda ir_node: create_symbolic_value(
                 f"unimplemented_{ir_node[0]}"
@@ -274,6 +275,14 @@ class SymbolicExecutor:
         else:
             # Fallback for other cases
             return create_concrete_value(op)
+
+    def _execute_raise(self, ir_node: Tuple) -> SymbolicValue:
+        """Execute a raise statement."""
+        if self.current_path:
+            # A more advanced implementation could inspect the exception type and value.
+            self.current_path.add_statement("raise")
+            self.current_path.state = ExecutionPathState.ERROR
+        return create_concrete_value(None)
 
     def _execute_module(self, ir_node: Tuple) -> SymbolicValue:
         """Execute a module IR node"""
@@ -1663,12 +1672,12 @@ class SymbolicExecutor:
                     else original_env.copy()
                 )
 
-                # 关键修复：如果路径已经完成（遇到return），则不继续执行后续语句
-                if (
-                    hasattr(path, "state")
-                    and path.state == ExecutionPathState.COMPLETED
-                ):
-                    # 路径已完成，添加到路径管理器但不继续执行
+                # 关键修复：如果路径已经完成（遇到return或异常），则不继续执行后续语句
+                if hasattr(path, "state") and path.state in [
+                    ExecutionPathState.COMPLETED,
+                    ExecutionPathState.ERROR,
+                ]:
+                    # 路径已完成或遇到错误，添加到路径管理器但不继续执行
                     if path not in self.path_manager.paths:
                         self.path_manager.add_path(path)
                     continue
@@ -1699,12 +1708,12 @@ class SymbolicExecutor:
                     else original_env.copy()
                 )
 
-                # 关键修复：如果路径已经完成（遇到return），则不继续执行后续语句
-                if (
-                    hasattr(path, "state")
-                    and path.state == ExecutionPathState.COMPLETED
-                ):
-                    # 路径已完成，添加到路径管理器但不继续执行
+                # 关键修复：如果路径已经完成（遇到return或异常），则不继续执行后续语句
+                if hasattr(path, "state") and path.state in [
+                    ExecutionPathState.COMPLETED,
+                    ExecutionPathState.ERROR,
+                ]:
+                    # 路径已完成或遇到错误，添加到路径管理器但不继续执行
                     if path not in self.path_manager.paths:
                         self.path_manager.add_path(path)
                     continue

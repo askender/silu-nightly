@@ -525,6 +525,7 @@ class PathManager:
                 ):
                     seen_paths.add(path_signature)
                     unique_paths.append(path)
+
             except Exception as e:
                 logger.error(f"Error creating path signature: {e}")
                 # Still add the path to avoid losing it

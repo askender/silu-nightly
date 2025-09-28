@@ -310,71 +310,55 @@ class ConditionalHandler(IRNodeHandler):
     def _execute_symbolic_if(
         self, executor, condition, readable_condition, then_block, else_block
     ):
-        """Execute if statement with symbolic condition by splitting paths"""
+        """Execute if statement with symbolic condition by splitting paths."""
+
         original_path = executor.current_path
         original_env = executor.current_env.copy()
 
-        # TODO: Generate Z3 constraint
-        # logger.debug(f"Gen Z3 constraint for condition: {condition} readable: {readable_condition}")
-        # z3_constraint = executor._generate_z3_constraint(condition)
-        z3_constraint = None
-        # logger.debug(f"Generated Z3 constraint: {z3_constraint}")
+        if original_path in executor.path_manager.paths:
+            executor.path_manager.paths.remove(original_path)
 
-        # Store all paths that are created from this if statement
-        created_paths = []
-
-        # Save the original path and environment before any execution
-        original_current_path = executor.current_path
-        original_current_env = original_env.copy()
-
-        # Execute true path with a fresh copy of the original path and environment
-        true_paths = self._execute_if_branch(
-            executor,
-            original_path,
-            original_env.copy(),
-            condition,
-            readable_condition,
-            True,
-            then_block,
-            z3_constraint,
-            "if",
+        # --- TRUE BRANCH ---
+        true_path_base = executor.path_manager.copy_path(original_path)
+        true_path_base.add_condition(
+            PathCondition(readable_condition, True, raw_expression=condition)
         )
-        if true_paths:
-            created_paths.extend(true_paths)
 
-        # Reset to original state before executing the false path
-        executor.current_path = original_current_path
-        executor.current_env = original_current_env.copy()
+        paths_before_true = executor.path_manager.paths.copy()
+        executor.path_manager.paths = [true_path_base]
+        executor.current_path = true_path_base
+        executor.current_env = original_env.copy()
+        true_path_base.environment = executor.current_env
 
-        # Execute false path with a fresh environment
-        false_paths = self._execute_if_branch(
-            executor,
-            original_path,
-            original_env.copy(),
-            condition,
-            readable_condition,
-            False,
-            else_block,
-            z3_constraint,
-            "else",
+        if then_block:
+            executor._execute_statements_recursive(then_block, 0)
+
+        true_results = executor.path_manager.paths.copy()
+        executor.path_manager.paths = paths_before_true
+
+        # --- FALSE BRANCH ---
+        false_path_base = executor.path_manager.copy_path(original_path)
+        false_path_base.add_condition(
+            PathCondition(readable_condition, False, raw_expression=condition)
         )
-        if false_paths:
-            created_paths.extend(false_paths)
 
-        # Don't reset current_path to None - this breaks nested if statements
-        # Instead, continue with one of the created paths for further execution
-        if created_paths:
-            # 将所有创建的路径添加到路径管理器，供递归执行使用
-            for path in created_paths:
-                if path not in executor.path_manager.paths:
-                    executor.path_manager.add_path(path)
-            # 仍然保持一个当前路径以继续执行
-            executor.current_path = created_paths[0]
-        else:
-            # If no paths created, restore the original path
-            executor.current_path = original_path
-            executor.current_env = original_current_env.copy()
+        paths_before_false = executor.path_manager.paths.copy()
+        executor.path_manager.paths = [false_path_base]
+        executor.current_path = false_path_base
+        executor.current_env = original_env.copy()
+        false_path_base.environment = executor.current_env
 
+        if else_block:
+            executor._execute_statements_recursive(else_block, 0)
+
+        false_results = executor.path_manager.paths.copy()
+        executor.path_manager.paths = paths_before_false
+
+        # --- COMBINE ---
+        executor.path_manager.paths.extend(true_results)
+        executor.path_manager.paths.extend(false_results)
+
+        executor.current_path = None
         return create_concrete_value(None)
 
     def _execute_if_branch(
@@ -617,7 +601,14 @@ class LoopHandler(IRNodeHandler):
                     if executor.current_path.state != ExecutionPathState.ERROR:
                         executor.path_manager.add_path(executor.current_path)
 
-            executor.current_path = None
+            # Create a path that represents the loop having finished executing
+            # This path should continue with the execution of subsequent statements
+            finished_path = executor.path_manager.copy_path(
+                original_path, "loop_finished"
+            )
+            finished_path.add_statement(f"# Loop execution completed")
+            executor.current_path = finished_path
+            executor.current_env = original_env.copy()
             return create_concrete_value(None)
 
         # Handle concrete stop value
