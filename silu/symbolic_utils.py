@@ -622,20 +622,9 @@ class LoopHandler(IRNodeHandler):
                     if executor.current_path.state != ExecutionPathState.ERROR:
                         executor.path_manager.add_path(executor.current_path)
 
-            # Create a path that represents the loop having finished executing
-            # This path should continue with the execution of subsequent statements
-            finished_path = executor.path_manager.copy_path(
-                original_path, "loop_finished"
-            )
-            finished_path.add_statement(f"# Loop execution completed")
-
-            # 重要修复：确保finished_path被添加到路径管理器中
-            # 这样它就能继续执行后续语句
-            if finished_path not in executor.path_manager.paths:
-                executor.path_manager.paths.append(finished_path)
-
-            executor.current_path = finished_path
-            executor.current_env = original_env.copy()
+            # 不需要创建finished_path，因为具体的循环执行路径已经涵盖了所有情况
+            # 设置current_path为None，让调用者处理后续语句的执行
+            executor.current_path = None
             return create_concrete_value(None)
 
         # Handle concrete stop value
