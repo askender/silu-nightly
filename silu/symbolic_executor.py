@@ -1720,6 +1720,7 @@ class SymbolicExecutor:
 
                 # 递归执行剩余语句
                 self._execute_statements_recursive(statements, start_index + 1)
+
         else:
             # 非条件语句，正常执行
             self._execute_ir(stmt)

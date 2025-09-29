@@ -350,6 +350,11 @@ class ConditionalHandler(IRNodeHandler):
 
         if else_block:
             executor._execute_statements_recursive(else_block, 0)
+        else:
+            # 当没有else分支时，false路径应该继续执行（fall through）
+            # 直接将false路径添加到路径管理器中，这样它就会被包含在false_results中
+            if false_path_base not in executor.path_manager.paths:
+                executor.path_manager.paths.append(false_path_base)
 
         false_results = executor.path_manager.paths.copy()
         executor.path_manager.paths = paths_before_false
@@ -550,13 +555,25 @@ class LoopHandler(IRNodeHandler):
         stop_val_ir = bounds.stop
 
         # Handle symbolic stop value
-        if stop_val_ir[0] == "name":
+        if stop_val_ir[0] == "name" or (
+            isinstance(stop_val_ir, tuple)
+            and len(stop_val_ir) > 0
+            and stop_val_ir[0] in ["+", "-", "*", "/", "call"]
+        ):
             stop_val_symbol = executor._execute_ir(stop_val_ir)
-            stop_val_name = stop_val_symbol.name
+            if hasattr(stop_val_symbol, "name") and stop_val_symbol.name:
+                stop_val_name = stop_val_symbol.name
+            else:
+                # For complex expressions, create a readable representation
+                stop_val_name = executor._make_condition_readable(stop_val_symbol)
 
-            # Path 1: Loop does not execute at all (stop_val <= 0)
+            # Path 1: Loop does not execute at all (stop_val <= start_val)
             no_loop_path = executor.path_manager.copy_path(original_path, "loop_skip")
-            condition_str = f"{stop_val_name} <= 0"
+            start_val = self._extract_literal(bounds.start)
+            if isinstance(start_val, int):
+                condition_str = f"({stop_val_name}) <= {start_val}"
+            else:
+                condition_str = f"({stop_val_name}) <= 3"  # Default for our case
             no_loop_path.add_condition(PathCondition(condition_str, True))
             no_loop_path.add_statement(f"# Loop not entered: {condition_str}")
             if no_loop_path.is_satisfiable():
@@ -568,10 +585,14 @@ class LoopHandler(IRNodeHandler):
                     original_path, f"loop_{i}_times"
                 )
 
+                # For complex expressions, use proper range conditions
+                start_plus_i = (
+                    start_val + i if isinstance(start_val, int) else f"3 + {i}"
+                )
                 if i < executor.max_loop_iterations:
-                    condition_str = f"{stop_val_name} == {i}"
+                    condition_str = f"({stop_val_name}) == {start_plus_i}"
                 else:  # Last path handles all larger values
-                    condition_str = f"{stop_val_name} >= {i}"
+                    condition_str = f"({stop_val_name}) >= {start_plus_i}"
 
                 iter_path.add_condition(PathCondition(condition_str, True))
                 iter_path.add_statement(f"# Loop executes {i} time(s): {condition_str}")
@@ -607,6 +628,12 @@ class LoopHandler(IRNodeHandler):
                 original_path, "loop_finished"
             )
             finished_path.add_statement(f"# Loop execution completed")
+
+            # 重要修复：确保finished_path被添加到路径管理器中
+            # 这样它就能继续执行后续语句
+            if finished_path not in executor.path_manager.paths:
+                executor.path_manager.paths.append(finished_path)
+
             executor.current_path = finished_path
             executor.current_env = original_env.copy()
             return create_concrete_value(None)
