@@ -72,6 +72,10 @@ class SiluToLLVMConverter:
         # Function definitions (IR nodes for later processing)
         self.function_defs: Dict[str, Any] = {}
 
+        # Targets for break/continue inside the innermost active loop
+        self.loop_break_blocks = []
+        self.loop_continue_blocks = []
+
         # Initialize runtime functions
         self._init_runtime_functions()
 
@@ -1437,12 +1441,16 @@ class SiluToLLVMConverter:
                     condition = self._extract_bool_condition(test_val)
                     self.current_builder.cbranch(condition, body_block, end_block)
 
-                    # Loop body
+                    # Loop body (break -> end, continue -> condition)
+                    self.loop_break_blocks.append(end_block)
+                    self.loop_continue_blocks.append(cond_block)
                     self.current_builder.position_at_end(body_block)
                     for stmt in body_stmts:
                         self._convert_node(stmt)
                         if self.current_builder.block.is_terminated:
                             break
+                    self.loop_break_blocks.pop()
+                    self.loop_continue_blocks.pop()
                     if not self.current_builder.block.is_terminated:
                         self.current_builder.branch(cond_block)
 
@@ -1450,6 +1458,41 @@ class SiluToLLVMConverter:
                     self.current_builder.position_at_end(end_block)
 
                 return None
+
+        elif op == "break":
+            if self.loop_break_blocks:
+                self.current_builder.branch(self.loop_break_blocks[-1])
+            return None
+
+        elif op == "continue":
+            if self.loop_continue_blocks:
+                self.current_builder.branch(self.loop_continue_blocks[-1])
+            return None
+
+        elif op == "aug_assign":
+            # i <op>= value  =>  i = i <op> value
+            if len(node) >= 3:
+                target_node, bin_op, value_node = node[1], node[2], node[3]
+                target_name = target_node[1]
+                if target_name not in self.variables:
+                    return None
+                left = self.current_builder.load(self.variables[target_name])
+                right = self._convert_node(value_node)
+                if not right:
+                    return None
+                func = {
+                    "+=": self.pyobj_add,
+                    "-=": self.pyobj_sub,
+                    "*=": self.pyobj_mul,
+                    "/=": self.pyobj_truediv,
+                    "//=": self.pyobj_floordiv,
+                    "%=": self.pyobj_mod,
+                }.get(bin_op)
+                if func is None:
+                    return None
+                result = self.current_builder.call(func, [left, right])
+                self.current_builder.store(result, self.variables[target_name])
+            return None
 
         elif op == "for":
             if len(node) >= 4:
@@ -1538,7 +1581,10 @@ class SiluToLLVMConverter:
                 )
                 self.current_builder.cbranch(condition, loop_body, loop_end)
 
-                # Loop body
+                # Loop body (break -> loop_end, continue -> increment step)
+                incr_block = self.current_function.append_basic_block("loop_incr")
+                self.loop_break_blocks.append(loop_end)
+                self.loop_continue_blocks.append(incr_block)
                 self.current_builder.position_at_end(loop_body)
 
                 # Set loop variable if it's a name (current iteration value)
@@ -1567,15 +1613,22 @@ class SiluToLLVMConverter:
 
                 # Increment counter if not terminated
                 if not self.current_builder.block.is_terminated:
-                    current_counter = self.current_builder.load(counter_ptr)
-                    one = self.current_builder.call(
-                        self.create_int, [ir.Constant(ir.IntType(64), 1)]
-                    )
-                    next_val = self.current_builder.call(
-                        self.pyobj_add, [current_counter, one]
-                    )
-                    self.current_builder.store(next_val, counter_ptr)
-                    self.current_builder.branch(loop_cond)
+                    self.current_builder.branch(incr_block)
+
+                self.loop_break_blocks.pop()
+                self.loop_continue_blocks.pop()
+
+                # Counter increment step (continue target)
+                self.current_builder.position_at_end(incr_block)
+                current_counter = self.current_builder.load(counter_ptr)
+                one = self.current_builder.call(
+                    self.create_int, [ir.Constant(ir.IntType(64), 1)]
+                )
+                next_val = self.current_builder.call(
+                    self.pyobj_add, [current_counter, one]
+                )
+                self.current_builder.store(next_val, counter_ptr)
+                self.current_builder.branch(loop_cond)
 
                 # Continue after loop
                 self.current_builder.position_at_end(loop_end)

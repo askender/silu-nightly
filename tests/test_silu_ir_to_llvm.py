@@ -181,3 +181,25 @@ class TestSiluToLLVMConverter:
 
         assert "print_null:" in llvm_ir
         assert 'c"None\\00"' in llvm_ir
+
+    def test_break_and_continue_in_loops(self):
+        """break/continue must branch to loop exit and increment blocks."""
+        llvm_ir = _convert(
+            "for i in range(5):\n"
+            "    if i == 2:\n"
+            "        break\n"
+            "    if i == 1:\n"
+            "        continue\n"
+            "    print(i)\n"
+        )
+
+        assert "loop_incr:" in llvm_ir
+        assert "loop_end:" in llvm_ir
+
+    def test_aug_assign_converted(self):
+        """Augmented assignment must desugar to load-op-store."""
+        llvm_ir = _convert("n = 10\nn += 3\nn -= 1\nn *= 2\nprint(n)\n")
+
+        assert 'call {i32, i8*}* @"pyobj_add"' in llvm_ir
+        assert 'call {i32, i8*}* @"pyobj_sub"' in llvm_ir
+        assert 'call {i32, i8*}* @"pyobj_mul"' in llvm_ir
