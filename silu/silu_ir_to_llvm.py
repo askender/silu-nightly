@@ -105,6 +105,41 @@ class SiluToLLVMConverter:
             self.module, memcpy_ty, name="llvm.memcpy.p0i8.p0i8.i64"
         )
 
+        # libc helpers for Python-style float printing
+        # (fmt is a fixed parameter of snprintf, not a vararg)
+        snprintf_ty = ir.FunctionType(
+            ir.IntType(32),
+            [
+                ir.PointerType(ir.IntType(8)),
+                ir.IntType(64),
+                ir.PointerType(ir.IntType(8)),
+            ],
+            var_arg=True,
+        )
+        self.snprintf = ir.Function(self.module, snprintf_ty, name="snprintf")
+
+        strtod_ty = ir.FunctionType(
+            ir.DoubleType(),
+            [
+                ir.PointerType(ir.IntType(8)),
+                ir.PointerType(ir.PointerType(ir.IntType(8))),
+            ],
+        )
+        self.strtod = ir.Function(self.module, strtod_ty, name="strtod")
+
+        memchr_ty = ir.FunctionType(
+            ir.PointerType(ir.IntType(8)),
+            [ir.PointerType(ir.IntType(8)), ir.IntType(32), ir.IntType(64)],
+        )
+        self.memchr = ir.Function(self.module, memchr_ty, name="memchr")
+
+        strlen_ty = ir.FunctionType(ir.IntType(64), [ir.PointerType(ir.IntType(8))])
+        self.strlen = ir.Function(self.module, strlen_ty, name="strlen")
+
+        # llvm.floor.f64 intrinsic for float floor division
+        floor_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
+        self.floor_f64 = ir.Function(self.module, floor_ty, name="llvm.floor.f64")
+
         # PyObject creation functions
         self._create_overflow_intrinsics()
         self._create_pyobj_constructors()
@@ -229,6 +264,40 @@ class SiluToLLVMConverter:
 
         builder.ret(obj)
 
+        # PyObject* create_float(double value)
+        create_float_ty = ir.FunctionType(
+            ir.PointerType(self.pyobj.pyobj_type), [ir.DoubleType()]
+        )
+        self.create_float = ir.Function(
+            self.module, create_float_ty, name="create_float"
+        )
+
+        block = self.create_float.append_basic_block("entry")
+        builder = ir.IRBuilder(block)
+
+        # Allocate PyObject
+        obj_ptr = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 16)])
+        obj = builder.bitcast(obj_ptr, ir.PointerType(self.pyobj.pyobj_type))
+
+        # Set type tag to 1 (float)
+        tag_ptr = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
+        builder.store(ir.Constant(ir.IntType(32), 1), tag_ptr)
+
+        # Allocate and store the double value
+        data_ptr = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 8)])
+        data_f64 = builder.bitcast(data_ptr, ir.PointerType(ir.DoubleType()))
+        builder.store(self.create_float.args[0], data_f64)
+
+        # Store data pointer
+        data_ptr_field = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
+        builder.store(data_ptr, data_ptr_field)
+
+        builder.ret(obj)
+
     def _create_pyobj_operations(self):
         """Create PyObject operation functions."""
 
@@ -257,24 +326,36 @@ class SiluToLLVMConverter:
         left_tag = builder.load(left_tag_ptr)
         right_tag = builder.load(right_tag_ptr)
 
-        # Check if both are integers (tag == 0)
-        # Ints and bools both take the numeric path (bool coerces to int)
+        # Ints, bools and floats take the numeric path (bool coerces to int)
         both_numeric_cond = builder.and_(
-            builder.or_(
-                builder.icmp_signed("==", left_tag, ir.Constant(ir.IntType(32), 0)),
-                builder.icmp_signed("==", left_tag, ir.Constant(ir.IntType(32), 3)),
-            ),
-            builder.or_(
-                builder.icmp_signed("==", right_tag, ir.Constant(ir.IntType(32), 0)),
-                builder.icmp_signed("==", right_tag, ir.Constant(ir.IntType(32), 3)),
-            ),
+            self._is_numeric_tag(builder, left_tag),
+            self._is_numeric_tag(builder, right_tag),
         )
 
-        int_block = self.pyobj_add.append_basic_block("int_add")
+        float_check_block = self.pyobj_add.append_basic_block("float_check")
         str_check_block = self.pyobj_add.append_basic_block("str_check")
         str_concat_block = self.pyobj_add.append_basic_block("str_concat")
         error_block = self.pyobj_add.append_basic_block("error")
-        builder.cbranch(both_numeric_cond, int_block, str_check_block)
+        builder.cbranch(both_numeric_cond, float_check_block, str_check_block)
+
+        # Any float operand promotes the result to float (Python semantics)
+        builder.position_at_end(float_check_block)
+        either_float = builder.or_(
+            builder.icmp_signed("==", left_tag, ir.Constant(ir.IntType(32), 1)),
+            builder.icmp_signed("==", right_tag, ir.Constant(ir.IntType(32), 1)),
+        )
+        int_block = self.pyobj_add.append_basic_block("int_add")
+        float_add_block = self.pyobj_add.append_basic_block("float_add")
+        builder.cbranch(either_float, float_add_block, int_block)
+
+        # Float addition
+        builder.position_at_end(float_add_block)
+        left_double = self._load_number_as_f64(builder, left)
+        right_double = self._load_number_as_f64(builder, right)
+        float_result = builder.call(
+            self.create_float, [builder.fadd(left_double, right_double)]
+        )
+        builder.ret(float_result)
 
         # Integer addition
         builder.position_at_end(int_block)
@@ -370,22 +451,91 @@ class SiluToLLVMConverter:
         builder.position_at_end(error_block)
         builder.ret(ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
-        # Integer subtraction and multiplication (int operands)
-        self.pyobj_sub = self._create_int_binary_function(
-            "sub", lambda b, left, right: b.sub(left, right)
+        # Arithmetic over int/bool/float operands with Python promotion rules
+        self.pyobj_sub = self._create_numeric_binary_function(
+            "sub",
+            int_apply=lambda b, left, right: b.sub(left, right),
+            float_apply=lambda b, left, right: b.fsub(left, right),
         )
-        self.pyobj_mul = self._create_int_binary_function(
-            "mul", lambda b, left, right: b.mul(left, right)
+        self.pyobj_mul = self._create_numeric_binary_function(
+            "mul",
+            int_apply=lambda b, left, right: b.mul(left, right),
+            float_apply=lambda b, left, right: b.fmul(left, right),
         )
-
-        # Floor division and modulo with Python floor semantics
-        self.pyobj_floordiv = self._create_int_binary_function(
-            "floordiv", self._floor_div_apply
+        # Python true division always returns a float
+        self.pyobj_truediv = self._create_numeric_binary_function(
+            "truediv",
+            float_apply=lambda b, left, right: b.fdiv(left, right),
         )
-        self.pyobj_mod = self._create_int_binary_function("mod", self._py_mod_apply)
+        self.pyobj_floordiv = self._create_numeric_binary_function(
+            "floordiv",
+            int_apply=self._floor_div_apply,
+            float_apply=self._float_floordiv_apply,
+        )
+        self.pyobj_mod = self._create_numeric_binary_function(
+            "mod",
+            int_apply=self._py_mod_apply,
+            float_apply=self._float_mod_apply,
+        )
 
         # Create print function for PyObjects
         self._create_pyobj_print()
+
+    @staticmethod
+    def _is_numeric_tag(builder, tag):
+        """True if the tag is int (0), float (1), or bool (3)."""
+        i32 = ir.IntType(32)
+        return builder.or_(
+            builder.icmp_signed("==", tag, ir.Constant(i32, 0)),
+            builder.or_(
+                builder.icmp_signed("==", tag, ir.Constant(i32, 1)),
+                builder.icmp_signed("==", tag, ir.Constant(i32, 3)),
+            ),
+        )
+
+    def _load_number_as_i64(self, builder, obj):
+        """Load the payload of an int/bool PyObject as an i64."""
+        data = builder.load(
+            builder.gep(
+                obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+            )
+        )
+        return builder.load(builder.bitcast(data, ir.PointerType(ir.IntType(64))))
+
+    def _load_number_as_f64(self, builder, obj):
+        """Load the payload of an int/bool/float PyObject as a double."""
+        data = builder.load(
+            builder.gep(
+                obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+            )
+        )
+        as_float = builder.load(builder.bitcast(data, ir.PointerType(ir.DoubleType())))
+        int_bits = builder.load(builder.bitcast(data, ir.PointerType(ir.IntType(64))))
+        as_int = builder.sitofp(int_bits, ir.DoubleType())
+        tag = builder.load(
+            builder.gep(
+                obj,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+        )
+        is_float = builder.icmp_signed("==", tag, ir.Constant(ir.IntType(32), 1))
+        return builder.select(is_float, as_float, as_int)
+
+    def _float_floordiv_apply(self, builder, left_val, right_val):
+        """Python float floor division: floor(left / right)."""
+        quotient = builder.fdiv(left_val, right_val)
+        return builder.call(self.floor_f64, [quotient])
+
+    def _float_mod_apply(self, builder, left_val, right_val):
+        """Python float modulo: result has the sign of the divisor."""
+        remainder = builder.frem(left_val, right_val)
+        zero = ir.Constant(ir.DoubleType(), 0.0)
+        r_ne_zero = builder.fcmp_ordered("!=", remainder, zero)
+        r_negative = builder.fcmp_ordered("<", remainder, zero)
+        right_negative = builder.fcmp_ordered("<", right_val, zero)
+        signs_differ = builder.xor(r_negative, right_negative)
+        adjust = builder.and_(r_ne_zero, signs_differ)
+        return builder.select(adjust, builder.fadd(remainder, right_val), remainder)
 
     @staticmethod
     def _floor_div_apply(builder, left_val, right_val):
@@ -418,6 +568,7 @@ class SiluToLLVMConverter:
 
     def _create_pyobj_print(self):
         """Create PyObject print function."""
+        self._create_float_repr_runtime()
 
         print_ty = ir.FunctionType(
             ir.VoidType(), [ir.PointerType(self.pyobj.pyobj_type)]
@@ -428,6 +579,7 @@ class SiluToLLVMConverter:
         null_block = self.pyobj_print.append_basic_block("print_null")
         dispatch_block = self.pyobj_print.append_basic_block("dispatch")
         int_block = self.pyobj_print.append_basic_block("print_int")
+        float_block = self.pyobj_print.append_basic_block("print_float")
         str_block = self.pyobj_print.append_basic_block("print_str")
         bool_block = self.pyobj_print.append_basic_block("print_bool")
         default_block = self.pyobj_print.append_basic_block("default")
@@ -456,8 +608,23 @@ class SiluToLLVMConverter:
         # Switch on type tag
         switch = builder.switch(tag, default_block)
         switch.add_case(ir.Constant(ir.IntType(32), 0), int_block)  # int
+        switch.add_case(ir.Constant(ir.IntType(32), 1), float_block)  # float
         switch.add_case(ir.Constant(ir.IntType(32), 2), str_block)  # str
         switch.add_case(ir.Constant(ir.IntType(32), 3), bool_block)  # bool
+
+        # Print float via the Python-style repr runtime
+        builder.position_at_end(float_block)
+        f64_ptr = builder.gep(
+            obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+        )
+        f64_data = builder.load(f64_ptr)
+        f64_val = builder.load(
+            builder.bitcast(f64_data, ir.PointerType(ir.DoubleType()))
+        )
+        chars = builder.call(self.float_repr, [f64_val])
+        float_fmt = self._create_global_string_with_builder("%s", builder)
+        builder.call(self.printf, [float_fmt, chars])
+        builder.ret_void()
 
         # Print bool as True/False
         builder.position_at_end(bool_block)
@@ -512,10 +679,116 @@ class SiluToLLVMConverter:
         builder.call(self.printf, [unknown_fmt])
         builder.ret_void()
 
-    def _create_int_binary_function(self, func_name: str, apply) -> ir.Function:
-        """Create a pyobj binary function for int operands.
+    def _create_float_repr_runtime(self):
+        """Create i8* float_repr(double): Python-style shortest repr.
 
-        apply(builder, left_val, right_val) returns the i64 result.
+        Emits "%.15g"; if strtod of the buffer differs from the input,
+        retries with "%.16g" then "%.17g". Appends ".0" when no '.', 'e',
+        'n'(nan) or 'i'(inf) appears, so 4.0 keeps its trailing zero.
+        Returns a pointer to a heap buffer (string struct, chars field).
+        """
+        f64 = ir.DoubleType()
+        i8p = ir.PointerType(ir.IntType(8))
+        repr_ty = ir.FunctionType(i8p, [f64])
+        func = ir.Function(self.module, repr_ty, name="float_repr")
+
+        entry = func.append_basic_block("entry")
+        retry = func.append_basic_block("retry")
+        more_digits = func.append_basic_block("more_digits")
+        finish = func.append_basic_block("finish")
+
+        builder = ir.IRBuilder(entry)
+        value = func.args[0]
+
+        def emit(fmt):
+            buf = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 40)])
+            fmt_ptr = self._create_global_string_with_builder(fmt, builder)
+            builder.call(
+                self.snprintf, [buf, ir.Constant(ir.IntType(64), 40), fmt_ptr, value]
+            )
+            return buf
+
+        def parsed_back(buf):
+            endp = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 8)])
+            endp_i8pp = builder.bitcast(endp, ir.PointerType(i8p))
+            back = builder.call(self.strtod, [buf, endp_i8pp])
+            return builder.fcmp_ordered("==", back, value)
+
+        # First try: 15 significant digits
+        buf1 = emit("%.15g")
+        ok1 = parsed_back(buf1)
+        builder.cbranch(ok1, finish, retry)
+
+        # Retry with 16 digits
+        builder.position_at_end(retry)
+        buf2 = emit("%.16g")
+        ok2 = parsed_back(buf2)
+        builder.cbranch(ok2, finish, more_digits)
+
+        # Retry with 17 digits
+        builder.position_at_end(more_digits)
+        buf3 = emit("%.17g")
+        builder.branch(finish)
+
+        # finish: pick the winning buffer, then append ".0" when there
+        # is no '.', 'e', 'n' (nan) or 'i' (inf) in the output
+        builder.position_at_end(finish)
+        buf = builder.phi(i8p)
+        buf.add_incoming(buf1, entry)
+        buf.add_incoming(buf2, retry)
+        buf.add_incoming(buf3, more_digits)
+
+        def is_float_marker(buf, ch):
+            hit = builder.call(
+                self.memchr,
+                [
+                    buf,
+                    ir.Constant(ir.IntType(32), ord(ch)),
+                    builder.call(self.strlen, [buf]),
+                ],
+            )
+            return builder.icmp_signed("!=", hit, ir.Constant(i8p, None))
+
+        needs_dot = builder.and_(
+            builder.not_(is_float_marker(buf, ".")),
+            builder.and_(
+                builder.not_(is_float_marker(buf, "e")),
+                builder.and_(
+                    builder.not_(is_float_marker(buf, "n")),
+                    builder.not_(is_float_marker(buf, "i")),
+                ),
+            ),
+        )
+
+        append_block = func.append_basic_block("append_dot")
+        done_block = func.append_basic_block("done")
+        builder.cbranch(needs_dot, append_block, done_block)
+
+        builder.position_at_end(append_block)
+        len1 = builder.call(self.strlen, [buf])
+        gep_dot = builder.gep(buf, [len1])
+        builder.store(ir.Constant(ir.IntType(8), ord(".")), gep_dot)
+        gep_zero = builder.gep(buf, [builder.add(len1, ir.Constant(ir.IntType(64), 1))])
+        builder.store(ir.Constant(ir.IntType(8), ord("0")), gep_zero)
+        gep_nul = builder.gep(buf, [builder.add(len1, ir.Constant(ir.IntType(64), 2))])
+        builder.store(ir.Constant(ir.IntType(8), 0), gep_nul)
+        builder.branch(done_block)
+
+        builder.position_at_end(done_block)
+        builder.ret(buf)
+
+        self.float_repr = func
+
+    def _create_numeric_binary_function(
+        self, func_name: str, int_apply=None, float_apply=None
+    ) -> ir.Function:
+        """Create a pyobj arithmetic function over int/bool/float operands.
+
+        int_apply(builder, left_i64, right_i64) returns the i64 result,
+        delivered as an int PyObject. float_apply(builder, left_f64,
+        right_f64) returns the double result, delivered as a float
+        PyObject. With int_apply None the operation always promotes to
+        float (Python true division always returns float).
         """
         func_ty = ir.FunctionType(
             ir.PointerType(self.pyobj.pyobj_type),
@@ -527,54 +800,66 @@ class SiluToLLVMConverter:
         func = ir.Function(self.module, func_ty, name=f"pyobj_{func_name}")
 
         entry_block = func.append_basic_block("entry")
-        int_block = func.append_basic_block("int_op")
+        num_check_block = func.append_basic_block("num_check")
+        float_op_block = func.append_basic_block("float_op")
+        # Only create the int block when int operations exist, otherwise
+        # it would be an empty (invalid) basic block.
+        int_op_block = (
+            func.append_basic_block("int_op") if int_apply is not None else None
+        )
         error_block = func.append_basic_block("error")
         builder = ir.IRBuilder(entry_block)
 
         left, right = func.args
-
-        zero32 = ir.Constant(ir.IntType(32), 0)
-        one32 = ir.Constant(ir.IntType(32), 1)
-        bool_tag = ir.Constant(ir.IntType(32), 3)
-
-        def numeric_tag(builder, obj):
-            """0 for int, 1 for bool (coerces to int in arithmetic)."""
-            tag = builder.load(builder.gep(obj, [zero32, zero32]))
-            is_bool = builder.icmp_signed("==", tag, bool_tag)
-            return builder.select(is_bool, zero32, tag)
-
-        left_tag = numeric_tag(builder, left)
-        right_tag = numeric_tag(builder, right)
-        both_int_cond = builder.and_(
-            builder.icmp_signed("==", left_tag, zero32),
-            builder.icmp_signed("==", right_tag, zero32),
-        )
-        builder.cbranch(both_int_cond, int_block, error_block)
-
-        builder.position_at_end(int_block)
-        left_val = builder.load(
-            builder.bitcast(
-                builder.load(builder.gep(left, [zero32, one32])),
-                ir.PointerType(ir.IntType(64)),
+        left_tag = builder.load(
+            builder.gep(
+                left,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
             )
         )
-        right_val = builder.load(
-            builder.bitcast(
-                builder.load(builder.gep(right, [zero32, one32])),
-                ir.PointerType(ir.IntType(64)),
+        right_tag = builder.load(
+            builder.gep(
+                right,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
             )
         )
-        result = apply(builder, left_val, right_val)
-        builder.ret(builder.call(self.create_int, [result]))
+        both_numeric = builder.and_(
+            self._is_numeric_tag(builder, left_tag),
+            self._is_numeric_tag(builder, right_tag),
+        )
+        builder.cbranch(both_numeric, num_check_block, error_block)
+
+        builder.position_at_end(num_check_block)
+        either_float = builder.or_(
+            builder.icmp_signed("==", left_tag, ir.Constant(ir.IntType(32), 1)),
+            builder.icmp_signed("==", right_tag, ir.Constant(ir.IntType(32), 1)),
+        )
+        if int_apply is None:
+            builder.branch(float_op_block)
+        else:
+            builder.cbranch(either_float, float_op_block, int_op_block)
+
+        builder.position_at_end(float_op_block)
+        left_f64 = self._load_number_as_f64(builder, left)
+        right_f64 = self._load_number_as_f64(builder, right)
+        float_result = float_apply(builder, left_f64, right_f64)
+        builder.ret(builder.call(self.create_float, [float_result]))
+
+        if int_apply is not None:
+            builder.position_at_end(int_op_block)
+            left_i64 = self._load_number_as_i64(builder, left)
+            right_i64 = self._load_number_as_i64(builder, right)
+            int_result = int_apply(builder, left_i64, right_i64)
+            builder.ret(builder.call(self.create_int, [int_result]))
 
         builder.position_at_end(error_block)
         builder.ret(ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
         return func
 
-    def _create_bool_result_function(self, func_name: str, apply) -> ir.Function:
-        """Create a pyobj function returning a bool PyObject for int operands.
+    def _create_bool_result_function(self, func_name: str, pred: str) -> ir.Function:
+        """Create a comparison function over int/bool/float operands.
 
-        apply(builder, left_val, right_val) returns the i1 result.
+        pred is one of "==", "!=", "<", "<=", ">", ">=".
         """
         func_ty = ir.FunctionType(
             ir.PointerType(self.pyobj.pyobj_type),
@@ -586,38 +871,53 @@ class SiluToLLVMConverter:
         func = ir.Function(self.module, func_ty, name=f"pyobj_{func_name}")
 
         entry_block = func.append_basic_block("entry")
-        int_block = func.append_basic_block("int_op")
+        num_check_block = func.append_basic_block("num_check")
+        float_op_block = func.append_basic_block("float_op")
+        int_op_block = func.append_basic_block("int_op")
         error_block = func.append_basic_block("error")
         builder = ir.IRBuilder(entry_block)
 
         left, right = func.args
-
-        zero32 = ir.Constant(ir.IntType(32), 0)
-        one32 = ir.Constant(ir.IntType(32), 1)
-
-        left_tag = builder.load(builder.gep(left, [zero32, zero32]))
-        right_tag = builder.load(builder.gep(right, [zero32, zero32]))
-        both_int_cond = builder.and_(
-            builder.icmp_signed("==", left_tag, zero32),
-            builder.icmp_signed("==", right_tag, zero32),
-        )
-        builder.cbranch(both_int_cond, int_block, error_block)
-
-        builder.position_at_end(int_block)
-        left_val = builder.load(
-            builder.bitcast(
-                builder.load(builder.gep(left, [zero32, one32])),
-                ir.PointerType(ir.IntType(64)),
+        left_tag = builder.load(
+            builder.gep(
+                left,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
             )
         )
-        right_val = builder.load(
-            builder.bitcast(
-                builder.load(builder.gep(right, [zero32, one32])),
-                ir.PointerType(ir.IntType(64)),
+        right_tag = builder.load(
+            builder.gep(
+                right,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
             )
         )
-        result = apply(builder, left_val, right_val)
-        builder.ret(builder.call(self.create_bool, [result]))
+        both_numeric = builder.and_(
+            self._is_numeric_tag(builder, left_tag),
+            self._is_numeric_tag(builder, right_tag),
+        )
+        builder.cbranch(both_numeric, num_check_block, error_block)
+
+        builder.position_at_end(num_check_block)
+        either_float = builder.or_(
+            builder.icmp_signed("==", left_tag, ir.Constant(ir.IntType(32), 1)),
+            builder.icmp_signed("==", right_tag, ir.Constant(ir.IntType(32), 1)),
+        )
+        builder.cbranch(either_float, float_op_block, int_op_block)
+
+        builder.position_at_end(float_op_block)
+        left_f64 = self._load_number_as_f64(builder, left)
+        right_f64 = self._load_number_as_f64(builder, right)
+        # Python NaN semantics: != is true whenever == is false
+        if pred == "!=":
+            float_result = builder.fcmp_unordered(pred, left_f64, right_f64)
+        else:
+            float_result = builder.fcmp_ordered(pred, left_f64, right_f64)
+        builder.ret(builder.call(self.create_bool, [float_result]))
+
+        builder.position_at_end(int_op_block)
+        left_i64 = self._load_number_as_i64(builder, left)
+        right_i64 = self._load_number_as_i64(builder, right)
+        int_result = builder.icmp_signed(pred, left_i64, right_i64)
+        builder.ret(builder.call(self.create_bool, [int_result]))
 
         builder.position_at_end(error_block)
         builder.ret(ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
@@ -635,83 +935,67 @@ class SiluToLLVMConverter:
             "ge": ">=",
         }
         for name, pred in predicates.items():
-            func = self._create_bool_result_function(
-                name,
-                lambda b, left, right, p=pred: b.icmp_signed(p, left, right),
+            setattr(
+                self, f"pyobj_{name}", self._create_bool_result_function(name, pred)
             )
-            setattr(self, f"pyobj_{name}", func)
 
     def _create_less_than_comparison(self, left: ir.Value, right: ir.Value) -> ir.Value:
-        """Create less than comparison for loop conditions."""
-        # Similar to pyobj_le but for < instead of <=
-        # For simplicity, inline the comparison here
-
-        # Get integer values
-        left_data_ptr = self.current_builder.gep(
-            left, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
-        )
-        right_data_ptr = self.current_builder.gep(
-            right, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
-        )
-        left_data = self.current_builder.load(left_data_ptr)
-        right_data = self.current_builder.load(right_data_ptr)
-        left_i64_ptr = self.current_builder.bitcast(
-            left_data, ir.PointerType(ir.IntType(64))
-        )
-        right_i64_ptr = self.current_builder.bitcast(
-            right_data, ir.PointerType(ir.IntType(64))
-        )
-        left_val = self.current_builder.load(left_i64_ptr)
-        right_val = self.current_builder.load(right_i64_ptr)
-
-        # Compare values (left < right)
-        result_bool = self.current_builder.icmp_signed("<", left_val, right_val)
-        result_int = self.current_builder.zext(result_bool, ir.IntType(64))
-        return self.current_builder.call(self.create_int, [result_int])
+        """Less-than over int/float operands, used by loop conditions."""
+        return self.current_builder.call(self.pyobj_lt, [left, right])
 
     def _create_unary_minus(self, operand: ir.Value) -> ir.Value:
-        """Create unary minus operation for PyObject."""
-        # Check if operand is an integer
-        tag_ptr = self.current_builder.gep(
-            operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
-        )
-        tag = self.current_builder.load(tag_ptr)
-
-        # Check if it's an integer (tag == 0)
-        is_int_cond = self.current_builder.icmp_signed(
-            "==", tag, ir.Constant(ir.IntType(32), 0)
+        """Unary minus over int/bool/float PyObjects."""
+        builder = self.current_builder
+        tag = builder.load(
+            builder.gep(
+                operand,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
         )
 
+        is_float = builder.icmp_signed("==", tag, ir.Constant(ir.IntType(32), 1))
+        is_numeric = self._is_numeric_tag(builder, tag)
+
+        float_block = self.current_function.append_basic_block("unary_minus_float")
+        int_check_block = self.current_function.append_basic_block(
+            "unary_minus_int_chk"
+        )
         int_block = self.current_function.append_basic_block("unary_minus_int")
         error_block = self.current_function.append_basic_block("unary_minus_error")
-        self.current_builder.cbranch(is_int_cond, int_block, error_block)
-
-        # Integer negation
-        self.current_builder.position_at_end(int_block)
-        data_ptr = self.current_builder.gep(
-            operand, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
-        )
-        data = self.current_builder.load(data_ptr)
-        i64_ptr = self.current_builder.bitcast(data, ir.PointerType(ir.IntType(64)))
-        val = self.current_builder.load(i64_ptr)
-
-        # Negate the value
-        neg_val = self.current_builder.sub(ir.Constant(ir.IntType(64), 0), val)
-        result_obj = self.current_builder.call(self.create_int, [neg_val])
-
-        # We need to merge the blocks
         merge_block = self.current_function.append_basic_block("unary_minus_merge")
-        self.current_builder.branch(merge_block)
+        builder.cbranch(is_float, float_block, int_check_block)
+
+        # Float negation
+        builder.position_at_end(float_block)
+        f64_val = self._load_number_as_f64(builder, operand)
+        float_result = builder.call(
+            self.create_float,
+            [builder.fsub(ir.Constant(ir.DoubleType(), 0.0), f64_val)],
+        )
+        builder.branch(merge_block)
+
+        # Int/bool negation
+        builder.position_at_end(int_check_block)
+        builder.cbranch(is_numeric, int_block, error_block)
+
+        builder.position_at_end(int_block)
+        i64_val = self._load_number_as_i64(builder, operand)
+        int_result = builder.call(
+            self.create_int,
+            [builder.sub(ir.Constant(ir.IntType(64), 0), i64_val)],
+        )
+        builder.branch(merge_block)
 
         # Error case
-        self.current_builder.position_at_end(error_block)
+        builder.position_at_end(error_block)
         null_result = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
-        self.current_builder.branch(merge_block)
+        builder.branch(merge_block)
 
         # Merge block with PHI node
-        self.current_builder.position_at_end(merge_block)
-        phi = self.current_builder.phi(ir.PointerType(self.pyobj.pyobj_type))
-        phi.add_incoming(result_obj, int_block)
+        builder.position_at_end(merge_block)
+        phi = builder.phi(ir.PointerType(self.pyobj.pyobj_type))
+        phi.add_incoming(float_result, float_block)
+        phi.add_incoming(int_result, int_block)
         phi.add_incoming(null_result, error_block)
 
         return phi
@@ -890,6 +1174,10 @@ class SiluToLLVMConverter:
                 return self.current_builder.call(
                     self.create_int, [ir.Constant(ir.IntType(64), value)]
                 )
+            elif isinstance(value, float):
+                return self.current_builder.call(
+                    self.create_float, [ir.Constant(ir.DoubleType(), value)]
+                )
             elif isinstance(value, str):
                 # Create string constant
                 str_len = len(value)  # Not including null terminator
@@ -953,6 +1241,15 @@ class SiluToLLVMConverter:
                 right = self._convert_node(node[2])
                 if left and right:
                     return self.current_builder.call(self.pyobj_mul, [left, right])
+            return None
+
+        elif op == "/":
+            # Python true division: always promotes to float
+            if len(node) >= 3:
+                left = self._convert_node(node[1])
+                right = self._convert_node(node[2])
+                if left and right:
+                    return self.current_builder.call(self.pyobj_truediv, [left, right])
             return None
 
         elif op == "//":

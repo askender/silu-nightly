@@ -121,6 +121,40 @@ class TestSiluToLLVMConverter:
 
         assert 'c" \\00"' in llvm_ir
 
+    def test_float_constants_and_arithmetic(self):
+        """Float constants must create float objects; ops use float paths."""
+        llvm_ir = _convert("x = 1.5\ny = x + 2.5\nprint(y)\n")
+
+        assert 'call {i32, i8*}* @"create_float"' in llvm_ir
+        assert "float_add:" in llvm_ir
+
+    def test_true_division_emits_truediv(self):
+        """'/' must emit the always-float truediv runtime call."""
+        llvm_ir = _convert("print(7 / 2)\n")
+
+        assert 'call {i32, i8*}* @"pyobj_truediv"' in llvm_ir
+
+    def test_float_repr_runtime_present(self):
+        """The Python-style float repr helper must be generated."""
+        llvm_ir = _convert("print(4.0)\n")
+
+        assert 'define i8* @"float_repr"' in llvm_ir
+        assert 'c"%.15g\\00"' in llvm_ir
+
+    def test_float_comparison_uses_fcmp(self):
+        """Comparisons with floats must take the fcmp path."""
+        llvm_ir = _convert("x = 1.5\nprint(x < 2)\n")
+
+        assert "float_op:" in llvm_ir
+        assert "fcmp olt" in llvm_ir
+
+    def test_float_floor_div_and_mod(self):
+        """Float floor division must use llvm.floor.f64."""
+        llvm_ir = _convert("print(-10.0 // 3)\nprint(10.5 % 3)\n")
+
+        assert 'call double @"llvm.floor.f64"' in llvm_ir
+        assert "frem" in llvm_ir
+
     def test_floordiv_and_mod_converted(self):
         """Floor division and modulo must emit runtime calls."""
         llvm_ir = _convert("a = 123 // 7\nb = 123 % 7\nprint(a + b)\n")
