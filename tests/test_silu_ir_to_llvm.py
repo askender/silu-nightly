@@ -203,3 +203,35 @@ class TestSiluToLLVMConverter:
         assert 'call {i32, i8*}* @"pyobj_add"' in llvm_ir
         assert 'call {i32, i8*}* @"pyobj_sub"' in llvm_ir
         assert 'call {i32, i8*}* @"pyobj_mul"' in llvm_ir
+
+    def test_list_literal_and_subscript(self):
+        """List literals, subscript read/write, and negative index."""
+        llvm_ir = _convert(
+            "l = [1, 2, 3]\nprint(l[0])\nprint(l[-1])\nl[1] = 9\nprint(l)\n"
+        )
+
+        assert 'define {i32, i8*}* @"create_list"' in llvm_ir
+        assert 'call {i32, i8*}* @"list_get"' in llvm_ir
+        assert 'call void @"list_set"' in llvm_ir
+
+    def test_list_append_and_len(self):
+        """append method and len() builtin must emit runtime calls."""
+        llvm_ir = _convert("l = [1]\nl.append(2)\nprint(len(l))\n")
+
+        assert 'call {i32, i8*}* @"list_append"' in llvm_ir
+        assert 'call {i32, i8*}* @"pyobj_len"' in llvm_ir
+
+    def test_for_loop_over_list(self):
+        """Non-range for loops must iterate lists via iter blocks."""
+        llvm_ir = _convert("for e in [10, 20]:\n    print(e)\n")
+
+        assert "iter_cond:" in llvm_ir
+        assert "iter_body:" in llvm_ir
+        assert 'call {i32, i8*}* @"list_get"' in llvm_ir
+
+    def test_list_print_runtime(self):
+        """pyobj_print must handle list objects."""
+        llvm_ir = _convert("print([1, 2])\n")
+
+        assert "print_list:" in llvm_ir
+        assert 'c"[\\00"' in llvm_ir

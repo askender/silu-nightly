@@ -61,6 +61,15 @@ class SiluToLLVMConverter:
         # Runtime object system
         self.pyobj = PyObject(self.module)
 
+        # List struct layout: {i64 length, i64 capacity, PyObject** items}
+        self.list_struct_type = ir.LiteralStructType(
+            [
+                ir.IntType(64),
+                ir.IntType(64),
+                ir.PointerType(ir.PointerType(self.pyobj.pyobj_type)),
+            ]
+        )
+
         # Global context
         self.variables: Dict[
             str, ir.Value
@@ -109,6 +118,10 @@ class SiluToLLVMConverter:
             self.module, memcpy_ty, name="llvm.memcpy.p0i8.p0i8.i64"
         )
 
+        # exit for runtime error aborts
+        exit_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(32)])
+        self.exit_func = ir.Function(self.module, exit_ty, name="exit")
+
         # libc helpers for Python-style float printing
         # (fmt is a fixed parameter of snprintf, not a vararg)
         snprintf_ty = ir.FunctionType(
@@ -149,6 +162,7 @@ class SiluToLLVMConverter:
         self._create_pyobj_constructors()
         self._create_pyobj_operations()
         self._create_comparison_operations()
+        self._create_list_runtime()
 
     def _create_pyobj_constructors(self):
         """Create PyObject constructor functions."""
@@ -398,9 +412,7 @@ class SiluToLLVMConverter:
         builder.call(self.printf, [error_msg])
 
         # Exit with error code 1
-        exit_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(32)])
-        exit_func = ir.Function(self.module, exit_ty, name="exit")
-        builder.call(exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
         builder.unreachable()
 
         # Success case - return result
@@ -586,6 +598,7 @@ class SiluToLLVMConverter:
         float_block = self.pyobj_print.append_basic_block("print_float")
         str_block = self.pyobj_print.append_basic_block("print_str")
         bool_block = self.pyobj_print.append_basic_block("print_bool")
+        list_block = self.pyobj_print.append_basic_block("print_list")
         default_block = self.pyobj_print.append_basic_block("default")
 
         builder = ir.IRBuilder(entry_block)
@@ -615,6 +628,56 @@ class SiluToLLVMConverter:
         switch.add_case(ir.Constant(ir.IntType(32), 1), float_block)  # float
         switch.add_case(ir.Constant(ir.IntType(32), 2), str_block)  # str
         switch.add_case(ir.Constant(ir.IntType(32), 3), bool_block)  # bool
+        switch.add_case(ir.Constant(ir.IntType(32), 4), list_block)  # list
+
+        # Print list as [a, b, c] with recursive element printing
+        builder.position_at_end(list_block)
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        zero32 = ir.Constant(i32, 0)
+        struct_ptr = self._load_list_struct(builder, obj)
+        list_len = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+        items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
+        open_bracket = self._create_global_string_with_builder("[", builder)
+        builder.call(self.printf, [open_bracket])
+        loop_check = self.pyobj_print.append_basic_block("list_loop_check")
+        loop_body = self.pyobj_print.append_basic_block("list_loop_body")
+        loop_incr = self.pyobj_print.append_basic_block("list_loop_incr")
+        list_done = self.pyobj_print.append_basic_block("list_done")
+        counter_ptr = builder.alloca(i64, name="list_print_idx")
+        builder.store(ir.Constant(i64, 0), counter_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_check)
+        counter = builder.load(counter_ptr)
+        more = builder.icmp_signed("<", counter, list_len)
+        builder.cbranch(more, loop_body, list_done)
+
+        builder.position_at_end(loop_body)
+        not_first = builder.icmp_signed(">", counter, ir.Constant(i64, 0))
+        sep_block = self.pyobj_print.append_basic_block("list_sep")
+        elem_block = self.pyobj_print.append_basic_block("list_elem")
+        builder.cbranch(not_first, sep_block, elem_block)
+
+        builder.position_at_end(sep_block)
+        comma = self._create_global_string_with_builder(", ", builder)
+        builder.call(self.printf, [comma])
+        builder.branch(elem_block)
+
+        builder.position_at_end(elem_block)
+        item_slot = builder.gep(items, [counter])
+        item = builder.load(item_slot)
+        builder.call(self.pyobj_print, [item])
+        builder.branch(loop_incr)
+
+        builder.position_at_end(loop_incr)
+        builder.store(builder.add(counter, ir.Constant(i64, 1)), counter_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(list_done)
+        close_bracket = self._create_global_string_with_builder("]", builder)
+        builder.call(self.printf, [close_bracket])
+        builder.ret_void()
 
         # Print float via the Python-style repr runtime
         builder.position_at_end(float_block)
@@ -682,6 +745,246 @@ class SiluToLLVMConverter:
         )
         builder.call(self.printf, [unknown_fmt])
         builder.ret_void()
+
+    def _create_list_runtime(self):
+        """Runtime for list PyObjects (tag 4).
+
+        data points to {i64 length, i64 capacity, PyObject** items}.
+        """
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        list_struct = self.list_struct_type
+        zero32 = ir.Constant(i32, 0)
+        one32 = ir.Constant(i32, 1)
+
+        # PyObject* create_list()
+        self.create_list = ir.Function(
+            self.module, ir.FunctionType(pyobj_ptr, []), name="create_list"
+        )
+        builder = ir.IRBuilder(self.create_list.append_basic_block("entry"))
+        obj_ptr = builder.call(self.malloc, [ir.Constant(i64, 16)])
+        obj = builder.bitcast(obj_ptr, pyobj_ptr)
+        builder.store(ir.Constant(i32, 4), builder.gep(obj, [zero32, zero32]))
+        list_ptr = builder.call(self.malloc, [ir.Constant(i64, 24)])
+        list_struct_ptr = builder.bitcast(list_ptr, ir.PointerType(list_struct))
+        builder.store(
+            ir.Constant(i64, 0), builder.gep(list_struct_ptr, [zero32, zero32])
+        )
+        builder.store(
+            ir.Constant(i64, 0), builder.gep(list_struct_ptr, [zero32, one32])
+        )
+        builder.store(
+            ir.Constant(ir.PointerType(pyobj_ptr), None),
+            builder.gep(list_struct_ptr, [zero32, ir.Constant(i32, 2)]),
+        )
+        builder.store(list_ptr, builder.gep(obj, [zero32, one32]))
+        builder.ret(obj)
+
+        # PyObject* list_append(PyObject* list, PyObject* item)
+        append_fn_ty = ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr])
+        self.list_append = ir.Function(self.module, append_fn_ty, name="list_append")
+        entry = self.list_append.append_basic_block("entry")
+        grow_block = self.list_append.append_basic_block("grow")
+        do_append_block = self.list_append.append_basic_block("do_append")
+        builder = ir.IRBuilder(entry)
+        list_arg, item_arg = self.list_append.args
+        struct_ptr = self._load_list_struct(builder, list_arg)
+        length = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+        capacity = builder.load(builder.gep(struct_ptr, [zero32, one32]))
+        needs_grow = builder.icmp_signed("==", length, capacity)
+        builder.cbranch(needs_grow, grow_block, do_append_block)
+
+        builder.position_at_end(grow_block)
+        zero64 = ir.Constant(i64, 0)
+        four64 = ir.Constant(i64, 4)
+        cap_is_zero = builder.icmp_signed("==", capacity, zero64)
+        new_capacity = builder.select(
+            cap_is_zero, four64, builder.mul(capacity, ir.Constant(i64, 2))
+        )
+        new_items = builder.call(
+            self.malloc, [builder.mul(new_capacity, ir.Constant(i64, 8))]
+        )
+        has_old = builder.icmp_signed(">", capacity, zero64)
+        copy_block = self.list_append.append_basic_block("grow_copy")
+        after_copy_block = self.list_append.append_basic_block("grow_after_copy")
+        builder.cbranch(has_old, copy_block, after_copy_block)
+
+        builder.position_at_end(copy_block)
+        old_items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
+        builder.call(
+            self.memcpy,
+            [
+                new_items,
+                builder.bitcast(old_items, ir.PointerType(ir.IntType(8))),
+                builder.mul(capacity, ir.Constant(i64, 8)),
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        builder.branch(after_copy_block)
+
+        builder.position_at_end(after_copy_block)
+        builder.store(new_capacity, builder.gep(struct_ptr, [zero32, one32]))
+        items_typed = builder.bitcast(new_items, ir.PointerType(pyobj_ptr))
+        builder.store(
+            items_typed, builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)])
+        )
+        builder.branch(do_append_block)
+
+        builder.position_at_end(do_append_block)
+        items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
+        length_now = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+        slot = builder.gep(items, [length_now])
+        builder.store(item_arg, slot)
+        builder.store(
+            builder.add(length_now, ir.Constant(i64, 1)),
+            builder.gep(struct_ptr, [zero32, zero32]),
+        )
+        builder.ret(list_arg)
+
+        # i64 list_length(PyObject* list) - raw length helper
+        self.list_length = ir.Function(
+            self.module, ir.FunctionType(i64, [pyobj_ptr]), name="list_length"
+        )
+        builder = ir.IRBuilder(self.list_length.append_basic_block("entry"))
+        struct_ptr = self._load_list_struct(builder, self.list_length.args[0])
+        builder.ret(builder.load(builder.gep(struct_ptr, [zero32, zero32])))
+
+        # PyObject* list_get(PyObject* list, PyObject* index)
+        self.list_get = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
+            name="list_get",
+        )
+        entry = self.list_get.append_basic_block("entry")
+        bounds_block = self.list_get.append_basic_block("bounds")
+        negative_block = self.list_get.append_basic_block("negative")
+        ok_block = self.list_get.append_basic_block("ok")
+        error_block = self.list_get.append_basic_block("index_error")
+        builder = ir.IRBuilder(entry)
+        list_arg, index_arg = self.list_get.args
+        struct_ptr = self._load_list_struct(builder, list_arg)
+        length = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+        raw_index = self._load_number_as_i64(builder, index_arg)
+        is_negative = builder.icmp_signed("<", raw_index, zero64)
+        builder.cbranch(is_negative, negative_block, bounds_block)
+
+        builder.position_at_end(negative_block)
+        adjusted = builder.add(raw_index, length)
+        builder.branch(bounds_block)
+
+        builder.position_at_end(bounds_block)
+        adjusted_index = builder.phi(i64)
+        adjusted_index.add_incoming(raw_index, entry)
+        adjusted_index.add_incoming(adjusted, negative_block)
+        in_range = builder.and_(
+            builder.icmp_signed(">=", adjusted_index, zero64),
+            builder.icmp_signed("<", adjusted_index, length),
+        )
+        builder.cbranch(in_range, ok_block, error_block)
+
+        builder.position_at_end(error_block)
+        error_msg = self._create_global_string_with_builder(
+            "IndexError: list index out of range\n", builder
+        )
+        builder.call(self.printf, [error_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        builder.position_at_end(ok_block)
+        items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
+        slot = builder.gep(items, [adjusted_index])
+        builder.ret(builder.load(slot))
+
+        # void list_set(PyObject* list, PyObject* index, PyObject* value)
+        self.list_set = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
+            name="list_set",
+        )
+        entry = self.list_set.append_basic_block("entry")
+        neg_block = self.list_set.append_basic_block("negative")
+        bounds_block = self.list_set.append_basic_block("bounds")
+        ok_block = self.list_set.append_basic_block("ok")
+        error_block = self.list_set.append_basic_block("index_error")
+        builder = ir.IRBuilder(entry)
+        list_arg, index_arg, value_arg = self.list_set.args
+        struct_ptr = self._load_list_struct(builder, list_arg)
+        length = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+        raw_index = self._load_number_as_i64(builder, index_arg)
+        builder.cbranch(
+            builder.icmp_signed("<", raw_index, zero64), neg_block, bounds_block
+        )
+
+        builder.position_at_end(neg_block)
+        adjusted = builder.add(raw_index, length)
+        builder.branch(bounds_block)
+
+        builder.position_at_end(bounds_block)
+        adjusted_index = builder.phi(i64)
+        adjusted_index.add_incoming(raw_index, entry)
+        adjusted_index.add_incoming(adjusted, neg_block)
+        in_range = builder.and_(
+            builder.icmp_signed(">=", adjusted_index, zero64),
+            builder.icmp_signed("<", adjusted_index, length),
+        )
+        builder.cbranch(in_range, ok_block, error_block)
+
+        builder.position_at_end(error_block)
+        error_msg = self._create_global_string_with_builder(
+            "IndexError: list assignment index out of range\n", builder
+        )
+        builder.call(self.printf, [error_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        builder.position_at_end(ok_block)
+        items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
+        builder.store(value_arg, builder.gep(items, [adjusted_index]))
+        builder.ret_void()
+
+        # PyObject* pyobj_len(PyObject* obj) - len() for lists and strings
+        self.pyobj_len = ir.Function(
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name="pyobj_len"
+        )
+        entry = self.pyobj_len.append_basic_block("entry")
+        list_block = self.pyobj_len.append_basic_block("len_list")
+        str_check_block = self.pyobj_len.append_basic_block("str_check")
+        str_block = self.pyobj_len.append_basic_block("len_str")
+        error_block = self.pyobj_len.append_basic_block("error")
+        builder = ir.IRBuilder(entry)
+        obj_arg = self.pyobj_len.args[0]
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        is_list = builder.icmp_signed("==", tag, ir.Constant(i32, 4))
+        builder.cbranch(is_list, list_block, str_check_block)
+
+        builder.position_at_end(list_block)
+        struct_ptr = self._load_list_struct(builder, obj_arg)
+        list_len = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+        builder.ret(builder.call(self.create_int, [list_len]))
+
+        builder.position_at_end(str_check_block)
+        is_str = builder.icmp_signed("==", tag, ir.Constant(i32, 2))
+        builder.cbranch(is_str, str_block, error_block)
+
+        builder.position_at_end(str_block)
+        data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
+        str_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
+        builder.ret(builder.call(self.create_int, [builder.sext(str_len, i64)]))
+
+        builder.position_at_end(error_block)
+        builder.ret(ir.Constant(pyobj_ptr, None))
+
+    def _load_list_struct(self, builder, obj):
+        """Load the list struct pointer from a list PyObject (tag 4)."""
+        data = builder.load(
+            builder.gep(
+                obj,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+            )
+        )
+        return builder.bitcast(data, ir.PointerType(self.list_struct_type))
 
     def _create_float_repr_runtime(self):
         """Create i8* float_repr(double): Python-style shortest repr.
@@ -1151,6 +1454,71 @@ class SiluToLLVMConverter:
         phi.add_incoming(nonzero, load_block)
         return phi
 
+    def _convert_list_for_loop(self, target_node, iter_node, body_stmts):
+        """For loop over a list: for item in some_list."""
+        i64 = ir.IntType(64)
+        builder = self.current_builder
+
+        list_obj = self._convert_node(iter_node)
+        if not list_obj:
+            return None
+
+        cond_block = self.current_function.append_basic_block("iter_cond")
+        body_block = self.current_function.append_basic_block("iter_body")
+        incr_block = self.current_function.append_basic_block("iter_incr")
+        end_block = self.current_function.append_basic_block("iter_end")
+
+        # Raw i64 index counter
+        counter_ptr = builder.alloca(i64, name="iter_idx")
+        builder.store(ir.Constant(i64, 0), counter_ptr)
+        list_len = builder.call(self.list_length, [list_obj])
+        builder.branch(cond_block)
+
+        builder.position_at_end(cond_block)
+        index = builder.load(counter_ptr)
+        more = builder.icmp_signed("<", index, list_len)
+        builder.cbranch(more, body_block, end_block)
+
+        self.loop_break_blocks.append(end_block)
+        self.loop_continue_blocks.append(incr_block)
+
+        builder.position_at_end(body_block)
+        if (
+            isinstance(target_node, list)
+            and len(target_node) >= 2
+            and target_node[0] == "name"
+        ):
+            var_name = target_node[1]
+            if var_name not in self.variables:
+                self.variables[var_name] = builder.alloca(
+                    ir.PointerType(self.pyobj.pyobj_type), name=var_name
+                )
+            item = builder.call(
+                self.list_get, [list_obj, builder.call(self.create_int, [index])]
+            )
+            builder.store(item, self.variables[var_name])
+
+        for stmt in body_stmts:
+            self._convert_node(stmt)
+            if self.current_builder.block.is_terminated:
+                break
+
+        if not self.current_builder.block.is_terminated:
+            self.current_builder.branch(incr_block)
+
+        self.loop_break_blocks.pop()
+        self.loop_continue_blocks.pop()
+
+        self.current_builder.position_at_end(incr_block)
+        next_index = self.current_builder.add(
+            self.current_builder.load(counter_ptr), ir.Constant(i64, 1)
+        )
+        self.current_builder.store(next_index, counter_ptr)
+        self.current_builder.branch(cond_block)
+
+        self.current_builder.position_at_end(end_block)
+        return None
+
     def _convert_node(
         self, node: Any, skip_func_defs: bool = False
     ) -> Optional[ir.Value]:
@@ -1323,6 +1691,23 @@ class SiluToLLVMConverter:
             func_node = node[1]
             args_node = node[2] if len(node) > 2 else []
 
+            # Method calls: obj.method(args)
+            if (
+                isinstance(func_node, list)
+                and len(func_node) >= 3
+                and func_node[0] == "attribute"
+            ):
+                obj_val = self._convert_node(func_node[1])
+                method_name = func_node[2]
+                if obj_val and method_name == "append":
+                    for arg_node in args_node:
+                        arg_val = self._convert_node(arg_node)
+                        if arg_val:
+                            self.current_builder.call(
+                                self.list_append, [obj_val, arg_val]
+                            )
+                return None
+
             if (
                 isinstance(func_node, list)
                 and len(func_node) >= 2
@@ -1343,6 +1728,13 @@ class SiluToLLVMConverter:
                     # Add newline
                     newline_fmt = self._create_global_string("\n")
                     self.current_builder.call(self.printf, [newline_fmt])
+                    return None
+
+                elif func_name == "len":
+                    if args_node:
+                        arg_val = self._convert_node(args_node[0])
+                        if arg_val:
+                            return self.current_builder.call(self.pyobj_len, [arg_val])
                     return None
 
                 elif func_name == "range":
@@ -1500,45 +1892,38 @@ class SiluToLLVMConverter:
                 iter_node = node[2]
                 body_stmts = node[3]
 
-                # Enhanced for loop implementation with proper range handling
-                # Handle range() call to get start and stop values
-                start_val = None
-                end_val = None
-
-                if (
+                is_range_iter = (
                     isinstance(iter_node, list)
                     and len(iter_node) >= 3
                     and iter_node[0] == "call"
-                ):
-                    func_node = iter_node[1]
-                    args_node = iter_node[2] if len(iter_node) > 2 else []
+                    and isinstance(iter_node[1], list)
+                    and len(iter_node[1]) >= 2
+                    and iter_node[1][0] == "name"
+                    and iter_node[1][1] == "range"
+                )
 
-                    if (
-                        isinstance(func_node, list)
-                        and len(func_node) >= 2
-                        and func_node[0] == "name"
-                        and func_node[1] == "range"
-                    ):
-                        if len(args_node) == 1:
-                            # range(stop) -> start=0, stop=args[0]
-                            start_val = self.current_builder.call(
-                                self.create_int, [ir.Constant(ir.IntType(64), 0)]
-                            )
-                            end_val = self._convert_node(args_node[0])
-                        elif len(args_node) >= 2:
-                            # range(start, stop) -> start=args[0], stop=args[1]
-                            start_val = self._convert_node(args_node[0])
-                            end_val = self._convert_node(args_node[1])
+                if not is_range_iter:
+                    return self._convert_list_for_loop(
+                        target_node, iter_node, body_stmts
+                    )
 
-                # Default values if not range()
-                if not start_val:
+                # range() handling: extract start/stop from the call
+                args_node = iter_node[2] if len(iter_node) > 2 else []
+                if len(args_node) == 1:
+                    # range(stop) -> start=0, stop=args[0]
                     start_val = self.current_builder.call(
                         self.create_int, [ir.Constant(ir.IntType(64), 0)]
                     )
-                if not end_val:
-                    end_val = self._convert_node(
-                        iter_node
-                    ) or self.current_builder.call(
+                    end_val = self._convert_node(args_node[0])
+                elif len(args_node) >= 2:
+                    # range(start, stop) -> start=args[0], stop=args[1]
+                    start_val = self._convert_node(args_node[0])
+                    end_val = self._convert_node(args_node[1])
+                else:
+                    start_val = self.current_builder.call(
+                        self.create_int, [ir.Constant(ir.IntType(64), 0)]
+                    )
+                    end_val = self.current_builder.call(
                         self.create_int, [ir.Constant(ir.IntType(64), 10)]
                     )
 
@@ -1680,6 +2065,36 @@ class SiluToLLVMConverter:
                             )
 
                 return None
+
+        elif op == "list":
+            # List literal: create runtime list and append each element
+            list_obj = self.current_builder.call(self.create_list, [])
+            for elem_node in node[1] if len(node) > 1 else []:
+                elem_val = self._convert_node(elem_node)
+                if elem_val:
+                    self.current_builder.call(self.list_append, [list_obj, elem_val])
+            return list_obj
+
+        elif op == "subscript":
+            if len(node) >= 3:
+                obj_val = self._convert_node(node[1])
+                index_val = self._convert_node(node[2])
+                if obj_val and index_val:
+                    return self.current_builder.call(
+                        self.list_get, [obj_val, index_val]
+                    )
+            return None
+
+        elif op == "subscript_assign":
+            if len(node) >= 4:
+                obj_val = self._convert_node(node[1])
+                index_val = self._convert_node(node[2])
+                value_val = self._convert_node(node[3])
+                if obj_val and index_val and value_val:
+                    self.current_builder.call(
+                        self.list_set, [obj_val, index_val, value_val]
+                    )
+            return None
 
         elif op == "tuple":
             # Handle tuple creation
