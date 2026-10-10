@@ -282,3 +282,26 @@ class TestSiluToLLVMConverter:
         llvm_ir = _convert("print([1, 2].count(1))\n")
 
         assert 'call i1 @"pyobj_deep_eq"' in llvm_ir
+
+    def test_not_operator(self):
+        """not must call pyobj_truthy and negate into a bool."""
+        llvm_ir = _convert("print(not 0)\nprint(not 1)\n")
+
+        assert 'call i1 @"pyobj_truthy"' in llvm_ir
+        assert 'call {i32, i8*}* @"create_bool"' in llvm_ir
+
+    def test_and_or_short_circuit_chain(self):
+        """N-ary and/or must chain through sc blocks with truthiness."""
+        llvm_ir = _convert("y = 0 or [] or 7\nprint(y)\n")
+
+        assert "sc_finish:" in llvm_ir
+        assert "sc_next:" in llvm_ir
+        assert 'call i1 @"pyobj_truthy"' in llvm_ir
+
+    def test_truthiness_runtime(self):
+        """pyobj_truthy must dispatch on int/float/str/list tags."""
+        llvm_ir = _convert("if 0:\n    print(1)\nif []:\n    print(2)\n")
+
+        assert 'define i1 @"pyobj_truthy"' in llvm_ir
+        assert "truthy_list:" in llvm_ir
+        assert "truthy_str:" in llvm_ir

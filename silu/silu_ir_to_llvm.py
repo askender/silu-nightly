@@ -1122,6 +1122,62 @@ class SiluToLLVMConverter:
             items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
             return struct_ptr, length, items
 
+        # i1 pyobj_truthy(PyObject* obj) - Python truthiness by type
+        self.pyobj_truthy = ir.Function(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [pyobj_ptr]),
+            name="pyobj_truthy",
+        )
+        entry = self.pyobj_truthy.append_basic_block("entry")
+        dispatch_block = self.pyobj_truthy.append_basic_block("dispatch")
+        int_case = self.pyobj_truthy.append_basic_block("truthy_int")
+        float_case = self.pyobj_truthy.append_basic_block("truthy_float")
+        str_case = self.pyobj_truthy.append_basic_block("truthy_str")
+        list_case = self.pyobj_truthy.append_basic_block("truthy_list")
+        true_case = self.pyobj_truthy.append_basic_block("truthy_true")
+        false_case = self.pyobj_truthy.append_basic_block("truthy_false")
+        builder = ir.IRBuilder(entry)
+        (obj_arg,) = self.pyobj_truthy.args
+        null_obj = ir.Constant(pyobj_ptr, None)
+        is_null = builder.icmp_signed("==", obj_arg, null_obj)
+        builder.cbranch(is_null, false_case, dispatch_block)
+
+        builder.position_at_end(dispatch_block)
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        switch = builder.switch(tag, true_case)
+        switch.add_case(ir.Constant(i32, 0), int_case)
+        switch.add_case(ir.Constant(i32, 1), float_case)
+        switch.add_case(ir.Constant(i32, 2), str_case)
+        switch.add_case(ir.Constant(i32, 3), int_case)
+        switch.add_case(ir.Constant(i32, 4), list_case)
+
+        builder.position_at_end(int_case)
+        int_val = self._load_number_as_i64(builder, obj_arg)
+        builder.ret(builder.icmp_signed("!=", int_val, ir.Constant(i64, 0)))
+
+        builder.position_at_end(float_case)
+        f64_val = self._load_number_as_f64(builder, obj_arg)
+        builder.ret(
+            builder.fcmp_ordered("!=", f64_val, ir.Constant(ir.DoubleType(), 0.0))
+        )
+
+        builder.position_at_end(str_case)
+        data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
+        str_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
+        builder.ret(builder.icmp_signed("!=", str_len, ir.Constant(i32, 0)))
+
+        builder.position_at_end(list_case)
+        list_struct_ptr = self._load_list_struct(builder, obj_arg)
+        list_len = builder.load(builder.gep(list_struct_ptr, [zero32, zero32]))
+        builder.ret(builder.icmp_signed("!=", list_len, ir.Constant(i64, 0)))
+
+        builder.position_at_end(true_case)
+        builder.ret(ir.Constant(ir.IntType(1), 1))
+
+        builder.position_at_end(false_case)
+        builder.ret(ir.Constant(ir.IntType(1), 0))
+
         # i1 pyobj_deep_eq(PyObject* a, PyObject* b) - structural equality
         # numeric: value compare (int/bool/float mix); str: memcmp;
         # list: recursive pairwise compare
@@ -2175,36 +2231,34 @@ class SiluToLLVMConverter:
             func = self.functions[func_name]
             self._generate_function_body(func, func_def)
 
-    def _extract_bool_condition(self, test_val: ir.Value) -> ir.Value:
-        """Extract an i1 condition from a PyObject (non-zero int is true).
+    def _emit_truthiness(self, obj: ir.Value) -> ir.Value:
+        """Emit a null-aware truthiness test; returns an i1 phi.
 
-        Null pointers (unsupported/void values) are treated as false.
+        Null pointers (unsupported/void values) are treated as false,
+        everything else goes through the pyobj_truthy runtime.
         """
         builder = self.current_builder
         null_ptr = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
-        is_null = builder.icmp_signed("==", test_val, null_ptr)
+        is_null = builder.icmp_signed("==", obj, null_ptr)
 
         check_block = builder.block
-        load_block = self.current_function.append_basic_block("bool_load")
-        merge_block = self.current_function.append_basic_block("bool_merge")
-        builder.cbranch(is_null, merge_block, load_block)
+        call_block = self.current_function.append_basic_block("truthy_call")
+        merge_block = self.current_function.append_basic_block("truthy_merge")
+        builder.cbranch(is_null, merge_block, call_block)
 
-        builder.position_at_end(load_block)
-        data_ptr = builder.gep(
-            test_val,
-            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
-        )
-        data = builder.load(data_ptr)
-        i64_ptr = builder.bitcast(data, ir.PointerType(ir.IntType(64)))
-        bool_val = builder.load(i64_ptr)
-        nonzero = builder.icmp_signed("!=", bool_val, ir.Constant(ir.IntType(64), 0))
+        builder.position_at_end(call_block)
+        truthy = builder.call(self.pyobj_truthy, [obj])
         builder.branch(merge_block)
 
         builder.position_at_end(merge_block)
         phi = builder.phi(ir.IntType(1))
         phi.add_incoming(ir.Constant(ir.IntType(1), 0), check_block)
-        phi.add_incoming(nonzero, load_block)
+        phi.add_incoming(truthy, call_block)
         return phi
+
+    def _extract_bool_condition(self, test_val: ir.Value) -> ir.Value:
+        """Extract an i1 condition from a PyObject (Python truthiness)."""
+        return self._emit_truthiness(test_val)
 
     def _convert_list_for_loop(self, target_node, iter_node, body_stmts):
         """For loop over a list: for item in some_list."""
@@ -2391,6 +2445,49 @@ class SiluToLLVMConverter:
                 if left and right:
                     return self.current_builder.call(self.pyobj_mod, [left, right])
             return None
+
+        elif op == "not":
+            operand = self._convert_node(node[1])
+            if operand:
+                truthy = self._emit_truthiness(operand)
+                negated = self.current_builder.not_(truthy)
+                return self.current_builder.call(self.create_bool, [negated])
+            return None
+
+        elif op in ("and", "or"):
+            # N-ary short-circuit returning the deciding operand object:
+            #   a and b and c -> first falsy operand, else the last
+            #   a or b or c   -> first truthy operand, else the last
+            builder = self.current_builder
+            operands = node[1:]
+            is_and = op == "and"
+            null_const = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
+            result_ptr = builder.alloca(
+                ir.PointerType(self.pyobj.pyobj_type), name="sc_result"
+            )
+            end_block = self.current_function.append_basic_block("sc_end")
+
+            for index, operand_node in enumerate(operands):
+                val = self._convert_node(operand_node) or null_const
+                if index == len(operands) - 1:
+                    builder.store(val, result_ptr)
+                    builder.branch(end_block)
+                    break
+                truthy = self._emit_truthiness(val)
+                finish_block = self.current_function.append_basic_block("sc_finish")
+                next_block = self.current_function.append_basic_block("sc_next")
+                if is_and:
+                    builder.cbranch(truthy, next_block, finish_block)
+                else:
+                    builder.cbranch(truthy, finish_block, next_block)
+
+                builder.position_at_end(finish_block)
+                builder.store(val, result_ptr)
+                builder.branch(end_block)
+                builder.position_at_end(next_block)
+
+            builder.position_at_end(end_block)
+            return builder.load(result_ptr)
 
         elif op == "if_expr":
             if len(node) >= 4:
