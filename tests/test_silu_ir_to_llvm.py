@@ -235,3 +235,50 @@ class TestSiluToLLVMConverter:
 
         assert "print_list:" in llvm_ir
         assert 'c"[\\00"' in llvm_ir
+
+    def test_list_methods(self):
+        """reverse/insert/count/copy/clear runtime calls must be emitted."""
+        llvm_ir = _convert(
+            "l = [3, 1, 2]\nl.append(5)\nl.insert(0, 9)\nl.reverse()\n"
+            "n = l.count(1)\nm = l.copy()\nl.clear()\nprint(n, m)\n"
+        )
+
+        assert 'call {i32, i8*}* @"list_insert"' in llvm_ir
+        assert 'call {i32, i8*}* @"list_reverse"' in llvm_ir
+        assert 'call {i32, i8*}* @"list_count"' in llvm_ir
+        assert 'call {i32, i8*}* @"list_copy"' in llvm_ir
+        assert 'call void @"list_clear"' in llvm_ir
+
+    def test_list_concatenation(self):
+        """list + list must take the list_concat path in pyobj_add."""
+        llvm_ir = _convert("c = [1, 2] + [3]\nprint(c)\n")
+
+        assert "list_concat:" in llvm_ir
+
+    def test_string_methods(self):
+        """upper/lower/find/rfind runtime calls must be emitted."""
+        llvm_ir = _convert(
+            's = "Hello"\nprint(s.upper())\nprint(s.lower())\n'
+            'print(s.find("l"))\nprint(s.rfind("l"))\n'
+        )
+
+        assert 'call {i32, i8*}* @"str_upper"' in llvm_ir
+        assert 'call {i32, i8*}* @"str_lower"' in llvm_ir
+        assert 'call {i32, i8*}* @"str_find"' in llvm_ir
+        assert 'call {i32, i8*}* @"str_rfind"' in llvm_ir
+
+    def test_string_multiplication_and_equality(self):
+        """str*int repetition and str==str memcmp path must exist."""
+        llvm_ir = _convert(
+            'a = "ab" * 3\nb = "a" == "a"\nc = "a" != "b"\nprint(a, b, c)\n'
+        )
+
+        assert 'call {i32, i8*}* @"str_repeat"' in llvm_ir
+        assert "str_op:" in llvm_ir
+        assert 'call i32 @"memcmp"' in llvm_ir
+
+    def test_deep_equality_runtime(self):
+        """list_count must use structural deep equality."""
+        llvm_ir = _convert("print([1, 2].count(1))\n")
+
+        assert 'call i1 @"pyobj_deep_eq"' in llvm_ir
