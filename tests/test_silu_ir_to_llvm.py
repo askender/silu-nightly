@@ -305,3 +305,44 @@ class TestSiluToLLVMConverter:
         assert 'define i1 @"pyobj_truthy"' in llvm_ir
         assert "truthy_list:" in llvm_ir
         assert "truthy_str:" in llvm_ir
+
+    def test_dict_literal_subscript_len(self):
+        """Dict literals, key subscript read/write, and len()."""
+        llvm_ir = _convert(
+            'd = {"a": 1}\nprint(d["a"])\nd["b"] = 2\nprint(len(d))\nprint(d)\n'
+        )
+
+        assert 'define {i32, i8*}* @"create_dict"' in llvm_ir
+        assert 'call {i32, i8*}* @"pyobj_subscript"' in llvm_ir
+        assert 'call void @"pyobj_subscript_set"' in llvm_ir
+        assert "print_dict:" in llvm_ir
+
+    def test_dict_methods(self):
+        """get/setdefault/pop/clear must map to dict runtimes."""
+        llvm_ir = _convert(
+            'd = {"a": 1}\nprint(d.get("a"))\nprint(d.get("z", 5))\n'
+            'print(d.setdefault("b", 2))\nn = d.pop("a")\nd.clear()\n'
+        )
+
+        assert 'call {i32, i8*}* @"dict_get_or"' in llvm_ir
+        assert 'call {i32, i8*}* @"dict_setdefault"' in llvm_ir
+        assert 'call {i32, i8*}* @"dict_pop"' in llvm_ir
+        assert 'call void @"pyobj_clear"' in llvm_ir
+
+    def test_dict_builtin_constructor(self):
+        """dict(), dict({...}) and dict(k=v) must build dicts."""
+        llvm_ir = _convert('a = dict()\nb = dict({"k": 1})\nc = dict(m=5)\n')
+
+        assert 'call {i32, i8*}* @"create_dict"' in llvm_ir
+        assert 'call void @"dict_update"' in llvm_ir
+
+    def test_dunder_item_methods(self):
+        """__setitem__/__getitem__/__delitem__ map to dict runtimes."""
+        llvm_ir = _convert(
+            'd = {}\nd.__setitem__("2", "two")\n'
+            'print(d.__getitem__("2"))\nd.__delitem__("2")\n'
+        )
+
+        assert 'call void @"dict_set"' in llvm_ir
+        assert 'call {i32, i8*}* @"dict_get_or"' in llvm_ir
+        assert 'call {i32, i8*}* @"dict_pop"' in llvm_ir

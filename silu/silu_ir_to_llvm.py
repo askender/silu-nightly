@@ -70,6 +70,25 @@ class SiluToLLVMConverter:
             ]
         )
 
+        # Dict struct layout:
+        # {i64 count, i64 capacity, {PyObject* key, PyObject* value}* entries}
+        self.dict_entry_type = ir.LiteralStructType(
+            [
+                ir.PointerType(self.pyobj.pyobj_type),
+                ir.PointerType(self.pyobj.pyobj_type),
+            ]
+        )
+        self.dict_entries_ptr_type = ir.PointerType(
+            ir.ArrayType(self.dict_entry_type, 0)
+        )
+        self.dict_struct_type = ir.LiteralStructType(
+            [
+                ir.IntType(64),
+                ir.IntType(64),
+                self.dict_entries_ptr_type,
+            ]
+        )
+
         # Global context
         self.variables: Dict[
             str, ir.Value
@@ -174,6 +193,7 @@ class SiluToLLVMConverter:
         self._create_comparison_operations()
         self._create_list_runtime()
         self._create_list_and_str_method_runtime()
+        self._create_dict_runtime()
 
     def _create_pyobj_constructors(self):
         """Create PyObject constructor functions."""
@@ -720,6 +740,40 @@ class SiluToLLVMConverter:
         )
         self.pyobj_print = ir.Function(self.module, print_ty, name="pyobj_print")
 
+        # void pyobj_repr_print(PyObject* obj) - repr-style: strings quoted
+        self.pyobj_repr_print = ir.Function(
+            self.module, print_ty, name="pyobj_repr_print"
+        )
+        repr_entry = self.pyobj_repr_print.append_basic_block("entry")
+        repr_str_case = self.pyobj_repr_print.append_basic_block("repr_str")
+        repr_other = self.pyobj_repr_print.append_basic_block("repr_other")
+        repr_builder = ir.IRBuilder(repr_entry)
+        repr_obj = self.pyobj_repr_print.args[0]
+        repr_tag = repr_builder.load(
+            repr_builder.gep(
+                repr_obj,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+        )
+        is_str_tag = repr_builder.icmp_signed(
+            "==", repr_tag, ir.Constant(ir.IntType(32), 2)
+        )
+        repr_builder.cbranch(is_str_tag, repr_str_case, repr_other)
+
+        repr_builder.position_at_end(repr_str_case)
+        zero32r = ir.Constant(ir.IntType(32), 0)
+        one32r = ir.Constant(ir.IntType(32), 1)
+        r_data = repr_builder.load(repr_builder.gep(repr_obj, [zero32r, one32r]))
+        r_struct = repr_builder.bitcast(r_data, ir.PointerType(self.pyobj.string_type))
+        r_chars = repr_builder.load(repr_builder.gep(r_struct, [zero32r, one32r]))
+        quoted_fmt = self._create_global_string_with_builder("'%s'", repr_builder)
+        repr_builder.call(self.printf, [quoted_fmt, r_chars])
+        repr_builder.ret_void()
+
+        repr_builder.position_at_end(repr_other)
+        repr_builder.call(self.pyobj_print, [repr_obj])
+        repr_builder.ret_void()
+
         entry_block = self.pyobj_print.append_basic_block("entry")
         null_block = self.pyobj_print.append_basic_block("print_null")
         dispatch_block = self.pyobj_print.append_basic_block("dispatch")
@@ -728,6 +782,7 @@ class SiluToLLVMConverter:
         str_block = self.pyobj_print.append_basic_block("print_str")
         bool_block = self.pyobj_print.append_basic_block("print_bool")
         list_block = self.pyobj_print.append_basic_block("print_list")
+        dict_block = self.pyobj_print.append_basic_block("print_dict")
         default_block = self.pyobj_print.append_basic_block("default")
 
         builder = ir.IRBuilder(entry_block)
@@ -758,6 +813,7 @@ class SiluToLLVMConverter:
         switch.add_case(ir.Constant(ir.IntType(32), 2), str_block)  # str
         switch.add_case(ir.Constant(ir.IntType(32), 3), bool_block)  # bool
         switch.add_case(ir.Constant(ir.IntType(32), 4), list_block)  # list
+        switch.add_case(ir.Constant(ir.IntType(32), 5), dict_block)  # dict
 
         # Print list as [a, b, c] with recursive element printing
         builder.position_at_end(list_block)
@@ -806,6 +862,81 @@ class SiluToLLVMConverter:
         builder.position_at_end(list_done)
         close_bracket = self._create_global_string_with_builder("]", builder)
         builder.call(self.printf, [close_bracket])
+        builder.ret_void()
+
+        # Print dict as {'k': v, ...} with repr-style keys and values
+        builder.position_at_end(dict_block)
+        d_data = builder.load(
+            builder.gep(
+                obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+            )
+        )
+        d_struct = builder.bitcast(d_data, ir.PointerType(self.dict_struct_type))
+        d_count = builder.load(
+            builder.gep(
+                d_struct,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+        )
+        d_entries = builder.load(
+            builder.gep(
+                d_struct,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 2)],
+            )
+        )
+        open_brace = self._create_global_string_with_builder("{", builder)
+        builder.call(self.printf, [open_brace])
+        d_check = self.pyobj_print.append_basic_block("dict_check")
+        d_body = self.pyobj_print.append_basic_block("dict_body")
+        d_sep = self.pyobj_print.append_basic_block("dict_sep")
+        d_key = self.pyobj_print.append_basic_block("dict_key")
+        d_incr = self.pyobj_print.append_basic_block("dict_incr")
+        d_done = self.pyobj_print.append_basic_block("dict_done")
+        d_idx = builder.alloca(ir.IntType(64), name="dict_print_idx")
+        builder.store(ir.Constant(ir.IntType(64), 0), d_idx)
+        builder.branch(d_check)
+
+        builder.position_at_end(d_check)
+        d_i = builder.load(d_idx)
+        d_more = builder.icmp_signed("<", d_i, d_count)
+        builder.cbranch(d_more, d_body, d_done)
+
+        builder.position_at_end(d_body)
+        d_not_first = builder.icmp_signed(">", d_i, ir.Constant(ir.IntType(64), 0))
+        builder.cbranch(d_not_first, d_sep, d_key)
+
+        builder.position_at_end(d_sep)
+        comma = self._create_global_string_with_builder(", ", builder)
+        builder.call(self.printf, [comma])
+        builder.branch(d_key)
+
+        builder.position_at_end(d_key)
+        d_entry = builder.gep(d_entries, [ir.Constant(ir.IntType(32), 0), d_i])
+        d_key_obj = builder.load(
+            builder.gep(
+                d_entry,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+        )
+        d_val_obj = builder.load(
+            builder.gep(
+                d_entry,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+            )
+        )
+        builder.call(self.pyobj_repr_print, [d_key_obj])
+        colon = self._create_global_string_with_builder(": ", builder)
+        builder.call(self.printf, [colon])
+        builder.call(self.pyobj_repr_print, [d_val_obj])
+        builder.branch(d_incr)
+
+        builder.position_at_end(d_incr)
+        builder.store(builder.add(d_i, ir.Constant(ir.IntType(64), 1)), d_idx)
+        builder.branch(d_check)
+
+        builder.position_at_end(d_done)
+        close_brace = self._create_global_string_with_builder("}", builder)
+        builder.call(self.printf, [close_brace])
         builder.ret_void()
 
         # Print float via the Python-style repr runtime
@@ -1059,6 +1190,8 @@ class SiluToLLVMConverter:
         list_block = self.pyobj_len.append_basic_block("len_list")
         str_check_block = self.pyobj_len.append_basic_block("str_check")
         str_block = self.pyobj_len.append_basic_block("len_str")
+        dict_check_block = self.pyobj_len.append_basic_block("dict_check")
+        dict_block = self.pyobj_len.append_basic_block("len_dict")
         error_block = self.pyobj_len.append_basic_block("error")
         builder = ir.IRBuilder(entry)
         obj_arg = self.pyobj_len.args[0]
@@ -1073,13 +1206,25 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(str_check_block)
         is_str = builder.icmp_signed("==", tag, ir.Constant(i32, 2))
-        builder.cbranch(is_str, str_block, error_block)
+        builder.cbranch(is_str, str_block, dict_check_block)
 
         builder.position_at_end(str_block)
         data = builder.load(builder.gep(obj_arg, [zero32, one32]))
         str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
         str_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
         builder.ret(builder.call(self.create_int, [builder.sext(str_len, i64)]))
+
+        builder.position_at_end(dict_check_block)
+        is_dict = builder.icmp_signed("==", tag, ir.Constant(i32, 5))
+        builder.cbranch(is_dict, dict_block, error_block)
+
+        builder.position_at_end(dict_block)
+        dict_data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        dict_struct_ptr = builder.bitcast(
+            dict_data, ir.PointerType(self.dict_struct_type)
+        )
+        dict_count = builder.load(builder.gep(dict_struct_ptr, [zero32, zero32]))
+        builder.ret(builder.call(self.create_int, [dict_count]))
 
         builder.position_at_end(error_block)
         builder.ret(ir.Constant(pyobj_ptr, None))
@@ -1622,6 +1767,450 @@ class SiluToLLVMConverter:
             self.str_rfind,
             True,
         )
+
+    def _create_dict_runtime(self):
+        """Runtime for dict PyObjects (tag 5) with linear-scan entries."""
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        entry_ptr_t = self.dict_entries_ptr_type
+        zero32 = ir.Constant(i32, 0)
+        one32 = ir.Constant(i32, 1)
+        two32 = ir.Constant(i32, 2)
+        zero64 = ir.Constant(i64, 0)
+        one64 = ir.Constant(i64, 1)
+
+        def load_dict_parts(builder, obj):
+            data = builder.load(builder.gep(obj, [zero32, one32]))
+            struct_ptr = builder.bitcast(data, ir.PointerType(self.dict_struct_type))
+            count = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+            entries = builder.load(builder.gep(struct_ptr, [zero32, two32]))
+            return struct_ptr, count, entries
+
+        def find_entry(builder, func, count, entries, key, prefix):
+            """Linear scan; returns (index_ptr, found_ptr) allocas."""
+            idx_ptr = builder.alloca(i64, name=f"{prefix}_i")
+            found_ptr = builder.alloca(i64, name=f"{prefix}_found")
+            builder.store(ir.Constant(i64, -1), found_ptr)
+            builder.store(zero64, idx_ptr)
+            cond = func.append_basic_block(f"{prefix}_cond")
+            body = func.append_basic_block(f"{prefix}_body")
+            done = func.append_basic_block(f"{prefix}_done")
+            builder.branch(cond)
+
+            builder.position_at_end(cond)
+            current = builder.load(idx_ptr)
+            more = builder.and_(
+                builder.icmp_signed("<", current, count),
+                builder.icmp_signed(
+                    "==", builder.load(found_ptr), ir.Constant(i64, -1)
+                ),
+            )
+            builder.cbranch(more, body, done)
+
+            builder.position_at_end(body)
+            entry_ptr = builder.gep(
+                entries, [ir.Constant(ir.IntType(32), 0), builder.load(idx_ptr)]
+            )
+            entry_key = builder.load(builder.gep(entry_ptr, [zero32, zero32]))
+            same = builder.call(self.pyobj_deep_eq, [entry_key, key])
+            hit_block = func.append_basic_block(f"{prefix}_hit")
+            step_block = func.append_basic_block(f"{prefix}_step")
+            builder.cbranch(same, hit_block, step_block)
+
+            builder.position_at_end(hit_block)
+            builder.store(builder.load(idx_ptr), found_ptr)
+            builder.branch(step_block)
+
+            builder.position_at_end(step_block)
+            builder.store(builder.add(current, one64), idx_ptr)
+            builder.branch(cond)
+
+            builder.position_at_end(done)
+            return idx_ptr, found_ptr
+
+        def ensure_capacity(
+            builder, func, struct_ptr, count, capacity, entries, prefix
+        ):
+            """Grow entries array when count == capacity; returns entries ptr."""
+            full = builder.icmp_signed("==", count, capacity)
+            grow_block = func.append_basic_block(f"{prefix}_grow")
+            after_block = func.append_basic_block(f"{prefix}_after")
+            builder.cbranch(full, grow_block, after_block)
+
+            builder.position_at_end(grow_block)
+            new_capacity = builder.select(
+                builder.icmp_signed("==", capacity, zero64),
+                ir.Constant(i64, 4),
+                builder.mul(capacity, ir.Constant(i64, 2)),
+            )
+            fresh = builder.call(
+                self.malloc,
+                [builder.mul(new_capacity, ir.Constant(i64, 16))],
+            )
+            has_old = builder.icmp_signed(">", count, zero64)
+            copy_block = func.append_basic_block(f"{prefix}_copy")
+            done_block = func.append_basic_block(f"{prefix}_grown")
+            builder.cbranch(has_old, copy_block, done_block)
+
+            builder.position_at_end(copy_block)
+            builder.call(
+                self.memcpy,
+                [
+                    fresh,
+                    builder.bitcast(entries, i8p),
+                    builder.mul(count, ir.Constant(i64, 16)),
+                    ir.Constant(ir.IntType(1), 0),
+                ],
+            )
+            builder.branch(done_block)
+
+            builder.position_at_end(done_block)
+            typed = builder.bitcast(fresh, entry_ptr_t)
+            builder.store(new_capacity, builder.gep(struct_ptr, [zero32, one32]))
+            builder.store(typed, builder.gep(struct_ptr, [zero32, two32]))
+            builder.branch(after_block)
+
+            builder.position_at_end(after_block)
+            return builder.load(builder.gep(struct_ptr, [zero32, two32]))
+
+        # PyObject* create_dict()
+        self.create_dict = ir.Function(
+            self.module, ir.FunctionType(pyobj_ptr, []), name="create_dict"
+        )
+        builder = ir.IRBuilder(self.create_dict.append_basic_block("entry"))
+        obj_ptr = builder.call(self.malloc, [ir.Constant(i64, 16)])
+        obj = builder.bitcast(obj_ptr, pyobj_ptr)
+        builder.store(ir.Constant(i32, 5), builder.gep(obj, [zero32, zero32]))
+        dict_ptr = builder.call(self.malloc, [ir.Constant(i64, 24)])
+        dict_struct_ptr = builder.bitcast(
+            dict_ptr, ir.PointerType(self.dict_struct_type)
+        )
+        builder.store(zero64, builder.gep(dict_struct_ptr, [zero32, zero32]))
+        builder.store(zero64, builder.gep(dict_struct_ptr, [zero32, one32]))
+        builder.store(
+            ir.Constant(entry_ptr_t, None),
+            builder.gep(dict_struct_ptr, [zero32, two32]),
+        )
+        builder.store(dict_ptr, builder.gep(obj, [zero32, one32]))
+        builder.ret(obj)
+
+        # PyObject* dict_get_or(PyObject* d, PyObject* key, PyObject* default)
+        self.dict_get_or = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
+            name="dict_get_or",
+        )
+        entry = self.dict_get_or.append_basic_block("entry")
+        found_block = self.dict_get_or.append_basic_block("found")
+        missing_block = self.dict_get_or.append_basic_block("missing")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg, default_arg = self.dict_get_or.args
+        _, count, entries = load_dict_parts(builder, dict_arg)
+        idx_ptr, found_ptr = find_entry(
+            builder, self.dict_get_or, count, entries, key_arg, "get"
+        )
+        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
+        builder.cbranch(hit, found_block, missing_block)
+
+        builder.position_at_end(found_block)
+        entry_ptr = builder.gep(
+            entries, [ir.Constant(ir.IntType(32), 0), builder.load(found_ptr)]
+        )
+        builder.ret(builder.load(builder.gep(entry_ptr, [zero32, one32])))
+
+        builder.position_at_end(missing_block)
+        builder.ret(default_arg)
+
+        # void dict_set(PyObject* d, PyObject* key, PyObject* value)
+        self.dict_set = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
+            name="dict_set",
+        )
+        entry = self.dict_set.append_basic_block("entry")
+        replace_block = self.dict_set.append_basic_block("replace")
+        insert_block = self.dict_set.append_basic_block("insert")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg, value_arg = self.dict_set.args
+        struct_ptr, count, entries = load_dict_parts(builder, dict_arg)
+        idx_ptr, found_ptr = find_entry(
+            builder, self.dict_set, count, entries, key_arg, "set"
+        )
+        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
+        builder.cbranch(hit, replace_block, insert_block)
+
+        builder.position_at_end(replace_block)
+        entry_ptr = builder.gep(
+            entries, [ir.Constant(ir.IntType(32), 0), builder.load(found_ptr)]
+        )
+        builder.store(value_arg, builder.gep(entry_ptr, [zero32, one32]))
+        builder.ret_void()
+
+        builder.position_at_end(insert_block)
+        entries = ensure_capacity(
+            builder,
+            self.dict_set,
+            struct_ptr,
+            count,
+            builder.load(builder.gep(struct_ptr, [zero32, one32])),
+            entries,
+            "set",
+        )
+        entry_ptr = builder.gep(entries, [ir.Constant(ir.IntType(32), 0), count])
+        builder.store(key_arg, builder.gep(entry_ptr, [zero32, zero32]))
+        builder.store(value_arg, builder.gep(entry_ptr, [zero32, one32]))
+        builder.store(
+            builder.add(count, one64), builder.gep(struct_ptr, [zero32, zero32])
+        )
+        builder.ret_void()
+
+        # PyObject* dict_pop(PyObject* d, PyObject* key)
+        self.dict_pop = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
+            name="dict_pop",
+        )
+        entry = self.dict_pop.append_basic_block("entry")
+        found_block = self.dict_pop.append_basic_block("found")
+        missing_block = self.dict_pop.append_basic_block("missing")
+        remove_body = self.dict_pop.append_basic_block("remove_body")
+        remove_done = self.dict_pop.append_basic_block("remove_done")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg = self.dict_pop.args
+        struct_ptr, count, entries = load_dict_parts(builder, dict_arg)
+        idx_ptr, found_ptr = find_entry(
+            builder, self.dict_pop, count, entries, key_arg, "pop"
+        )
+        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
+        builder.cbranch(hit, found_block, missing_block)
+
+        builder.position_at_end(found_block)
+        remove_at = builder.load(found_ptr)
+        entry_ptr = builder.gep(entries, [ir.Constant(ir.IntType(32), 0), remove_at])
+        removed_value = builder.load(builder.gep(entry_ptr, [zero32, one32]))
+        builder.store(remove_at, idx_ptr)
+        builder.branch(remove_body)
+
+        # shift entries left from the removed slot
+        builder.position_at_end(remove_body)
+        current = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", builder.add(current, one64), count)
+        shift_block = self.dict_pop.append_basic_block("remove_shift")
+        builder.cbranch(more, shift_block, remove_done)
+
+        builder.position_at_end(shift_block)
+        next_entry = builder.gep(
+            entries, [ir.Constant(ir.IntType(32), 0), builder.add(current, one64)]
+        )
+        dst = builder.gep(entries, [ir.Constant(ir.IntType(32), 0), current])
+        builder.call(
+            self.memcpy,
+            [
+                builder.bitcast(dst, i8p),
+                builder.bitcast(next_entry, i8p),
+                ir.Constant(i64, 16),
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        builder.store(builder.add(current, one64), idx_ptr)
+        builder.branch(remove_body)
+
+        builder.position_at_end(remove_done)
+        builder.store(
+            builder.sub(count, one64), builder.gep(struct_ptr, [zero32, zero32])
+        )
+        builder.ret(removed_value)
+
+        builder.position_at_end(missing_block)
+        builder.ret(ir.Constant(pyobj_ptr, None))
+
+        # void dict_clear_entries(PyObject* d)
+        self.dict_clear_entries = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr]),
+            name="dict_clear_entries",
+        )
+        builder = ir.IRBuilder(self.dict_clear_entries.append_basic_block("entry"))
+        struct_ptr, _, _ = load_dict_parts(builder, self.dict_clear_entries.args[0])
+        builder.store(zero64, builder.gep(struct_ptr, [zero32, zero32]))
+        builder.ret_void()
+
+        # {i32,i8*}* pyobj_subscript(PyObject* obj, PyObject* key)
+        # tag dispatch: 4 -> list_get, 5 -> dict_get_or(key, null)
+        self.pyobj_subscript = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
+            name="pyobj_subscript",
+        )
+        entry = self.pyobj_subscript.append_basic_block("entry")
+        list_block = self.pyobj_subscript.append_basic_block("sub_list")
+        dict_check = self.pyobj_subscript.append_basic_block("sub_dict_check")
+        dict_do = self.pyobj_subscript.append_basic_block("sub_dict_do")
+        error_block = self.pyobj_subscript.append_basic_block("sub_error")
+        builder = ir.IRBuilder(entry)
+        obj_arg, key_arg = self.pyobj_subscript.args
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        is_list = builder.icmp_signed("==", tag, ir.Constant(i32, 4))
+        builder.cbranch(is_list, list_block, dict_check)
+
+        builder.position_at_end(list_block)
+        builder.ret(builder.call(self.list_get, [obj_arg, key_arg]))
+
+        builder.position_at_end(dict_check)
+        is_dict = builder.icmp_signed("==", tag, ir.Constant(i32, 5))
+        builder.cbranch(is_dict, dict_do, error_block)
+
+        builder.position_at_end(dict_do)
+        builder.ret(
+            builder.call(
+                self.dict_get_or, [obj_arg, key_arg, ir.Constant(pyobj_ptr, None)]
+            )
+        )
+
+        builder.position_at_end(error_block)
+        error_msg = self._create_global_string_with_builder(
+            "TypeError: object is not subscriptable\n", builder
+        )
+        builder.call(self.printf, [error_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        # void pyobj_subscript_set(PyObject* obj, PyObject* key, PyObject* value)
+        self.pyobj_subscript_set = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
+            name="pyobj_subscript_set",
+        )
+        entry = self.pyobj_subscript_set.append_basic_block("entry")
+        list_block = self.pyobj_subscript_set.append_basic_block("sub_list")
+        dict_check = self.pyobj_subscript_set.append_basic_block("sub_dict_check")
+        dict_do = self.pyobj_subscript_set.append_basic_block("sub_dict_do")
+        error_block = self.pyobj_subscript_set.append_basic_block("sub_error")
+        builder = ir.IRBuilder(entry)
+        obj_arg, key_arg, value_arg = self.pyobj_subscript_set.args
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        is_list = builder.icmp_signed("==", tag, ir.Constant(i32, 4))
+        builder.cbranch(is_list, list_block, dict_check)
+
+        builder.position_at_end(list_block)
+        builder.call(self.list_set, [obj_arg, key_arg, value_arg])
+        builder.ret_void()
+
+        builder.position_at_end(dict_check)
+        is_dict = builder.icmp_signed("==", tag, ir.Constant(i32, 5))
+        builder.cbranch(is_dict, dict_do, error_block)
+
+        builder.position_at_end(dict_do)
+        builder.call(self.dict_set, [obj_arg, key_arg, value_arg])
+        builder.ret_void()
+
+        builder.position_at_end(error_block)
+        error_msg = self._create_global_string_with_builder(
+            "TypeError: object does not support item assignment\n", builder
+        )
+        builder.call(self.printf, [error_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        # PyObject* dict_setdefault(PyObject* d, PyObject* key, PyObject* default)
+        self.dict_setdefault = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
+            name="dict_setdefault",
+        )
+        entry = self.dict_setdefault.append_basic_block("entry")
+        found_block = self.dict_setdefault.append_basic_block("found")
+        insert_block = self.dict_setdefault.append_basic_block("insert")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg, default_arg = self.dict_setdefault.args
+        _, count, entries = load_dict_parts(builder, dict_arg)
+        idx_ptr, found_ptr = find_entry(
+            builder, self.dict_setdefault, count, entries, key_arg, "sd"
+        )
+        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
+        builder.cbranch(hit, found_block, insert_block)
+
+        builder.position_at_end(found_block)
+        entry_ptr = builder.gep(
+            entries, [ir.Constant(ir.IntType(32), 0), builder.load(found_ptr)]
+        )
+        builder.ret(builder.load(builder.gep(entry_ptr, [zero32, one32])))
+
+        builder.position_at_end(insert_block)
+        builder.call(self.dict_set, [dict_arg, key_arg, default_arg])
+        builder.ret(default_arg)
+
+        # void pyobj_clear(PyObject* obj) - clear() for lists and dicts
+        self.pyobj_clear = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr]),
+            name="pyobj_clear",
+        )
+        entry = self.pyobj_clear.append_basic_block("entry")
+        list_case = self.pyobj_clear.append_basic_block("clear_list")
+        dict_check = self.pyobj_clear.append_basic_block("clear_dict_check")
+        dict_case = self.pyobj_clear.append_basic_block("clear_dict")
+        error_block = self.pyobj_clear.append_basic_block("clear_error")
+        builder = ir.IRBuilder(entry)
+        obj_arg = self.pyobj_clear.args[0]
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        is_list = builder.icmp_signed("==", tag, ir.Constant(i32, 4))
+        builder.cbranch(is_list, list_case, dict_check)
+
+        builder.position_at_end(list_case)
+        builder.call(self.list_clear, [obj_arg])
+        builder.ret_void()
+
+        builder.position_at_end(dict_check)
+        is_dict = builder.icmp_signed("==", tag, ir.Constant(i32, 5))
+        builder.cbranch(is_dict, dict_case, error_block)
+
+        builder.position_at_end(dict_case)
+        builder.call(self.dict_clear_entries, [obj_arg])
+        builder.ret_void()
+
+        builder.position_at_end(error_block)
+        error_msg = self._create_global_string_with_builder(
+            "AttributeError: object has no clear()\n", builder
+        )
+        builder.call(self.printf, [error_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        # void dict_update(PyObject* dst, PyObject* src) - copy all entries
+        self.dict_update = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr]),
+            name="dict_update",
+        )
+        entry = self.dict_update.append_basic_block("entry")
+        loop_check = self.dict_update.append_basic_block("upd_check")
+        loop_body = self.dict_update.append_basic_block("upd_body")
+        loop_done = self.dict_update.append_basic_block("upd_done")
+        builder = ir.IRBuilder(entry)
+        dst_arg, src_arg = self.dict_update.args
+        _, src_count, src_entries = load_dict_parts(builder, src_arg)
+        upd_idx = builder.alloca(i64, name="upd_i")
+        builder.store(zero64, upd_idx)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_check)
+        upd_i = builder.load(upd_idx)
+        upd_more = builder.icmp_signed("<", upd_i, src_count)
+        builder.cbranch(upd_more, loop_body, loop_done)
+
+        builder.position_at_end(loop_body)
+        upd_entry = builder.gep(src_entries, [ir.Constant(ir.IntType(32), 0), upd_i])
+        upd_key = builder.load(builder.gep(upd_entry, [zero32, zero32]))
+        upd_value = builder.load(builder.gep(upd_entry, [zero32, one32]))
+        builder.call(self.dict_set, [dst_arg, upd_key, upd_value])
+        builder.store(builder.add(upd_i, one64), upd_idx)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_done)
+        builder.ret_void()
 
     def _create_str_repeat_runtime(self):
         """PyObject* str_repeat(PyObject* s, PyObject* count) - "ab" * 3.
@@ -2554,11 +3143,18 @@ class SiluToLLVMConverter:
                     "insert": (self.list_insert, 2, True),
                     "count": (self.list_count, 1, True),
                     "copy": (self.list_copy, 0, True),
-                    "clear": (self.list_clear, 0, False),
+                    "clear": (self.pyobj_clear, 0, False),
                     "upper": (self.str_upper, 0, True),
                     "lower": (self.str_lower, 0, True),
                     "find": (self.str_find, 1, True),
                     "rfind": (self.str_rfind, 1, True),
+                    # dict methods
+                    "get": (self.dict_get_or, 2, True),
+                    "setdefault": (self.dict_setdefault, 2, True),
+                    "pop": (self.dict_pop, 1, True),
+                    "__getitem__": (self.dict_get_or, 2, True),
+                    "__setitem__": (self.dict_set, 2, False),
+                    "__delitem__": (self.dict_pop, 1, False),
                 }
                 entry = method_map.get(method_name)
                 if obj_val and entry:
@@ -2567,6 +3163,12 @@ class SiluToLLVMConverter:
                         self._convert_node(arg_node)
                         for arg_node in args_node[:arg_count]
                     ]
+                    # Optional-argument methods (get/setdefault) pad with
+                    # null, which the runtimes treat as None.
+                    while len(arg_vals) < arg_count:
+                        arg_vals.append(
+                            ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
+                        )
                     if len(arg_vals) == arg_count and all(arg_vals):
                         result = self.current_builder.call(func, [obj_val] + arg_vals)
                         return result if has_result else None
@@ -2607,6 +3209,24 @@ class SiluToLLVMConverter:
                         if arg_val:
                             return self.current_builder.call(self.list_sum, [arg_val])
                     return None
+
+                elif func_name == "dict":
+                    # dict(), dict({...}), dict(a=1, b=2)
+                    dict_obj = self.current_builder.call(self.create_dict, [])
+                    for arg_node in args_node:
+                        arg_val = self._convert_node(arg_node)
+                        if arg_val:
+                            self.current_builder.call(
+                                self.dict_update, [dict_obj, arg_val]
+                            )
+                    for kw_name, kw_value_node in node[3] if len(node) > 3 else []:
+                        key_val = self._convert_node(["const", kw_name])
+                        value_val = self._convert_node(kw_value_node)
+                        if key_val and value_val:
+                            self.current_builder.call(
+                                self.dict_set, [dict_obj, key_val, value_val]
+                            )
+                    return dict_obj
 
                 elif func_name == "range":
                     # Handle range function with start and stop parameters
@@ -2951,8 +3571,9 @@ class SiluToLLVMConverter:
                 obj_val = self._convert_node(node[1])
                 index_val = self._convert_node(node[2])
                 if obj_val and index_val:
+                    # Runtime tag dispatch: list index vs dict key
                     return self.current_builder.call(
-                        self.list_get, [obj_val, index_val]
+                        self.pyobj_subscript, [obj_val, index_val]
                     )
             return None
 
@@ -2963,9 +3584,21 @@ class SiluToLLVMConverter:
                 value_val = self._convert_node(node[3])
                 if obj_val and index_val and value_val:
                     self.current_builder.call(
-                        self.list_set, [obj_val, index_val, value_val]
+                        self.pyobj_subscript_set, [obj_val, index_val, value_val]
                     )
             return None
+
+        elif op == "dict":
+            # Dict literal: {"k": v, ...} pairs
+            dict_obj = self.current_builder.call(self.create_dict, [])
+            for pair_node in node[1] if len(node) > 1 else []:
+                key_val = self._convert_node(pair_node[0])
+                value_val = self._convert_node(pair_node[1])
+                if key_val and value_val:
+                    self.current_builder.call(
+                        self.dict_set, [dict_obj, key_val, value_val]
+                    )
+            return dict_obj
 
         elif op == "tuple":
             # Handle tuple creation
