@@ -1,0 +1,35 @@
+[package]
+name = "silu-benchmarks"
+version = "0.5.0"
+edition = "2021"
+
+# Mirrors of benchmarks/*.si. Semantics follow the Python versions:
+# s = s + "x" (new string each step, not push_str), i64 arithmetic with
+# Python-compatible operations for non-negative operands.
+
+[[bin]]
+name = "arith"
+path = "src/arith.rs"
+
+[[bin]]
+name = "fib"
+path = "src/fib.rs"
+
+[[bin]]
+name = "float"
+path = "src/float.rs"
+
+[[bin]]
+name = "list"
+path = "src/list.rs"
+
+[[bin]]
+name = "dict"
+path = "src/dict.rs"
+
+[[bin]]
+name = "string"
+path = "src/string.rs"
+
+[profile.release]
+opt-level = 3

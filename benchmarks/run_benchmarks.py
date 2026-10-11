@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Benchmark: Silu interpreter vs CPython vs compiled native binary.
+"""Benchmark: Silu interpreter vs CPython vs compiled binary vs Rust.
 
 For each benchmarks/*.si program:
 1. Compile through the silu ir/llvm pipeline with clang.
-2. Verify the binary, the Silu interpreter, AND CPython running the
-   same file directly all produce identical output.
-3. Time 3 runs of each (median), including process startup.
+2. Verify the binary, the Silu interpreter, CPython running the same
+   file directly, AND the hand-written Rust mirror
+   (benchmarks/rust/src/*.rs) all produce identical output.
+3. Time runs of each (median), including process startup.
 
 The .si sources are valid Python (Silu syntax is a Python subset), so
-CPython executes them directly - no translation involved.
+CPython executes them directly - no translation involved. The Rust
+mirrors are equivalent programs, not translations of the same IR.
 
 Usage: python benchmarks/run_benchmarks.py [--runs N] [--filter substr]
+[--no-rust-build]
 """
 
 import argparse
@@ -29,8 +32,17 @@ CPYTHON = sys.executable
 
 
 def run(cmd, timeout=300):
+    if isinstance(cmd, dict):
+        cwd = cmd["cwd"]
+        cmd = cmd["cmd"]
+    else:
+        cwd = None
     return subprocess.run(
-        [str(c) for c in cmd], capture_output=True, text=True, timeout=timeout
+        [str(c) for c in cmd],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=cwd,
     )
 
 
@@ -50,6 +62,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--filter", default="")
+    parser.add_argument("--no-rust-build", action="store_true")
     args = parser.parse_args()
 
     programs = sorted(
@@ -59,8 +72,26 @@ def main():
         print("no benchmark programs matched", file=sys.stderr)
         return 1
 
+    # Build the Rust mirrors once (skip with --no-rust-build)
+    rust_dir = REPO / "benchmarks" / "rust"
+    rust_bins = {}
+    if not args.no_rust_build and (rust_dir / "Cargo.toml").exists():
+        build = run(
+            {"cmd": ["cargo", "build", "--release"], "cwd": str(rust_dir)},
+            timeout=600,
+        )
+        if build.returncode != 0:
+            print(
+                "warning: cargo build failed, rust column disabled",
+                file=sys.stderr,
+            )
+    for program in programs:
+        candidate = rust_dir / "target" / "release" / program.stem
+        if candidate.exists():
+            rust_bins[program.stem] = candidate
+
     with tempfile.TemporaryDirectory() as tmp:
-        # Startup baseline: minimal program through all three paths
+        # Startup baseline: minimal program through all paths
         baseline = Path(tmp) / "hello.si"
         baseline.write_text('print("ok")\n')
         baseline_ir = Path(tmp) / "hello.ir.json"
@@ -78,9 +109,9 @@ def main():
         rows = []
         print(
             f"{'program':<10} {'silu-int':>10} {'cpython':>10} {'binary':>10} "
-            f"{'vs-int':>7} {'vs-cpy':>7}  match"
+            f"{'rust':>10} {'vs-int':>7} {'vs-cpy':>7} {'vs-rust':>8}  match"
         )
-        print("-" * 72)
+        print("-" * 92)
         for program in programs:
             ir_file = Path(tmp) / (program.stem + ".ir.json")
             ll_file = Path(tmp) / (program.stem + ".ll")
@@ -102,35 +133,50 @@ def main():
             cpython_time, cpython_out = median_time([CPYTHON, program], args.runs)
             bin_time, bin_out = median_time([binary], args.runs)
 
-            match = "ok" if interp_out == bin_out == cpython_out else "MISMATCH!"
+            rust_time = None
+            rust_out = None
+            rust_bin = rust_bins.get(program.stem)
+            if rust_bin is not None:
+                rust_time, rust_out = median_time([rust_bin], args.runs)
+
+            outputs = [interp_out, bin_out, cpython_out]
+            if rust_out is not None:
+                outputs.append(rust_out)
+            match = "ok" if len(set(outputs)) == 1 else "MISMATCH!"
             vs_interp = interp_time / bin_time if bin_time else float("inf")
             vs_cpython = cpython_time / bin_time if bin_time else float("inf")
+            vs_rust = rust_time / bin_time if rust_time and bin_time else float("nan")
             rows.append(
                 (
                     program.stem,
                     interp_time,
                     cpython_time,
                     bin_time,
+                    rust_time,
                     vs_interp,
                     vs_cpython,
+                    vs_rust,
                 )
             )
+            rust_str = f"{rust_time:>9.4f}s" if rust_time is not None else " " * 10
             print(
                 f"{program.stem:<10} {interp_time:>9.3f}s {cpython_time:>9.3f}s "
-                f"{bin_time:>9.4f}s {vs_interp:>6.0f}x {vs_cpython:>6.1f}x  {match}"
+                f"{bin_time:>9.4f}s {rust_str} {vs_interp:>6.0f}x "
+                f"{vs_cpython:>6.1f}x {vs_rust:>7.1f}x  {match}"
             )
 
-        print("-" * 72)
+        print("-" * 92)
         print(
             f"startup baseline: silu-int {interp_base:.3f}s, "
             f"cpython {cpython_base:.3f}s, binary {bin_base:.4f}s"
         )
         if rows:
-            geo_vs_int = statistics.geometric_mean(r[4] for r in rows)
-            geo_vs_cpy = statistics.geometric_mean(r[5] for r in rows)
+            geo_vs_int = statistics.geometric_mean(r[5] for r in rows)
+            geo_vs_cpy = statistics.geometric_mean(r[6] for r in rows)
+            geo_vs_rust = statistics.geometric_mean(r[7] for r in rows if r[7] == r[7])
             print(
                 f"geometric mean: {geo_vs_int:.0f}x vs silu-int, "
-                f"{geo_vs_cpy:.1f}x vs cpython"
+                f"{geo_vs_cpy:.1f}x vs cpython, {geo_vs_rust:.1f}x vs rust"
             )
     return 0
 
