@@ -871,7 +871,7 @@ class SiluToLLVMConverter:
         builder.position_at_end(elem_block)
         item_slot = builder.gep(items, [counter])
         item = builder.load(item_slot)
-        builder.call(self.pyobj_print, [item])
+        builder.call(self.pyobj_repr_print, [item])
         builder.branch(loop_incr)
 
         builder.position_at_end(loop_incr)

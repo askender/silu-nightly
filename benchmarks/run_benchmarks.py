@@ -99,7 +99,7 @@ def main():
         baseline_bin = Path(tmp) / "hello_bin"
         run([SILU, "ir", baseline, "--output", baseline_ir])
         run([SILU, "llvm", baseline_ir, "--output", baseline_ll])
-        clang_result = run(["clang", baseline_ll, "-o", baseline_bin])
+        clang_result = run(["clang", "-O2", baseline_ll, "-o", baseline_bin])
         if clang_result.returncode != 0:
             raise RuntimeError("baseline clang failed")
         interp_base, _ = median_time([SILU, "interpret", baseline], args.runs)
@@ -123,7 +123,7 @@ def main():
             if run([SILU, "llvm", ir_file, "--output", ll_file]).returncode != 0:
                 print(f"{program.stem:<10}  SKIP (llvm failed)")
                 continue
-            if run(["clang", ll_file, "-o", binary]).returncode != 0:
+            if run(["clang", "-O2", ll_file, "-o", binary]).returncode != 0:
                 print(f"{program.stem:<10}  SKIP (clang failed)")
                 continue
 

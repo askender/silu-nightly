@@ -153,3 +153,73 @@ class TestTypedCodegen:
         llvm_ir = _convert("a: bool = True\nb: bool = False\nprint(a and not b)\n")
 
         assert "xor i1" in llvm_ir
+
+    def test_rawlist_int_annotation(self):
+        """list[int] builds a raw i64 container, no boxing on push/get."""
+        llvm_ir = _convert(
+            "l: list[int] = []\ni: int = 0\n"
+            "while i < 5:\n    l.append(i * 10)\n    i += 1\n"
+            "x: int = l[2]\nl[1] = 7\n"
+            "total: int = 0\nfor v in l:\n    total += v\n"
+            "print(x, len(l), total)\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'define i8* @"rawlist_new"' in llvm_ir
+        assert 'call void @"rawlist_push"' in main
+        assert 'call void @"rawlist_get"' in main
+        assert 'call void @"rawlist_set"' in main
+        assert 'call {i32, i8*}* @"list_append"' not in main
+
+    def test_rawlist_float_annotation(self):
+        """list[float] stores raw doubles."""
+        llvm_ir = _convert(
+            "f: list[float] = [1.5, 2.5]\nf.append(3.5)\nprint(f[0] + f[2])\n"
+        )
+        main = _main_body(llvm_ir)
+
+        # the fadd itself is raw; create_float only appears once, at the
+        # print boundary (boxing the result for display)
+        assert "fadd double" in main
+        assert main.count('call {i32, i8*}* @"create_float"') == 1
+
+    def test_mixed_list_still_dynamic(self):
+        """Plain list annotations keep PyObject storage (mixed types)."""
+        llvm_ir = _convert('m: list = [1, "x"]\nprint(m)\n')
+
+        assert 'call {i32, i8*}* @"list_append"' in llvm_ir
+
+    def test_silu_checks_env_disables_overflow(self):
+        """SILU_CHECKS=0 emits plain add instead of the checked intrinsic."""
+        import os
+
+        from silu.ir_generator import SiluIRGenerator as Gen
+
+        source = "a: int = 1\nb: int = 2\nprint(a + b)\n"
+        ir_json = json.dumps(Gen().visit(ast.parse(source)))
+        old = os.environ.get("SILU_CHECKS")
+        try:
+            os.environ["SILU_CHECKS"] = "0"
+            unchecked = _main_body(TypedCodegen().convert(ir_json))
+            os.environ["SILU_CHECKS"] = "1"
+            checked = _main_body(TypedCodegen().convert(ir_json))
+        finally:
+            if old is None:
+                os.environ.pop("SILU_CHECKS", None)
+            else:
+                os.environ["SILU_CHECKS"] = old
+
+        assert "with.overflow" not in unchecked
+        assert "add i64" in unchecked
+        assert "with.overflow" in checked
+
+    def test_rawlist_mixed_int_vars_safe(self):
+        """for-range over a previously-dynamic variable keeps it dynamic."""
+        llvm_ir = _convert(
+            "i = \"init\"\nfor i in range(3):\n    pass\nprint(i)\n"
+        )
+        main = _main_body(llvm_ir)
+
+        # counter is raw, the named variable gets a boxed copy per loop
+        assert "phi i64" in llvm_ir or "icmp slt i64" in llvm_ir
+        assert 'call {i32, i8*}* @"create_int"' in main
