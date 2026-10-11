@@ -3728,13 +3728,6 @@ class SiluToLLVMConverter:
             # i <op>= value  =>  i = i <op> value
             if len(node) >= 3:
                 target_node, bin_op, value_node = node[1], node[2], node[3]
-                target_name = target_node[1]
-                if target_name not in self.variables:
-                    return None
-                left = self.current_builder.load(self.variables[target_name])
-                right = self._convert_node(value_node)
-                if not right:
-                    return None
                 func = {
                     "+=": self.pyobj_add,
                     "-=": self.pyobj_sub,
@@ -3745,6 +3738,32 @@ class SiluToLLVMConverter:
                 }.get(bin_op)
                 if func is None:
                     return None
+                right = self._convert_node(value_node)
+                if not right:
+                    return None
+                if (
+                    isinstance(target_node, list)
+                    and len(target_node) >= 3
+                    and target_node[0] == "subscript"
+                ):
+                    # obj[i] <op>= value: read-modify-write through the
+                    # dynamic subscript runtime
+                    obj = self._convert_node(target_node[1])
+                    key = self._convert_node(target_node[2])
+                    if not obj or not key:
+                        return None
+                    current = self.current_builder.call(
+                        self.pyobj_subscript, [obj, key]
+                    )
+                    result = self.current_builder.call(func, [current, right])
+                    self.current_builder.call(
+                        self.pyobj_subscript_set, [obj, key, result]
+                    )
+                    return None
+                target_name = target_node[1]
+                if target_name not in self.variables:
+                    return None
+                left = self.current_builder.load(self.variables[target_name])
                 result = self.current_builder.call(func, [left, right])
                 self.current_builder.store(result, self.variables[target_name])
             return None
