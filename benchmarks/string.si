@@ -1,6 +1,6 @@
 # String concatenation in a loop (quadratic in both)
-s = ""
-i = 0
+s: str = ""
+i: int = 0
 while i < 3000:
     s = s + "x"
     i += 1

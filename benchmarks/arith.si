@@ -1,6 +1,6 @@
 # Arithmetic loop: while + mod/floordiv + augmented assignment
-total = 0
-i = 0
+total: int = 0
+i: int = 0
 while i < 300000:
     total += i % 7
     total -= i // 3

@@ -3347,6 +3347,12 @@ class SiluToLLVMConverter:
                 self.current_builder.store(value, self.variables[target])
             return value
 
+        elif op == "ann_assign":
+            # x: int = 5 - statically typed assignment. The annotation is
+            # recorded in the IR (node[3]) but per project direction no
+            # type inference is performed; runtime semantics match assign.
+            return self._convert_node(["assign", node[1], node[2]])
+
         elif op == "+":
             if len(node) >= 3:
                 left = self._convert_node(node[1])

@@ -381,3 +381,21 @@ class TestSiluToLLVMConverter:
         assert 'define i64 @"dict_find_probe"' in llvm_ir
         assert 'define void @"dict_rehash"' in llvm_ir
         assert "KeyError: key not found" in llvm_ir
+
+    def test_ann_assign_static_types(self):
+        """Annotated assignments run like plain assigns in compiled code."""
+        llvm_ir = _convert(
+            'x: int = 5\nname: str = "Silu"\nratio: float = 2.5\n'
+            "flag: bool = True\nplain: int\nprint(x, name, ratio, flag)\n"
+        )
+
+        assert 'call {i32, i8*}* @"create_float"' in llvm_ir
+        assert 'call {i32, i8*}* @"create_bool"' in llvm_ir
+
+    def test_typed_function_signature(self):
+        """Parameter/return annotations compile (ignored at runtime)."""
+        llvm_ir = _convert(
+            "def add(a: int, b: int) -> int:\n    return a + b\n\nprint(add(2, 3))\n"
+        )
+
+        assert 'define {i32, i8*}* @"add"' in llvm_ir

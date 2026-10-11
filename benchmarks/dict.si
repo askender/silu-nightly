@@ -1,11 +1,11 @@
 # Dict writes and lookups
-d = {}
-i = 0
+d: dict = {}
+i: int = 0
 while i < 20000:
     d[i % 500] = i
     i += 1
 
-total = 0
+total: int = 0
 i = 0
 while i < 500:
     total += d[i]

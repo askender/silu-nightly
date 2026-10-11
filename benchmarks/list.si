@@ -1,11 +1,11 @@
 # List building and iteration
-l = []
-i = 0
+l: list = []
+i: int = 0
 while i < 30000:
     l.append(i % 100)
     i += 1
 
-total = 0
+total: int = 0
 for x in l:
     total += x
 print(total, len(l))
