@@ -1,0 +1,60 @@
+# Fannkuch (Benchmarks Game classic): array index flips with heavy data
+# dependency chains. Counts pancake flips for permutations of n=10.
+
+n: int = 10
+perm: list[int] = [0] * n
+perm1: list[int] = [0] * n
+count: list[int] = [0] * n
+max_flips: int = 0
+perm_count: int = 0
+checksum: int = 0
+
+i: int = 0
+while i < n:
+    perm1[i] = i
+    i += 1
+
+r: int = n
+while r > 0:
+    # count flips for the current permutation
+    i = 0
+    while i < n:
+        perm[i] = perm1[i]
+        i += 1
+    flips: int = 0
+    k = perm1[0]
+    while k != 0:
+        i = 0
+        j = k
+        while i < j:
+            tmp = perm[i]
+            perm[i] = perm[j]
+            perm[j] = tmp
+            i += 1
+            j -= 1
+        flips += 1
+        k = perm[0]
+
+    if flips > max_flips:
+        max_flips = flips
+    checksum += flips
+    perm_count += 1
+
+    # next permutation ( odometer style )
+    i = 0
+    while r > 0:
+        if i == n:
+            r = 0
+            break
+        j = perm1[0]
+        k = 1
+        while k <= i:
+            perm1[k - 1] = perm1[k]
+            k += 1
+        perm1[i] = j
+        i += 1
+        if i >= r:
+            break
+    r -= 1
+
+print(checksum, max_flips)

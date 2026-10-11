@@ -1,0 +1,139 @@
+# N-body simulation (Benchmarks Game classic).
+# Planar SoA layout: parallel float lists per coordinate, since Silu has
+# no object instances. Same physics as the original: pairwise velocity
+# deltas over Jupiter/Saturn/Uranus/Neptune + the Sun, then one
+# advance step and an energy report.
+
+# sun
+xs: list[float] = [0.0]
+ys: list[float] = [0.0]
+zs: list[float] = [0.0]
+vx: list[float] = [0.0]
+vy: list[float] = [0.0]
+vz: list[float] = [0.0]
+mass: list[float] = [4.0 * 3.141592653589793 * 3.141592653589793]
+
+# jupiter
+xs.append(4.84143144246472090)
+ys.append(-1.16032004402742839)
+zs.append(-0.19964705344137988)
+vx.append(1.66007664274403694e-03 * 365.24)
+vy.append(7.69901118419740425e-03 * 365.24)
+vz.append(-6.90460016972063023e-04 * 365.24)
+mass.append(9.54791938424326609e-04)
+
+# saturn
+xs.append(8.34336671824457987)
+ys.append(4.12479856412430479)
+zs.append(-4.03523417114321381e-01)
+vx.append(-2.76742510726862411e-03 * 365.24)
+vy.append(4.99852801234917238e-03 * 365.24)
+vz.append(2.30417297573763929e-05 * 365.24)
+mass.append(2.85885980666130812e-04)
+
+# uranus
+xs.append(1.28943695621391310e+01)
+ys.append(-1.51111514016986312e+01)
+zs.append(-2.23307578892655734e-01)
+vx.append(2.96460137564761618e-03 * 365.24)
+vy.append(2.37847173959480950e-03 * 365.24)
+vz.append(-2.96589568540237556e-05 * 365.24)
+mass.append(4.36624404335156298e-05)
+
+# neptune
+xs.append(1.53796971148509165e+01)
+ys.append(-2.59193146099879641e+01)
+zs.append(1.79258772950371181e-01)
+vx.append(2.68067772490389322e-03 * 365.24)
+vy.append(-1.62813114750985960e-03 * 365.24)
+vz.append(-9.51592254519715870e-05 * 365.24)
+mass.append(5.15138902046611451e-05)
+
+SOLAR_MASS = 4.0 * 3.141592653589793 * 3.141592653589793
+DAYS_PER_YEAR = 365.24
+
+
+def energy() -> float:
+    e: float = 0.0
+    n: int = len(mass)
+    i: int = 0
+    while i < n:
+        x1: float = xs[i]
+        y1: float = ys[i]
+        z1: float = zs[i]
+        vx1: float = vx[i]
+        vy1: float = vy[i]
+        vz1: float = vz[i]
+        m1: float = mass[i]
+        e += 0.5 * m1 * (vx1 * vx1 + vy1 * vy1 + vz1 * vz1)
+        j: int = i + 1
+        while j < n:
+            dx: float = x1 - xs[j]
+            dy: float = y1 - ys[j]
+            dz: float = z1 - zs[j]
+            dist: float = (dx * dx + dy * dy + dz * dz) ** 0.5
+            e += (m1 * mass[j]) / dist
+            j += 1
+        i += 1
+    return e
+
+
+def advance(dt: float) -> float:
+    # returns 0.0 (unused); annotated so the compiler keeps raw types
+    n: int = len(mass)
+    i: int = 0
+    while i < n:
+        x1: float = xs[i]
+        y1: float = ys[i]
+        z1: float = zs[i]
+        i += 1
+        j: int = i
+        while j < n:
+            dx: float = x1 - xs[j]
+            dy: float = y1 - ys[j]
+            dz: float = z1 - zs[j]
+            dist2: float = dx * dx + dy * dy + dz * dz
+            dist: float = dist2 ** 0.5
+            mag: float = dt / (dist2 * dist)
+            mass_j: float = mass[j]
+            vx[j] += dx * m_agg(mag, mass_j)
+            vy[j] += dy * m_agg(mag, mass_j)
+            vz[j] += dz * m_agg(mag, mass_j)
+            j += 1
+    i = 0
+    while i < n:
+        xs[i] += dt * vx[i]
+        ys[i] += dt * vy[i]
+        zs[i] += dt * vz[i]
+        i += 1
+    return 0.0
+
+
+_total_mass: float = 0.0
+
+
+def m_agg(mag: float, m: float) -> float:
+    return mag * m
+
+
+# offset the sun's velocity to conserve momentum
+px: float = 0.0
+py: float = 0.0
+pz: float = 0.0
+n: int = len(mass)
+i = 1
+while i < n:
+    px += vx[i] * mass[i]
+    py += vy[i] * mass[i]
+    pz += vz[i] * mass[i]
+    i += 1
+vx[0] = -px / SOLAR_MASS
+vy[0] = -py / SOLAR_MASS
+vz[0] = -pz / SOLAR_MASS
+
+print(energy())
+i = 0
+while i < 50000:
+    advance(0.01)
+    i += 1
+print(energy())

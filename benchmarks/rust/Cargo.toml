@@ -31,5 +31,25 @@ path = "src/dict.rs"
 name = "string"
 path = "src/string.rs"
 
+[[bin]]
+name = "nbody"
+path = "src/nbody.rs"
+
+[[bin]]
+name = "mandelbrot"
+path = "src/mandelbrot.rs"
+
+[[bin]]
+name = "trees"
+path = "src/trees.rs"
+
+[[bin]]
+name = "fannkuch"
+path = "src/fannkuch.rs"
+
+[[bin]]
+name = "spectral"
+path = "src/spectral.rs"
+
 [profile.release]
 opt-level = 3

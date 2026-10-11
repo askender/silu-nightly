@@ -64,8 +64,56 @@ class TypedCodegen(SiluToLLVMConverter):
         # fully-annotated numeric functions (raw machine ABI)
         self.static_funcs: Dict[str, Tuple[List[str], Optional[str], ir.Function]] = {}
         self.current_ret_kind: Optional[str] = None
+
+        # math intrinsics / libc used by ** (sqrt fast path, general pow)
+        sqrt_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
+        self.sqrt_f64 = ir.Function(self.module, sqrt_ty, name="llvm.sqrt.f64")
+        pow_ty = ir.FunctionType(
+            ir.DoubleType(), [ir.DoubleType(), ir.DoubleType()]
+        )
+        self.pow_f64 = ir.Function(self.module, pow_ty, name="pow")
+
         self._create_unbox_runtime()
         self._create_raw_list_runtime()
+
+        # PyObject* pyobj_pow(PyObject* base, PyObject* exp) via libc pow
+        i32t = ir.IntType(32)
+        i64t = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.Constant(i32t, 0)
+        one32 = ir.Constant(i32t, 1)
+        self.pyobj_pow = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
+            name="pyobj_pow",
+        )
+        entry = self.pyobj_pow.append_basic_block("entry")
+        builder = ir.IRBuilder(entry)
+        base_arg, exp_arg = self.pyobj_pow.args
+        base_tag = builder.load(builder.gep(base_arg, [zero32, zero32]))
+        exp_tag = builder.load(builder.gep(exp_arg, [zero32, zero32]))
+        base_f64 = self._load_number_as_f64(builder, base_arg)
+        exp_f64 = self._load_number_as_f64(builder, exp_arg)
+        result = builder.call(self.pow_f64, [base_f64, exp_f64])
+        # int ** int with non-negative int result stays int (Python semantics
+        # for the common integer case); anything else is float
+        base_is_intish = builder.or_(
+            builder.icmp_signed("==", base_tag, zero32),
+            builder.icmp_signed("==", base_tag, ir.Constant(i32t, 3)),
+        )
+        exp_is_int = builder.or_(
+            builder.icmp_signed("==", exp_tag, zero32),
+            builder.icmp_signed("==", exp_tag, ir.Constant(i32t, 3)),
+        )
+        both_int = builder.and_(base_is_intish, exp_is_int)
+        as_i64 = builder.fptosi(result, i64t)
+        roundtrip = builder.sitofp(as_i64, ir.DoubleType())
+        is_integral = builder.fcmp_ordered("==", result, roundtrip)
+        keep_int = builder.and_(both_int, is_integral)
+        int_obj = builder.call(self.create_int, [as_i64])
+        float_obj = builder.call(self.create_float, [result])
+        out = builder.select(keep_int, int_obj, float_obj)
+        builder.ret(out)
 
     # ================== runtime additions ==================
 
@@ -233,6 +281,52 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(loop_done)
         builder.ret(result)
+
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32b = ir.Constant(ir.IntType(32), 0)
+        one32b = ir.Constant(ir.IntType(32), 1)
+
+        # i8* pylist_to_rawlist(PyObject* list) - unbox each element into
+        # a fresh raw array (ints only; other element types become 0)
+        self.pylist_to_rawlist = ir.Function(
+            self.module, ir.FunctionType(i8p, [pyobj_ptr]), name="pylist_to_rawlist"
+        )
+        entry = self.pylist_to_rawlist.append_basic_block("entry")
+        loop_check = self.pylist_to_rawlist.append_basic_block("p2r_check")
+        loop_body = self.pylist_to_rawlist.append_basic_block("p2r_body")
+        loop_done = self.pylist_to_rawlist.append_basic_block("p2r_done")
+        builder = ir.IRBuilder(entry)
+        (list_arg,) = self.pylist_to_rawlist.args
+        struct_ptr = builder.bitcast(
+            list_arg, ir.PointerType(self.list_struct_type)
+        )
+        length = builder.load(field(builder, struct_ptr, 0))
+        items = builder.load(field(builder, struct_ptr, 2))
+        raw = builder.call(self.rawlist_new, [ir.Constant(i64, 8)])
+        idx_ptr = builder.alloca(i64, name="p2r_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_check)
+        i_val = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", i_val, length)
+        builder.cbranch(more, loop_body, loop_done)
+
+        builder.position_at_end(loop_body)
+        elem = builder.load(builder.gep(items, [i_val]))
+        elem_tag = builder.load(
+            builder.gep(elem, [zero32b, zero32b])
+        )
+        elem_data = builder.load(
+            builder.gep(elem, [zero32b, one32b])
+        )
+        elem_i64 = builder.load(builder.bitcast(elem_data, ir.PointerType(i64)))
+        builder.call(self.rawlist_push, [raw, elem_i64])
+        builder.store(builder.add(i_val, one64), idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_done)
+        builder.ret(raw)
 
         # i64 rawlist_len(i8* list)
         self.rawlist_len = ir.Function(
@@ -510,9 +604,40 @@ class TypedCodegen(SiluToLLVMConverter):
     # ================== variables ==================
 
     def _declare_var(self, name: str, kind: str):
+        current_kind = self.var_kinds.get(name)
         if name in self.variables:
-            return
-        if kind == OBJ:
+            if current_kind == kind:
+                return
+            # same name, different representation (e.g. a function-local
+            # `i: int` shadowing a module-level dynamic `i`): inside a
+            # function the local shadows the global with a fresh alloca
+            if self.current_function is not None and self.current_function.name != "main":
+                del self.variables[name]
+            else:
+                return
+        if self.current_function is not None and self.current_function.name == "main":
+            # module scope: names are true globals so functions can see
+            # them (Silu has no declarations; top-level assignments are
+            # the global definitions)
+            if kind == OBJ:
+                gv = ir.GlobalVariable(
+                    self.module, ir.PointerType(self.pyobj.pyobj_type), name=name
+                )
+                gv.initializer = ir.Constant(
+                    ir.PointerType(self.pyobj.pyobj_type), None
+                )
+            elif kind in RAWLIST_KINDS:
+                gv = ir.GlobalVariable(
+                    self.module, ir.PointerType(ir.IntType(8)), name=name
+                )
+                gv.initializer = ir.Constant(ir.PointerType(ir.IntType(8)), None)
+            else:
+                gv = ir.GlobalVariable(
+                    self.module, LLVM_KIND_TYPES[kind], name=name
+                )
+                gv.initializer = ir.Constant(LLVM_KIND_TYPES[kind], 0)
+            self.variables[name] = gv
+        elif kind == OBJ:
             self.variables[name] = self.current_builder.alloca(
                 ir.PointerType(self.pyobj.pyobj_type), name=name
             )
@@ -645,6 +770,59 @@ class TypedCodegen(SiluToLLVMConverter):
             return (I64, self._py_mod_inline(l_val, r_val))
         raise NotImplementedError(f"typed binop {op}")
 
+    @staticmethod
+    def _extract_i64_const(value: Any) -> Optional[int]:
+        if isinstance(value, ir.Constant) and isinstance(
+            value.type, ir.IntType
+        ) and value.type.width == 64:
+            return int(value.constant)
+        return None
+
+    def _typed_pow(self, left: Tuple[str, Any], right: Tuple[str, Any]):
+        """x ** y: int ** int stays int (repeated multiply), float ** 0.5
+        takes the sqrt fast path, everything else goes through libc pow."""
+        if left[0] == OBJ or right[0] == OBJ:
+            boxed_l = self._box(left)
+            boxed_r = self._box(right)
+            return (OBJ, self.current_builder.call(self.pyobj_pow, [boxed_l, boxed_r]))
+        if left[0] == I64 and right[0] == I64:
+            # exponentiation by squaring on i64 with overflow check
+            i64 = ir.IntType(64)
+            builder = self.current_builder
+            exp = self._extract_i64_const(right[1])
+            if exp is not None and 0 <= exp <= 64:
+                result = ir.Constant(i64, 1)
+                base = left[1]
+                while exp > 0:
+                    if exp & 1:
+                        pair = builder.call(self.smul_overflow, [result, base])
+                        result = self._overflow_checked(pair, "mul")
+                    exp >>= 1
+                    if exp:
+                        pair = builder.call(self.smul_overflow, [base, base])
+                        base = self._overflow_checked(pair, "mul")
+                if not self.checks:
+                    pass
+                return (I64, result)
+            # general integer pow via libc pow + exactness check
+            lf = self._coerce(left, F64)
+            rf = self._coerce(right, F64)
+            result = builder.call(self.pow_f64, [lf[1], rf[1]])
+            as_i64 = builder.fptosi(result, i64)
+            roundtrip = builder.sitofp(as_i64, ir.DoubleType())
+            exact = builder.fcmp_ordered("==", result, roundtrip)
+            self._panic_if(exact, "TypeError: int pow result not exact\n")
+            return (I64, as_i64)
+        lf = self._coerce(left, F64)
+        rf = self._coerce(right, F64)
+        is_half = isinstance(right[1], ir.Constant) and float(
+            right[1].constant
+        ) == 0.5
+        if is_half:
+            return (F64, self.current_builder.call(self.sqrt_f64, [lf[1]]))
+        # general pow via libc
+        return (F64, self.current_builder.call(self.pow_f64, [lf[1], rf[1]]))
+
     def _overflow_checked(self, pair: Any, op: str) -> Any:
         result = self.current_builder.extract_value(pair, 0)
         overflowed = self.current_builder.extract_value(pair, 1)
@@ -735,6 +913,21 @@ class TypedCodegen(SiluToLLVMConverter):
     def _rawlist_elem_size(kind: str) -> int:
         return 8  # both i64 and double elements are 8 bytes
 
+    def _dynamic_param_kinds(self, func_def: list) -> List[str]:
+        """Parameter kinds for an unannotated function: annotations on
+        individual parameters (list[int] etc.) still apply."""
+        param_annotations = func_def[4] if len(func_def) > 4 else ()
+        kinds = []
+        for index, _param in enumerate(func_def[2]):
+            annotation = (
+                param_annotations[index] if index < len(param_annotations) else None
+            )
+            kind = self._annotation_kind(annotation)
+            if kind is None:
+                kind = OBJ
+            kinds.append(kind)
+        return kinds
+
     def _static_signature(self, func_def: list):
         """Return (param_kinds, ret_kind) when fully annotated numeric."""
         param_annotations = func_def[4] if len(func_def) > 4 else ()
@@ -757,7 +950,12 @@ class TypedCodegen(SiluToLLVMConverter):
         return kinds, ret_kind
 
     def _create_function_declarations(self):
-        """Create raw-ABI functions for annotated ones, PyObject otherwise."""
+        """Create raw-ABI functions for annotated ones, PyObject otherwise.
+
+        A dynamic (unannotated-return) function whose parameters declare
+        list[int]/list[float] gets those parameters typed as raw i8*
+        pointers; the rest stay PyObject*.
+        """
         for func_name, func_def in self.function_defs.items():
             param_kinds, ret_kind = self._static_signature(func_def)
             if param_kinds is not None:
@@ -766,8 +964,15 @@ class TypedCodegen(SiluToLLVMConverter):
                 func = ir.Function(self.module, func_ty, name=func_name)
                 self.static_funcs[func_name] = (param_kinds, ret_kind, func)
             else:
-                param_count = len(func_def[2]) if len(func_def) > 2 else 0
-                param_types = [ir.PointerType(self.pyobj.pyobj_type)] * param_count
+                dyn_kinds = self._dynamic_param_kinds(func_def)
+                param_types = []
+                for kind in dyn_kinds:
+                    if kind in RAWLIST_KINDS:
+                        param_types.append(ir.PointerType(ir.IntType(8)))
+                    else:
+                        param_types.append(
+                            ir.PointerType(self.pyobj.pyobj_type)
+                        )
                 func_ty = ir.FunctionType(
                     ir.PointerType(self.pyobj.pyobj_type), param_types
                 )
@@ -802,11 +1007,22 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
         self.current_ret_kind = ret_kind
-        self.variables = {}
-        self.var_kinds = {}
+        # keep module-level variables visible (they act as globals);
+        # remember which names are function-local so we can pop them on
+        # exit - a local kind must never leak into other functions
+        self._scope_depth = getattr(self, "_scope_depth", 0) + 1
+        if self._scope_depth == 1:
+            self._module_vars = set(self.variables.keys())
+            self._module_kinds = set(self.var_kinds.keys())
+        self.variables = dict(self.variables)
+        self.var_kinds = dict(self.var_kinds)
 
         for index, param_name in enumerate(func_def[2]):
             kind = param_kinds[index]
+            # parameters always shadow: delete any inherited entry so
+            # _declare_var allocates a fresh function-local slot
+            self.variables.pop(param_name, None)
+            self.var_kinds.pop(param_name, None)
             self._declare_var(param_name, kind)
             self.current_builder.store(func.args[index], self.variables[param_name])
 
@@ -828,6 +1044,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = old_variables
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
+        self._scope_depth = getattr(self, "_scope_depth", 1) - 1
 
     def _generate_dynamic_function_body(self, func: ir.Function, func_def: list):
         """PyObject-ABI function body (unannotated functions)."""
@@ -841,11 +1058,26 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
         self.current_ret_kind = None
-        self.variables = {}
-        self.var_kinds = {}
+        self._scope_depth = getattr(self, "_scope_depth", 0) + 1
+        if self._scope_depth == 1:
+            self._module_vars = set(self.variables.keys())
+            self._module_kinds = set(self.var_kinds.keys())
+        self.variables = dict(self.variables)
+        self.var_kinds = dict(self.var_kinds)
 
+        param_kinds_dyn = self._dynamic_param_kinds(func_def)
         for index, param_name in enumerate(func_def[2]):
             if index < len(func.args):
+                kind = param_kinds_dyn[index]
+                if kind in RAWLIST_KINDS:
+                    # raw-ABI parameter: store the pointer in an alloca
+                    param_alloca = self.current_builder.alloca(
+                        ir.PointerType(ir.IntType(8)), name=param_name
+                    )
+                    self.current_builder.store(func.args[index], param_alloca)
+                    self.variables[param_name] = param_alloca
+                    self.var_kinds[param_name] = kind
+                    continue
                 param_alloca = self.current_builder.alloca(
                     ir.PointerType(self.pyobj.pyobj_type), name=param_name
                 )
@@ -867,6 +1099,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = old_variables
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
+        self._scope_depth = getattr(self, "_scope_depth", 1) - 1
 
     # ================== statement / expression dispatch ==================
 
@@ -940,6 +1173,77 @@ class TypedCodegen(SiluToLLVMConverter):
             if (
                 annotation_kind in RAWLIST_KINDS
                 and isinstance(value_node, list)
+                and len(value_node) >= 3
+                and value_node[0] == "*"
+                and isinstance(value_node[1], list)
+                and value_node[1][0] == "list"
+            ):
+                # [init] * count into a rawlist variable: constant counts
+                # expand at compile time, runtime counts use a fill loop
+                elem_nodes = value_node[1][1] if len(value_node[1]) > 1 else []
+                count_tv = self._convert_node(value_node[2])
+                count_const = self._extract_i64_const(count_tv[1])
+                if count_const is not None:
+                    expanded: list = []
+                    for _ in range(count_const):
+                        expanded.extend(elem_nodes)
+                    raw = self._build_raw_list(expanded, annotation_kind)
+                    self._declare_var(target, annotation_kind)
+                    self.current_builder.store(raw[1], self.variables[target])
+                    return raw
+                # runtime count: create the list then push in a loop
+                raw = self.current_builder.call(
+                    self.rawlist_new, [ir.Constant(ir.IntType(64), 8)]
+                )
+                count_i64 = self._coerce(count_tv, I64)[1]
+                raw_ptr = self.current_builder.alloca(
+                    ir.PointerType(ir.IntType(8)), name="fill_list"
+                )
+                self.current_builder.store(raw, raw_ptr)
+                fill_idx = self.current_builder.alloca(
+                    ir.IntType(64), name="fill_i"
+                )
+                self.current_builder.store(ir.Constant(ir.IntType(64), 0), fill_idx)
+                fill_cond = self.current_function.append_basic_block("fill_cond")
+                fill_body = self.current_function.append_basic_block("fill_body")
+                fill_end = self.current_function.append_basic_block("fill_end")
+                self.current_builder.branch(fill_cond)
+
+                self.current_builder.position_at_end(fill_cond)
+                fill_i = self.current_builder.load(fill_idx)
+                fill_more = self.current_builder.icmp_signed("<", fill_i, count_i64)
+                self.current_builder.cbranch(fill_more, fill_body, fill_end)
+
+                self.current_builder.position_at_end(fill_body)
+                for element_node in elem_nodes:
+                    elem = self._coerce(
+                        self._convert_node(element_node), RAWLIST_KINDS[annotation_kind]
+                    )
+                    elem_bits = elem[1]
+                    if RAWLIST_KINDS[annotation_kind] == F64:
+                        elem_bits = self.current_builder.bitcast(
+                            elem[1], ir.IntType(64)
+                        )
+                    self.current_builder.call(
+                        self.rawlist_push,
+                        [
+                            self.current_builder.load(raw_ptr),
+                            elem_bits,
+                        ],
+                    )
+                self.current_builder.store(
+                    self.current_builder.add(fill_i, ir.Constant(ir.IntType(64), 1)),
+                    fill_idx,
+                )
+                self.current_builder.branch(fill_cond)
+
+                self.current_builder.position_at_end(fill_end)
+                self._declare_var(target, annotation_kind)
+                self.current_builder.store(raw, self.variables[target])
+                return (annotation_kind, raw)
+            if (
+                annotation_kind in RAWLIST_KINDS
+                and isinstance(value_node, list)
                 and len(value_node) >= 1
                 and value_node[0] == "list"
             ):
@@ -956,13 +1260,73 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, null_obj)
 
         if op == "aug_assign":
-            target_name = node[1][1]
             bin_op = node[2][:-1]  # "+=" -> "+"
+            target_node = node[1]
+            right_tv = self._convert_node(node[3])
+
+            # subscript target: obj[i] <op>= value
+            if (
+                isinstance(target_node, list)
+                and len(target_node) >= 3
+                and target_node[0] == "subscript"
+            ):
+                obj_tv = self._convert_node(target_node[1])
+                key_tv = self._convert_node(target_node[2])
+                if obj_tv[0] in RAWLIST_KINDS:
+                    elem_kind = RAWLIST_KINDS[obj_tv[0]]
+                    index = self._coerce(key_tv, I64)[1]
+                    # read-modify-write on the raw element
+                    items = self.current_builder.load(
+                        self.current_builder.gep(
+                            self.current_builder.bitcast(
+                                obj_tv[1],
+                                ir.PointerType(self.raw_list_struct_type),
+                            ),
+                            [
+                                ir.Constant(ir.IntType(32), 0),
+                                ir.Constant(ir.IntType(32), 2),
+                            ],
+                        )
+                    )
+                    items_i64 = self.current_builder.bitcast(
+                        items, ir.PointerType(ir.IntType(64))
+                    )
+                    slot = self.current_builder.gep(items_i64, [index])
+                    current = (elem_kind, self.current_builder.load(slot))
+                    if elem_kind == F64:
+                        current = (
+                            F64,
+                            self.current_builder.bitcast(current[1], ir.DoubleType()),
+                        )
+                    result = self._typed_binop(bin_op, current, right_tv)
+                    coerced = self._coerce(result, elem_kind)
+                    stored = coerced[1]
+                    if elem_kind == F64:
+                        stored = self.current_builder.bitcast(
+                            stored, ir.IntType(64)
+                        )
+                    self.current_builder.store(stored, slot)
+                    return coerced
+                obj = self._box(obj_tv)
+                key = self._box(key_tv)
+                current_obj = self.current_builder.call(
+                    self.pyobj_subscript, [obj, key]
+                )
+                result = self._typed_binop(
+                    bin_op, (OBJ, current_obj), right_tv
+                )
+                value = self._box(result)
+                self.current_builder.call(
+                    self.pyobj_subscript_set, [obj, key, value]
+                )
+                return (OBJ, value)
+
+            # plain variable target
+            target_name = target_node[1]
             if target_name not in self.var_kinds and target_name not in self.variables:
                 return (OBJ, null_obj)
             current = self._load_var(target_name)
-            right = self._convert_node(node[3])
-            result = self._typed_binop(bin_op, current, right)
+            result = self._typed_binop(bin_op, current, right_tv)
             coerced = self._coerce(result, self.var_kinds[target_name])
             self.current_builder.store(coerced[1], self.variables[target_name])
             return coerced
@@ -994,6 +1358,11 @@ class TypedCodegen(SiluToLLVMConverter):
                 ],
             )
             return (I64, self._overflow_checked(pair, "sub"))
+
+        if op == "**" and len(node) >= 3:
+            return self._typed_pow(
+                self._convert_node(node[1]), self._convert_node(node[2])
+            )
 
         if op in ("+", "-", "*", "/", "//", "%") and len(node) >= 3:
             left = self._convert_node(node[1])
@@ -1178,23 +1547,68 @@ class TypedCodegen(SiluToLLVMConverter):
                 if obj_tv[0] in RAWLIST_KINDS:
                     elem_kind = RAWLIST_KINDS[obj_tv[0]]
                     index = self._coerce(key_tv, I64)[1]
-                    slot = self.current_builder.alloca(
-                        LLVM_KIND_TYPES[elem_kind], name="get_slot"
+                    # inline load: negative indices adjust by +length
+                    # (Python semantics), out-of-range still panics via
+                    # the bounds branch below. No function call keeps the
+                    # surrounding loop vectorizable.
+                    struct_ptr = self.current_builder.bitcast(
+                        obj_tv[1], ir.PointerType(self.raw_list_struct_type)
                     )
+                    length = self.current_builder.load(
+                        self.current_builder.gep(
+                            struct_ptr,
+                            [
+                                ir.Constant(ir.IntType(32), 0),
+                                ir.Constant(ir.IntType(32), 0),
+                            ],
+                        )
+                    )
+                    items = self.current_builder.load(
+                        self.current_builder.gep(
+                            struct_ptr,
+                            [
+                                ir.Constant(ir.IntType(32), 0),
+                                ir.Constant(ir.IntType(32), 2),
+                            ],
+                        )
+                    )
+                    is_negative = self.current_builder.icmp_signed(
+                        "<", index, ir.Constant(ir.IntType(64), 0)
+                    )
+                    adjusted = self.current_builder.add(index, length)
+                    index_eff = self.current_builder.select(
+                        is_negative, adjusted, index
+                    )
+                    in_range = self.current_builder.icmp_signed(
+                        "<", index_eff, length
+                    )
+                    ok_block = self.current_function.append_basic_block("get_ok")
+                    err_block = self.current_function.append_basic_block("get_err")
+                    self.current_builder.cbranch(in_range, ok_block, err_block)
+
+                    self.current_builder.position_at_end(err_block)
+                    msg = self._create_global_string_with_builder(
+                        "IndexError: list index out of range\n",
+                        self.current_builder,
+                    )
+                    self.current_builder.call(self.printf, [msg])
                     self.current_builder.call(
-                        self.rawlist_get,
-                        [
-                            obj_tv[1],
-                            index,
-                            self.current_builder.bitcast(
-                                slot, ir.PointerType(ir.IntType(8))
-                            ),
-                            ir.Constant(
-                                ir.IntType(64), self._rawlist_elem_size(obj_tv[0])
-                            ),
-                        ],
+                        self.exit_func, [ir.Constant(ir.IntType(32), 1)]
                     )
-                    return (elem_kind, self.current_builder.load(slot))
+                    self.current_builder.unreachable()
+
+                    self.current_builder.position_at_end(ok_block)
+                    items_i64 = self.current_builder.bitcast(
+                        items, ir.PointerType(ir.IntType(64))
+                    )
+                    element = self.current_builder.load(
+                        self.current_builder.gep(items_i64, [index_eff])
+                    )
+                    if elem_kind == F64:
+                        element = self.current_builder.bitcast(
+                            element, ir.DoubleType()
+                        )
+                    return (elem_kind, element)
                 obj = self._box(obj_tv)
                 key = self._box(key_tv)
                 return (
@@ -1738,9 +2152,30 @@ class TypedCodegen(SiluToLLVMConverter):
 
             if func_name in self.functions:
                 func = self.functions[func_name]
+                callee_def = self.function_defs.get(func_name)
+                callee_kinds = (
+                    self._dynamic_param_kinds(callee_def) if callee_def else []
+                )
                 boxed_args = []
-                for arg_node in args_node:
-                    boxed_args.append(self._box(self._convert_node(arg_node)))
+                for arg_index, arg_node in enumerate(args_node):
+                    arg_tv = self._convert_node(arg_node)
+                    expected = (
+                        callee_kinds[arg_index]
+                        if arg_index < len(callee_kinds)
+                        else OBJ
+                    )
+                    if expected in RAWLIST_KINDS:
+                        if arg_tv[0] in RAWLIST_KINDS:
+                            boxed_args.append(arg_tv[1])
+                        else:
+                            boxed_args.append(
+                                self.current_builder.call(
+                                    self.pylist_to_rawlist,
+                                    [self._box(arg_tv)],
+                                )
+                            )
+                    else:
+                        boxed_args.append(self._box(arg_tv))
                 if len(boxed_args) == len(func.args):
                     result = self.current_builder.call(func, boxed_args)
                     return (OBJ, result)

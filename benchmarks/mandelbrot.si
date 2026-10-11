@@ -1,0 +1,32 @@
+# Mandelbrot (Benchmarks Game classic): dense float loop, no memory.
+# ASCII output like the original; 50x30 grid, 50 iterations.
+
+width: int = 80
+height: int = 24
+max_iter: int = 50
+
+y: int = 0
+while y < height:
+    row: str = ""
+    x: int = 0
+    while x < width:
+        c_re: float = (x * 3.5) / width - 2.5
+        c_im: float = (y * 2.0) / height - 1.0
+        z_re: float = 0.0
+        z_im: float = 0.0
+        iter: int = 0
+        while iter < max_iter:
+            zr2 = z_re * z_re
+            zi2 = z_im * z_im
+            if zr2 + zi2 > 4.0:
+                break
+            z_im = 2.0 * z_re * z_im + c_im
+            z_re = zr2 - zi2 + c_re
+            iter += 1
+        if iter == max_iter:
+            row = row + "*"
+        else:
+            row = row + " "
+        x += 1
+    print(row)
+    y += 1

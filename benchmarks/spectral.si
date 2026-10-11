@@ -1,0 +1,56 @@
+# Spectral norm (Benchmarks Game classic): float array math with sqrt.
+# Approximate the largest singular value of an n x n matrix stored as
+# flat list[float] rows.
+
+n: int = 300
+
+
+def a(i: int, j: int) -> float:
+    return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
+
+
+def multiply(v: list[float], out: list[float]):
+    i: int = 0
+    while i < n:
+        s: float = 0.0
+        j: int = 0
+        while j < n:
+            s = s + a(i, j) * v[j]
+            j += 1
+        out[i] = s
+        i += 1
+
+
+def multiply_transposed(v: list[float], out: list[float]):
+    i: int = 0
+    while i < n:
+        s: float = 0.0
+        j: int = 0
+        while j < n:
+            s = s + a(j, i) * v[j]
+            j += 1
+        out[i] = s
+        i += 1
+
+
+u: list[float] = [1.0] * n
+v: list[float] = [1.0] * n
+tmp: list[float] = [1.0] * n
+
+iter: int = 0
+while iter < 10:
+    multiply(u, v)
+    multiply_transposed(v, u)
+    iter += 1
+
+v_bv: float = 0.0
+v_vv: float = 0.0
+i = 0
+while i < n:
+    v_bv += u[i] * v[i]
+    v_vv += v[i] * v[i]
+    i += 1
+
+# sqrt via ** 0.5
+result: float = (v_bv / v_vv) ** 0.5
+print(result)

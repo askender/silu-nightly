@@ -142,7 +142,29 @@ def main():
             outputs = [interp_out, bin_out, cpython_out]
             if rust_out is not None:
                 outputs.append(rust_out)
-            match = "ok" if len(set(outputs)) == 1 else "MISMATCH!"
+
+            def _equivalent(a: str, b: str) -> bool:
+                """Exact match, or all floats equal within 1e-9 relative."""
+                if a == b:
+                    return True
+                try:
+                    fa = [float(t) for t in a.split()]
+                    fb = [float(t) for t in b.split()]
+                except ValueError:
+                    return False
+                if len(fa) != len(fb) or not fa:
+                    return False
+                return all(
+                    abs(x - y) <= 1e-9 * max(1.0, abs(x), abs(y))
+                    for x, y in zip(fa, fb)
+                )
+
+            base = outputs[0]
+            match = (
+                "ok"
+                if all(_equivalent(base, o) for o in outputs[1:])
+                else "MISMATCH!"
+            )
             vs_interp = interp_time / bin_time if bin_time else float("inf")
             vs_cpython = cpython_time / bin_time if bin_time else float("inf")
             vs_rust = rust_time / bin_time if rust_time and bin_time else float("nan")
