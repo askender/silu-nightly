@@ -1284,6 +1284,7 @@ class SiluToLLVMConverter:
         float_case = self.pyobj_truthy.append_basic_block("truthy_float")
         str_case = self.pyobj_truthy.append_basic_block("truthy_str")
         list_case = self.pyobj_truthy.append_basic_block("truthy_list")
+        dict_case = self.pyobj_truthy.append_basic_block("truthy_dict")
         true_case = self.pyobj_truthy.append_basic_block("truthy_true")
         false_case = self.pyobj_truthy.append_basic_block("truthy_false")
         builder = ir.IRBuilder(entry)
@@ -1300,6 +1301,7 @@ class SiluToLLVMConverter:
         switch.add_case(ir.Constant(i32, 2), str_case)
         switch.add_case(ir.Constant(i32, 3), int_case)
         switch.add_case(ir.Constant(i32, 4), list_case)
+        switch.add_case(ir.Constant(i32, 5), dict_case)
 
         builder.position_at_end(int_case)
         int_val = self._load_number_as_i64(builder, obj_arg)
@@ -1321,6 +1323,14 @@ class SiluToLLVMConverter:
         list_struct_ptr = self._load_list_struct(builder, obj_arg)
         list_len = builder.load(builder.gep(list_struct_ptr, [zero32, zero32]))
         builder.ret(builder.icmp_signed("!=", list_len, ir.Constant(i64, 0)))
+
+        builder.position_at_end(dict_case)
+        dict_data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        dict_struct_ptr = builder.bitcast(
+            dict_data, ir.PointerType(self.dict_struct_type)
+        )
+        dict_count = builder.load(builder.gep(dict_struct_ptr, [zero32, zero32]))
+        builder.ret(builder.icmp_signed("!=", dict_count, ir.Constant(i64, 0)))
 
         builder.position_at_end(true_case)
         builder.ret(ir.Constant(ir.IntType(1), 1))
@@ -1347,8 +1357,21 @@ class SiluToLLVMConverter:
         list_body_block = self.pyobj_deep_eq.append_basic_block("list_body")
         list_len_bad_block = self.pyobj_deep_eq.append_basic_block("list_len_bad")
         false_block = self.pyobj_deep_eq.append_basic_block("eq_false")
+        tag_block = self.pyobj_deep_eq.append_basic_block("tag_check")
         builder = ir.IRBuilder(entry)
         arg_a, arg_b = self.pyobj_deep_eq.args
+        null_a = builder.icmp_signed("==", arg_a, ir.Constant(pyobj_ptr, None))
+        null_b = builder.icmp_signed("==", arg_b, ir.Constant(pyobj_ptr, None))
+        both_null = builder.and_(null_a, null_b)
+        either_null = builder.or_(null_a, null_b)
+        # None == None is True; None == anything else is False
+        null_check_block = self.pyobj_deep_eq.append_basic_block("null_check")
+        builder.cbranch(either_null, null_check_block, tag_block)
+
+        builder.position_at_end(null_check_block)
+        builder.ret(both_null)
+
+        builder.position_at_end(tag_block)
         tag_a = builder.load(builder.gep(arg_a, [zero32, zero32]))
         tag_b = builder.load(builder.gep(arg_b, [zero32, zero32]))
         same_kind = builder.icmp_signed("==", tag_a, tag_b)
@@ -2184,18 +2207,63 @@ class SiluToLLVMConverter:
         builder.call(self.exit_func, [ir.Constant(i32, 1)])
         builder.unreachable()
 
-        # void dict_update(PyObject* dst, PyObject* src) - copy all entries
+        # void dict_update(PyObject* dst, PyObject* src)
+        # src may be a dict (copy entries) or a list of [k, v] pairs
         self.dict_update = ir.Function(
             self.module,
             ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr]),
             name="dict_update",
         )
         entry = self.dict_update.append_basic_block("entry")
+        src_tag_check = self.dict_update.append_basic_block("upd_src_check")
+        src_is_list = self.dict_update.append_basic_block("upd_src_list")
         loop_check = self.dict_update.append_basic_block("upd_check")
         loop_body = self.dict_update.append_basic_block("upd_body")
         loop_done = self.dict_update.append_basic_block("upd_done")
+        pair_loop_check = self.dict_update.append_basic_block("upd_pair_check")
+        pair_loop_body = self.dict_update.append_basic_block("upd_pair_body")
+        pair_loop_done = self.dict_update.append_basic_block("upd_pair_done")
         builder = ir.IRBuilder(entry)
         dst_arg, src_arg = self.dict_update.args
+        src_tag = builder.load(builder.gep(src_arg, [zero32, zero32]))
+        is_list_src = builder.icmp_signed("==", src_tag, ir.Constant(i32, 4))
+        builder.cbranch(is_list_src, src_is_list, src_tag_check)
+
+        # list source: each item is a [key, value] pair
+        builder.position_at_end(src_is_list)
+        list_struct_ptr = self._load_list_struct(builder, src_arg)
+        pair_count = builder.load(builder.gep(list_struct_ptr, [zero32, zero32]))
+        pair_items = builder.load(
+            builder.gep(list_struct_ptr, [zero32, ir.Constant(i32, 2)])
+        )
+        pair_idx = builder.alloca(i64, name="upd_pair_i")
+        builder.store(zero64, pair_idx)
+        builder.branch(pair_loop_check)
+
+        builder.position_at_end(pair_loop_check)
+        pair_i = builder.load(pair_idx)
+        pair_more = builder.icmp_signed("<", pair_i, pair_count)
+        builder.cbranch(pair_more, pair_loop_body, pair_loop_done)
+
+        builder.position_at_end(pair_loop_body)
+        pair_obj = builder.load(builder.gep(pair_items, [pair_i]))
+        pair_struct = self._load_list_struct(builder, pair_obj)
+        pair_elems = builder.load(
+            builder.gep(pair_struct, [zero32, ir.Constant(i32, 2)])
+        )
+        pair_key = builder.load(builder.gep(pair_elems, [zero64]))
+        pair_value = builder.load(
+            builder.gep(pair_elems, [one64])
+        )
+        builder.call(self.dict_set, [dst_arg, pair_key, pair_value])
+        builder.store(builder.add(pair_i, one64), pair_idx)
+        builder.branch(pair_loop_check)
+
+        builder.position_at_end(pair_loop_done)
+        builder.ret_void()
+
+        # dict source: copy all entries
+        builder.position_at_end(src_tag_check)
         _, src_count, src_entries = load_dict_parts(builder, src_arg)
         upd_idx = builder.alloca(i64, name="upd_i")
         builder.store(zero64, upd_idx)
