@@ -6,6 +6,7 @@ Command line interface for the Silu interpreter and IR generator.
 import argparse
 import ast
 import json
+import os
 import sys
 import logging
 from pathlib import Path
@@ -234,8 +235,16 @@ def run_llvm_ir_generator(
             # Use IR string directly
             ir_json = source
 
-        # Convert to LLVM IR
-        converter = SiluToLLVMConverter()
+        # Convert to LLVM IR. SILU_CODEGEN=typed (default) uses the
+        # statically-typed backend for annotated scalars; "dynamic"
+        # restores the original all-PyObject backend.
+        codegen_mode = os.environ.get("SILU_CODEGEN", "typed")
+        if codegen_mode == "dynamic":
+            converter = SiluToLLVMConverter()
+        else:
+            from silu.typed_codegen import TypedCodegen
+
+            converter = TypedCodegen()
         llvm_ir = converter.convert(ir_json)
 
         if output_file:
@@ -271,7 +280,9 @@ def run_ir_to_source_converter(
         sys.exit(1)
 
 
-def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> dict[str, Any]:
+def run_symbolic_executor(
+    source: str, is_file: bool = True, **kwargs
+) -> dict[str, Any]:
     """Run symbolic execution on source code or IR."""
     debug = kwargs.get("debug", False)
     report = {}
@@ -399,6 +410,7 @@ def run_symbolic_executor(source: str, is_file: bool = True, **kwargs) -> dict[s
             logger.error(traceback.format_exc())
         print(json.dumps({"error": str(e)}, indent=2))
     return report
+
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
@@ -756,10 +768,14 @@ def main() -> None:
             report = {}
             if args.source:
                 # Symbolic execution from command line source
-                report = run_symbolic_executor(args.source, is_file=False, **symbolic_kwargs)
+                report = run_symbolic_executor(
+                    args.source, is_file=False, **symbolic_kwargs
+                )
             else:
                 # Symbolic execution from file
-                report = run_symbolic_executor(args.file, is_file=True, **symbolic_kwargs)
+                report = run_symbolic_executor(
+                    args.file, is_file=True, **symbolic_kwargs
+                )
 
             if hasattr(args, "output") and args.output:
                 # Save symbolic execution report to file
