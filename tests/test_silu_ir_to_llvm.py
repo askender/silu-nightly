@@ -346,3 +346,12 @@ class TestSiluToLLVMConverter:
         assert 'call void @"dict_set"' in llvm_ir
         assert 'call {i32, i8*}* @"dict_get_or"' in llvm_ir
         assert 'call {i32, i8*}* @"dict_pop"' in llvm_ir
+
+    def test_tuple_values_share_list_runtime(self):
+        """Tuple literals build sequence objects usable with len/index/loop."""
+        llvm_ir = _convert(
+            "t = (1, 2, 3)\nprint(len(t))\nprint(t[0])\nfor x in t:\n    print(x)\n"
+        )
+
+        assert 'call {i32, i8*}* @"create_list"' in llvm_ir
+        assert "iter_cond:" in llvm_ir

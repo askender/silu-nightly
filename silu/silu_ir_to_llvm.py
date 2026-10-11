@@ -3601,14 +3601,16 @@ class SiluToLLVMConverter:
             return dict_obj
 
         elif op == "tuple":
-            # Handle tuple creation
-            if len(node) >= 2:
-                elements = node[1]
-                # For now, just return the first element
-                # A full implementation would create a tuple object
-                if elements:
-                    return self._convert_node(elements[0])
-            return None
+            # Tuples share the list runtime (Rust maps tuples to fixed-size
+            # sequence values; iteration/len/index semantics are identical).
+            # Known deviation: backed by a mutable list, so tuple item
+            # assignment is not rejected as it would be in Rust/Python.
+            tuple_obj = self.current_builder.call(self.create_list, [])
+            for elem_node in node[1] if len(node) > 1 else []:
+                elem_val = self._convert_node(elem_node)
+                if elem_val:
+                    self.current_builder.call(self.list_append, [tuple_obj, elem_val])
+            return tuple_obj
 
         elif op == "return":
             # Handle return statements
