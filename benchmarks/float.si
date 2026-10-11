@@ -1,0 +1,7 @@
+# Float arithmetic loop (numeric computing workload)
+acc = 0.0
+i = 0
+while i < 200000:
+    acc = acc + 1.5 * 2.25 + i / 4.0
+    i += 1
+print(acc)

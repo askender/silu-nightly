@@ -1,0 +1,8 @@
+# Arithmetic loop: while + mod/floordiv + augmented assignment
+total = 0
+i = 0
+while i < 300000:
+    total += i % 7
+    total -= i // 3
+    i += 1
+print(total)
