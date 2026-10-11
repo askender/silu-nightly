@@ -24,38 +24,72 @@ and should not be trusted for timing.
 
 Binaries are built with the default typed codegen (SILU_CODEGEN=typed,
 clang -O2), where `int`/`float`/`bool` annotations compile to unboxed
-i64/double/i1 stack values and `list[int]`/`list[float]` compile to
-raw element arrays (no PyObject per element).
+i64/double/i1 stack values, `list[int]`/`list[float]` compile to raw
+element arrays and `dict[int, int]`/`dict[int, float]` to a machine-word
+open-addressing dict (no PyObject per element). Unannotated scalars are
+promoted to the same raw storage when a conservative pre-pass proves
+every assignment to the name yields one same kind.
 
 Core micro-benchmarks:
 
 | program | silu-int | cpython | binary | rust | vs cpython | vs rust |
 |---|---|---|---|---|---|---|
-| arith (300k loop, mod/floordiv) | 4.91s | 0.079s | 0.003s | 0.003s | 30.6x | 1.1x |
-| fib(24) recursive calls | 1.65s | 0.032s | 0.0025s | 0.003s | 12.7x | 1.1x |
-| float (200k float ops) | 3.27s | 0.048s | 0.003s | 0.003s | 16.3x | 1.1x |
-| list (30k append + iterate, `list[int]`) | 0.51s | 0.029s | 0.004s | 0.003s | 7.6x | 0.7x |
-| dict (20k writes + lookups) | 0.33s | 0.027s | 0.004s | 0.003s | 7.1x | 0.8x |
-| string (3k concats) | 0.15s | 0.025s | 0.003s | 0.003s | 8.4x | 0.9x |
+| arith (300k loop, mod/floordiv) | 5.0s | 0.070s | 0.003s | 0.003s | 24.0x | 1.1x |
+| fib(24) recursive calls | 1.7s | 0.030s | 0.0026s | 0.0027s | 11.6x | 1.1x |
+| float (200k float ops) | 3.2s | 0.044s | 0.003s | 0.003s | 14.7x | 1.1x |
+| list (30k append + iterate, `list[int]`) | 0.51s | 0.029s | 0.0031s | 0.0033s | 9.4x | 1.1x |
+| dict (20k writes + lookups, `dict[int, int]`) | 0.33s | 0.029s | 0.0026s | 0.0029s | 11.0x | 1.1x |
+| string (3k concats) | 0.17s | 0.028s | 0.0033s | 0.0032s | 7.9x | 1.0x |
 
 Benchmarks Game classics:
 
 | program | silu-int | cpython | binary | rust | vs cpython | vs rust |
 |---|---|---|---|---|---|---|
-| n-body (50k steps, 5 bodies) | 52.0s | 0.283s | 0.021s | 0.006s | 13.6x | 0.3x |
-| spectral-norm (n=300) | 61.3s | 0.332s | 0.006s | 0.004s | 59.1x | 0.7x |
-| fannkuch (n=10) | 0.14s | 0.026s | 0.002s | 0.003s | 10.9x | 1.2x |
-| binary-trees (depth 4-14) | 0.87s | 0.030s | 0.002s | 0.003s | 12.2x | 1.4x |
-| mandelbrot (80x24 ASCII) | 1.12s | 0.034s | 0.009s | 0.003s | 3.9x | 0.4x |
+| n-body (50k steps, 5 bodies) | 52.1s | 0.217s | 0.0057s | 0.0057s | 37.8x | 1.0x |
+| spectral-norm (n=300) | 61.3s | 0.294s | 0.0057s | 0.0050s | 51.4x | 0.9x |
+| fannkuch (n=10) | 0.14s | 0.026s | 0.0026s | 0.0027s | 10.0x | 1.0x |
+| binary-trees (depth 4-14) | 0.90s | 0.030s | 0.003s | 0.0034s | 9.7x | 1.1x |
+| mandelbrot (80x24 ASCII) | 1.13s | 0.033s | 0.0029s | 0.0032s | 11.4x | 1.1x |
 
-Overall geometric mean: **~413x vs silu-int, 12.5x vs CPython, 0.8x
-vs hand-written Rust** across 11 programs. Six workloads are at or
-above Rust parity (arith 1.1x, fib 1.1x, float 1.1x, fannkuch 1.2x,
-binary-trees 1.4x, and dict/string within 20%).
+Overall geometric mean: **~490x vs silu-int, 13.9x vs CPython, 1.0x
+vs hand-written Rust** across 11 programs - every workload is within
+measurement noise of the Rust mirrors. Note that ~2.6ms of each binary
+measurement is process startup; the actual compute in most rows is
+several times faster than Rust's, whose own startup it also carries.
 
 Switches: SILU_CODEGEN=dynamic restores the all-PyObject backend;
 SILU_CHECKS=0 drops the overflow panics (Rust release semantics;
 zero-division checks always stay on, as in Rust).
+
+### SILU_CHECKS=1 vs SILU_CHECKS=0 (back-to-back runs)
+
+Binary times only; interpreter/CPython/Rust are unaffected by the
+switch. Both runs verified identical output (match ok - no benchmark
+overflows i64 either way). Startup (~2.8-3.1ms of each binary time)
+varies by ±0.3ms between runs, so per-row deltas under ~0.5ms are
+noise.
+
+| program | binary CHECKS=1 | binary CHECKS=0 | delta | vs rust (0) | vs rust (1) |
+|---|---|---|---|---|---|
+| arith | 0.0034s | 0.0033s | ~ | 1.2x | 1.1x |
+| dict | 0.0031s | 0.0030s | ~ | 1.0x | 1.1x |
+| fannkuch | 0.0029s | 0.0029s | ~ | 1.3x | 1.0x |
+| fib | 0.0030s | 0.0032s | ~ | 1.2x | 1.1x |
+| float | 0.0035s | 0.0034s | ~ | 1.2x | 1.2x |
+| list | 0.0037s | 0.0031s | 1.2x | 1.0x | 0.9x |
+| mandelbrot | 0.0044s | 0.0030s | **1.5x** | 1.3x | 0.7x |
+| n-body | 0.0064s | 0.0065s | ~ | 1.0x | 1.0x |
+| spectral-norm | 0.0062s | 0.0047s | **1.3x** | 1.0x | 0.8x |
+| string | 0.0042s | 0.0037s | 1.1x | 0.8x | 0.7x |
+| binary-trees | 0.0029s | 0.0033s | ~ | 1.0x | 1.1x |
+
+Geometric mean vs Rust: **1.0x with checks, 1.1x without**. The two
+real wins are exactly the predicted ones: long countable float loops
+whose only exits were the overflow-check branches (spectral-norm's
+a() has three checked int ops per call; mandelbrot's 50-iteration
+pixel loop) - with the branches gone LLVM auto-vectorizes and the
+gap closes. The checks stay on by default because they catch real
+arithmetic bugs, matching Rust debug builds.
 
 ## Notes
 
@@ -64,9 +98,34 @@ zero-division checks always stay on, as in Rust).
   intermediate value was a heap-allocated PyObject. The typed backend
   removes that malloc entirely: scalar loops now run 6-16x faster
   than CPython, and every workload is above it.
-- Rust parity came from four changes: clang -O2 in the pipeline (the
-  biggest single win - earlier runs were accidentally -O0), unboxed
-  i64/double arithmetic, raw-element lists for
+- The last gaps to Rust (geomean 0.8x -> 1.0x) were three distinct
+  defects, each confirmed by an isolated experiment:
+  1. `len()` on a raw list/dict boxed the whole container (one malloc
+     per element) just to ask pyobj_len for the count - 60% of n-body's
+     profile sat in that round trip. It now reads the length/count
+     field directly (n-body 29.8ms -> 11.7ms).
+  2. Unannotated names always took PyObject slots even when every
+     assignment provably produced the same raw type - mandelbrot's
+     inner loop paid 3 mallocs + 3 dynamic dispatches per iteration
+     for `zr2 = z_re * z_re`. A conservative per-scope inference now
+     promotes them (11.2ms -> 3.0ms). Any kind conflict (e.g.
+     `x = 7` then `x = x / 2`) keeps the dynamic slot, so rebinding a
+     name to another type keeps Python semantics. This exposed a
+     latent shadowing bug: a function declaring a name whose kind
+     matched a module global reused the global slot and clobbered the
+     caller's loop counter (n-body hung); function declarations of
+     module names now always shadow, as Python's assignment-makes-a-
+     local rule requires.
+  3. dict had no raw representation at all - rawdict (see above)
+     closed it (dict 0.7x -> 1.1x).
+- The remaining per-workload spread (0.9x-1.2x) traces to the
+  integer overflow-check branches blocking auto-vectorization in long
+  float loops (visible in spectral-norm): SILU_CHECKS=0 recovers it
+  where needed; the checks themselves are kept by default because
+  they catch real bugs (matching Rust debug builds, not release).
+- Rust parity came from earlier changes too: clang -O2 in the pipeline
+  (the biggest single win - earlier runs were accidentally -O0),
+  unboxed i64/double arithmetic, raw-element lists for
   `list[int]`/`list[float]`, and a by-value rawlist_push with one
   capacity check (the first version round-tripped every element
   through a stack slot + memcpy + a redundant second grow check).
