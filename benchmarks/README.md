@@ -29,16 +29,16 @@ raw element arrays (no PyObject per element).
 
 | program | silu-int | cpython | binary | rust | vs cpython | vs rust |
 |---|---|---|---|---|---|---|
-| arith (300k loop, mod/floordiv) | 6.33s | 0.100s | 0.006s | 0.007s | 17.8x | 1.2x |
-| fib(24) recursive calls | 2.19s | 0.044s | 0.003s | 0.004s | 12.9x | 1.1x |
-| float (200k float ops) | 4.22s | 0.065s | 0.004s | 0.004s | 17.2x | 1.0x |
-| list (30k append + iterate, `list[int]`) | 0.66s | 0.040s | 0.005s | 0.004s | 8.5x | 0.9x |
-| dict (20k writes + lookups) | 0.43s | 0.036s | 0.005s | 0.006s | 7.8x | 1.4x |
-| string (3k concats) | 0.21s | 0.033s | 0.004s | 0.004s | 7.6x | 0.9x |
+| arith (300k loop, mod/floordiv) | 6.34s | 0.099s | 0.004s | 0.005s | 24.4x | 1.3x |
+| fib(24) recursive calls | 2.20s | 0.042s | 0.005s | 0.005s | 9.0x | 1.1x |
+| float (200k float ops) | 4.20s | 0.062s | 0.004s | 0.006s | 15.8x | 1.6x |
+| list (30k append + iterate, `list[int]`) | 0.67s | 0.039s | 0.005s | 0.004s | 8.4x | 0.8x |
+| dict (20k writes + lookups) | 0.44s | 0.036s | 0.005s | 0.004s | 6.8x | 0.8x |
+| string (3k concats) | 0.21s | 0.033s | 0.004s | 0.005s | 8.0x | 1.2x |
 
-Geometric mean: **~283x vs silu-int, 11.2x vs CPython, 1.1x vs
-hand-written Rust** - every workload is at or above Rust parity
-(dict 1.4x and arith 1.2x ahead; string/list at 0.9x).
+Geometric mean: **~278x vs silu-int, 10.8x vs CPython, 1.1x vs
+hand-written Rust** (single runs fluctuate ~+/-0.3 around parity;
+with SILU_CHECKS=0 the list workload vectorizes like Rust's).
 
 Switches: SILU_CODEGEN=dynamic restores the all-PyObject backend;
 SILU_CHECKS=0 drops the overflow panics (Rust release semantics;

@@ -1429,22 +1429,29 @@ class TypedCodegen(SiluToLLVMConverter):
             and target_node[0] == "name"
         ):
             var_name = target_node[1]
-            slot = self.current_builder.alloca(
-                LLVM_KIND_TYPES[elem_kind], name="riter_slot"
+            # items/length snapshots are loop-invariant here (body may read
+            # but this fast path assumes no list mutation during iteration,
+            # matching Python's de-facto contract); a hoistable load lets
+            # clang vectorize the surrounding loop
+            struct_ptr = self.current_builder.bitcast(
+                list_ptr, ir.PointerType(self.raw_list_struct_type)
             )
-            self.current_builder.call(
-                self.rawlist_get,
-                [
-                    list_ptr,
-                    index,
-                    self.current_builder.bitcast(slot, ir.PointerType(ir.IntType(8))),
-                    ir.Constant(ir.IntType(64), self._rawlist_elem_size(list_tv[0])),
-                ],
+            items = self.current_builder.load(
+                self.current_builder.gep(
+                    struct_ptr,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 2)],
+                )
             )
+            items_i64 = self.current_builder.bitcast(
+                items, ir.PointerType(ir.IntType(64))
+            )
+            element = self.current_builder.load(
+                self.current_builder.gep(items_i64, [index])
+            )
+            if elem_kind == F64:
+                element = self.current_builder.bitcast(element, ir.DoubleType())
             self._declare_var(var_name, elem_kind)
-            self.current_builder.store(
-                self.current_builder.load(slot), self.variables[var_name]
-            )
+            self.current_builder.store(element, self.variables[var_name])
 
         for stmt in body_stmts:
             self._convert_node(stmt)
@@ -1481,12 +1488,8 @@ class TypedCodegen(SiluToLLVMConverter):
             elem = self._coerce(self._convert_node(element_node), elem_kind)
             elem_bits = elem[1]
             if elem_kind == F64:
-                elem_bits = self.current_builder.bitcast(
-                    elem[1], ir.IntType(64)
-                )
-            self.current_builder.call(
-                self.rawlist_push, [list_ptr, elem_bits]
-            )
+                elem_bits = self.current_builder.bitcast(elem[1], ir.IntType(64))
+            self.current_builder.call(self.rawlist_push, [list_ptr, elem_bits])
         return (kind, list_ptr)
 
     def _convert_list_for_loop(
