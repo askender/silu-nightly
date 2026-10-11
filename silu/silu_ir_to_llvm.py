@@ -1839,13 +1839,9 @@ class SiluToLLVMConverter:
         """
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
-        i8p = ir.PointerType(ir.IntType(8))
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
         zero32 = ir.Constant(i32, 0)
         one32 = ir.Constant(i32, 1)
-        two32 = ir.Constant(i32, 2)
-        three32 = ir.Constant(i32, 3)
-        four32 = ir.Constant(i32, 4)
         zero64 = ir.Constant(i64, 0)
         one64 = ir.Constant(i64, 1)
         pyobj_null = ir.Constant(pyobj_ptr, None)
