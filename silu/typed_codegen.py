@@ -106,31 +106,38 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.store(initial, field(builder, struct_ptr, 2))
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
-        # void rawlist_push(i8* list, i8* elem_ptr, i64 elem_size)
+        # i64 rawlist_push(i8* list, <elem-width * elem_value>) -> new length
+        # Element passed BY VALUE; call sites use the i64 flavor (double
+        # values are bitcast - both are 8 bytes). One capacity check per
+        # call, in-place element store, no temporary buffers.
         self.rawlist_push = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [i8p, i8p, i64]),
+            ir.FunctionType(i64, [i8p, i64]),
             name="rawlist_push",
         )
         entry = self.rawlist_push.append_basic_block("entry")
         grow_block = self.rawlist_push.append_basic_block("grow")
         copy_block = self.rawlist_push.append_basic_block("grow_copy")
-        append_block = self.rawlist_push.append_basic_block("do_push")
+        do_push = self.rawlist_push.append_basic_block("do_push")
         builder = ir.IRBuilder(entry)
-        list_arg, elem_arg, size_arg = self.rawlist_push.args
+        list_arg, elem_arg = self.rawlist_push.args
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
         length = builder.load(field(builder, struct_ptr, 0))
         capacity = builder.load(field(builder, struct_ptr, 1))
         needs_grow = builder.icmp_signed("==", length, capacity)
-        builder.cbranch(needs_grow, grow_block, append_block)
+        builder.cbranch(needs_grow, grow_block, do_push)
 
         builder.position_at_end(grow_block)
+        # capacity doubles; entries are fixed 8 bytes
         new_capacity = builder.mul(capacity, ir.Constant(i64, 2))
-        fresh = builder.call(self.malloc, [builder.mul(new_capacity, size_arg)])
+        fresh = builder.call(
+            self.malloc,
+            [builder.mul(new_capacity, ir.Constant(i64, 8))],
+        )
         has_old = builder.icmp_signed(">", length, zero64)
-        builder.cbranch(has_old, copy_block, append_block)
+        builder.cbranch(has_old, copy_block, do_push)
 
         builder.position_at_end(copy_block)
         old_items = builder.load(field(builder, struct_ptr, 2))
@@ -139,56 +146,23 @@ class TypedCodegen(SiluToLLVMConverter):
             [
                 fresh,
                 old_items,
-                builder.mul(length, size_arg),
+                builder.mul(length, ir.Constant(i64, 8)),
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
         builder.store(new_capacity, field(builder, struct_ptr, 1))
         builder.store(fresh, field(builder, struct_ptr, 2))
-        builder.branch(append_block)
-        builder.position_at_end(append_block)
-        items = builder.load(field(builder, struct_ptr, 2))
-        capacity_now = builder.load(field(builder, struct_ptr, 1))
-        length_now = builder.load(field(builder, struct_ptr, 0))
-        still_full = builder.icmp_signed("==", length_now, capacity_now)
-        regrow_block = self.rawlist_push.append_basic_block("grow2")
-        pushed_block = self.rawlist_push.append_basic_block("push")
-        builder.cbranch(still_full, regrow_block, pushed_block)
+        builder.branch(do_push)
 
-        # safety net: if capacity was not updated by the grow path above
-        # (first insertion into a zero-capacity list), regrow once more
-        builder.position_at_end(regrow_block)
-        bigger = builder.mul(capacity_now, ir.Constant(i64, 2))
-        fresh2 = builder.call(self.malloc, [builder.mul(bigger, size_arg)])
-        builder.call(
-            self.memcpy,
-            [
-                fresh2,
-                items,
-                builder.mul(length_now, size_arg),
-                ir.Constant(ir.IntType(1), 0),
-            ],
-        )
-        builder.store(bigger, field(builder, struct_ptr, 1))
-        builder.store(fresh2, field(builder, struct_ptr, 2))
-        builder.branch(pushed_block)
-
-        builder.position_at_end(pushed_block)
+        builder.position_at_end(do_push)
         items = builder.load(field(builder, struct_ptr, 2))
         length_now = builder.load(field(builder, struct_ptr, 0))
-        slot = builder.gep(items, [builder.mul(length_now, size_arg)])
-        builder.call(
-            self.memcpy,
-            [
-                slot,
-                elem_arg,
-                size_arg,
-                ir.Constant(ir.IntType(1), 0),
-            ],
-        )
-        builder.store(builder.add(length_now, one64), field(builder, struct_ptr, 0))
-        # capacity update only happens on the grow path; store it there
-        builder.ret_void()
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        slot = builder.gep(items_i64, [length_now])
+        builder.store(elem_arg, slot)
+        new_length = builder.add(length_now, one64)
+        builder.store(new_length, field(builder, struct_ptr, 0))
+        builder.ret(new_length)
 
         # i64 rawlist_pop(i8* list) - remove and return the last element
         self.rawlist_pop = ir.Function(
@@ -216,8 +190,9 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(ok_block)
         items = builder.load(field(builder, struct_ptr, 2))
         last_index = builder.sub(length, one64)
-        slot = builder.gep(items, [last_index])
-        value = builder.load(builder.bitcast(slot, ir.PointerType(i64)))
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        slot = builder.gep(items_i64, [last_index])
+        value = builder.load(slot)
         builder.store(zero64, field(builder, struct_ptr, 0))
         builder.ret(value)
 
@@ -311,11 +286,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(ok_block)
         items = builder.load(field(builder, struct_ptr, 2))
-        slot = builder.gep(items, [builder.mul(adj_phi, size_arg)])
-        builder.call(
-            self.memcpy,
-            [out_arg, slot, size_arg, ir.Constant(ir.IntType(1), 0)],
-        )
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        slot = builder.gep(items_i64, [adj_phi])
+        builder.store(builder.load(slot), builder.bitcast(out_arg, ir.PointerType(i64)))
         builder.ret_void()
 
         # void rawlist_set(i8* list, i64 index, i8* elem_ptr, i64 elem_size)
@@ -360,11 +333,10 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(ok_block)
         items = builder.load(field(builder, struct_ptr, 2))
-        slot = builder.gep(items, [builder.mul(adj_phi, size_arg)])
-        builder.call(
-            self.memcpy,
-            [slot, elem_arg, size_arg, ir.Constant(ir.IntType(1), 0)],
-        )
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        slot = builder.gep(items_i64, [adj_phi])
+        elem_bits = builder.load(builder.bitcast(elem_arg, ir.PointerType(i64)))
+        builder.store(elem_bits, slot)
         builder.ret_void()
 
     def _create_unbox_runtime(self):
@@ -1507,17 +1479,13 @@ class TypedCodegen(SiluToLLVMConverter):
         )
         for element_node in element_nodes:
             elem = self._coerce(self._convert_node(element_node), elem_kind)
-            slot = self.current_builder.alloca(
-                LLVM_KIND_TYPES[elem_kind], name="init_elem"
-            )
-            self.current_builder.store(elem[1], slot)
+            elem_bits = elem[1]
+            if elem_kind == F64:
+                elem_bits = self.current_builder.bitcast(
+                    elem[1], ir.IntType(64)
+                )
             self.current_builder.call(
-                self.rawlist_push,
-                [
-                    list_ptr,
-                    self.current_builder.bitcast(slot, i8p),
-                    ir.Constant(ir.IntType(64), elem_size),
-                ],
+                self.rawlist_push, [list_ptr, elem_bits]
             )
         return (kind, list_ptr)
 
@@ -1610,20 +1578,15 @@ class TypedCodegen(SiluToLLVMConverter):
                 list_ptr = raw_obj_tv[1]
                 if method_name == "append" and args_node:
                     elem = self._coerce(self._convert_node(args_node[0]), elem_kind)
-                    slot = self.current_builder.alloca(
-                        LLVM_KIND_TYPES[elem_kind], name="push_slot"
-                    )
-                    self.current_builder.store(elem[1], slot)
-                    slot_i8 = self.current_builder.bitcast(
-                        slot, ir.PointerType(ir.IntType(8))
-                    )
+                    elem_bits = elem[1]
+                    if elem_kind == F64:
+                        # doubles travel as their bit pattern (8 bytes)
+                        elem_bits = self.current_builder.bitcast(
+                            elem[1], ir.IntType(64)
+                        )
                     self.current_builder.call(
                         self.rawlist_push,
-                        [
-                            list_ptr,
-                            slot_i8,
-                            ir.Constant(ir.IntType(64), elem_size),
-                        ],
+                        [list_ptr, elem_bits],
                     )
                     return (raw_kind, list_ptr)
                 if method_name == "len":

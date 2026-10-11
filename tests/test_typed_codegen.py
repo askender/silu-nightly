@@ -166,7 +166,7 @@ class TestTypedCodegen:
         main = _main_body(llvm_ir)
 
         assert 'define i8* @"rawlist_new"' in llvm_ir
-        assert 'call void @"rawlist_push"' in main
+        assert 'call i64 @"rawlist_push"' in main
         assert 'call void @"rawlist_get"' in main
         assert 'call void @"rawlist_set"' in main
         assert 'call {i32, i8*}* @"list_append"' not in main

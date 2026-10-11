@@ -1,5 +1,5 @@
 # List building and iteration
-l: list = []
+l: list[int] = []
 i: int = 0
 while i < 30000:
     l.append(i % 100)

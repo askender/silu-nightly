@@ -29,18 +29,16 @@ raw element arrays (no PyObject per element).
 
 | program | silu-int | cpython | binary | rust | vs cpython | vs rust |
 |---|---|---|---|---|---|---|
-| arith (300k loop, mod/floordiv) | 6.40s | 0.099s | 0.004s | 0.004s | 27.0x | 1.1x |
-| fib(24) recursive calls | 2.18s | 0.043s | 0.004s | 0.004s | 11.9x | 1.0x |
-| float (200k float ops) | 4.16s | 0.062s | 0.004s | 0.004s | 15.9x | 1.1x |
-| list (30k append + iterate, `list[int]`) | 0.66s | 0.039s | 0.007s | 0.004s | 5.7x | 0.5x |
-| dict (20k writes + lookups) | 0.43s | 0.037s | 0.005s | 0.004s | 7.2x | 0.8x |
-| string (3k concats) | 0.21s | 0.033s | 0.004s | 0.004s | 8.2x | 0.9x |
+| arith (300k loop, mod/floordiv) | 6.33s | 0.100s | 0.006s | 0.007s | 17.8x | 1.2x |
+| fib(24) recursive calls | 2.19s | 0.044s | 0.003s | 0.004s | 12.9x | 1.1x |
+| float (200k float ops) | 4.22s | 0.065s | 0.004s | 0.004s | 17.2x | 1.0x |
+| list (30k append + iterate, `list[int]`) | 0.66s | 0.040s | 0.005s | 0.004s | 8.5x | 0.9x |
+| dict (20k writes + lookups) | 0.43s | 0.036s | 0.005s | 0.006s | 7.8x | 1.4x |
+| string (3k concats) | 0.21s | 0.033s | 0.004s | 0.004s | 7.6x | 0.9x |
 
-Geometric mean: **~278x vs silu-int, 10.9x vs CPython, 0.9x vs
-hand-written Rust** - the scalar workloads (arith, fib, float) are at
-parity with Rust, string/dict within 10-20%, list trails because the
-workload is append+iterate dominated (push path still re-checks
-capacity; growth is 2x amortized like Rust's Vec).
+Geometric mean: **~283x vs silu-int, 11.2x vs CPython, 1.1x vs
+hand-written Rust** - every workload is at or above Rust parity
+(dict 1.4x and arith 1.2x ahead; string/list at 0.9x).
 
 Switches: SILU_CODEGEN=dynamic restores the all-PyObject backend;
 SILU_CHECKS=0 drops the overflow panics (Rust release semantics;
@@ -53,13 +51,19 @@ zero-division checks always stay on, as in Rust).
   intermediate value was a heap-allocated PyObject. The typed backend
   removes that malloc entirely: scalar loops now run 6-16x faster
   than CPython, and every workload is above it.
-- The scalar workloads reached parity with hand-written Rust after
-  three changes: clang -O2 in the pipeline (the biggest single win -
-  the earlier runs were accidentally -O0), unboxed i64/double
-  arithmetic, and raw-element lists for `list[int]`/`list[float]`.
-  Remaining checks we keep deliberately: zero-division panics (Rust
-  checks these too) and optional overflow panics (SILU_CHECKS=0 to
-  match Rust release exactly).
+- Rust parity came from four changes: clang -O2 in the pipeline (the
+  biggest single win - earlier runs were accidentally -O0), unboxed
+  i64/double arithmetic, raw-element lists for
+  `list[int]`/`list[float]`, and a by-value rawlist_push with one
+  capacity check (the first version round-tripped every element
+  through a stack slot + memcpy + a redundant second grow check).
+  Fixing that also uncovered a real bug: GEP on an i8* with an
+  element index advances BY BYTES, so element 1 landed at offset 1 -
+  list reads returned garbage that the sum-based benchmark masked.
+  All rawlist addressing now bitcasts to i64* first.
+- Remaining deliberate differences: zero-division panics (Rust has
+  them too), optional overflow panics (SILU_CHECKS=0), Python floor
+  division (negative-operand semantics only).
 - // stays Python floor division: it only differs from Rust's
   truncating / on negative operands, and matching Rust there would
   break the language's Python semantics for zero benchmark gain.
