@@ -785,8 +785,10 @@ class SiluToLLVMConverter:
         r_data = repr_builder.load(repr_builder.gep(repr_obj, [zero32r, one32r]))
         r_struct = repr_builder.bitcast(r_data, ir.PointerType(self.pyobj.string_type))
         r_chars = repr_builder.load(repr_builder.gep(r_struct, [zero32r, one32r]))
-        quoted_fmt = self._create_global_string_with_builder("'%s'", repr_builder)
-        repr_builder.call(self.printf, [quoted_fmt, r_chars])
+        # string buffers are not NUL-terminated; print by length
+        r_len = repr_builder.load(repr_builder.gep(r_struct, [zero32r, zero32r]))
+        quoted_fmt = self._create_global_string_with_builder("'%.*s'", repr_builder)
+        repr_builder.call(self.printf, [quoted_fmt, r_len, r_chars])
         repr_builder.ret_void()
 
         repr_builder.position_at_end(repr_other)
@@ -1032,9 +1034,16 @@ class SiluToLLVMConverter:
             str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
         )
         chars_ptr = builder.load(chars_ptr_ptr)
+        # print with an explicit precision: string buffers are not
+        # NUL-terminated (concat allocates exactly len bytes), so a
+        # bare %s reads past the end into heap garbage
+        str_len_ptr = builder.gep(
+            str_struct, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        )
+        str_len = builder.load(str_len_ptr)
 
-        str_fmt = self._create_global_string_with_builder("%s", builder)
-        builder.call(self.printf, [str_fmt, chars_ptr])
+        str_fmt = self._create_global_string_with_builder("%.*s", builder)
+        builder.call(self.printf, [str_fmt, str_len, chars_ptr])
         builder.ret_void()
 
         # Default case
@@ -2851,17 +2860,17 @@ class SiluToLLVMConverter:
         return func
 
     def _create_bool_result_function(self, func_name: str, pred: str) -> ir.Function:
-        """Create a comparison function over int/bool/float operands.
+        """Create a comparison function over int/bool/float/str operands.
 
-        pred is one of "==", "!=", "<", "<=", ">", ">=". Functions named
-        eq/ne also compare str operands via memcmp.
+        pred is one of "==", "!=", "<", "<=", ">", ">=". String
+        operands compare via memcmp byte order (UTF-8 byte order equals
+        Python code point order) with length breaking ties.
         """
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
         zero32 = ir.Constant(i32, 0)
         one32 = ir.Constant(i32, 1)
         str_tag = ir.Constant(i32, 2)
-        is_equality = func_name in ("eq", "ne")
 
         func_ty = ir.FunctionType(
             ir.PointerType(self.pyobj.pyobj_type),
@@ -2896,63 +2905,52 @@ class SiluToLLVMConverter:
             self._is_numeric_tag(builder, left_tag),
             self._is_numeric_tag(builder, right_tag),
         )
-        if is_equality:
-            str_check_block = func.append_basic_block("str_check")
-            builder.cbranch(both_numeric, num_check_block, str_check_block)
-        else:
-            builder.cbranch(both_numeric, num_check_block, error_block)
+        str_check_block = func.append_basic_block("str_check")
+        builder.cbranch(both_numeric, num_check_block, str_check_block)
 
-        if is_equality:
-            # str == str / str != str via memcmp
-            builder.position_at_end(str_check_block)
-            both_str = builder.and_(
-                builder.icmp_signed("==", left_tag, str_tag),
-                builder.icmp_signed("==", right_tag, str_tag),
+        # str <op> str for every predicate: memcmp byte order (UTF-8
+        # byte order equals Python code point order) with the length
+        # difference breaking ties, matching rawstr_cmp
+        builder.position_at_end(str_check_block)
+        both_str = builder.and_(
+            builder.icmp_signed("==", left_tag, str_tag),
+            builder.icmp_signed("==", right_tag, str_tag),
+        )
+        str_op_block = func.append_basic_block("str_op")
+        builder.cbranch(both_str, str_op_block, error_block)
+
+        builder.position_at_end(str_op_block)
+
+        def string_parts(obj):
+            data = builder.load(builder.gep(obj, [zero32, one32]))
+            str_struct = builder.bitcast(
+                data, ir.PointerType(self.pyobj.string_type)
             )
-            str_op_block = func.append_basic_block("str_op")
-            builder.cbranch(both_str, str_op_block, error_block)
+            length = builder.load(builder.gep(str_struct, [zero32, zero32]))
+            chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+            return length, chars
 
-            builder.position_at_end(str_op_block)
-
-            def string_parts(obj):
-                data = builder.load(builder.gep(obj, [zero32, one32]))
-                str_struct = builder.bitcast(
-                    data, ir.PointerType(self.pyobj.string_type)
-                )
-                length = builder.load(builder.gep(str_struct, [zero32, zero32]))
-                chars = builder.load(builder.gep(str_struct, [zero32, one32]))
-                return length, chars
-
-            left_len, left_chars = string_parts(left)
-            right_len, right_chars = string_parts(right)
-            same_len = builder.icmp_signed("==", left_len, right_len)
-            cmp_block = func.append_basic_block("str_cmp")
-            diff_block = func.append_basic_block("str_len_diff")
-            builder.cbranch(same_len, cmp_block, diff_block)
-
-            builder.position_at_end(diff_block)
-            builder.ret(
-                builder.call(
-                    self.create_bool,
-                    [ir.Constant(ir.IntType(1), 1 if pred == "!=" else 0)],
-                )
-            )
-
-            builder.position_at_end(cmp_block)
-            chars_same = builder.icmp_signed(
-                "==",
-                builder.call(
-                    self.memcmp,
-                    [
-                        left_chars,
-                        right_chars,
-                        builder.sext(left_len, i64),
-                    ],
-                ),
-                ir.Constant(i32, 0),
-            )
-            equal_result = chars_same if pred == "==" else builder.not_(chars_same)
-            builder.ret(builder.call(self.create_bool, [equal_result]))
+        left_len, left_chars = string_parts(left)
+        right_len, right_chars = string_parts(right)
+        prefix_len = builder.select(
+            builder.icmp_signed("<", left_len, right_len), left_len, right_len
+        )
+        memcmp_i64 = builder.sext(
+            builder.call(
+                self.memcmp,
+                [left_chars, right_chars, builder.sext(prefix_len, i64)],
+            ),
+            i64,
+        )
+        order = builder.select(
+            builder.icmp_signed("==", memcmp_i64, ir.Constant(i64, 0)),
+            builder.sub(builder.sext(left_len, i64), builder.sext(right_len, i64)),
+            memcmp_i64,
+        )
+        str_result = builder.icmp_signed(
+            pred, order, ir.Constant(i64, 0)
+        )
+        builder.ret(builder.call(self.create_bool, [str_result]))
 
         builder.position_at_end(num_check_block)
         either_float = builder.or_(
@@ -3313,7 +3311,7 @@ class SiluToLLVMConverter:
                 )
             elif isinstance(value, str):
                 # Create string constant
-                str_len = len(value)  # Not including null terminator
+                str_len = len(value.encode('utf-8'))  # byte length, not char count
                 str_ptr = self._create_global_string(value)
                 return self.current_builder.call(
                     self.create_str, [str_ptr, ir.Constant(ir.IntType(32), str_len)]

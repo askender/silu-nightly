@@ -103,15 +103,16 @@ clang program.s -o program                    # Executable
 
 Type annotations drive the native representation: annotated `int` /
 `float` / `bool` scalars compile to unboxed machine values,
-`list[int]` / `list[float]` to raw element arrays and
-`dict[int, int]` / `dict[int, float]` to a machine-word hash dict —
-no PyObject boxing on those paths. Unannotated scalars get the same
-treatment when a conservative inference proves every assignment to a
-name produces one same type. Across 11 benchmark programs (including
-five Benchmarks Game classics) the compiled binaries average **1.0x
-hand-written Rust and ~14x CPython**; see
-[benchmarks/README.md](benchmarks/README.md) for the full table and
-methodology.
+`list[int]` / `list[float]` to raw element arrays,
+`dict[int, int]` / `dict[int, float]` to a machine-word hash dict and
+annotated `str` to Rust-String-style raw slots (assignment copies,
+append grows in place) — no PyObject boxing on those paths.
+Unannotated scalars get the same treatment when a conservative
+inference proves every assignment to a name produces one same type.
+Across 11 benchmark programs (including five Benchmarks Game
+classics) the compiled binaries average **1.1x hand-written Rust and
+~16x CPython**; see [benchmarks/README.md](benchmarks/README.md) for
+the full table and methodology.
 
 ### Analyzing C Programs (experimental)
 

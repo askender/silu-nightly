@@ -46,12 +46,13 @@ RAWLIST_KINDS = {RAWLIST_I: I64, RAWLIST_F: F64}
 RAWDICT_II = "rawdict_ii"  # dict[int, int]: machine-word open addressing
 RAWDICT_IF = "rawdict_if"  # dict[int, float] (values as f64 bit patterns)
 RAWDICT_KINDS = {RAWDICT_II: I64, RAWDICT_IF: F64}  # kind -> value kind
-RAW_STORAGE_KINDS = {**RAWLIST_KINDS, **RAWDICT_KINDS}
-
+RAWSTR = "rawstr"  # str: {len, cap, data} with exclusive slot ownership
+RAW_STORAGE_KINDS = {**RAWLIST_KINDS, **RAWDICT_KINDS, RAWSTR: RAWSTR}
 LLVM_KIND_TYPES = {
     I64: ir.IntType(64),
     F64: ir.DoubleType(),
     I1: ir.IntType(1),
+    RAWSTR: ir.PointerType(ir.IntType(8)),  # rawstr passes as i8* in ABIs
 }
 
 
@@ -721,6 +722,257 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.position_at_end(loop_done)
             builder.ret(result)
 
+        # ---- raw strings: annotated/inferred str ----
+        # {i64 len, i64 cap, i8* data}. Every slot owns its buffer
+        # exclusively (assignment copies), so appends may realloc in
+        # place and grow amortized like Rust's String.
+        self.rawstr_struct_type = ir.LiteralStructType([i64, i64, i8p])
+
+        self.realloc = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
+        )
+
+        def sfield(b, struct_ptr, index):
+            return b.gep(struct_ptr, [zero32, ir.Constant(i32, index)])
+
+        def load_len(b, struct_ptr):
+            return b.load(sfield(b, struct_ptr, 0))
+
+        def load_data(b, struct_ptr):
+            return b.load(sfield(b, struct_ptr, 2))
+
+        type_error_msg = panic_string(
+            b"TypeError: expected str\0a\0", "str_typeerr"
+        )
+
+        def build_rawstr(header_len, data_len, data_value):
+            """Shared prologue: fresh struct + data buffer, fields set."""
+            fresh = builder.bitcast(
+                builder.call(self.malloc, [ir.Constant(i64, 24)]),
+                ir.PointerType(self.rawstr_struct_type),
+            )
+            builder.store(header_len, sfield(builder, fresh, 0))
+            builder.store(header_len, sfield(builder, fresh, 1))
+            builder.store(data_value, sfield(builder, fresh, 2))
+            return fresh
+
+        # i8* rawstr_new_copy(i8* data, i64 len)
+        self.rawstr_new_copy = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i64]),
+            name="rawstr_new_copy",
+        )
+        builder = ir.IRBuilder(self.rawstr_new_copy.append_basic_block("entry"))
+        data_arg, len_arg = self.rawstr_new_copy.args
+        buffer = builder.call(self.malloc, [len_arg])
+        builder.call(
+            self.memcpy,
+            [buffer, data_arg, len_arg, ir.Constant(ir.IntType(1), 0)],
+        )
+        struct_ptr = build_rawstr(len_arg, len_arg, buffer)
+        builder.ret(builder.bitcast(struct_ptr, i8p))
+
+        # i8* rawstr_copy(i8* src) - eager copy keeps slots exclusive
+        self.rawstr_copy = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p]), name="rawstr_copy"
+        )
+        builder = ir.IRBuilder(self.rawstr_copy.append_basic_block("entry"))
+        (src_arg,) = self.rawstr_copy.args
+        src_struct = builder.bitcast(
+            src_arg, ir.PointerType(self.rawstr_struct_type)
+        )
+        src_len = load_len(builder, src_struct)
+        src_data = load_data(builder, src_struct)
+        fresh_data = builder.call(self.malloc, [src_len])
+        builder.call(
+            self.memcpy,
+            [fresh_data, src_data, src_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        struct_ptr = builder.bitcast(
+            builder.call(self.malloc, [ir.Constant(i64, 24)]),
+            ir.PointerType(self.rawstr_struct_type),
+        )
+        builder.store(src_len, sfield(builder, struct_ptr, 0))
+        builder.store(src_len, sfield(builder, struct_ptr, 1))
+        builder.store(fresh_data, sfield(builder, struct_ptr, 2))
+        builder.ret(builder.bitcast(struct_ptr, i8p))
+
+        # i8* rawstr_concat(i8* a, i8* b) - fresh result, inputs untouched
+        self.rawstr_concat = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i8p]),
+            name="rawstr_concat",
+        )
+        builder = ir.IRBuilder(self.rawstr_concat.append_basic_block("entry"))
+        a_arg, b_arg = self.rawstr_concat.args
+        a_struct = builder.bitcast(a_arg, ir.PointerType(self.rawstr_struct_type))
+        b_struct = builder.bitcast(b_arg, ir.PointerType(self.rawstr_struct_type))
+        a_len = load_len(builder, a_struct)
+        b_len = load_len(builder, b_struct)
+        total = builder.add(a_len, b_len)
+        buffer = builder.call(self.malloc, [total])
+        builder.call(
+            self.memcpy,
+            [buffer, load_data(builder, a_struct), a_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        b_dst = builder.gep(buffer, [a_len])
+        builder.call(
+            self.memcpy,
+            [b_dst, load_data(builder, b_struct), b_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        struct_ptr = build_rawstr(total, total, buffer)
+        builder.ret(builder.bitcast(struct_ptr, i8p))
+
+        # void rawstr_append(i8* s, i8* data, i64 len)
+        # Grow in place with doubling; caller guarantees `data` does not
+        # point into s's buffer (self-append goes through rawstr_concat).
+        self.rawstr_append = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i8p, i64]),
+            name="rawstr_append",
+        )
+        entry = self.rawstr_append.append_basic_block("entry")
+        grow_block = self.rawstr_append.append_basic_block("grow")
+        copy_block = self.rawstr_append.append_basic_block("do_append")
+        builder = ir.IRBuilder(entry)
+        s_arg, data_arg, add_len_arg = self.rawstr_append.args
+        struct_ptr = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        old_len = load_len(builder, struct_ptr)
+        old_cap = builder.load(sfield(builder, struct_ptr, 1))
+        new_len = builder.add(old_len, add_len_arg)
+        needs_room = builder.icmp_signed(">", new_len, old_cap)
+        builder.cbranch(needs_room, grow_block, copy_block)
+
+        builder.position_at_end(grow_block)
+        doubled = builder.mul(old_cap, ir.Constant(i64, 2))
+        enough = builder.icmp_signed(">=", doubled, new_len)
+        new_cap = builder.select(enough, doubled, new_len)
+        old_data = load_data(builder, struct_ptr)
+        grown = builder.call(
+            self.realloc,
+            [old_data, new_cap],
+        )
+        builder.store(new_cap, sfield(builder, struct_ptr, 1))
+        builder.store(grown, sfield(builder, struct_ptr, 2))
+        builder.branch(copy_block)
+
+        builder.position_at_end(copy_block)
+        data_now = load_data(builder, struct_ptr)
+        len_now = load_len(builder, struct_ptr)
+        dst = builder.gep(data_now, [len_now])
+        builder.call(
+            self.memcpy,
+            [dst, data_arg, add_len_arg, ir.Constant(ir.IntType(1), 0)],
+        )
+        builder.store(new_len, sfield(builder, struct_ptr, 0))
+        builder.ret_void()
+
+        # i1 rawstr_eq(i8* a, i8* b)
+        self.rawstr_eq = ir.Function(
+            self.module, ir.FunctionType(ir.IntType(1), [i8p, i8p]), name="rawstr_eq"
+        )
+        entry = self.rawstr_eq.append_basic_block("entry")
+        eq_ok = self.rawstr_eq.append_basic_block("len_ok")
+        eq_out = self.rawstr_eq.append_basic_block("eq_out")
+        builder = ir.IRBuilder(entry)
+        a_arg, b_arg = self.rawstr_eq.args
+        a_struct = builder.bitcast(a_arg, ir.PointerType(self.rawstr_struct_type))
+        b_struct = builder.bitcast(b_arg, ir.PointerType(self.rawstr_struct_type))
+        a_len = load_len(builder, a_struct)
+        b_len = load_len(builder, b_struct)
+        same_len = builder.icmp_signed("==", a_len, b_len)
+        builder.cbranch(same_len, eq_ok, eq_out)
+
+        builder.position_at_end(eq_ok)
+        same = builder.call(
+            self.memcmp,
+            [load_data(builder, a_struct), load_data(builder, b_struct), a_len],
+        )
+        is_zero = builder.icmp_signed("==", same, ir.Constant(i32, 0))
+        builder.branch(eq_out)
+
+        builder.position_at_end(eq_out)
+        result = builder.phi(ir.IntType(1))
+        result.add_incoming(ir.Constant(ir.IntType(1), 0), entry)
+        result.add_incoming(is_zero, eq_ok)
+        builder.ret(result)
+
+        # i64 rawstr_cmp(i8* a, i8* b) - memcmp sign (UTF-8 byte order
+        # equals code point order, same as Python's str ordering)
+        self.rawstr_cmp = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p, i8p]), name="rawstr_cmp"
+        )
+        builder = ir.IRBuilder(self.rawstr_cmp.append_basic_block("entry"))
+        a_arg, b_arg = self.rawstr_cmp.args
+        a_struct = builder.bitcast(a_arg, ir.PointerType(self.rawstr_struct_type))
+        b_struct = builder.bitcast(b_arg, ir.PointerType(self.rawstr_struct_type))
+        a_len = load_len(builder, a_struct)
+        b_len = load_len(builder, b_struct)
+        prefix_len = builder.select(
+            builder.icmp_signed("<", a_len, b_len), a_len, b_len
+        )
+        memcmp_result = builder.call(
+            self.memcmp,
+            [load_data(builder, a_struct), load_data(builder, b_struct), prefix_len],
+        )
+        memcmp_i64 = builder.sext(memcmp_result, i64)
+        is_equal = builder.icmp_signed("==", memcmp_i64, zero64)
+        # equal prefixes: the shorter string sorts first
+        length_diff = builder.sub(a_len, b_len)
+        builder.ret(builder.select(is_equal, length_diff, memcmp_i64))
+
+        # PyObject* rawstr_to_pystr(i8* s) - boundary box (data copied)
+        self.rawstr_to_pystr = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [i8p]),
+            name="rawstr_to_pystr",
+        )
+        builder = ir.IRBuilder(self.rawstr_to_pystr.append_basic_block("entry"))
+        (s_arg,) = self.rawstr_to_pystr.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = load_len(builder, s_struct)
+        s_data = load_data(builder, s_struct)
+        box_buffer = builder.call(self.malloc, [s_len])
+        builder.call(
+            self.memcpy,
+            [box_buffer, s_data, s_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        box_len = builder.trunc(s_len, ir.IntType(32))
+        builder.ret(builder.call(self.create_str, [box_buffer, box_len]))
+
+        # i8* pystr_to_rawstr(PyObject* obj) - boundary unbox (copies)
+        self.pystr_to_rawstr = ir.Function(
+            self.module, ir.FunctionType(i8p, [pyobj_ptr]), name="pystr_to_rawstr"
+        )
+        entry = self.pystr_to_rawstr.append_basic_block("entry")
+        ok_block = self.pystr_to_rawstr.append_basic_block("ok")
+        error_block = self.pystr_to_rawstr.append_basic_block("type_error")
+        builder = ir.IRBuilder(entry)
+        (obj_arg,) = self.pystr_to_rawstr.args
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        is_str = builder.icmp_signed("==", tag, ir.Constant(i32, 2))
+        builder.cbranch(is_str, ok_block, error_block)
+
+        builder.position_at_end(ok_block)
+        inner = builder.load(builder.gep(obj_arg, [zero32, one32b]))
+        str_struct = builder.bitcast(inner, ir.PointerType(self.pyobj.string_type))
+        box_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
+        box_data = builder.load(builder.gep(str_struct, [zero32, one32b]))
+        wide_len = builder.sext(box_len, i64)
+        raw_buffer = builder.call(self.malloc, [wide_len])
+        builder.call(
+            self.memcpy,
+            [raw_buffer, box_data, wide_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        struct_ptr = build_rawstr(wide_len, wide_len, raw_buffer)
+        builder.ret(builder.bitcast(struct_ptr, i8p))
+
+        builder.position_at_end(error_block)
+        msg_ptr = builder.gep(type_error_msg, [zero32, zero32])
+        builder.call(self.printf, [msg_ptr])
+        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.unreachable()
+
         # void rawlist_get(i8* list, i64 index, i8* out_ptr, i64 elem_size)
         # Bounds are checked; OOB aborts like list_get.
         self.rawlist_get = ir.Function(
@@ -909,6 +1161,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 else self.rawdict_to_pydict_if
             )
             return self.current_builder.call(converter, [value])
+        if kind == RAWSTR:
+            return self.current_builder.call(self.rawstr_to_pystr, [value])
         if kind == I64:
             return self.current_builder.call(self.create_int, [value])
         if kind == F64:
@@ -925,12 +1179,23 @@ class TypedCodegen(SiluToLLVMConverter):
             return self.current_builder.call(self.unbox_float, [obj])
         if kind == I1:
             return self.current_builder.call(self.unbox_bool, [obj])
+        if kind == RAWSTR:
+            return self.current_builder.call(self.pystr_to_rawstr, [obj])
         raise ValueError(f"cannot unbox into {kind}")
 
     def _coerce(self, tv: Tuple[str, Any], target: str) -> Tuple[str, Any]:
         """Convert a TypedValue to the target kind."""
         kind, value = tv
         if kind == target:
+            if kind == RAWSTR:
+                # rawstr slots own their buffers exclusively: storing the
+                # same buffer into a second slot would let an in-place
+                # append alias, so assignment eagerly copies (Rust String
+                # move semantics expressed as value copy)
+                return (
+                    RAWSTR,
+                    self.current_builder.call(self.rawstr_copy, [value]),
+                )
             return tv
         if target == OBJ and kind in RAW_STORAGE_KINDS:
             boxed = self._box(tv)
@@ -973,6 +1238,43 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_builder.unreachable()
         self.current_builder.position_at_end(ok_block)
 
+    def _rawstr_append_operand(self, rhs_node: Any) -> Tuple[Any, Any]:
+        """(data_ptr, byte_len) for rawstr_append.
+
+        String literals stream straight from their global constant;
+        rawstr values pass their own buffer (append's realloc never
+        moves a foreign buffer); anything dynamic is boxed and copied
+        out through the unbox boundary first.
+        """
+        if (
+            isinstance(rhs_node, list)
+            and len(rhs_node) >= 2
+            and rhs_node[0] == "const"
+            and isinstance(rhs_node[1], str)
+        ):
+            text = rhs_node[1]
+            return (
+                self._create_global_string(text),
+                ir.Constant(ir.IntType(64), len(text.encode("utf-8"))),
+            )
+        tv = self._coerce(self._convert_node(rhs_node), RAWSTR)
+        struct_ptr = self.current_builder.bitcast(
+            tv[1], ir.PointerType(self.rawstr_struct_type)
+        )
+        length = self.current_builder.load(
+            self.current_builder.gep(
+                struct_ptr,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+        )
+        data = self.current_builder.load(
+            self.current_builder.gep(
+                struct_ptr,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 2)],
+            )
+        )
+        return data, length
+
     def _to_i1_cond(self, tv: Tuple[str, Any]) -> Any:
         """Condition value -> i1 (direct, or Python truthiness for obj)."""
         kind, value = tv
@@ -985,6 +1287,20 @@ class TypedCodegen(SiluToLLVMConverter):
         if kind == F64:
             return self.current_builder.fcmp_ordered(
                 "!=", value, ir.Constant(ir.DoubleType(), 0.0)
+            )
+        if kind == RAWSTR:
+            # Python truthiness: the empty string is false
+            struct_ptr = self.current_builder.bitcast(
+                value, ir.PointerType(self.rawstr_struct_type)
+            )
+            length = self.current_builder.load(
+                self.current_builder.gep(
+                    struct_ptr,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+                )
+            )
+            return self.current_builder.icmp_signed(
+                "!=", length, ir.Constant(ir.IntType(64), 0)
             )
         return self._emit_truthiness(value)
 
@@ -1064,6 +1380,21 @@ class TypedCodegen(SiluToLLVMConverter):
         return self._coerce(left, target), self._coerce(right, target)
 
     def _typed_binop(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any]):
+        if op == "+" and (left[0] == RAWSTR or right[0] == RAWSTR):
+            # string concatenation on raw slots: fresh buffer, inputs
+            # untouched (t = s + "x" must not disturb s). Raw operands
+            # are only read, so they skip the eager-copy coercion.
+            def as_rawstr(tv: Tuple[str, Any]):
+                if tv[0] == RAWSTR:
+                    return tv[1]
+                return self._coerce(tv, RAWSTR)[1]
+
+            return (
+                RAWSTR,
+                self.current_builder.call(
+                    self.rawstr_concat, [as_rawstr(left), as_rawstr(right)]
+                ),
+            )
         if left[0] == OBJ or right[0] == OBJ:
             l_obj = self._box(left)
             r_obj = self._box(right)
@@ -1254,6 +1585,25 @@ class TypedCodegen(SiluToLLVMConverter):
         return builder.add(remainder, adjustment)
 
     def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any]):
+        if left[0] == RAWSTR or right[0] == RAWSTR:
+            # raw string comparisons: memcmp semantics, which on UTF-8
+            # bytes equals Python's code point ordering
+            def as_rawstr(tv: Tuple[str, Any]):
+                if tv[0] == RAWSTR:
+                    return tv[1]
+                return self._coerce(tv, RAWSTR)[1]
+
+            a_ptr = as_rawstr(left)
+            b_ptr = as_rawstr(right)
+            if op == "==":
+                return (I1, self.current_builder.call(self.rawstr_eq, [a_ptr, b_ptr]))
+            if op == "!=":
+                eq = self.current_builder.call(self.rawstr_eq, [a_ptr, b_ptr])
+                return (I1, self.current_builder.not_(eq))
+            order = self.current_builder.call(self.rawstr_cmp, [a_ptr, b_ptr])
+            zero = ir.Constant(ir.IntType(64), 0)
+            return (I1, self.current_builder.icmp_signed(op, order, zero))
+
         if left[0] == OBJ or right[0] == OBJ:
             l_obj = self._box(left)
             r_obj = self._box(right)
@@ -1288,7 +1638,14 @@ class TypedCodegen(SiluToLLVMConverter):
             and node[0] == "name"
             and isinstance(node[1], str)
         ):
-            return ANNOTATION_KINDS.get(node[1])
+            if ANNOTATION_KINDS.get(node[1]) is not None:
+                return ANNOTATION_KINDS[node[1]]
+            if node[1] == "str":
+                # annotated str: raw {len, cap, data} slot (Rust String's
+                # ownership model - assignment copies, append grows in
+                # place, so Python's immutable-value semantics hold)
+                return RAWSTR
+            return None
         if (
             isinstance(node, list)
             and len(node) >= 3
@@ -1364,6 +1721,10 @@ class TypedCodegen(SiluToLLVMConverter):
         def merge_arith(left: Optional[str], right: Optional[str]) -> Optional[str]:
             if left is None or right is None or left == OBJ or right == OBJ:
                 return None
+            if left == RAWSTR or right == RAWSTR:
+                # concatenation: str + str stays str, anything mixed with
+                # a number keeps the name dynamic
+                return RAWSTR if left == right else None
             if F64 in (left, right):
                 return F64
             return I64  # i1 operands promote like bool arithmetic
@@ -1380,6 +1741,8 @@ class TypedCodegen(SiluToLLVMConverter):
                     return I64
                 if isinstance(value, float):
                     return F64
+                if isinstance(value, str):
+                    return RAWSTR
                 return None
             if op == "name":
                 name = node[1]
@@ -1427,7 +1790,7 @@ class TypedCodegen(SiluToLLVMConverter):
         def add(name: str, kind: Optional[str]):
             if name in annotations:
                 return  # declared kind always wins
-            if kind not in (I64, F64, I1):
+            if kind not in (I64, F64, I1, RAWSTR):
                 kind = None
             if name not in candidates:
                 candidates[name] = kind
@@ -1474,10 +1837,22 @@ class TypedCodegen(SiluToLLVMConverter):
                             iter_kind = I64
                         elif resolved == RAWLIST_F:
                             iter_kind = F64
+                    # the IR spells assign targets as bare names but for
+                    # targets as name nodes; accept both
                     if isinstance(stmt[1], str):
+                        target_name = stmt[1]
+                    elif (
+                        isinstance(stmt[1], list)
+                        and len(stmt[1]) >= 2
+                        and stmt[1][0] == "name"
+                    ):
+                        target_name = stmt[1][1]
+                    else:
+                        target_name = None
+                    if target_name is not None:
                         # None (dynamic iteration) must also register:
                         # the loop rebinds the target and blocks inference
-                        add(stmt[1], iter_kind)
+                        add(target_name, iter_kind)
                     walk(stmt[3])
                 elif op == "if" and len(stmt) >= 4:
                     walk(stmt[2])
@@ -1620,12 +1995,23 @@ class TypedCodegen(SiluToLLVMConverter):
                 break
 
         if not self.current_builder.block.is_terminated:
-            zero = {
-                I64: ir.Constant(ir.IntType(64), 0),
-                F64: ir.Constant(ir.DoubleType(), 0.0),
-                I1: ir.Constant(ir.IntType(1), 0),
-            }[ret_kind]
-            self.current_builder.ret(zero)
+            if ret_kind == RAWSTR:
+                # missing return: an empty owned string, never a null
+                # pointer (slots must stay dereferenceable)
+                empty_ptr = self._create_global_string("")
+                self.current_builder.ret(
+                    self.current_builder.call(
+                        self.rawstr_new_copy,
+                        [empty_ptr, ir.Constant(ir.IntType(64), 0)],
+                    )
+                )
+            else:
+                zero = {
+                    I64: ir.Constant(ir.IntType(64), 0),
+                    F64: ir.Constant(ir.DoubleType(), 0.0),
+                    I1: ir.Constant(ir.IntType(1), 0),
+                }[ret_kind]
+                self.current_builder.ret(zero)
 
         self.current_function = old_function
         self.current_builder = old_builder
@@ -1748,7 +2134,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (I64, ir.Constant(ir.IntType(64), value))
             if kind == F64:
                 return (F64, ir.Constant(ir.DoubleType(), value))
-            str_len = len(value)
+            str_len = len(value.encode('utf-8'))  # bytes, matches the utf-8 global
             str_ptr = self._create_global_string(value)
             return (
                 OBJ,
@@ -1773,6 +2159,28 @@ class TypedCodegen(SiluToLLVMConverter):
                 # unannotated rebinding: raw storage only when the
                 # pre-pass proved every assignment yields one same kind
                 annotation_kind = self._inferred_kinds.get(target) or OBJ
+            if (
+                annotation_kind == RAWSTR
+                and isinstance(target, str)
+                and isinstance(value_node, list)
+                and len(value_node) >= 3
+                and value_node[0] == "+"
+                and isinstance(value_node[1], list)
+                and value_node[1][0] == "name"
+                and value_node[1][1] == target
+            ):
+                # s = s + rhs: the slot owns its buffer and the old value
+                # dies here, so append in place (amortized O(1)) instead
+                # of a fresh quadratic copy. A rhs naming s itself goes
+                # through rawstr_concat: append's realloc could move the
+                # buffer out from under its own source.
+                data_ptr, byte_len = self._rawstr_append_operand(value_node[2])
+                slot_value = self._load_var(target)[1]
+                self.current_builder.call(
+                    self.rawstr_append, [slot_value, data_ptr, byte_len]
+                )
+                self._declare_var(target, RAWSTR)
+                return (RAWSTR, slot_value)
             if (
                 annotation_kind in RAWLIST_KINDS
                 and isinstance(value_node, list)
@@ -1982,6 +2390,24 @@ class TypedCodegen(SiluToLLVMConverter):
             target_name = target_node[1]
             if target_name not in self.var_kinds and target_name not in self.variables:
                 return (OBJ, null_obj)
+            if self.var_kinds.get(target_name) == RAWSTR:
+                # s += rhs grows the owned buffer in place; a rhs naming
+                # s itself must take the fresh-concat path (append's
+                # realloc would move the buffer under its own source)
+                if isinstance(node[3], list) and node[3][:2] == ["name", target_name]:
+                    current = self._load_var(target_name)
+                    result = self._typed_binop("+", current, right_tv)
+                    coerced = self._coerce(result, RAWSTR)
+                    self.current_builder.store(
+                        coerced[1], self.variables[target_name]
+                    )
+                    return coerced
+                data_ptr, byte_len = self._rawstr_append_operand(node[3])
+                slot_value = self._load_var(target_name)[1]
+                self.current_builder.call(
+                    self.rawstr_append, [slot_value, data_ptr, byte_len]
+                )
+                return (RAWSTR, slot_value)
             current = self._load_var(target_name)
             result = self._typed_binop(bin_op, current, right_tv)
             coerced = self._coerce(result, self.var_kinds[target_name])
@@ -2152,6 +2578,15 @@ class TypedCodegen(SiluToLLVMConverter):
             if self.current_ret_kind is not None:
                 value = self._convert_node(node[1]) if len(node) > 1 else None
                 if value is None:
+                    if self.current_ret_kind == RAWSTR:
+                        empty_ptr = self._create_global_string("")
+                        self.current_builder.ret(
+                            self.current_builder.call(
+                                self.rawstr_new_copy,
+                                [empty_ptr, ir.Constant(ir.IntType(64), 0)],
+                            )
+                        )
+                        return (RAWSTR, null_obj)
                     zero = {
                         I64: ir.Constant(ir.IntType(64), 0),
                         F64: ir.Constant(ir.DoubleType(), 0.0),
@@ -2780,6 +3215,24 @@ class TypedCodegen(SiluToLLVMConverter):
                                         arg_tv[1],
                                         ir.PointerType(self.raw_dict_struct_type),
                                     ),
+                                    [
+                                        ir.Constant(ir.IntType(32), 0),
+                                        ir.Constant(ir.IntType(32), 0),
+                                    ],
+                                )
+                            ),
+                        )
+                    if arg_tv[0] == RAWSTR:
+                        # raw string: length lives in the slot header
+                        struct_ptr = self.current_builder.bitcast(
+                            arg_tv[1],
+                            ir.PointerType(self.rawstr_struct_type),
+                        )
+                        return (
+                            I64,
+                            self.current_builder.load(
+                                self.current_builder.gep(
+                                    struct_ptr,
                                     [
                                         ir.Constant(ir.IntType(32), 0),
                                         ir.Constant(ir.IntType(32), 0),

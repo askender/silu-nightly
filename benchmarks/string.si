@@ -1,7 +1,9 @@
-# String concatenation in a loop (quadratic in both)
+# String concatenation in a loop. CPython (refcount==1 in-place concat)
+# and Rust (String: Add<&str> reuses the buffer) both amortize
+# s = s + "x" into O(n); the typed backend's raw str slots do too.
 s: str = ""
 i: int = 0
-while i < 3000:
+while i < 48000:
     s = s + "x"
     i += 1
 print(len(s))

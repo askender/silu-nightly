@@ -372,3 +372,117 @@ class TestInferredScalarKinds:
         )
 
         assert _run_main(_convert(source)) == "0 3\n"
+
+
+class TestRawStr:
+    def test_annotated_str_is_raw(self):
+        """s: str builds a raw {len, cap, data} slot; appends skip the
+        PyObject runtime entirely."""
+        llvm_ir = _convert(
+            's: str = "a"\ns = s + "b"\ns += "c"\n'
+            "t: str = s\nprint(s, t, len(s))\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'define void @"rawstr_append"' in llvm_ir
+        assert 'call void @"rawstr_append"' in main
+        assert 'call {i32, i8*}* @"pyobj_add"' not in main
+        assert '@"s" = global i8*' in llvm_ir
+
+    def test_str_semantics_execute(self):
+        """Concat, aug-append, aliasing, len, truthiness and compare all
+        match the interpreter."""
+        source = (
+            's: str = "a"\n'
+            's = s + "b"\n'
+            's += "c"\n'
+            "t: str = s\n"
+            's += "X"\n'
+            "print(t, s, len(s))\n"
+            "print(s == t, s != t)\n"
+            'empty: str = ""\n'
+            "if not empty:\n"
+            '    print("falsy")\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_inferred_str_avoids_pyobj_add(self):
+        """u = "" then u = u + "z" in a loop: the pre-pass promotes u to
+        a raw slot and the self-append grows in place (amortized O(1),
+        was quadratic PyObject concat)."""
+        llvm_ir = _convert(
+            'u = ""\ni: int = 0\nwhile i < 5:\n'
+            '    u = u + "z"\n    i += 1\nprint(u, len(u))\n'
+        )
+        main = _main_body(llvm_ir)
+
+        assert '@"u" = global i8*' in llvm_ir
+        assert 'call void @"rawstr_append"' in main
+        assert 'call {i32, i8*}* @"pyobj_add"' not in main
+        assert _run_main(llvm_ir) == "zzzzz 5\n"
+
+    def test_str_kind_conflict_keeps_dynamic(self):
+        """x = "a" then x = 5 rebinds to int: the name must stay on
+        PyObject storage."""
+        llvm_ir = _convert('x = "a"\nx = 5\nprint(x)\n')
+        main = _main_body(llvm_ir)
+
+        assert 'call {i32, i8*}* @"create_int"' in main
+        assert '@x = global i8*' not in llvm_ir
+
+    def test_self_append_concatenates(self):
+        """s = s + s must take the fresh-concat path (append's realloc
+        would move the buffer under its own source)."""
+        source = (
+            's = "ab"\ni: int = 0\nwhile i < 3:\n'
+            "    s = s + s\n    i += 1\nprint(s, len(s))\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_str_function_boundary(self):
+        """rawstr params are copied at the call boundary and rawstr
+        returns are copied at return, so callees cannot alias callers."""
+        source = (
+            "def shout(name: str) -> str:\n"
+            '    return name + "!"\n'
+            's: str = "bob"\n'
+            "t: str = shout(s)\n"
+            't += "?"\n'
+            "print(s, t)\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_dynamic_str_compare_matches_python(self):
+        """str <op> str for every comparison predicate used to return
+        None for ordering ops (eq/ne only); now matches Python."""
+        source = (
+            'print("abc" == "abd", "abc" != "abd")\n'
+            'print("abc" < "abd", "abd" < "abc")\n'
+            'print("abc" <= "abc", "abc" >= "abc")\n'
+            'print("" < "a", "a" < "")\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
+def _run_interpreter(source: str) -> str:
+    """Reference output from the tree-walking interpreter."""
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".si", delete=False
+    ) as handle:
+        handle.write(source)
+        path = handle.name
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "silu", "interpret", path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+    finally:
+        os.unlink(path)

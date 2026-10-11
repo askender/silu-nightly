@@ -25,8 +25,10 @@ and should not be trusted for timing.
 Binaries are built with the default typed codegen (SILU_CODEGEN=typed,
 clang -O2), where `int`/`float`/`bool` annotations compile to unboxed
 i64/double/i1 stack values, `list[int]`/`list[float]` compile to raw
-element arrays and `dict[int, int]`/`dict[int, float]` to a machine-word
-open-addressing dict (no PyObject per element). Unannotated scalars are
+element arrays, `dict[int, int]`/`dict[int, float]` to a machine-word
+open-addressing dict and annotated (or consistently inferred) `str` to
+Rust-String-style raw slots whose buffers are owned exclusively by
+their variable (no PyObject per value). Unannotated scalars are
 promoted to the same raw storage when a conservative pre-pass proves
 every assignment to the name yields one same kind.
 
@@ -39,7 +41,7 @@ Core micro-benchmarks:
 | float (200k float ops) | 3.2s | 0.044s | 0.003s | 0.003s | 14.7x | 1.1x |
 | list (30k append + iterate, `list[int]`) | 0.51s | 0.029s | 0.0031s | 0.0033s | 9.4x | 1.1x |
 | dict (20k writes + lookups, `dict[int, int]`) | 0.33s | 0.029s | 0.0026s | 0.0029s | 11.0x | 1.1x |
-| string (3k concats) | 0.17s | 0.028s | 0.0033s | 0.0032s | 7.9x | 1.0x |
+| string (48k concats, amortized) | 0.59s | 0.047s | 0.0037s | 0.0032s | 12.5x | 1.2x |
 
 Benchmarks Game classics:
 
@@ -118,6 +120,20 @@ arithmetic bugs, matching Rust debug builds.
      local rule requires.
   3. dict had no raw representation at all - rawdict (see above)
      closed it (dict 0.7x -> 1.1x).
+- Strings had the biggest hidden gap: `s = s + "x"` was a true
+  quadratic copy (fresh buffer + full copy per step) while CPython
+  (refcount==1 in-place concat) and Rust (String: Add<&str> reuses
+  the buffer) both amortize. At n=48k the compiled binary lost to
+  CPython 3x. Raw str slots now copy on assignment (exclusive
+  ownership) and grow in place on `s = s + ...` / `s +=`, matching
+  Rust String semantics (string 0.8x -> 1.2x; the benchmark is now
+  48k iterations because at 3k the row was startup-dominated).
+  Two latent dynamic-runtime bugs surfaced and were fixed: printed
+  strings used printf("%s") on non-NUL-terminated concat buffers
+  (heap garbage past the end - now printf("%.*s") with the cached
+  length), and str<op>str ordering comparisons (pyobj_lt etc.)
+  returned None for every non-equality predicate (now memcmp byte
+  order with length tiebreak, matching Python code point order).
 - The remaining per-workload spread (0.9x-1.2x) traces to the
   integer overflow-check branches blocking auto-vectorization in long
   float loops (visible in spectral-norm): SILU_CHECKS=0 recovers it
