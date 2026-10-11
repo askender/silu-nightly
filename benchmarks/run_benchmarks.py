@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Benchmark: Silu interpreter vs compiled native binary.
+"""Benchmark: Silu interpreter vs CPython vs compiled native binary.
 
 For each benchmarks/*.si program:
 1. Compile through the silu ir/llvm pipeline with clang.
-2. Verify the binary output matches the interpreter output exactly.
-3. Time 3 runs of each side (median), including process startup.
+2. Verify the binary, the Silu interpreter, AND CPython running the
+   same file directly all produce identical output.
+3. Time 3 runs of each (median), including process startup.
+
+The .si sources are valid Python (Silu syntax is a Python subset), so
+CPython executes them directly - no translation involved.
 
 Usage: python benchmarks/run_benchmarks.py [--runs N] [--filter substr]
 """
@@ -21,6 +25,7 @@ REPO = Path(__file__).resolve().parent.parent
 SILU = REPO / ".venv" / "bin" / "silu"
 if not SILU.exists():
     SILU = Path("silu")  # fallback to PATH
+CPYTHON = sys.executable
 
 
 def run(cmd, timeout=300):
@@ -55,7 +60,7 @@ def main():
         return 1
 
     with tempfile.TemporaryDirectory() as tmp:
-        # Startup baseline: minimal program through both paths
+        # Startup baseline: minimal program through all three paths
         baseline = Path(tmp) / "hello.si"
         baseline.write_text('print("ok")\n')
         baseline_ir = Path(tmp) / "hello.ir.json"
@@ -67,51 +72,66 @@ def main():
         if clang_result.returncode != 0:
             raise RuntimeError("baseline clang failed")
         interp_base, _ = median_time([SILU, "interpret", baseline], args.runs)
+        cpython_base, _ = median_time([CPYTHON, baseline], args.runs)
         bin_base, _ = median_time([baseline_bin], args.runs)
 
         rows = []
         print(
-            f"{'program':<10} {'interpreter':>12} {'binary':>10} "
-            f"{'speedup':>9}  output-match"
+            f"{'program':<10} {'silu-int':>10} {'cpython':>10} {'binary':>10} "
+            f"{'vs-int':>7} {'vs-cpy':>7}  match"
         )
-        print("-" * 58)
+        print("-" * 72)
         for program in programs:
             ir_file = Path(tmp) / (program.stem + ".ir.json")
             ll_file = Path(tmp) / (program.stem + ".ll")
             binary = Path(tmp) / (program.stem + "_bin")
 
-            compile_result = run([SILU, "ir", program, "--output", ir_file])
-            if compile_result.returncode != 0:
+            if run([SILU, "ir", program, "--output", ir_file]).returncode != 0:
                 print(f"{program.stem:<10}  SKIP (ir failed)")
                 continue
-            compile_result = run([SILU, "llvm", ir_file, "--output", ll_file])
-            if compile_result.returncode != 0:
+            if run([SILU, "llvm", ir_file, "--output", ll_file]).returncode != 0:
                 print(f"{program.stem:<10}  SKIP (llvm failed)")
                 continue
-            compile_result = run(["clang", ll_file, "-o", binary])
-            if compile_result.returncode != 0:
+            if run(["clang", ll_file, "-o", binary]).returncode != 0:
                 print(f"{program.stem:<10}  SKIP (clang failed)")
                 continue
 
             interp_time, interp_out = median_time(
                 [SILU, "interpret", program], args.runs
             )
+            cpython_time, cpython_out = median_time([CPYTHON, program], args.runs)
             bin_time, bin_out = median_time([binary], args.runs)
 
-            match = "ok" if interp_out == bin_out else "MISMATCH!"
-            speedup = interp_time / bin_time if bin_time else float("inf")
-            rows.append((program.stem, interp_time, bin_time, speedup, match))
+            match = "ok" if interp_out == bin_out == cpython_out else "MISMATCH!"
+            vs_interp = interp_time / bin_time if bin_time else float("inf")
+            vs_cpython = cpython_time / bin_time if bin_time else float("inf")
+            rows.append(
+                (
+                    program.stem,
+                    interp_time,
+                    cpython_time,
+                    bin_time,
+                    vs_interp,
+                    vs_cpython,
+                )
+            )
             print(
-                f"{program.stem:<10} {interp_time:>10.3f}s {bin_time:>8.4f}s "
-                f"{speedup:>8.0f}x  {match}"
+                f"{program.stem:<10} {interp_time:>9.3f}s {cpython_time:>9.3f}s "
+                f"{bin_time:>9.4f}s {vs_interp:>6.0f}x {vs_cpython:>6.1f}x  {match}"
             )
 
-        print("-" * 58)
+        print("-" * 72)
         print(
-            f"startup baseline: interpreter {interp_base:.3f}s, binary {bin_base:.4f}s"
+            f"startup baseline: silu-int {interp_base:.3f}s, "
+            f"cpython {cpython_base:.3f}s, binary {bin_base:.4f}s"
         )
-        geometric = statistics.geometric_mean(r[3] for r in rows) if rows else 0
-        print(f"geometric mean speedup: {geometric:.0f}x")
+        if rows:
+            geo_vs_int = statistics.geometric_mean(r[4] for r in rows)
+            geo_vs_cpy = statistics.geometric_mean(r[5] for r in rows)
+            print(
+                f"geometric mean: {geo_vs_int:.0f}x vs silu-int, "
+                f"{geo_vs_cpy:.1f}x vs cpython"
+            )
     return 0
 
 
