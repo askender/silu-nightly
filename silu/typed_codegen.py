@@ -2007,8 +2007,10 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                     return (raw_kind, list_ptr)
                 if method_name == "len":
-                    count = self.current_builder.call(self.rawlist_len, [list_ptr])
-                    return (OBJ, self.current_builder.call(self.create_int, [count]))
+                    return (
+                        I64,
+                        self.current_builder.call(self.rawlist_len, [list_ptr]),
+                    )
                 if method_name == "pop" and not args_node:
                     return (
                         elem_kind,
@@ -2077,6 +2079,14 @@ class TypedCodegen(SiluToLLVMConverter):
             if func_name == "len":
                 if args_node:
                     arg_tv = self._convert_node(args_node[0])
+                    if arg_tv[0] in RAWLIST_KINDS:
+                        # raw list: the length field is the answer; boxing
+                        # the whole list to ask pyobj_len would allocate
+                        # every element on each call
+                        return (
+                            I64,
+                            self.current_builder.call(self.rawlist_len, [arg_tv[1]]),
+                        )
                     boxed = self._box(arg_tv)
                     # len(()) and len({}) compile to pyobj_len on real
                     # objects; null constants (unsupported exprs) degrade
