@@ -1,19 +1,21 @@
 """Statically-typed LLVM code generation for Silu (no PyObject boxing).
 
-This backend consumes the static type annotations written in the source
-(``x: int = 0``, ``def f(a: int) -> int``) and represents those scalars
-as raw machine values:
+Static type annotations drive the representation:
 
     int   -> i64 on the stack
     float -> double on the stack
     bool  -> i1 on the stack
     str / list / dict / unannotated -> PyObject* (the dynamic runtime)
 
-No type inference is performed: only declared annotations and literal
-types drive the representation. Expression kinds propagate by Python's
-own numeric semantics (int+float promotes to float, ``/`` always yields
-float, range variables are always int) - that is semantic propagation,
-not inference. Values cross between the static and dynamic worlds at
+Unannotated names stay on PyObject storage unless a conservative
+pre-pass proves that every assignment to the name in one scope yields
+the same raw scalar kind (literals, annotated names, and outer kinds
+only - no method calls, no cross-scope analysis); any conflict keeps
+the dynamic slot so rebinding a name to another type still works.
+Expression kinds propagate by Python's own numeric semantics
+(int+float promotes to float, ``/`` always yields float, range
+variables are always int) - that is semantic propagation, not
+guesswork. Values cross between the static and dynamic worlds at
 explicit boundaries (print, containers, dynamic variables and calls)
 through box/unbox steps.
 
@@ -60,6 +62,10 @@ class TypedCodegen(SiluToLLVMConverter):
         self.checks = os.environ.get("SILU_CHECKS", "1") != "0"
         # kind of every named variable in the current scope
         self.var_kinds: Dict[str, str] = {}
+        # unannotated names promoted to raw storage by the assignment
+        # pre-pass (only when every assignment provably yields the same
+        # raw scalar kind); empty while converting dynamic code
+        self._inferred_kinds: Dict[str, str] = {}
         # name -> (param_kinds, return_kind, llvm.Function) for
         # fully-annotated numeric functions (raw machine ABI)
         self.static_funcs: Dict[str, Tuple[List[str], Optional[str], ir.Function]] = {}
@@ -606,7 +612,19 @@ class TypedCodegen(SiluToLLVMConverter):
     def _declare_var(self, name: str, kind: str):
         current_kind = self.var_kinds.get(name)
         if name in self.variables:
-            if current_kind == kind:
+            # inside a function, declaring a name that is a module-level
+            # global must always shadow it with a fresh alloca - Python
+            # makes any assignment a local regardless of type, and reusing
+            # the same-kind global slot lets the function clobber a
+            # caller's loop counter (same kind does not mean same scope)
+            if (
+                current_kind == kind
+                and (
+                    self.current_function is None
+                    or self.current_function.name == "main"
+                    or name not in getattr(self, "_module_vars", ())
+                )
+            ):
                 return
             # same name, different representation (e.g. a function-local
             # `i: int` shadowing a module-level dynamic `i`): inside a
@@ -913,6 +931,163 @@ class TypedCodegen(SiluToLLVMConverter):
     def _rawlist_elem_size(kind: str) -> int:
         return 8  # both i64 and double elements are 8 bytes
 
+    # ================== conservative kind inference ==================
+
+    def _infer_assign_kinds(
+        self, stmts: list, param_kinds: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
+        """Kinds for unannotated names whose every assignment in this
+        scope provably yields one and the same raw scalar kind.
+
+        Resolution uses only literals, annotated names, names already
+        inferred earlier in the walk, and outer-scope kinds - never
+        method calls or other dynamic values. Any unknown operand or
+        kind conflict marks the name as PyObject storage, so Python's
+        rebind-a-name-to-any-type behaviour stays untouched (e.g.
+        ``x = 7`` then ``x = x / 2`` must keep x dynamic because the
+        truediv rebinding produces a float).
+        """
+        annotations: Dict[str, str] = dict(param_kinds or {})
+        candidates: Dict[str, Optional[str]] = {}
+        func_ret: Dict[str, str] = {}
+        for func_name, func_def in self.function_defs.items():
+            ret_kind = (
+                self._annotation_kind(func_def[5]) if len(func_def) > 5 else None
+            )
+            if ret_kind:
+                func_ret[func_name] = ret_kind
+
+        def merge_arith(left: Optional[str], right: Optional[str]) -> Optional[str]:
+            if left is None or right is None or left == OBJ or right == OBJ:
+                return None
+            if F64 in (left, right):
+                return F64
+            return I64  # i1 operands promote like bool arithmetic
+
+        def resolve(node: Any) -> Optional[str]:
+            if not isinstance(node, list) or not node:
+                return None
+            op = node[0]
+            if op == "const":
+                value = node[1]
+                if isinstance(value, bool):
+                    return I1
+                if isinstance(value, int):
+                    return I64
+                if isinstance(value, float):
+                    return F64
+                return None
+            if op == "name":
+                name = node[1]
+                if name in annotations:
+                    return annotations[name]
+                if name in candidates:
+                    return candidates[name]
+                return self.var_kinds.get(name)
+            if op == "-" and len(node) == 2:
+                return resolve(node[1])
+            if op in ("+", "-", "*", "**") and len(node) >= 3:
+                return merge_arith(resolve(node[1]), resolve(node[2]))
+            if op in ("/", "//", "%") and len(node) >= 3:
+                left, right = resolve(node[1]), resolve(node[2])
+                if left is None or right is None or OBJ in (left, right):
+                    return None
+                if op == "/":
+                    return F64  # truediv always rebinds to float
+                return F64 if F64 in (left, right) else I64
+            if op in ("==", "!=", "<", "<=", ">", ">=", "not"):
+                return I1  # comparisons produce a bool whatever the operands
+            if op in ("and", "or") and len(node) >= 3:
+                left, right = resolve(node[1]), resolve(node[2])
+                return left if left == right else None
+            if op == "if_expr" and len(node) >= 4:
+                then_kind, else_kind = resolve(node[2]), resolve(node[3])
+                return then_kind if then_kind == else_kind else None
+            if op == "call" and isinstance(node[1], list) and node[1][0] == "name":
+                callee = node[1][1]
+                if callee == "len":
+                    return I64
+                return func_ret.get(callee)
+            if (
+                op == "subscript"
+                and isinstance(node[1], list)
+                and node[1][0] == "name"
+            ):
+                base_kind = resolve(node[1])
+                if base_kind == RAWLIST_I:
+                    return I64
+                if base_kind == RAWLIST_F:
+                    return F64
+            return None
+
+        def add(name: str, kind: Optional[str]):
+            if name in annotations:
+                return  # declared kind always wins
+            if kind not in (I64, F64, I1):
+                kind = None
+            if name not in candidates:
+                candidates[name] = kind
+            elif candidates[name] != kind:
+                candidates[name] = None  # conflict: keep it dynamic
+
+        def is_range_call(iter_node: Any) -> bool:
+            return (
+                isinstance(iter_node, list)
+                and len(iter_node) >= 3
+                and iter_node[0] == "call"
+                and isinstance(iter_node[1], list)
+                and len(iter_node[1]) >= 2
+                and iter_node[1][0] == "name"
+                and iter_node[1][1] == "range"
+            )
+
+        def walk(stmt_list: list):
+            for stmt in stmt_list if isinstance(stmt_list, list) else []:
+                if not isinstance(stmt, list) or not stmt:
+                    continue
+                op = stmt[0]
+                if op == "assign" and isinstance(stmt[1], str):
+                    add(stmt[1], resolve(stmt[2]))
+                elif op == "ann_assign" and isinstance(stmt[1], str):
+                    kind = self._annotation_kind(stmt[3])
+                    if kind:
+                        annotations[stmt[1]] = kind
+                elif op == "aug_assign" and isinstance(stmt[1], str):
+                    current = annotations.get(stmt[1])
+                    if current is None:
+                        current = candidates.get(
+                            stmt[1], self.var_kinds.get(stmt[1])
+                        )
+                    if current == resolve(stmt[3]):
+                        add(stmt[1], current)
+                    else:
+                        add(stmt[1], None)
+                elif op == "for":
+                    iter_kind = I64 if is_range_call(stmt[2]) else None
+                    if iter_kind is None:
+                        resolved = resolve(stmt[2])
+                        if resolved == RAWLIST_I:
+                            iter_kind = I64
+                        elif resolved == RAWLIST_F:
+                            iter_kind = F64
+                    if isinstance(stmt[1], str):
+                        # None (dynamic iteration) must also register:
+                        # the loop rebinds the target and blocks inference
+                        add(stmt[1], iter_kind)
+                    walk(stmt[3])
+                elif op == "if" and len(stmt) >= 4:
+                    walk(stmt[2])
+                    walk(stmt[3])
+                elif op == "while" and len(stmt) >= 3:
+                    walk(stmt[2])
+                # func_def bodies are separate scopes; other statements
+                # introduce no assignments in this scope
+
+        walk(stmts)
+        return {
+            name: kind for name, kind in candidates.items() if kind is not None
+        }
+
     def _dynamic_param_kinds(self, func_def: list) -> List[str]:
         """Parameter kinds for an unannotated function: annotations on
         individual parameters (list[int] etc.) still apply."""
@@ -1003,10 +1178,19 @@ class TypedCodegen(SiluToLLVMConverter):
         old_variables = self.variables.copy()
         old_kinds = dict(self.var_kinds)
         old_ret = self.current_ret_kind
+        old_inferred = self._inferred_kinds
 
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
         self.current_ret_kind = ret_kind
+        self._inferred_kinds = self._infer_assign_kinds(
+            func_def[3],
+            {
+                name: kind
+                for name, kind in zip(func_def[2], param_kinds)
+                if kind != OBJ
+            },
+        )
         # keep module-level variables visible (they act as globals);
         # remember which names are function-local so we can pop them on
         # exit - a local kind must never leak into other functions
@@ -1044,6 +1228,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = old_variables
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
+        self._inferred_kinds = old_inferred
         self._scope_depth = getattr(self, "_scope_depth", 1) - 1
 
     def _generate_dynamic_function_body(self, func: ir.Function, func_def: list):
@@ -1054,6 +1239,7 @@ class TypedCodegen(SiluToLLVMConverter):
         old_variables = self.variables.copy()
         old_kinds = dict(self.var_kinds)
         old_ret = self.current_ret_kind
+        old_inferred = self._inferred_kinds
 
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
@@ -1066,6 +1252,13 @@ class TypedCodegen(SiluToLLVMConverter):
         self.var_kinds = dict(self.var_kinds)
 
         param_kinds_dyn = self._dynamic_param_kinds(func_def)
+        self._inferred_kinds = self._infer_assign_kinds(
+            func_def[3],
+            {
+                name: kind
+                for name, kind in zip(func_def[2], param_kinds_dyn)
+            },
+        )
         for index, param_name in enumerate(func_def[2]):
             if index < len(func.args):
                 kind = param_kinds_dyn[index]
@@ -1099,6 +1292,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = old_variables
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
+        self._inferred_kinds = old_inferred
         self._scope_depth = getattr(self, "_scope_depth", 1) - 1
 
     # ================== statement / expression dispatch ==================
@@ -1112,6 +1306,9 @@ class TypedCodegen(SiluToLLVMConverter):
         null_obj = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
 
         if op == "module":
+            self._inferred_kinds = self._infer_assign_kinds(
+                node[1] if len(node) > 1 else []
+            )
             for stmt in node[1] if len(node) > 1 else []:
                 self._convert_node(stmt, skip_func_defs)
             return (OBJ, null_obj)
@@ -1169,7 +1366,9 @@ class TypedCodegen(SiluToLLVMConverter):
             else:
                 annotation_kind = self.var_kinds.get(target)
             if annotation_kind is None and target not in self.var_kinds:
-                annotation_kind = OBJ
+                # unannotated rebinding: raw storage only when the
+                # pre-pass proved every assignment yields one same kind
+                annotation_kind = self._inferred_kinds.get(target) or OBJ
             if (
                 annotation_kind in RAWLIST_KINDS
                 and isinstance(value_node, list)
