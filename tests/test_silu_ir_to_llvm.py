@@ -369,3 +369,15 @@ class TestSiluToLLVMConverter:
         llvm_ir = _convert("a = 7 // 2\nb = 7 % 3\nc = 7 / 2\nprint(a, b, c)\n")
 
         assert llvm_ir.count("ZeroDivisionError: division by zero") >= 3
+
+    def test_dict_hash_runtime(self):
+        """Dict uses hash index table with rehash, tombstones, KeyError."""
+        llvm_ir = _convert(
+            'd = {"a": 1}\nd["b"] = 2\nprint(d["a"])\nn = d.pop("b")\n'
+            'print(d.get("b", 5))\n'
+        )
+
+        assert 'define i64 @"pyobj_hash"' in llvm_ir
+        assert 'define i64 @"dict_find_probe"' in llvm_ir
+        assert 'define void @"dict_rehash"' in llvm_ir
+        assert "KeyError: key not found" in llvm_ir

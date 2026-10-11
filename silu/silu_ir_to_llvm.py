@@ -70,8 +70,14 @@ class SiluToLLVMConverter:
             ]
         )
 
-        # Dict struct layout:
-        # {i64 count, i64 capacity, {PyObject* key, PyObject* value}* entries}
+        # Dict struct layout (CPython-style compact dict):
+        # { i64 count        - live entries
+        #   i64 used         - entries array length (live + deleted)
+        #   i64 mask         - index table size - 1 (table is a power of 2)
+        #   i64* index_table - open-addressed slots: entry_index + 1,
+        #                      0 = empty, -1 = deleted
+        #   {PyObject* key, PyObject* value}* entries - insertion ordered,
+        #                      key == null marks a deleted entry }
         self.dict_entry_type = ir.LiteralStructType(
             [
                 ir.PointerType(self.pyobj.pyobj_type),
@@ -85,6 +91,8 @@ class SiluToLLVMConverter:
             [
                 ir.IntType(64),
                 ir.IntType(64),
+                ir.IntType(64),
+                ir.PointerType(ir.IntType(64)),
                 self.dict_entries_ptr_type,
             ]
         )
@@ -119,6 +127,12 @@ class SiluToLLVMConverter:
         # malloc and free
         malloc_ty = ir.FunctionType(ir.PointerType(ir.IntType(8)), [ir.IntType(64)])
         self.malloc = ir.Function(self.module, malloc_ty, name="malloc")
+
+        # calloc for zero-initialized hash index tables
+        calloc_ty = ir.FunctionType(
+            ir.PointerType(ir.IntType(8)), [ir.IntType(64), ir.IntType(64)]
+        )
+        self.calloc = ir.Function(self.module, calloc_ty, name="calloc")
 
         free_ty = ir.FunctionType(ir.VoidType(), [ir.PointerType(ir.IntType(8))])
         self.free = ir.Function(self.module, free_ty, name="free")
@@ -871,22 +885,23 @@ class SiluToLLVMConverter:
 
         # Print dict as {'k': v, ...} with repr-style keys and values
         builder.position_at_end(dict_block)
+        d_null_const = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
         d_data = builder.load(
             builder.gep(
                 obj, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
             )
         )
         d_struct = builder.bitcast(d_data, ir.PointerType(self.dict_struct_type))
-        d_count = builder.load(
+        d_used = builder.load(
             builder.gep(
                 d_struct,
-                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
             )
         )
         d_entries = builder.load(
             builder.gep(
                 d_struct,
-                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 2)],
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 4)],
             )
         )
         open_brace = self._create_global_string_with_builder("{", builder)
@@ -898,16 +913,38 @@ class SiluToLLVMConverter:
         d_incr = self.pyobj_print.append_basic_block("dict_incr")
         d_done = self.pyobj_print.append_basic_block("dict_done")
         d_idx = builder.alloca(ir.IntType(64), name="dict_print_idx")
+        d_printed = builder.alloca(ir.IntType(64), name="dict_printed")
         builder.store(ir.Constant(ir.IntType(64), 0), d_idx)
+        builder.store(ir.Constant(ir.IntType(64), 0), d_printed)
         builder.branch(d_check)
 
         builder.position_at_end(d_check)
         d_i = builder.load(d_idx)
-        d_more = builder.icmp_signed("<", d_i, d_count)
+        d_more = builder.icmp_signed("<", d_i, d_used)
         builder.cbranch(d_more, d_body, d_done)
 
         builder.position_at_end(d_body)
-        d_not_first = builder.icmp_signed(">", d_i, ir.Constant(ir.IntType(64), 0))
+        d_entry = builder.gep(d_entries, [ir.Constant(ir.IntType(32), 0), d_i])
+        d_key_obj = builder.load(
+            builder.gep(
+                d_entry,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+        )
+        # deleted entries (null key) are skipped
+        d_is_live = builder.icmp_signed("!=", d_key_obj, d_null_const)
+        d_skip = self.pyobj_print.append_basic_block("dict_skip")
+        d_live = self.pyobj_print.append_basic_block("dict_live")
+        builder.cbranch(d_is_live, d_live, d_skip)
+
+        builder.position_at_end(d_skip)
+        builder.store(builder.add(d_i, ir.Constant(ir.IntType(64), 1)), d_idx)
+        builder.branch(d_check)
+
+        builder.position_at_end(d_live)
+        d_not_first = builder.icmp_signed(
+            ">", builder.load(d_printed), ir.Constant(ir.IntType(64), 0)
+        )
         builder.cbranch(d_not_first, d_sep, d_key)
 
         builder.position_at_end(d_sep)
@@ -916,13 +953,6 @@ class SiluToLLVMConverter:
         builder.branch(d_key)
 
         builder.position_at_end(d_key)
-        d_entry = builder.gep(d_entries, [ir.Constant(ir.IntType(32), 0), d_i])
-        d_key_obj = builder.load(
-            builder.gep(
-                d_entry,
-                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
-            )
-        )
         d_val_obj = builder.load(
             builder.gep(
                 d_entry,
@@ -936,6 +966,10 @@ class SiluToLLVMConverter:
         builder.branch(d_incr)
 
         builder.position_at_end(d_incr)
+        builder.store(
+            builder.add(builder.load(d_printed), ir.Constant(ir.IntType(64), 1)),
+            d_printed,
+        )
         builder.store(builder.add(d_i, ir.Constant(ir.IntType(64), 1)), d_idx)
         builder.branch(d_check)
 
@@ -1797,111 +1831,263 @@ class SiluToLLVMConverter:
         )
 
     def _create_dict_runtime(self):
-        """Runtime for dict PyObjects (tag 5) with linear-scan entries."""
+        """Runtime for dict PyObjects (tag 5): a CPython-style compact dict.
+
+        Insertion-ordered entries array (deleted entries keep their slot
+        with a null key) plus a power-of-two open-addressed index table
+        whose slots hold entry_index + 1, 0 = empty, -1 = deleted.
+        """
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
         i8p = ir.PointerType(ir.IntType(8))
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
-        entry_ptr_t = self.dict_entries_ptr_type
         zero32 = ir.Constant(i32, 0)
         one32 = ir.Constant(i32, 1)
         two32 = ir.Constant(i32, 2)
+        three32 = ir.Constant(i32, 3)
+        four32 = ir.Constant(i32, 4)
         zero64 = ir.Constant(i64, 0)
         one64 = ir.Constant(i64, 1)
+        pyobj_null = ir.Constant(pyobj_ptr, None)
+
+        def dict_field(builder, struct_ptr, index):
+            return builder.gep(
+                struct_ptr,
+                [zero32, ir.Constant(i32, index)],
+            )
 
         def load_dict_parts(builder, obj):
+            """Return (struct_ptr, count, used, mask, itable, entries)."""
             data = builder.load(builder.gep(obj, [zero32, one32]))
             struct_ptr = builder.bitcast(data, ir.PointerType(self.dict_struct_type))
-            count = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
-            entries = builder.load(builder.gep(struct_ptr, [zero32, two32]))
-            return struct_ptr, count, entries
+            count = builder.load(dict_field(builder, struct_ptr, 0))
+            used = builder.load(dict_field(builder, struct_ptr, 1))
+            mask = builder.load(dict_field(builder, struct_ptr, 2))
+            itable = builder.load(dict_field(builder, struct_ptr, 3))
+            entries = builder.load(dict_field(builder, struct_ptr, 4))
+            return struct_ptr, count, used, mask, itable, entries
 
-        def find_entry(builder, func, count, entries, key, prefix):
-            """Linear scan; returns (index_ptr, found_ptr) allocas."""
-            idx_ptr = builder.alloca(i64, name=f"{prefix}_i")
-            found_ptr = builder.alloca(i64, name=f"{prefix}_found")
-            builder.store(ir.Constant(i64, -1), found_ptr)
-            builder.store(zero64, idx_ptr)
-            cond = func.append_basic_block(f"{prefix}_cond")
-            body = func.append_basic_block(f"{prefix}_body")
-            done = func.append_basic_block(f"{prefix}_done")
-            builder.branch(cond)
+        # i64 pyobj_hash(PyObject* obj)
+        self.pyobj_hash = ir.Function(
+            self.module, ir.FunctionType(i64, [pyobj_ptr]), name="pyobj_hash"
+        )
+        entry = self.pyobj_hash.append_basic_block("entry")
+        dispatch = self.pyobj_hash.append_basic_block("dispatch")
+        int_case = self.pyobj_hash.append_basic_block("hash_int")
+        float_case = self.pyobj_hash.append_basic_block("hash_float")
+        str_case = self.pyobj_hash.append_basic_block("hash_str")
+        zero_case = self.pyobj_hash.append_basic_block("hash_zero")
+        builder = ir.IRBuilder(entry)
+        (obj_arg,) = self.pyobj_hash.args
+        is_null = builder.icmp_signed("==", obj_arg, pyobj_null)
+        builder.cbranch(is_null, zero_case, dispatch)
 
-            builder.position_at_end(cond)
-            current = builder.load(idx_ptr)
-            more = builder.and_(
-                builder.icmp_signed("<", current, count),
-                builder.icmp_signed(
-                    "==", builder.load(found_ptr), ir.Constant(i64, -1)
-                ),
-            )
-            builder.cbranch(more, body, done)
+        builder.position_at_end(dispatch)
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        switch = builder.switch(tag, int_case)
+        switch.add_case(ir.Constant(i32, 1), float_case)
+        switch.add_case(ir.Constant(i32, 2), str_case)
+        switch.add_case(ir.Constant(i32, 5), zero_case)
 
-            builder.position_at_end(body)
-            entry_ptr = builder.gep(
-                entries, [ir.Constant(ir.IntType(32), 0), builder.load(idx_ptr)]
-            )
-            entry_key = builder.load(builder.gep(entry_ptr, [zero32, zero32]))
-            same = builder.call(self.pyobj_deep_eq, [entry_key, key])
-            hit_block = func.append_basic_block(f"{prefix}_hit")
-            step_block = func.append_basic_block(f"{prefix}_step")
-            builder.cbranch(same, hit_block, step_block)
+        builder.position_at_end(int_case)
+        builder.ret(self._load_number_as_i64(builder, obj_arg))
 
-            builder.position_at_end(hit_block)
-            builder.store(builder.load(idx_ptr), found_ptr)
-            builder.branch(step_block)
+        builder.position_at_end(float_case)
+        data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        bits = builder.load(builder.bitcast(data, ir.PointerType(i64)))
+        # -0.0 must hash like 0.0 (they compare equal)
+        neg_zero = builder.icmp_signed("==", bits, ir.Constant(i64, 0x8000000000000000))
+        builder.ret(builder.select(neg_zero, zero64, bits))
 
-            builder.position_at_end(step_block)
-            builder.store(builder.add(current, one64), idx_ptr)
-            builder.branch(cond)
+        builder.position_at_end(str_case)
+        data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
+        str_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
+        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        # FNV-1a over the bytes
+        hash_ptr = builder.alloca(i64, name="fnv_h")
+        idx_ptr = builder.alloca(i64, name="fnv_i")
+        builder.store(ir.Constant(i64, 0xCBF29CE484222325), hash_ptr)
+        builder.store(zero64, idx_ptr)
+        cond = self.pyobj_hash.append_basic_block("fnv_cond")
+        body = self.pyobj_hash.append_basic_block("fnv_body")
+        done = self.pyobj_hash.append_basic_block("fnv_done")
+        builder.branch(cond)
 
-            builder.position_at_end(done)
-            return idx_ptr, found_ptr
+        builder.position_at_end(cond)
+        i_val = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", i_val, builder.sext(str_len, i64))
+        builder.cbranch(more, body, done)
 
-        def ensure_capacity(
-            builder, func, struct_ptr, count, capacity, entries, prefix
-        ):
-            """Grow entries array when count == capacity; returns entries ptr."""
-            full = builder.icmp_signed("==", count, capacity)
-            grow_block = func.append_basic_block(f"{prefix}_grow")
-            after_block = func.append_basic_block(f"{prefix}_after")
-            builder.cbranch(full, grow_block, after_block)
+        builder.position_at_end(body)
+        ch = builder.load(builder.gep(chars, [i_val]))
+        h_val = builder.load(hash_ptr)
+        h_val = builder.xor(h_val, builder.zext(ch, i64))
+        h_val = builder.mul(h_val, ir.Constant(i64, 0x100000001B3))
+        builder.store(h_val, hash_ptr)
+        builder.store(builder.add(i_val, one64), idx_ptr)
+        builder.branch(cond)
 
-            builder.position_at_end(grow_block)
-            new_capacity = builder.select(
-                builder.icmp_signed("==", capacity, zero64),
-                ir.Constant(i64, 4),
-                builder.mul(capacity, ir.Constant(i64, 2)),
-            )
-            fresh = builder.call(
-                self.malloc,
-                [builder.mul(new_capacity, ir.Constant(i64, 16))],
-            )
-            has_old = builder.icmp_signed(">", count, zero64)
-            copy_block = func.append_basic_block(f"{prefix}_copy")
-            done_block = func.append_basic_block(f"{prefix}_grown")
-            builder.cbranch(has_old, copy_block, done_block)
+        builder.position_at_end(done)
+        builder.ret(builder.load(hash_ptr))
 
-            builder.position_at_end(copy_block)
-            builder.call(
-                self.memcpy,
-                [
-                    fresh,
-                    builder.bitcast(entries, i8p),
-                    builder.mul(count, ir.Constant(i64, 16)),
-                    ir.Constant(ir.IntType(1), 0),
-                ],
-            )
-            builder.branch(done_block)
+        builder.position_at_end(zero_case)
+        builder.ret(zero64)
 
-            builder.position_at_end(done_block)
-            typed = builder.bitcast(fresh, entry_ptr_t)
-            builder.store(new_capacity, builder.gep(struct_ptr, [zero32, one32]))
-            builder.store(typed, builder.gep(struct_ptr, [zero32, two32]))
-            builder.branch(after_block)
+        # i64 dict_find_probe(PyObject* d, PyObject* key, i64* out_slot)
+        # Returns the entry index of the match, or -1 when the key is
+        # absent; out_slot receives the match slot (hit) or the slot to
+        # insert into (miss, reusing the first tombstone seen).
+        self.dict_find_probe = ir.Function(
+            self.module,
+            ir.FunctionType(i64, [pyobj_ptr, pyobj_ptr, ir.PointerType(i64)]),
+            name="dict_find_probe",
+        )
+        entry = self.dict_find_probe.append_basic_block("entry")
+        probe_cond = self.dict_find_probe.append_basic_block("probe_cond")
+        probe_body = self.dict_find_probe.append_basic_block("probe_body")
+        probe_hit = self.dict_find_probe.append_basic_block("probe_hit")
+        probe_empty = self.dict_find_probe.append_basic_block("probe_empty")
+        probe_tomb = self.dict_find_probe.append_basic_block("probe_tomb")
+        probe_step = self.dict_find_probe.append_basic_block("probe_step")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg, out_slot_arg = self.dict_find_probe.args
+        _, _, _, mask, itable, entries = load_dict_parts(builder, dict_arg)
+        hash_val = builder.call(self.pyobj_hash, [key_arg])
+        slot_ptr = builder.alloca(i64, name="probe_slot")
+        tomb_ptr = builder.alloca(i64, name="probe_tomb")
+        builder.store(builder.and_(hash_val, mask), slot_ptr)
+        builder.store(ir.Constant(i64, -1), tomb_ptr)
+        builder.branch(probe_cond)
 
-            builder.position_at_end(after_block)
-            return builder.load(builder.gep(struct_ptr, [zero32, two32]))
+        builder.position_at_end(probe_cond)
+        slot_val = builder.load(slot_ptr)
+        table_val = builder.load(builder.gep(itable, [slot_val]))
+        is_empty = builder.icmp_signed("==", table_val, zero64)
+        is_tomb = builder.icmp_signed("==", table_val, ir.Constant(i64, -1))
+        builder.cbranch(is_empty, probe_empty, probe_body)
+
+        builder.position_at_end(probe_empty)
+        first_tomb = builder.load(tomb_ptr)
+        has_tomb = builder.icmp_signed(">=", first_tomb, zero64)
+        use_slot = builder.select(has_tomb, first_tomb, slot_val)
+        builder.store(use_slot, out_slot_arg)
+        builder.ret(ir.Constant(i64, -1))
+
+        builder.position_at_end(probe_body)
+        builder.cbranch(is_tomb, probe_tomb, probe_hit)
+
+        builder.position_at_end(probe_tomb)
+        first_tomb = builder.load(tomb_ptr)
+        no_tomb = builder.icmp_signed("<", first_tomb, zero64)
+        builder.store(builder.select(no_tomb, slot_val, first_tomb), tomb_ptr)
+        builder.branch(probe_step)
+
+        builder.position_at_end(probe_hit)
+        entry_ptr = builder.gep(entries, [zero32, builder.sub(table_val, one64)])
+        entry_key = builder.load(builder.gep(entry_ptr, [zero32, zero32]))
+        same = builder.call(self.pyobj_deep_eq, [entry_key, key_arg])
+        match_block = self.dict_find_probe.append_basic_block("probe_match")
+        builder.cbranch(same, match_block, probe_step)
+
+        builder.position_at_end(match_block)
+        builder.store(slot_val, out_slot_arg)
+        builder.ret(builder.sub(table_val, one64))
+
+        builder.position_at_end(probe_step)
+        next_slot = builder.and_(builder.add(builder.load(slot_ptr), one64), mask)
+        builder.store(next_slot, slot_ptr)
+        builder.branch(probe_cond)
+
+        # void dict_rehash(PyObject* d) - double the table, compact entries
+        self.dict_rehash = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr]),
+            name="dict_rehash",
+        )
+        entry = self.dict_rehash.append_basic_block("entry")
+        scan_cond = self.dict_rehash.append_basic_block("reh_scan_cond")
+        scan_body = self.dict_rehash.append_basic_block("reh_scan_body")
+        scan_dead = self.dict_rehash.append_basic_block("reh_scan_dead")
+        scan_live = self.dict_rehash.append_basic_block("reh_scan_live")
+        place_cond = self.dict_rehash.append_basic_block("reh_place_cond")
+        scan_done = self.dict_rehash.append_basic_block("reh_scan_done")
+        builder = ir.IRBuilder(entry)
+        (dict_arg,) = self.dict_rehash.args
+        struct_ptr, count, used, mask, itable, entries = load_dict_parts(
+            builder, dict_arg
+        )
+        old_cap = builder.add(mask, one64)
+        new_cap = builder.select(
+            builder.icmp_signed("==", old_cap, zero64),
+            ir.Constant(i64, 4),
+            builder.mul(old_cap, ir.Constant(i64, 2)),
+        )
+        new_mask = builder.sub(new_cap, one64)
+        new_table = builder.call(self.calloc, [new_cap, ir.Constant(i64, 8)])
+        new_table = builder.bitcast(new_table, ir.PointerType(i64))
+        new_entries = builder.call(
+            self.malloc, [builder.mul(new_cap, ir.Constant(i64, 16))]
+        )
+        new_entries = builder.bitcast(new_entries, self.dict_entries_ptr_type)
+        j_ptr = builder.alloca(i64, name="reh_j")
+        i_ptr = builder.alloca(i64, name="reh_i")
+        builder.store(zero64, j_ptr)
+        builder.store(zero64, i_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_cond)
+        i_val = builder.load(i_ptr)
+        more = builder.icmp_signed("<", i_val, used)
+        builder.cbranch(more, scan_body, scan_done)
+
+        builder.position_at_end(scan_body)
+        old_entry = builder.gep(entries, [zero32, i_val])
+        old_key = builder.load(builder.gep(old_entry, [zero32, zero32]))
+        is_live = builder.icmp_signed("!=", old_key, pyobj_null)
+        builder.cbranch(is_live, scan_live, scan_dead)
+
+        builder.position_at_end(scan_dead)
+        builder.store(builder.add(builder.load(i_ptr), one64), i_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_live)
+        old_value = builder.load(builder.gep(old_entry, [zero32, one32]))
+        key_hash = builder.call(self.pyobj_hash, [old_key])
+        place_ptr = builder.alloca(i64, name="reh_s")
+        builder.store(builder.and_(key_hash, new_mask), place_ptr)
+        builder.branch(place_cond)
+
+        builder.position_at_end(place_cond)
+        s_val = builder.load(place_ptr)
+        taken = builder.icmp_signed(
+            "!=", builder.load(builder.gep(new_table, [s_val])), zero64
+        )
+        place_advance = self.dict_rehash.append_basic_block("reh_place_adv")
+        place_do = self.dict_rehash.append_basic_block("reh_place_do")
+        builder.cbranch(taken, place_advance, place_do)
+
+        builder.position_at_end(place_advance)
+        builder.store(builder.and_(builder.add(s_val, one64), new_mask), place_ptr)
+        builder.branch(place_cond)
+
+        # free slot found: place the entry
+        builder.position_at_end(place_do)
+        j_val = builder.load(j_ptr)
+        dest = builder.gep(new_entries, [zero32, j_val])
+        builder.store(old_key, builder.gep(dest, [zero32, zero32]))
+        builder.store(old_value, builder.gep(dest, [zero32, one32]))
+        builder.store(builder.add(j_val, one64), builder.gep(new_table, [s_val]))
+        builder.store(builder.add(j_val, one64), j_ptr)
+        builder.store(builder.add(builder.load(i_ptr), one64), i_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_done)
+        builder.store(new_mask, dict_field(builder, struct_ptr, 2))
+        builder.store(new_table, dict_field(builder, struct_ptr, 3))
+        builder.store(new_entries, dict_field(builder, struct_ptr, 4))
+        builder.store(builder.load(j_ptr), dict_field(builder, struct_ptr, 1))
+        builder.ret_void()
 
         # PyObject* create_dict()
         self.create_dict = ir.Function(
@@ -1911,16 +2097,28 @@ class SiluToLLVMConverter:
         obj_ptr = builder.call(self.malloc, [ir.Constant(i64, 16)])
         obj = builder.bitcast(obj_ptr, pyobj_ptr)
         builder.store(ir.Constant(i32, 5), builder.gep(obj, [zero32, zero32]))
-        dict_ptr = builder.call(self.malloc, [ir.Constant(i64, 24)])
+        dict_ptr = builder.call(self.malloc, [ir.Constant(i64, 40)])
         dict_struct_ptr = builder.bitcast(
             dict_ptr, ir.PointerType(self.dict_struct_type)
         )
-        builder.store(zero64, builder.gep(dict_struct_ptr, [zero32, zero32]))
-        builder.store(zero64, builder.gep(dict_struct_ptr, [zero32, one32]))
-        builder.store(
-            ir.Constant(entry_ptr_t, None),
-            builder.gep(dict_struct_ptr, [zero32, two32]),
+        # allocate the initial 4-slot index table and entries array so
+        # probing never dereferences null
+        initial_table = builder.call(
+            self.calloc, [ir.Constant(i64, 4), ir.Constant(i64, 8)]
         )
+        initial_table = builder.bitcast(initial_table, ir.PointerType(i64))
+        initial_entries = builder.call(self.malloc, [ir.Constant(i64, 64)])
+        initial_entries = builder.bitcast(initial_entries, self.dict_entries_ptr_type)
+        for field_index, field_value in enumerate(
+            [zero64, zero64, ir.Constant(i64, 3), initial_table, initial_entries]
+        ):
+            builder.store(
+                field_value,
+                builder.gep(
+                    dict_struct_ptr,
+                    [zero32, ir.Constant(i32, field_index)],
+                ),
+            )
         builder.store(dict_ptr, builder.gep(obj, [zero32, one32]))
         builder.ret(obj)
 
@@ -1935,17 +2133,14 @@ class SiluToLLVMConverter:
         missing_block = self.dict_get_or.append_basic_block("missing")
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg, default_arg = self.dict_get_or.args
-        _, count, entries = load_dict_parts(builder, dict_arg)
-        idx_ptr, found_ptr = find_entry(
-            builder, self.dict_get_or, count, entries, key_arg, "get"
-        )
-        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
+        _, _, _, _, _, entries = load_dict_parts(builder, dict_arg)
+        out_slot = builder.alloca(i64, name="get_slot")
+        found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
+        hit = builder.icmp_signed(">=", found, zero64)
         builder.cbranch(hit, found_block, missing_block)
 
         builder.position_at_end(found_block)
-        entry_ptr = builder.gep(
-            entries, [ir.Constant(ir.IntType(32), 0), builder.load(found_ptr)]
-        )
+        entry_ptr = builder.gep(entries, [zero32, found])
         builder.ret(builder.load(builder.gep(entry_ptr, [zero32, one32])))
 
         builder.position_at_end(missing_block)
@@ -1958,40 +2153,50 @@ class SiluToLLVMConverter:
             name="dict_set",
         )
         entry = self.dict_set.append_basic_block("entry")
+        capacity_check = self.dict_set.append_basic_block("capacity_check")
+        rehash_block = self.dict_set.append_basic_block("do_rehash")
+        probe_block = self.dict_set.append_basic_block("probe")
         replace_block = self.dict_set.append_basic_block("replace")
         insert_block = self.dict_set.append_basic_block("insert")
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg, value_arg = self.dict_set.args
-        struct_ptr, count, entries = load_dict_parts(builder, dict_arg)
-        idx_ptr, found_ptr = find_entry(
-            builder, self.dict_set, count, entries, key_arg, "set"
+        struct_ptr, count, used, mask, itable, entries = load_dict_parts(
+            builder, dict_arg
         )
-        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
+        out_slot = builder.alloca(i64, name="set_slot")
+        # grow the table BEFORE probing: a full table would send the
+        # probe loop circling forever without finding an empty slot
+        at_capacity = builder.icmp_signed("==", used, builder.add(mask, one64))
+        builder.cbranch(at_capacity, rehash_block, capacity_check)
+
+        builder.position_at_end(rehash_block)
+        builder.call(self.dict_rehash, [dict_arg])
+        builder.branch(capacity_check)
+
+        builder.position_at_end(capacity_check)
+        builder.branch(probe_block)
+
+        builder.position_at_end(probe_block)
+        _, count, used, mask, itable, entries = load_dict_parts(builder, dict_arg)
+        found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
+        hit = builder.icmp_signed(">=", found, zero64)
         builder.cbranch(hit, replace_block, insert_block)
 
         builder.position_at_end(replace_block)
-        entry_ptr = builder.gep(
-            entries, [ir.Constant(ir.IntType(32), 0), builder.load(found_ptr)]
-        )
+        entry_ptr = builder.gep(entries, [zero32, found])
         builder.store(value_arg, builder.gep(entry_ptr, [zero32, one32]))
         builder.ret_void()
 
         builder.position_at_end(insert_block)
-        entries = ensure_capacity(
-            builder,
-            self.dict_set,
-            struct_ptr,
-            count,
-            builder.load(builder.gep(struct_ptr, [zero32, one32])),
-            entries,
-            "set",
-        )
-        entry_ptr = builder.gep(entries, [ir.Constant(ir.IntType(32), 0), count])
+        _, count, used, mask, itable, entries = load_dict_parts(builder, dict_arg)
+        found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
+        slot = builder.load(out_slot)
+        builder.store(builder.add(used, one64), builder.gep(itable, [slot]))
+        entry_ptr = builder.gep(entries, [zero32, used])
         builder.store(key_arg, builder.gep(entry_ptr, [zero32, zero32]))
         builder.store(value_arg, builder.gep(entry_ptr, [zero32, one32]))
-        builder.store(
-            builder.add(count, one64), builder.gep(struct_ptr, [zero32, zero32])
-        )
+        builder.store(builder.add(used, one64), dict_field(builder, struct_ptr, 1))
+        builder.store(builder.add(count, one64), dict_field(builder, struct_ptr, 0))
         builder.ret_void()
 
         # PyObject* dict_pop(PyObject* d, PyObject* key)
@@ -2003,56 +2208,30 @@ class SiluToLLVMConverter:
         entry = self.dict_pop.append_basic_block("entry")
         found_block = self.dict_pop.append_basic_block("found")
         missing_block = self.dict_pop.append_basic_block("missing")
-        remove_body = self.dict_pop.append_basic_block("remove_body")
-        remove_done = self.dict_pop.append_basic_block("remove_done")
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg = self.dict_pop.args
-        struct_ptr, count, entries = load_dict_parts(builder, dict_arg)
-        idx_ptr, found_ptr = find_entry(
-            builder, self.dict_pop, count, entries, key_arg, "pop"
+        struct_ptr, count, used, mask, itable, entries = load_dict_parts(
+            builder, dict_arg
         )
-        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
+        out_slot = builder.alloca(i64, name="pop_slot")
+        found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
+        hit = builder.icmp_signed(">=", found, zero64)
         builder.cbranch(hit, found_block, missing_block)
 
         builder.position_at_end(found_block)
-        remove_at = builder.load(found_ptr)
-        entry_ptr = builder.gep(entries, [ir.Constant(ir.IntType(32), 0), remove_at])
+        entry_ptr = builder.gep(entries, [zero32, found])
         removed_value = builder.load(builder.gep(entry_ptr, [zero32, one32]))
-        builder.store(remove_at, idx_ptr)
-        builder.branch(remove_body)
-
-        # shift entries left from the removed slot
-        builder.position_at_end(remove_body)
-        current = builder.load(idx_ptr)
-        more = builder.icmp_signed("<", builder.add(current, one64), count)
-        shift_block = self.dict_pop.append_basic_block("remove_shift")
-        builder.cbranch(more, shift_block, remove_done)
-
-        builder.position_at_end(shift_block)
-        next_entry = builder.gep(
-            entries, [ir.Constant(ir.IntType(32), 0), builder.add(current, one64)]
-        )
-        dst = builder.gep(entries, [ir.Constant(ir.IntType(32), 0), current])
-        builder.call(
-            self.memcpy,
-            [
-                builder.bitcast(dst, i8p),
-                builder.bitcast(next_entry, i8p),
-                ir.Constant(i64, 16),
-                ir.Constant(ir.IntType(1), 0),
-            ],
-        )
-        builder.store(builder.add(current, one64), idx_ptr)
-        builder.branch(remove_body)
-
-        builder.position_at_end(remove_done)
+        # mark the entry dead and its table slot as a tombstone
+        builder.store(pyobj_null, builder.gep(entry_ptr, [zero32, zero32]))
         builder.store(
-            builder.sub(count, one64), builder.gep(struct_ptr, [zero32, zero32])
+            ir.Constant(i64, -1),
+            builder.gep(itable, [builder.load(out_slot)]),
         )
+        builder.store(builder.sub(count, one64), dict_field(builder, struct_ptr, 0))
         builder.ret(removed_value)
 
         builder.position_at_end(missing_block)
-        builder.ret(ir.Constant(pyobj_ptr, None))
+        builder.ret(pyobj_null)
 
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
@@ -2060,9 +2239,140 @@ class SiluToLLVMConverter:
             ir.FunctionType(ir.VoidType(), [pyobj_ptr]),
             name="dict_clear_entries",
         )
-        builder = ir.IRBuilder(self.dict_clear_entries.append_basic_block("entry"))
-        struct_ptr, _, _ = load_dict_parts(builder, self.dict_clear_entries.args[0])
-        builder.store(zero64, builder.gep(struct_ptr, [zero32, zero32]))
+        entry = self.dict_clear_entries.append_basic_block("entry")
+        wipe_cond = self.dict_clear_entries.append_basic_block("wipe_cond")
+        wipe_body = self.dict_clear_entries.append_basic_block("wipe_body")
+        wipe_done = self.dict_clear_entries.append_basic_block("wipe_done")
+        builder = ir.IRBuilder(entry)
+        (dict_arg,) = self.dict_clear_entries.args
+        struct_ptr, _, _, mask, itable, _ = load_dict_parts(builder, dict_arg)
+        builder.store(zero64, dict_field(builder, struct_ptr, 0))
+        builder.store(zero64, dict_field(builder, struct_ptr, 1))
+        wipe_idx = builder.alloca(i64, name="wipe_i")
+        builder.store(zero64, wipe_idx)
+        builder.branch(wipe_cond)
+
+        builder.position_at_end(wipe_cond)
+        w_i = builder.load(wipe_idx)
+        w_more = builder.icmp_signed("<=", w_i, mask)
+        builder.cbranch(w_more, wipe_body, wipe_done)
+
+        builder.position_at_end(wipe_body)
+        builder.store(zero64, builder.gep(itable, [w_i]))
+        builder.store(builder.add(w_i, one64), wipe_idx)
+        builder.branch(wipe_cond)
+
+        builder.position_at_end(wipe_done)
+        builder.ret_void()
+
+        # PyObject* dict_setdefault(PyObject* d, PyObject* key, PyObject* default)
+        self.dict_setdefault = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
+            name="dict_setdefault",
+        )
+        entry = self.dict_setdefault.append_basic_block("entry")
+        found_block = self.dict_setdefault.append_basic_block("found")
+        insert_block = self.dict_setdefault.append_basic_block("insert")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg, default_arg = self.dict_setdefault.args
+        _, _, _, _, _, entries = load_dict_parts(builder, dict_arg)
+        out_slot = builder.alloca(i64, name="sd_slot")
+        found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
+        hit = builder.icmp_signed(">=", found, zero64)
+        builder.cbranch(hit, found_block, insert_block)
+
+        builder.position_at_end(found_block)
+        entry_ptr = builder.gep(entries, [zero32, found])
+        builder.ret(builder.load(builder.gep(entry_ptr, [zero32, one32])))
+
+        builder.position_at_end(insert_block)
+        builder.call(self.dict_set, [dict_arg, key_arg, default_arg])
+        builder.ret(default_arg)
+
+        # void dict_update(PyObject* dst, PyObject* src)
+        # src may be a dict (copy live entries) or a list of [k, v] pairs
+        self.dict_update = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr]),
+            name="dict_update",
+        )
+        entry = self.dict_update.append_basic_block("entry")
+        src_tag_check = self.dict_update.append_basic_block("upd_src_check")
+        src_is_list = self.dict_update.append_basic_block("upd_src_list")
+        loop_check = self.dict_update.append_basic_block("upd_check")
+        loop_body = self.dict_update.append_basic_block("upd_body")
+        loop_step = self.dict_update.append_basic_block("upd_step")
+        loop_done = self.dict_update.append_basic_block("upd_done")
+        pair_loop_check = self.dict_update.append_basic_block("upd_pair_check")
+        pair_loop_body = self.dict_update.append_basic_block("upd_pair_body")
+        pair_loop_done = self.dict_update.append_basic_block("upd_pair_done")
+        builder = ir.IRBuilder(entry)
+        dst_arg, src_arg = self.dict_update.args
+        src_tag = builder.load(builder.gep(src_arg, [zero32, zero32]))
+        is_list_src = builder.icmp_signed("==", src_tag, ir.Constant(i32, 4))
+        builder.cbranch(is_list_src, src_is_list, src_tag_check)
+
+        # list source: each item is a [key, value] pair
+        builder.position_at_end(src_is_list)
+        list_struct_ptr = self._load_list_struct(builder, src_arg)
+        pair_count = builder.load(builder.gep(list_struct_ptr, [zero32, zero32]))
+        pair_items = builder.load(
+            builder.gep(list_struct_ptr, [zero32, ir.Constant(i32, 2)])
+        )
+        pair_idx = builder.alloca(i64, name="upd_pair_i")
+        builder.store(zero64, pair_idx)
+        builder.branch(pair_loop_check)
+
+        builder.position_at_end(pair_loop_check)
+        pair_i = builder.load(pair_idx)
+        pair_more = builder.icmp_signed("<", pair_i, pair_count)
+        builder.cbranch(pair_more, pair_loop_body, pair_loop_done)
+
+        builder.position_at_end(pair_loop_body)
+        pair_obj = builder.load(builder.gep(pair_items, [pair_i]))
+        pair_struct = self._load_list_struct(builder, pair_obj)
+        pair_elems = builder.load(
+            builder.gep(pair_struct, [zero32, ir.Constant(i32, 2)])
+        )
+        pair_key = builder.load(builder.gep(pair_elems, [zero64]))
+        pair_value = builder.load(builder.gep(pair_elems, [one64]))
+        builder.call(self.dict_set, [dst_arg, pair_key, pair_value])
+        builder.store(builder.add(pair_i, one64), pair_idx)
+        builder.branch(pair_loop_check)
+
+        builder.position_at_end(pair_loop_done)
+        builder.ret_void()
+
+        # dict source: copy all live entries
+        builder.position_at_end(src_tag_check)
+        _, _, src_used, _, _, src_entries = load_dict_parts(builder, src_arg)
+        upd_idx = builder.alloca(i64, name="upd_i")
+        builder.store(zero64, upd_idx)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_check)
+        upd_i = builder.load(upd_idx)
+        upd_more = builder.icmp_signed("<", upd_i, src_used)
+        builder.cbranch(upd_more, loop_body, loop_done)
+
+        builder.position_at_end(loop_body)
+        upd_entry = builder.gep(src_entries, [zero32, upd_i])
+        upd_key = builder.load(builder.gep(upd_entry, [zero32, zero32]))
+        is_live = builder.icmp_signed("!=", upd_key, pyobj_null)
+        upd_value = builder.load(builder.gep(upd_entry, [zero32, one32]))
+        live_block = self.dict_update.append_basic_block("upd_live")
+        builder.cbranch(is_live, live_block, loop_step)
+
+        builder.position_at_end(live_block)
+        builder.call(self.dict_set, [dst_arg, upd_key, upd_value])
+        builder.branch(loop_step)
+
+        builder.position_at_end(loop_step)
+        builder.store(builder.add(upd_i, one64), upd_idx)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_done)
         builder.ret_void()
 
         # {i32,i8*}* pyobj_subscript(PyObject* obj, PyObject* key)
@@ -2091,11 +2401,30 @@ class SiluToLLVMConverter:
         builder.cbranch(is_dict, dict_do, error_block)
 
         builder.position_at_end(dict_do)
-        builder.ret(
-            builder.call(
-                self.dict_get_or, [obj_arg, key_arg, ir.Constant(pyobj_ptr, None)]
-            )
+        # d[k] on a missing key is a KeyError (Python raises, Rust panics);
+        # .get() with its default goes through dict_get_or instead
+        out_slot = builder.alloca(ir.IntType(64), name="sub_slot")
+        found = builder.call(self.dict_find_probe, [obj_arg, key_arg, out_slot])
+        is_hit = builder.icmp_signed(">=", found, ir.Constant(ir.IntType(64), 0))
+        hit_block = self.pyobj_subscript.append_basic_block("sub_dict_hit")
+        key_error = self.pyobj_subscript.append_basic_block("sub_key_error")
+        builder.cbranch(is_hit, hit_block, key_error)
+
+        builder.position_at_end(hit_block)
+        _, _, _, _, _, entries = load_dict_parts(builder, obj_arg)
+        entry_ptr = builder.gep(
+            entries,
+            [zero32, found],
         )
+        builder.ret(builder.load(builder.gep(entry_ptr, [zero32, one32])))
+
+        builder.position_at_end(key_error)
+        key_msg = self._create_global_string_with_builder(
+            "KeyError: key not found\n", builder
+        )
+        builder.call(self.printf, [key_msg])
+        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.unreachable()
 
         builder.position_at_end(error_block)
         error_msg = self._create_global_string_with_builder(
@@ -2142,34 +2471,6 @@ class SiluToLLVMConverter:
         builder.call(self.exit_func, [ir.Constant(i32, 1)])
         builder.unreachable()
 
-        # PyObject* dict_setdefault(PyObject* d, PyObject* key, PyObject* default)
-        self.dict_setdefault = ir.Function(
-            self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
-            name="dict_setdefault",
-        )
-        entry = self.dict_setdefault.append_basic_block("entry")
-        found_block = self.dict_setdefault.append_basic_block("found")
-        insert_block = self.dict_setdefault.append_basic_block("insert")
-        builder = ir.IRBuilder(entry)
-        dict_arg, key_arg, default_arg = self.dict_setdefault.args
-        _, count, entries = load_dict_parts(builder, dict_arg)
-        idx_ptr, found_ptr = find_entry(
-            builder, self.dict_setdefault, count, entries, key_arg, "sd"
-        )
-        hit = builder.icmp_signed("!=", builder.load(found_ptr), ir.Constant(i64, -1))
-        builder.cbranch(hit, found_block, insert_block)
-
-        builder.position_at_end(found_block)
-        entry_ptr = builder.gep(
-            entries, [ir.Constant(ir.IntType(32), 0), builder.load(found_ptr)]
-        )
-        builder.ret(builder.load(builder.gep(entry_ptr, [zero32, one32])))
-
-        builder.position_at_end(insert_block)
-        builder.call(self.dict_set, [dict_arg, key_arg, default_arg])
-        builder.ret(default_arg)
-
         # void pyobj_clear(PyObject* obj) - clear() for lists and dicts
         self.pyobj_clear = ir.Function(
             self.module,
@@ -2206,84 +2507,6 @@ class SiluToLLVMConverter:
         builder.call(self.printf, [error_msg])
         builder.call(self.exit_func, [ir.Constant(i32, 1)])
         builder.unreachable()
-
-        # void dict_update(PyObject* dst, PyObject* src)
-        # src may be a dict (copy entries) or a list of [k, v] pairs
-        self.dict_update = ir.Function(
-            self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr]),
-            name="dict_update",
-        )
-        entry = self.dict_update.append_basic_block("entry")
-        src_tag_check = self.dict_update.append_basic_block("upd_src_check")
-        src_is_list = self.dict_update.append_basic_block("upd_src_list")
-        loop_check = self.dict_update.append_basic_block("upd_check")
-        loop_body = self.dict_update.append_basic_block("upd_body")
-        loop_done = self.dict_update.append_basic_block("upd_done")
-        pair_loop_check = self.dict_update.append_basic_block("upd_pair_check")
-        pair_loop_body = self.dict_update.append_basic_block("upd_pair_body")
-        pair_loop_done = self.dict_update.append_basic_block("upd_pair_done")
-        builder = ir.IRBuilder(entry)
-        dst_arg, src_arg = self.dict_update.args
-        src_tag = builder.load(builder.gep(src_arg, [zero32, zero32]))
-        is_list_src = builder.icmp_signed("==", src_tag, ir.Constant(i32, 4))
-        builder.cbranch(is_list_src, src_is_list, src_tag_check)
-
-        # list source: each item is a [key, value] pair
-        builder.position_at_end(src_is_list)
-        list_struct_ptr = self._load_list_struct(builder, src_arg)
-        pair_count = builder.load(builder.gep(list_struct_ptr, [zero32, zero32]))
-        pair_items = builder.load(
-            builder.gep(list_struct_ptr, [zero32, ir.Constant(i32, 2)])
-        )
-        pair_idx = builder.alloca(i64, name="upd_pair_i")
-        builder.store(zero64, pair_idx)
-        builder.branch(pair_loop_check)
-
-        builder.position_at_end(pair_loop_check)
-        pair_i = builder.load(pair_idx)
-        pair_more = builder.icmp_signed("<", pair_i, pair_count)
-        builder.cbranch(pair_more, pair_loop_body, pair_loop_done)
-
-        builder.position_at_end(pair_loop_body)
-        pair_obj = builder.load(builder.gep(pair_items, [pair_i]))
-        pair_struct = self._load_list_struct(builder, pair_obj)
-        pair_elems = builder.load(
-            builder.gep(pair_struct, [zero32, ir.Constant(i32, 2)])
-        )
-        pair_key = builder.load(builder.gep(pair_elems, [zero64]))
-        pair_value = builder.load(
-            builder.gep(pair_elems, [one64])
-        )
-        builder.call(self.dict_set, [dst_arg, pair_key, pair_value])
-        builder.store(builder.add(pair_i, one64), pair_idx)
-        builder.branch(pair_loop_check)
-
-        builder.position_at_end(pair_loop_done)
-        builder.ret_void()
-
-        # dict source: copy all entries
-        builder.position_at_end(src_tag_check)
-        _, src_count, src_entries = load_dict_parts(builder, src_arg)
-        upd_idx = builder.alloca(i64, name="upd_i")
-        builder.store(zero64, upd_idx)
-        builder.branch(loop_check)
-
-        builder.position_at_end(loop_check)
-        upd_i = builder.load(upd_idx)
-        upd_more = builder.icmp_signed("<", upd_i, src_count)
-        builder.cbranch(upd_more, loop_body, loop_done)
-
-        builder.position_at_end(loop_body)
-        upd_entry = builder.gep(src_entries, [ir.Constant(ir.IntType(32), 0), upd_i])
-        upd_key = builder.load(builder.gep(upd_entry, [zero32, zero32]))
-        upd_value = builder.load(builder.gep(upd_entry, [zero32, one32]))
-        builder.call(self.dict_set, [dst_arg, upd_key, upd_value])
-        builder.store(builder.add(upd_i, one64), upd_idx)
-        builder.branch(loop_check)
-
-        builder.position_at_end(loop_done)
-        builder.ret_void()
 
     def _create_str_repeat_runtime(self):
         """PyObject* str_repeat(PyObject* s, PyObject* count) - "ab" * 3.
