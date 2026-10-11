@@ -1,5 +1,5 @@
 # Dict writes and lookups
-d: dict = {}
+d: dict[int, int] = {}
 i: int = 0
 while i < 20000:
     d[i % 500] = i

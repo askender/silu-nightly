@@ -223,3 +223,152 @@ class TestTypedCodegen:
         # counter is raw, the named variable gets a boxed copy per loop
         assert "phi i64" in llvm_ir or "icmp slt i64" in llvm_ir
         assert 'call {i32, i8*}* @"create_int"' in main
+
+
+def _run_main(llvm_ir: str) -> str:
+    """Execute the module through MCJIT and capture stdout."""
+    import ctypes
+    import os
+    import tempfile
+
+    from llvmlite import binding as llvm
+
+    module = llvm.parse_assembly(llvm_ir)
+    module.verify()
+    target = llvm.Target.from_default_triple()
+    engine = llvm.create_mcjit_compiler(
+        module, target.create_target_machine()
+    )
+    engine.finalize_object()
+    main_ptr = engine.get_function_address("main")
+    output = tempfile.TemporaryFile()
+    saved = os.dup(1)
+    os.dup2(output.fileno(), 1)
+    try:
+        ctypes.CFUNCTYPE(ctypes.c_int)(main_ptr)()
+        ctypes.CDLL(None).fflush(None)
+    finally:
+        os.dup2(saved, 1)
+        os.close(saved)
+    output.seek(0)
+    return output.read().decode()
+
+
+class TestRawDict:
+    def test_rawdict_int_annotation_is_raw(self):
+        """dict[int, int] uses the machine-word dict, not PyObject slots."""
+        llvm_ir = _convert(
+            "d: dict[int, int] = {1: 2}\nd[3] = 4\n"
+            "x: int = d[1]\nd[1] = 10\nprint(x, len(d))\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'define i8* @"rawdict_new"' in llvm_ir
+        assert "call void @\"rawdict_set\"" in main
+        assert 'call i64 @"rawdict_get"' in main
+        assert 'call void @"pyobj_subscript_set"' not in main
+
+    def test_rawdict_executes_rehash_and_len(self):
+        """2000 inserts over 100 keys force several rehashes; sums match
+        a Python reference and len reads the live count."""
+        source = (
+            "d: dict[int, int] = {}\n"
+            "i: int = 0\nwhile i < 2000:\n    d[i % 100] = i\n    i += 1\n"
+            "total: int = 0\n"
+            "i = 0\nwhile i < 100:\n    total += d[i]\n    i += 1\n"
+            "print(total, len(d))\n"
+        )
+        reference = {}
+        for i in range(2000):
+            reference[i % 100] = i
+        expected = f"{sum(reference.values())} {len(reference)}\n"
+
+        assert _run_main(_convert(source)) == expected
+
+    def test_rawdict_float_annotation(self):
+        """dict[int, float] stores values as f64 bit patterns."""
+        llvm_ir = _convert(
+            "f: dict[int, float] = {1: 0.5}\nf[2] = 2.5\nf[1] += 10.0\n"
+            "print(f[1], f[2], len(f))\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert "call void @\"rawdict_set\"" in main
+        assert _run_main(llvm_ir) == "10.5 2.5 2\n"
+
+    def test_plain_dict_still_dynamic(self):
+        """Unparameterized dict annotations keep PyObject storage."""
+        llvm_ir = _convert('d: dict = {}\nd[1] = "x"\nprint(d)\n')
+
+        assert 'call void @"pyobj_subscript_set"' in _main_body(llvm_ir)
+
+
+class TestLenWithoutBoxing:
+    def test_len_on_rawlist_reads_length_field(self):
+        """len(list[int]) must not materialize a boxed copy (nbody's
+        advance() used to allocate every element just to ask for len)."""
+        llvm_ir = _convert(
+            "l: list[int] = [1, 2, 3]\nn: int = len(l)\nprint(n)\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'call i64 @"rawlist_len"' in main
+        assert 'call {i32, i8*}* @"rawlist_to_pylist"' not in main
+        assert 'call {i32, i8*}* @"pyobj_len"' not in main
+
+    def test_len_on_rawdict_reads_count_field(self):
+        llvm_ir = _convert(
+            "d: dict[int, int] = {5: 1, 6: 2}\nprint(len(d))\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'call {i32, i8*}* @"pyobj_len"' not in main
+        assert _run_main(llvm_ir) == "2\n"
+
+
+class TestInferredScalarKinds:
+    def test_consistent_unannotated_assignment_is_unboxed(self):
+        """zr2 = z_re * z_re with annotated z_re: the target takes the
+        raw double slot (mandelbrot's inner loop malloc'd per iteration
+        before inference)."""
+        llvm_ir = _convert(
+            "z_re: float = 0.5\nzr2 = z_re * z_re\nzi2 = z_re * z_re\n"
+            "i: int = 0\nwhile i < 3:\n"
+            "    zr2 = zr2 + zi2\n    i += 1\n"
+            "print(zr2)\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert '@"zr2" = global double' in llvm_ir
+        assert '@"zi2" = global double' in llvm_ir
+        # the only boxing is the print() display boundary
+        assert main.count('call {i32, i8*}* @"create_float"') == 1
+
+    def test_kind_conflict_keeps_dynamic(self):
+        """x = 7 then x = x / 2 rebinds to float: the name must stay on
+        PyObject storage so both types flow."""
+        llvm_ir = _convert('x = 7\nx = x / 2\nprint(x)\n')
+        main = _main_body(llvm_ir)
+
+        assert 'call {i32, i8*}* @"create_int"' in main
+        assert '@x = global double' not in llvm_ir
+
+    def test_function_local_shadows_module_global(self):
+        """A function declaring the same name as an inferred module
+        variable must not clobber the caller's counter (nbody hung in an
+        infinite loop when advance()'s local i reused the global slot)."""
+        source = (
+            "i = 0\n"
+            "def bump() -> int:\n"
+            "    i: int = 5\n"
+            "    while i < 8:\n"
+            "        i += 1\n"
+            "    return i\n"
+            "j = 0\n"
+            "while j < 3:\n"
+            "    bump()\n"
+            "    j += 1\n"
+            "print(i, j)\n"
+        )
+
+        assert _run_main(_convert(source)) == "0 3\n"
