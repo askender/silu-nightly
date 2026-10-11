@@ -355,3 +355,17 @@ class TestSiluToLLVMConverter:
 
         assert 'call {i32, i8*}* @"create_list"' in llvm_ir
         assert "iter_cond:" in llvm_ir
+
+    def test_sub_mul_overflow_checks(self):
+        """sub/mul int paths must use with.overflow intrinsics."""
+        llvm_ir = _convert("a = 5 - 3\nb = a * 4\nprint(b)\n")
+
+        assert 'call {i64, i1} @"llvm.ssub.with.overflow.i64"' in llvm_ir
+        assert 'call {i64, i1} @"llvm.smul.with.overflow.i64"' in llvm_ir
+        assert "int_overflow:" in llvm_ir
+
+    def test_division_zero_checks(self):
+        """//, % and / must abort on zero divisors."""
+        llvm_ir = _convert("a = 7 // 2\nb = 7 % 3\nc = 7 / 2\nprint(a, b, c)\n")
+
+        assert llvm_ir.count("ZeroDivisionError: division by zero") >= 3

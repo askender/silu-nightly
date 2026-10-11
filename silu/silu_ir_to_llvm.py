@@ -620,27 +620,32 @@ class SiluToLLVMConverter:
             "sub",
             int_apply=lambda b, left, right: b.sub(left, right),
             float_apply=lambda b, left, right: b.fsub(left, right),
+            overflow_check=True,
         )
         self.pyobj_mul = self._create_numeric_binary_function(
             "mul",
             int_apply=lambda b, left, right: b.mul(left, right),
             float_apply=lambda b, left, right: b.fmul(left, right),
             str_int_apply=lambda b, s, n: b.call(self.str_repeat, [s, n]),
+            overflow_check=True,
         )
         # Python true division always returns a float
         self.pyobj_truediv = self._create_numeric_binary_function(
             "truediv",
             float_apply=lambda b, left, right: b.fdiv(left, right),
+            zero_check=True,
         )
         self.pyobj_floordiv = self._create_numeric_binary_function(
             "floordiv",
             int_apply=self._floor_div_apply,
             float_apply=self._float_floordiv_apply,
+            zero_check=True,
         )
         self.pyobj_mod = self._create_numeric_binary_function(
             "mod",
             int_apply=self._py_mod_apply,
             float_apply=self._float_mod_apply,
+            zero_check=True,
         )
 
         # Create print function for PyObjects
@@ -2384,7 +2389,13 @@ class SiluToLLVMConverter:
         self.float_repr = func
 
     def _create_numeric_binary_function(
-        self, func_name: str, int_apply=None, float_apply=None, str_int_apply=None
+        self,
+        func_name: str,
+        int_apply=None,
+        float_apply=None,
+        str_int_apply=None,
+        zero_check=False,
+        overflow_check=False,
     ) -> ir.Function:
         """Create a pyobj arithmetic function over int/bool/float operands.
 
@@ -2395,6 +2406,8 @@ class SiluToLLVMConverter:
         float (Python true division always returns float).
         str_int_apply(builder, str_obj, int_obj) handles str*int mixes
         (string repetition) when provided.
+        zero_check aborts on zero right operand (Python/Rust division).
+        overflow_check aborts on i64 overflow (Rust debug panic semantics).
         """
         func_ty = ir.FunctionType(
             ir.PointerType(self.pyobj.pyobj_type),
@@ -2482,6 +2495,23 @@ class SiluToLLVMConverter:
         builder.position_at_end(float_op_block)
         left_f64 = self._load_number_as_f64(builder, left)
         right_f64 = self._load_number_as_f64(builder, right)
+        if zero_check:
+            float_is_zero = builder.fcmp_ordered(
+                "==", right_f64, ir.Constant(ir.DoubleType(), 0.0)
+            )
+            fbad_block = func.append_basic_block("float_zero")
+            fok_block = func.append_basic_block("float_ok")
+            builder.cbranch(float_is_zero, fbad_block, fok_block)
+
+            builder.position_at_end(fbad_block)
+            fmsg = self._create_global_string_with_builder(
+                "ZeroDivisionError: division by zero\n", builder
+            )
+            builder.call(self.printf, [fmsg])
+            builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+            builder.unreachable()
+            builder.position_at_end(fok_block)
+
         float_result = float_apply(builder, left_f64, right_f64)
         builder.ret(builder.call(self.create_float, [float_result]))
 
@@ -2489,7 +2519,44 @@ class SiluToLLVMConverter:
             builder.position_at_end(int_op_block)
             left_i64 = self._load_number_as_i64(builder, left)
             right_i64 = self._load_number_as_i64(builder, right)
-            int_result = int_apply(builder, left_i64, right_i64)
+
+            if zero_check:
+                int_is_zero = builder.icmp_signed(
+                    "==", right_i64, ir.Constant(ir.IntType(64), 0)
+                )
+                zbad_block = func.append_basic_block("int_zero")
+                zok_block = func.append_basic_block("int_ok")
+                builder.cbranch(int_is_zero, zbad_block, zok_block)
+
+                builder.position_at_end(zbad_block)
+                zmsg = self._create_global_string_with_builder(
+                    "ZeroDivisionError: division by zero\n", builder
+                )
+                builder.call(self.printf, [zmsg])
+                builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+                builder.unreachable()
+                builder.position_at_end(zok_block)
+
+            if overflow_check:
+                overflow_pair = builder.call(
+                    self.overflow_intrinsics[func_name], [left_i64, right_i64]
+                )
+                int_result = builder.extract_value(overflow_pair, 0)
+                overflowed = builder.extract_value(overflow_pair, 1)
+                obad_block = func.append_basic_block("int_overflow")
+                ook_block = func.append_basic_block("int_no_overflow")
+                builder.cbranch(overflowed, obad_block, ook_block)
+
+                builder.position_at_end(obad_block)
+                omsg = self._create_global_string_with_builder(
+                    f"OverflowError: integer overflow in {func_name}\n", builder
+                )
+                builder.call(self.printf, [omsg])
+                builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+                builder.unreachable()
+                builder.position_at_end(ook_block)
+            else:
+                int_result = int_apply(builder, left_i64, right_i64)
             builder.ret(builder.call(self.create_int, [int_result]))
 
         builder.position_at_end(error_block)
@@ -2715,6 +2782,18 @@ class SiluToLLVMConverter:
         self.sadd_overflow = ir.Function(
             self.module, sadd_overflow_ty, name="llvm.sadd.with.overflow.i64"
         )
+
+        # signed sub and mul with overflow detection (Rust panic semantics)
+        self.ssub_overflow = ir.Function(
+            self.module, sadd_overflow_ty, name="llvm.ssub.with.overflow.i64"
+        )
+        self.smul_overflow = ir.Function(
+            self.module, sadd_overflow_ty, name="llvm.smul.with.overflow.i64"
+        )
+        self.overflow_intrinsics = {
+            "sub": self.ssub_overflow,
+            "mul": self.smul_overflow,
+        }
 
     def _create_global_string(self, string_content: str) -> ir.Value:
         """Create a global string constant."""
