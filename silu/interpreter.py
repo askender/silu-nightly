@@ -231,6 +231,25 @@ class SiluInterpreter(BaseASTProcessor):
         """Return constant value."""
         return value
 
+    def visit_BoolOp(self, node: ast.BoolOp) -> Any:
+        """Boolean operations with Python short-circuit semantics.
+
+        Returns the deciding operand itself (all()/any() would boolify the
+        result and evaluate every operand, which contradicts Python and
+        the Rust-style && / || semantics the compiled backend implements).
+        """
+        is_and = isinstance(node.op, ast.And)
+        if not is_and and not isinstance(node.op, ast.Or):
+            raise NotImplementedError(f"Unsupported operator: {type(node.op).__name__}")
+        result = self.visit(node.values[0])
+        for value_node in node.values[1:]:
+            if is_and and not result:
+                return result
+            if not is_and and result:
+                return result
+            result = self.visit(value_node)
+        return result
+
     def process_operation(self, op: str, *operands) -> Any:
         """Handle all operations using consolidated logic."""
         # Define all operation mappings

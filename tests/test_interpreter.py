@@ -1206,3 +1206,33 @@ result = test_func()
         tree = ast.parse(code)
         interpreter.visit(tree)
         assert interpreter.env.get("result") == 126
+
+    def test_boolop_short_circuit(self):
+        """and/or must short-circuit and return the deciding operand."""
+        interpreter = SiluInterpreter()
+
+        executed = []
+
+        def side_effect():
+            executed.append(1)
+            return 1
+
+        node = ast.BoolOp(
+            op=ast.And(),
+            values=[ast.Constant(value=0), ast.Call(func=side_effect, args=[], keywords={})],
+        )
+        assert interpreter.visit_BoolOp(node) == 0
+        assert executed == []
+
+        node = ast.BoolOp(
+            op=ast.Or(),
+            values=[ast.Constant(value=2), ast.Call(func=side_effect, args=[], keywords={})],
+        )
+        assert interpreter.visit_BoolOp(node) == 2
+        assert executed == []
+
+        node = ast.BoolOp(
+            op=ast.Or(),
+            values=[ast.Constant(value=""), ast.Constant(value="x")],
+        )
+        assert interpreter.visit_BoolOp(node) == "x"
