@@ -101,6 +101,15 @@ clang program.s -o program                    # 可执行文件
 ./program
 ```
 
+类型注解直接驱动原生表示：带注解的 `int` / `float` / `bool` 编译为
+非装箱的机器值，`list[int]` / `list[float]` 编译为原始元素数组，
+`dict[int, int]` / `dict[int, float]` 编译为机器字哈希字典——这些
+路径上没有 PyObject 装箱。未注解的标量在保守推断证明"所有赋值都
+产生同一类型"时也享受同样待遇。在 11 个基准程序（含 5 个
+Benchmarks Game 经典）上，编译产物平均达到**手写 Rust 的 1.0 倍、
+CPython 的约 14 倍**；完整数据与方法见
+[benchmarks/README.md](benchmarks/README.md)。
+
 ### 分析 C 程序（实验性）
 
 同一套 IR 与符号执行工具链可通过 pycparser 处理 C 源码：
