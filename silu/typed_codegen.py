@@ -891,10 +891,14 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.position_at_end(loop_done)
             builder.ret(result)
             setattr(self, f"rawdict_to_pydict_{tag}", func)
-        # {i64 len, i64 cap, i8* data}. Every slot owns its buffer
-        # exclusively (assignment copies), so appends may realloc in
-        # place and grow amortized like Rust's String.
-        self.rawstr_struct_type = ir.LiteralStructType([i64, i64, i8p])
+        # {i64 byte_len, i64 cap, i8* data, i64 cp_len}. Every slot owns
+        # its buffer exclusively (assignment copies), so appends may
+        # realloc in place and grow amortized like Rust's String.
+        # byte_len/cap are bytes; cp_len is the code point count - len(),
+        # s[i], s[a:b] and for-iteration are all code point semantics
+        # (Python); eq/cmp/contains stay byte-wise, which on UTF-8
+        # equals code point semantics.
+        self.rawstr_struct_type = ir.LiteralStructType([i64, i64, i8p, i64])
 
         self.realloc = ir.Function(
             self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
@@ -909,19 +913,85 @@ class TypedCodegen(SiluToLLVMConverter):
         def load_data(b, struct_ptr):
             return b.load(sfield(b, struct_ptr, 2))
 
+        def load_cp(b, struct_ptr):
+            return b.load(sfield(b, struct_ptr, 3))
+
         type_error_msg = panic_string(
             b"TypeError: expected str\n\0", "str_typeerr"
         )
 
-        def build_rawstr(header_len, data_len, data_value):
+        # i64 rawutf8_cp_count(i8* data, i64 len) - code points = bytes
+        # that are not continuation bytes ((b & 0xC0) != 0x80)
+        self.rawutf8_cp_count = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p, i64]),
+            name="rawutf8_cp_count",
+        )
+        entry = self.rawutf8_cp_count.append_basic_block("entry")
+        count_cond = self.rawutf8_cp_count.append_basic_block("count_cond")
+        count_body = self.rawutf8_cp_count.append_basic_block("count_body")
+        count_done = self.rawutf8_cp_count.append_basic_block("count_done")
+        builder = ir.IRBuilder(entry)
+        data_arg, len_arg = self.rawutf8_cp_count.args
+        idx_ptr = builder.alloca(i64, name="cpc_i")
+        total_ptr = builder.alloca(i64, name="cpc_n")
+        builder.store(zero64, idx_ptr)
+        builder.store(zero64, total_ptr)
+        builder.branch(count_cond)
+
+        builder.position_at_end(count_cond)
+        idx = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", idx, len_arg)
+        builder.cbranch(more, count_body, count_done)
+
+        builder.position_at_end(count_body)
+        byte = builder.load(builder.gep(data_arg, [idx]))
+        masked = builder.and_(byte, ir.Constant(ir.IntType(8), 0xC0))
+        is_lead = builder.icmp_signed(
+            "!=", masked, ir.Constant(ir.IntType(8), 0x80)
+        )
+        total_now = builder.load(total_ptr)
+        bumped = builder.select(
+            is_lead, builder.add(total_now, one64), total_now
+        )
+        builder.store(bumped, total_ptr)
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(count_cond)
+
+        builder.position_at_end(count_done)
+        builder.ret(builder.load(total_ptr))
+
+        def emit_seq_len(b, byte_value):
+            """UTF-8 sequence length from a lead byte (invalid -> 1)."""
+            b8 = ir.IntType(8)
+            two = b.icmp_signed(
+                "==",
+                b.and_(byte_value, ir.Constant(b8, 0xE0)),
+                ir.Constant(b8, 0xC0),
+            )
+            three = b.icmp_signed(
+                "==",
+                b.and_(byte_value, ir.Constant(b8, 0xF0)),
+                ir.Constant(b8, 0xE0),
+            )
+            four = b.icmp_signed(
+                "==",
+                b.and_(byte_value, ir.Constant(b8, 0xF8)),
+                ir.Constant(b8, 0xF0),
+            )
+            len2 = b.select(four, ir.Constant(i64, 4), one64)
+            len3 = b.select(three, ir.Constant(i64, 3), len2)
+            return b.select(two, ir.Constant(i64, 2), len3)
+
+        def build_rawstr(header_len, data_len, data_value, cp_len):
             """Shared prologue: fresh struct + data buffer, fields set."""
             fresh = builder.bitcast(
-                builder.call(self.malloc, [ir.Constant(i64, 24)]),
+                builder.call(self.malloc, [ir.Constant(i64, 32)]),
                 ir.PointerType(self.rawstr_struct_type),
             )
             builder.store(header_len, sfield(builder, fresh, 0))
             builder.store(header_len, sfield(builder, fresh, 1))
             builder.store(data_value, sfield(builder, fresh, 2))
+            builder.store(cp_len, sfield(builder, fresh, 3))
             return fresh
 
         # i8* rawstr_new_copy(i8* data, i64 len)
@@ -937,7 +1007,8 @@ class TypedCodegen(SiluToLLVMConverter):
             self.memcpy,
             [buffer, data_arg, len_arg, ir.Constant(ir.IntType(1), 0)],
         )
-        struct_ptr = build_rawstr(len_arg, len_arg, buffer)
+        cp_count = builder.call(self.rawutf8_cp_count, [data_arg, len_arg])
+        struct_ptr = build_rawstr(len_arg, len_arg, buffer, cp_count)
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         # i8* rawstr_copy(i8* src) - eager copy keeps slots exclusive
@@ -951,19 +1022,50 @@ class TypedCodegen(SiluToLLVMConverter):
         )
         src_len = load_len(builder, src_struct)
         src_data = load_data(builder, src_struct)
+        src_cp = load_cp(builder, src_struct)
         fresh_data = builder.call(self.malloc, [src_len])
         builder.call(
             self.memcpy,
             [fresh_data, src_data, src_len, ir.Constant(ir.IntType(1), 0)],
         )
         struct_ptr = builder.bitcast(
-            builder.call(self.malloc, [ir.Constant(i64, 24)]),
+            builder.call(self.malloc, [ir.Constant(i64, 32)]),
             ir.PointerType(self.rawstr_struct_type),
         )
         builder.store(src_len, sfield(builder, struct_ptr, 0))
         builder.store(src_len, sfield(builder, struct_ptr, 1))
         builder.store(fresh_data, sfield(builder, struct_ptr, 2))
+        builder.store(src_cp, sfield(builder, struct_ptr, 3))
         builder.ret(builder.bitcast(struct_ptr, i8p))
+
+        # void rawstr_free(i8* s) - drop a slot's buffer on overwrite
+        # (Rust drop). Slots are null-initialized, so free skips null.
+        self.rawstr_free = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p]),
+            name="rawstr_free",
+        )
+        entry = self.rawstr_free.append_basic_block("entry")
+        free_block = self.rawstr_free.append_basic_block("do_free")
+        builder = ir.IRBuilder(entry)
+        (free_arg,) = self.rawstr_free.args
+        is_null = builder.icmp_signed(
+            "==",
+            builder.ptrtoint(free_arg, i64),
+            zero64,
+        )
+        done_block = self.rawstr_free.append_basic_block("free_done")
+        builder.cbranch(is_null, done_block, free_block)
+
+        builder.position_at_end(free_block)
+        free_struct = builder.bitcast(
+            free_arg, ir.PointerType(self.rawstr_struct_type)
+        )
+        builder.call(self.free, [load_data(builder, free_struct)])
+        builder.call(self.free, [free_arg])
+        builder.branch(done_block)
+
+        builder.position_at_end(done_block)
+        builder.ret_void()
 
         # i8* rawstr_concat(i8* a, i8* b) - fresh result, inputs untouched
         self.rawstr_concat = ir.Function(
@@ -978,6 +1080,9 @@ class TypedCodegen(SiluToLLVMConverter):
         a_len = load_len(builder, a_struct)
         b_len = load_len(builder, b_struct)
         total = builder.add(a_len, b_len)
+        total_cp = builder.add(
+            load_cp(builder, a_struct), load_cp(builder, b_struct)
+        )
         buffer = builder.call(self.malloc, [total])
         builder.call(
             self.memcpy,
@@ -988,7 +1093,7 @@ class TypedCodegen(SiluToLLVMConverter):
             self.memcpy,
             [b_dst, load_data(builder, b_struct), b_len, ir.Constant(ir.IntType(1), 0)],
         )
-        struct_ptr = build_rawstr(total, total, buffer)
+        struct_ptr = build_rawstr(total, total, buffer, total_cp)
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         # void rawstr_append(i8* s, i8* data, i64 len)
@@ -1033,6 +1138,13 @@ class TypedCodegen(SiluToLLVMConverter):
             [dst, data_arg, add_len_arg, ir.Constant(ir.IntType(1), 0)],
         )
         builder.store(new_len, sfield(builder, struct_ptr, 0))
+        add_cp = builder.call(
+            self.rawutf8_cp_count, [data_arg, add_len_arg]
+        )
+        old_cp = builder.load(sfield(builder, struct_ptr, 3))
+        builder.store(
+            builder.add(old_cp, add_cp), sfield(builder, struct_ptr, 3)
+        )
         builder.ret_void()
 
         # i1 rawstr_eq(i8* a, i8* b)
@@ -1089,9 +1201,44 @@ class TypedCodegen(SiluToLLVMConverter):
         length_diff = builder.sub(a_len, b_len)
         builder.ret(builder.select(is_equal, length_diff, memcmp_i64))
 
-        # i8* rawstr_char_at(i8* s, i64 index) - s[i] as a 1-byte rawstr.
-        # Byte semantics: for ASCII this equals Python's code-point
-        # indexing; negative indices adjust by the byte length.
+        # i64 rawutf8_cp_offset(i8* data, i64 cp_index) - byte offset of
+        # the cp_index-th code point (callers clamp cp_index, so the
+        # walk always stays inside the buffer)
+        self.rawutf8_cp_offset = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p, i64]),
+            name="rawutf8_cp_offset",
+        )
+        entry = self.rawutf8_cp_offset.append_basic_block("entry")
+        scan_cond = self.rawutf8_cp_offset.append_basic_block("off_cond")
+        scan_body = self.rawutf8_cp_offset.append_basic_block("off_body")
+        scan_done = self.rawutf8_cp_offset.append_basic_block("off_done")
+        builder = ir.IRBuilder(entry)
+        data_arg, cp_index_arg = self.rawutf8_cp_offset.args
+        off_ptr = builder.alloca(i64, name="cpo_off")
+        seen_ptr = builder.alloca(i64, name="cpo_seen")
+        builder.store(zero64, off_ptr)
+        builder.store(zero64, seen_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_cond)
+        seen = builder.load(seen_ptr)
+        more = builder.icmp_signed("<", seen, cp_index_arg)
+        builder.cbranch(more, scan_body, scan_done)
+
+        builder.position_at_end(scan_body)
+        off = builder.load(off_ptr)
+        lead = builder.load(builder.gep(data_arg, [off]))
+        seq = emit_seq_len(builder, lead)
+        builder.store(builder.add(off, seq), off_ptr)
+        builder.store(builder.add(seen, one64), seen_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_done)
+        builder.ret(builder.load(off_ptr))
+
+        # i8* rawstr_char_at(i8* s, i64 index) - s[i] as a one-code-point
+        # rawstr. Negative indices adjust by the code point count; the
+        # code point walk makes indexing O(n) like Rust's chars().nth().
         self.rawstr_char_at = ir.Function(
             self.module, ir.FunctionType(i8p, [i8p, i64]), name="rawstr_char_at"
         )
@@ -1101,11 +1248,11 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         s_arg, index_arg = self.rawstr_char_at.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_len = load_len(builder, s_struct)
+        s_cp = load_cp(builder, s_struct)
         is_neg = builder.icmp_signed("<", index_arg, zero64)
-        index_eff = builder.select(is_neg, builder.add(index_arg, s_len), index_arg)
+        index_eff = builder.select(is_neg, builder.add(index_arg, s_cp), index_arg)
         below = builder.icmp_signed(">=", index_eff, zero64)
-        above = builder.icmp_signed("<", index_eff, s_len)
+        above = builder.icmp_signed("<", index_eff, s_cp)
         builder.cbranch(builder.and_(below, above), ok_block, err_block)
 
         builder.position_at_end(err_block)
@@ -1116,15 +1263,27 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(ok_block)
         s_data = load_data(builder, s_struct)
-        byte_ptr = builder.gep(s_data, [index_eff])
-        char_buf = builder.call(self.malloc, [one64])
-        builder.store(builder.load(byte_ptr), char_buf)
-        char_struct = build_rawstr(one64, one64, char_buf)
+        char_off = builder.call(
+            self.rawutf8_cp_offset, [s_data, index_eff]
+        )
+        lead = builder.load(builder.gep(s_data, [char_off]))
+        seq = emit_seq_len(builder, lead)
+        char_buf = builder.call(self.malloc, [seq])
+        builder.call(
+            self.memcpy,
+            [
+                char_buf,
+                builder.gep(s_data, [char_off]),
+                seq,
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        char_struct = build_rawstr(seq, seq, char_buf, one64)
         builder.ret(builder.bitcast(char_struct, i8p))
 
-        # i8* rawstr_slice(i8* s, i64 lo, i64 hi) - s[lo:hi] with Python's
-        # clamping (negative bounds adjust, out-of-range clamps, an
-        # inverted range yields the empty string)
+        # i8* rawstr_slice(i8* s, i64 lo, i64 hi) - s[lo:hi] in code
+        # points with Python's clamping (negative bounds adjust,
+        # out-of-range clamps, an inverted range yields the empty string)
         self.rawstr_slice = ir.Function(
             self.module, ir.FunctionType(i8p, [i8p, i64, i64]),
             name="rawstr_slice",
@@ -1132,23 +1291,31 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(self.rawstr_slice.append_basic_block("entry"))
         s_arg, lo_arg, hi_arg = self.rawstr_slice.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_len = load_len(builder, s_struct)
+        s_cp = load_cp(builder, s_struct)
         s_data = load_data(builder, s_struct)
 
-        def clamp_bound(b, bound):
+        def clamp_cp_bound(b, bound):
             adjusted = b.select(
-                b.icmp_signed("<", bound, zero64), b.add(bound, s_len), bound
+                b.icmp_signed("<", bound, zero64), b.add(bound, s_cp), bound
             )
             floored = b.select(
                 b.icmp_signed("<", adjusted, zero64), zero64, adjusted
             )
-            return b.select(b.icmp_signed(">", floored, s_len), s_len, floored)
+            return b.select(b.icmp_signed(">", floored, s_cp), s_cp, floored)
 
-        lo_eff = clamp_bound(builder, lo_arg)
-        hi_eff = clamp_bound(builder, hi_arg)
-        span = builder.sub(hi_eff, lo_eff)
+        lo_eff = clamp_cp_bound(builder, lo_arg)
+        hi_eff = clamp_cp_bound(builder, hi_arg)
+        span_cp = builder.sub(hi_eff, lo_eff)
+        out_cp = builder.select(
+            builder.icmp_signed(">", span_cp, zero64), span_cp, zero64
+        )
+        off_lo = builder.call(self.rawutf8_cp_offset, [s_data, lo_eff])
+        off_hi = builder.call(self.rawutf8_cp_offset, [s_data, hi_eff])
+        # an inverted range is the empty string: off_lo may sit past
+        # off_hi, so clamp the byte span by the code point span
+        raw_span = builder.sub(off_hi, off_lo)
         out_len = builder.select(
-            builder.icmp_signed(">", span, zero64), span, zero64
+            builder.icmp_signed(">", out_cp, zero64), raw_span, zero64
         )
         # malloc(0) may return null; keep the buffer valid for memcpy
         alloc_len = builder.select(
@@ -1159,12 +1326,12 @@ class TypedCodegen(SiluToLLVMConverter):
             self.memcpy,
             [
                 out_buf,
-                builder.gep(s_data, [lo_eff]),
+                builder.gep(s_data, [off_lo]),
                 out_len,
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
-        slice_struct = build_rawstr(out_len, out_len, out_buf)
+        slice_struct = build_rawstr(out_len, out_len, out_buf, out_cp)
         builder.ret(builder.bitcast(slice_struct, i8p))
 
         # i1 rawstr_contains(i8* haystack, i8* needle) - substring scan;
@@ -1522,7 +1689,8 @@ class TypedCodegen(SiluToLLVMConverter):
             self.memcpy,
             [raw_buffer, box_data, wide_len, ir.Constant(ir.IntType(1), 0)],
         )
-        struct_ptr = build_rawstr(wide_len, wide_len, raw_buffer)
+        wide_cp = builder.call(self.rawutf8_cp_count, [box_data, wide_len])
+        struct_ptr = build_rawstr(wide_len, wide_len, raw_buffer, wide_cp)
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         builder.position_at_end(error_block)
@@ -1924,6 +2092,13 @@ class TypedCodegen(SiluToLLVMConverter):
             self.variables[name] = self.current_builder.alloca(
                 ir.PointerType(ir.IntType(8)), name=name
             )
+            if kind == RAWSTR:
+                # null-init so the drop-on-overwrite helper can tell
+                # "never assigned" apart from a live buffer
+                self.current_builder.store(
+                    ir.Constant(ir.PointerType(ir.IntType(8)), None),
+                    self.variables[name],
+                )
         else:
             self.variables[name] = self.current_builder.alloca(
                 LLVM_KIND_TYPES[kind], name=name
@@ -1937,6 +2112,14 @@ class TypedCodegen(SiluToLLVMConverter):
         if name in self.variables:
             return (OBJ, self.current_builder.load(self.variables[name]))
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _store_rawstr(self, name: str, new_ptr: Any):
+        """Drop the slot's previous buffer (Rust drop on overwrite), then
+        store the new one. Ownership is exclusive, so freeing the old
+        buffer is always safe; slots are null-initialized."""
+        old_ptr = self.current_builder.load(self.variables[name])
+        self.current_builder.call(self.rawstr_free, [old_ptr])
+        self.current_builder.store(new_ptr, self.variables[name])
 
     # ================== arithmetic ==================
 
@@ -3602,7 +3785,7 @@ class TypedCodegen(SiluToLLVMConverter):
                                 struct_ptr,
                                 [
                                     ir.Constant(ir.IntType(32), 0),
-                                    ir.Constant(ir.IntType(32), 0),
+                                    ir.Constant(ir.IntType(32), 3),
                                 ],
                             )
                         )
@@ -4014,49 +4197,104 @@ class TypedCodegen(SiluToLLVMConverter):
     def _convert_rawstr_for_loop(
         self, target_node: Any, str_tv: Tuple[str, Any], body_stmts: list
     ) -> Tuple[str, Any]:
-        """for ch in raw_str: ch is a fresh 1-byte rawstr per iteration
-        (byte semantics - ASCII equals Python's code-point iteration)."""
+        """for ch in raw_str: ch is a fresh one-code-point rawstr per
+        iteration. Iteration walks byte offsets (decode the lead byte,
+        advance by the sequence length), so the whole loop is O(bytes)
+        even though each char is code-point semantics."""
         i64 = ir.IntType(64)
         str_ptr = str_tv[1]
 
         cond_block = self.current_function.append_basic_block("siter_cond")
         body_block = self.current_function.append_basic_block("siter_body")
-        incr_block = self.current_function.append_basic_block("siter_incr")
         end_block = self.current_function.append_basic_block("siter_end")
 
-        counter_ptr = self.current_builder.alloca(i64, name="siter_idx")
-        self.current_builder.store(ir.Constant(i64, 0), counter_ptr)
+        offset_ptr = self.current_builder.alloca(i64, name="siter_off")
+        seq_ptr = self.current_builder.alloca(i64, name="siter_seq")
+        self.current_builder.store(ir.Constant(i64, 0), offset_ptr)
         struct_ptr = self.current_builder.bitcast(
             str_ptr, ir.PointerType(self.rawstr_struct_type)
         )
-        str_len = self.current_builder.load(
+        byte_len = self.current_builder.load(
             self.current_builder.gep(
                 struct_ptr,
                 [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
             )
         )
+        data = self.current_builder.load(
+            self.current_builder.gep(
+                struct_ptr,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 2)],
+            )
+        )
         self.current_builder.branch(cond_block)
 
         self.current_builder.position_at_end(cond_block)
-        index = self.current_builder.load(counter_ptr)
-        more = self.current_builder.icmp_signed("<", index, str_len)
+        offset = self.current_builder.load(offset_ptr)
+        more = self.current_builder.icmp_signed("<", offset, byte_len)
         self.current_builder.cbranch(more, body_block, end_block)
 
         self.loop_break_blocks.append(end_block)
-        self.loop_continue_blocks.append(incr_block)
+        self.loop_continue_blocks.append(cond_block)
 
         self.current_builder.position_at_end(body_block)
+        lead = self.current_builder.load(
+            self.current_builder.gep(data, [offset])
+        )
+        seq = self._emit_utf8_seq_len(lead)
+        self.current_builder.store(seq, seq_ptr)
+
         if (
             isinstance(target_node, list)
             and len(target_node) >= 2
             and target_node[0] == "name"
         ):
             var_name = target_node[1]
-            ch = self.current_builder.call(
-                self.rawstr_char_at, [str_ptr, index]
+            # fresh one-code-point rawstr: {seq, seq, data+off, 1}
+            char_struct = self.current_builder.bitcast(
+                self.current_builder.call(
+                    self.malloc, [ir.Constant(i64, 32)]
+                ),
+                ir.PointerType(self.rawstr_struct_type),
+            )
+            char_buf = self.current_builder.call(self.malloc, [seq])
+            self.current_builder.call(
+                self.memcpy,
+                [
+                    char_buf,
+                    self.current_builder.gep(data, [offset]),
+                    seq,
+                    ir.Constant(ir.IntType(1), 0),
+                ],
+            )
+            for field_index, field_value in (
+                (0, seq),
+                (1, seq),
+                (3, ir.Constant(i64, 1)),
+            ):
+                self.current_builder.store(
+                    field_value,
+                    self.current_builder.gep(
+                        char_struct,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), field_index),
+                        ],
+                    ),
+                )
+            self.current_builder.store(
+                char_buf,
+                self.current_builder.gep(
+                    char_struct,
+                    [
+                        ir.Constant(ir.IntType(32), 0),
+                        ir.Constant(ir.IntType(32), 2),
+                    ],
+                ),
             )
             self._declare_var(var_name, RAWSTR)
-            self.current_builder.store(ch, self.variables[var_name])
+            self._store_rawstr(var_name, self.current_builder.bitcast(
+                char_struct, ir.PointerType(ir.IntType(8))
+            ))
 
         for stmt in body_stmts:
             self._convert_node(stmt)
@@ -4064,21 +4302,40 @@ class TypedCodegen(SiluToLLVMConverter):
                 break
 
         if not self.current_builder.block.is_terminated:
-            self.current_builder.branch(incr_block)
+            self.current_builder.store(
+                self.current_builder.add(
+                    self.current_builder.load(offset_ptr),
+                    self.current_builder.load(seq_ptr),
+                ),
+                offset_ptr,
+            )
+            self.current_builder.branch(cond_block)
         self.loop_break_blocks.pop()
         self.loop_continue_blocks.pop()
 
-        self.current_builder.position_at_end(incr_block)
-        self.current_builder.store(
-            self.current_builder.add(
-                self.current_builder.load(counter_ptr), ir.Constant(i64, 1)
-            ),
-            counter_ptr,
-        )
-        self.current_builder.branch(cond_block)
-
         self.current_builder.position_at_end(end_block)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _emit_utf8_seq_len(self, byte_value):
+        """UTF-8 sequence length from a lead byte (invalid -> 1)."""
+        b8 = ir.IntType(8)
+        i64 = ir.IntType(64)
+        b = self.current_builder
+        two = b.icmp_signed(
+            "==", b.and_(byte_value, ir.Constant(b8, 0xE0)),
+            ir.Constant(b8, 0xC0),
+        )
+        three = b.icmp_signed(
+            "==", b.and_(byte_value, ir.Constant(b8, 0xF0)),
+            ir.Constant(b8, 0xE0),
+        )
+        four = b.icmp_signed(
+            "==", b.and_(byte_value, ir.Constant(b8, 0xF8)),
+            ir.Constant(b8, 0xF0),
+        )
+        len2 = b.select(four, ir.Constant(i64, 4), ir.Constant(i64, 1))
+        len3 = b.select(three, ir.Constant(i64, 3), len2)
+        return b.select(two, ir.Constant(i64, 2), len3)
 
     def _build_raw_list(self, element_nodes: list, kind: str) -> Tuple[str, Any]:
         """[a, b, c] literal stored into a rawlist-typed variable."""
@@ -4397,7 +4654,7 @@ class TypedCodegen(SiluToLLVMConverter):
                             ),
                         )
                     if arg_tv[0] == RAWSTR:
-                        # raw string: length lives in the slot header
+                        # raw string: len() counts code points (field 3)
                         struct_ptr = self.current_builder.bitcast(
                             arg_tv[1],
                             ir.PointerType(self.rawstr_struct_type),
@@ -4409,7 +4666,7 @@ class TypedCodegen(SiluToLLVMConverter):
                                     struct_ptr,
                                     [
                                         ir.Constant(ir.IntType(32), 0),
-                                        ir.Constant(ir.IntType(32), 0),
+                                        ir.Constant(ir.IntType(32), 3),
                                     ],
                                 )
                             ),

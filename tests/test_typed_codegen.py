@@ -628,7 +628,7 @@ class TestRawStr:
         llvm_ir = _convert(source)
         main = _main_body(llvm_ir)
 
-        assert 'call i8* @"rawstr_char_at"' in main
+        assert 'call void @"rawstr_free"' in main  # per-char slot drop
         assert 'call {i32, i8*}* @"list_length"' not in main
         assert _run_main(llvm_ir) == _run_interpreter(source)
 
@@ -660,6 +660,46 @@ class TestRawStr:
 
         assert 'call i1 @"pyobj_contains"' in main
         assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_rawstr_code_point_semantics(self):
+        """len, indexing, negative indexing and slicing all count code
+        points, matching the interpreter on multi-byte text."""
+        source = (
+            's: str = "你好世界"\n'
+            "print(len(s), s[1], s[-1], s[1:3], s[:2], s[3:])\n"
+            't: str = "hi 你好"\n'
+            "print(len(t), t[3], t[-2:])\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_rawstr_code_point_iteration(self):
+        """for ch in s walks code points (a byte-offset loop under the
+        hood), and appended strings keep their code point count."""
+        source = (
+            's: str = "你好世界"\n'
+            "count: int = 0\n"
+            "for ch in s:\n"
+            '    if ch == "好":\n'
+            "        count += 1\n"
+            "print(count)\n"
+            'u: str = ""\n'
+            "i: int = 0\n"
+            "while i < 3:\n"
+            '    u = u + "你"\n'
+            "    i += 1\n"
+            "print(u, len(u), u[2])\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_rawstr_utf8_equality_and_contains(self):
+        """Byte-wise eq/cmp/contains already equal code point semantics
+        on UTF-8 - pinned down for multi-byte text."""
+        source = (
+            's: str = "你好世界"\n'
+            'print(s == "你好世界", s != "你好", s < "你好吗")\n'
+            'print("好世" in s, "吗" in s, "" in s)\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
 
     def test_str_function_boundary(self):
         """rawstr params are copied at the call boundary and rawstr
