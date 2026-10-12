@@ -701,6 +701,55 @@ class TestRawStr:
         )
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
+    def test_rawstr_reassign_drops_old_buffer(self):
+        """t = "ab" + "cd" in a loop: the slot's previous buffer is
+        dropped on every overwrite (Rust drop), so a reassignment loop
+        runs in constant memory (was ~160 bytes leaked per iteration)."""
+        source = (
+            't: str = "x"\n'
+            "i: int = 0\n"
+            "while i < 100:\n"
+            '    t = "ab" + "cd"\n'
+            "    i += 1\n"
+            "print(t, len(t))\n"
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        # no pyobj round-trip for const-str concat, and both the concat
+        # temporaries and the overwritten slot buffers are freed
+        assert 'call {i32, i8*}* @"pyobj_add"' not in main
+        assert 'call i8* @"rawstr_concat"' in main
+        assert main.count('call void @"rawstr_free"') >= 2
+        assert _run_main(llvm_ir) == "abcd 4\n"
+
+    def test_rawstr_alias_assignment_still_copies(self):
+        """t = s must copy (exclusive ownership): mutating t afterwards
+        leaves s alone, and both buffers get dropped independently."""
+        source = (
+            's: str = "keep"\n'
+            "t: str = s\n"
+            't = t + "X"\n'
+            "print(s, t)\n"
+            'u: str = "a"\n'
+            'u = "b" + u\n'
+            "print(u)\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_rawstr_self_concat_fresh_path(self):
+        """s = s + s takes the concat path and drops the old buffer
+        only after the new one exists (no use-after-free)."""
+        source = (
+            's: str = "ab"\n'
+            "i: int = 0\n"
+            "while i < 3:\n"
+            "    s = s + s\n"
+            "    i += 1\n"
+            "print(s, len(s))\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
     def test_str_function_boundary(self):
         """rawstr params are copied at the call boundary and rawstr
         returns are copied at return, so callees cannot alias callers."""

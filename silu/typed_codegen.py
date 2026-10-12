@@ -1970,13 +1970,14 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_builder.unreachable()
         self.current_builder.position_at_end(ok_block)
 
-    def _rawstr_append_operand(self, rhs_node: Any) -> Tuple[Any, Any]:
-        """(data_ptr, byte_len) for rawstr_append.
+    def _rawstr_append_operand(self, rhs_node: Any) -> Tuple[Any, Any, Any]:
+        """(data_ptr, byte_len, temp) for rawstr_append.
 
         String literals stream straight from their global constant;
         rawstr values pass their own buffer (append's realloc never
         moves a foreign buffer); anything dynamic is boxed and copied
-        out through the unbox boundary first.
+        out through the unbox boundary first - that copy is a temporary
+        the caller frees after the append (Rust end-of-statement drop).
         """
         if (
             isinstance(rhs_node, list)
@@ -1988,10 +1989,17 @@ class TypedCodegen(SiluToLLVMConverter):
             return (
                 self._create_global_string(text),
                 ir.Constant(ir.IntType(64), len(text.encode("utf-8"))),
+                None,
             )
-        tv = self._coerce(self._convert_node(rhs_node), RAWSTR)
+        rhs_tv = self._convert_node(rhs_node)
+        temp = None
+        if rhs_tv[0] == RAWSTR:
+            raw_ptr = rhs_tv[1]
+        else:
+            raw_ptr = self._coerce(rhs_tv, RAWSTR)[1]
+            temp = raw_ptr
         struct_ptr = self.current_builder.bitcast(
-            tv[1], ir.PointerType(self.rawstr_struct_type)
+            raw_ptr, ir.PointerType(self.rawstr_struct_type)
         )
         length = self.current_builder.load(
             self.current_builder.gep(
@@ -2005,7 +2013,16 @@ class TypedCodegen(SiluToLLVMConverter):
                 [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 2)],
             )
         )
-        return data, length
+        return data, length, temp
+
+    def _rawstr_operand(self, tv: Tuple[str, Any]) -> Tuple[Any, Any]:
+        """(ptr, temp) for one-shot rawstr consumers (binop, compare,
+        contains): a slot's buffer is borrowed, a coerced value is a
+        temporary the caller frees after the consuming call."""
+        if tv[0] == RAWSTR:
+            return tv[1], None
+        raw_ptr = self._coerce(tv, RAWSTR)[1]
+        return raw_ptr, raw_ptr
 
     def _to_i1_cond(self, tv: Tuple[str, Any]) -> Any:
         """Condition value -> i1 (direct, or Python truthiness for obj)."""
@@ -2130,18 +2147,17 @@ class TypedCodegen(SiluToLLVMConverter):
         if op == "+" and (left[0] == RAWSTR or right[0] == RAWSTR):
             # string concatenation on raw slots: fresh buffer, inputs
             # untouched (t = s + "x" must not disturb s). Raw operands
-            # are only read, so they skip the eager-copy coercion.
-            def as_rawstr(tv: Tuple[str, Any]):
-                if tv[0] == RAWSTR:
-                    return tv[1]
-                return self._coerce(tv, RAWSTR)[1]
-
-            return (
-                RAWSTR,
-                self.current_builder.call(
-                    self.rawstr_concat, [as_rawstr(left), as_rawstr(right)]
-                ),
+            # are only read, so they skip the eager-copy coercion;
+            # coerced temporaries are dropped after the call.
+            a_ptr, a_temp = self._rawstr_operand(left)
+            b_ptr, b_temp = self._rawstr_operand(right)
+            result = self.current_builder.call(
+                self.rawstr_concat, [a_ptr, b_ptr]
             )
+            for temp in (a_temp, b_temp):
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
+            return (RAWSTR, result)
         if left[0] == OBJ or right[0] == OBJ:
             l_obj = self._box(left)
             r_obj = self._box(right)
@@ -2334,22 +2350,22 @@ class TypedCodegen(SiluToLLVMConverter):
     def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any]):
         if left[0] == RAWSTR or right[0] == RAWSTR:
             # raw string comparisons: memcmp semantics, which on UTF-8
-            # bytes equals Python's code point ordering
-            def as_rawstr(tv: Tuple[str, Any]):
-                if tv[0] == RAWSTR:
-                    return tv[1]
-                return self._coerce(tv, RAWSTR)[1]
-
-            a_ptr = as_rawstr(left)
-            b_ptr = as_rawstr(right)
-            if op == "==":
-                return (I1, self.current_builder.call(self.rawstr_eq, [a_ptr, b_ptr]))
-            if op == "!=":
+            # bytes equals Python's code point ordering; coerced
+            # temporaries are dropped after the call
+            a_ptr, a_temp = self._rawstr_operand(left)
+            b_ptr, b_temp = self._rawstr_operand(right)
+            if op in ("==", "!="):
                 eq = self.current_builder.call(self.rawstr_eq, [a_ptr, b_ptr])
-                return (I1, self.current_builder.not_(eq))
-            order = self.current_builder.call(self.rawstr_cmp, [a_ptr, b_ptr])
-            zero = ir.Constant(ir.IntType(64), 0)
-            return (I1, self.current_builder.icmp_signed(op, order, zero))
+                result = eq if op == "==" else self.current_builder.not_(eq)
+            else:
+                order = self.current_builder.call(self.rawstr_cmp, [a_ptr, b_ptr])
+                result = self.current_builder.icmp_signed(
+                    op, order, ir.Constant(ir.IntType(64), 0)
+                )
+            for temp in (a_temp, b_temp):
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
+            return (I1, result)
 
         if left[0] == OBJ or right[0] == OBJ:
             l_obj = self._box(left)
@@ -2398,10 +2414,14 @@ class TypedCodegen(SiluToLLVMConverter):
         pyobj_contains for everything else. Result is always i1."""
         container_tv = self._convert_node(container_node)
         if container_tv[0] == RAWSTR:
-            needle = self._coerce(self._convert_node(item_node), RAWSTR)
-            result = self.current_builder.call(
-                self.rawstr_contains, [container_tv[1], needle[1]]
+            needle_ptr, needle_temp = self._rawstr_operand(
+                self._convert_node(item_node)
             )
+            result = self.current_builder.call(
+                self.rawstr_contains, [container_tv[1], needle_ptr]
+            )
+            if needle_temp is not None:
+                self.current_builder.call(self.rawstr_free, [needle_temp])
         elif container_tv[0] in RAWDICT_KINDS:
             key = self._coerce(self._convert_node(item_node), I64)[1]
             result = self.current_builder.call(
@@ -3176,11 +3196,13 @@ class TypedCodegen(SiluToLLVMConverter):
                 # of a fresh quadratic copy. A rhs naming s itself goes
                 # through rawstr_concat: append's realloc could move the
                 # buffer out from under its own source.
-                data_ptr, byte_len = self._rawstr_append_operand(value_node[2])
+                data_ptr, byte_len, temp = self._rawstr_append_operand(value_node[2])
                 slot_value = self._load_var(target)[1]
                 self.current_builder.call(
                     self.rawstr_append, [slot_value, data_ptr, byte_len]
                 )
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
                 self._declare_var(target, RAWSTR)
                 return (RAWSTR, slot_value)
             if (
@@ -3293,9 +3315,31 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (annotation_kind, raw_ptr)
             value = self._convert_node(value_node)
             if isinstance(target, str) and value[1] is not None:
+                if annotation_kind == RAWSTR and value[0] == RAWSTR:
+                    # a name aliases another slot's buffer, so assigning
+                    # it must copy (exclusive ownership); an expression
+                    # result is a fresh temporary the slot can simply own
+                    aliases_slot = (
+                        isinstance(value_node, list)
+                        and len(value_node) >= 2
+                        and value_node[0] == "name"
+                    )
+                    coerced = (
+                        self._coerce(value, RAWSTR) if aliases_slot else value
+                    )
+                    self._declare_var(target, RAWSTR)
+                    # the slot owns its buffer exclusively: drop the old
+                    # value on overwrite (Rust drop), no leak per reassign
+                    self._store_rawstr(target, coerced[1])
+                    return coerced
                 coerced = self._coerce(value, annotation_kind)
                 self._declare_var(target, annotation_kind)
-                self.current_builder.store(coerced[1], self.variables[target])
+                if annotation_kind == RAWSTR:
+                    # the coerced value is a fresh owned temporary; drop
+                    # the slot's previous buffer as we overwrite it
+                    self._store_rawstr(target, coerced[1])
+                else:
+                    self.current_builder.store(coerced[1], self.variables[target])
                 return coerced
             return (OBJ, null_obj)
 
@@ -3399,16 +3443,17 @@ class TypedCodegen(SiluToLLVMConverter):
                 if isinstance(node[3], list) and node[3][:2] == ["name", target_name]:
                     current = self._load_var(target_name)
                     result = self._typed_binop("+", current, right_tv)
-                    coerced = self._coerce(result, RAWSTR)
-                    self.current_builder.store(
-                        coerced[1], self.variables[target_name]
-                    )
-                    return coerced
-                data_ptr, byte_len = self._rawstr_append_operand(node[3])
+                    # concat output is a fresh temporary: own it directly
+                    # (a coerce here would copy it and leak the original)
+                    self._store_rawstr(target_name, result[1])
+                    return result
+                data_ptr, byte_len, temp = self._rawstr_append_operand(node[3])
                 slot_value = self._load_var(target_name)[1]
                 self.current_builder.call(
                     self.rawstr_append, [slot_value, data_ptr, byte_len]
                 )
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
                 return (RAWSTR, slot_value)
             current = self._load_var(target_name)
             result = self._typed_binop(bin_op, current, right_tv)
@@ -3452,6 +3497,21 @@ class TypedCodegen(SiluToLLVMConverter):
         if op in ("+", "-", "*", "/", "//", "%") and len(node) >= 3:
             left = self._convert_node(node[1])
             right = self._convert_node(node[2])
+            if op == "+" and left[0] != RAWSTR and right[0] != RAWSTR:
+                # const str operands make this a string concatenation
+                # even when both sides boxed: route it through the raw
+                # concat so t = "ab" + "cd" never round-trips pyobj_add
+                def is_str_const(operand_node):
+                    return (
+                        isinstance(operand_node, list)
+                        and len(operand_node) >= 2
+                        and operand_node[0] == "const"
+                        and isinstance(operand_node[1], str)
+                    )
+
+                if is_str_const(node[1]) or is_str_const(node[2]):
+                    left = self._coerce(left, RAWSTR)
+                    right = self._coerce(right, RAWSTR)
             return self._typed_binop(op, left, right)
 
         if op in ("==", "!=", "<", "<=", ">", ">="):
@@ -3970,7 +4030,12 @@ class TypedCodegen(SiluToLLVMConverter):
                         kind = self.var_kinds.get(target, OBJ)
                         coerced = self._coerce(evaluated[index], kind)
                         self._declare_var(target, kind)
-                        self.current_builder.store(coerced[1], self.variables[target])
+                        if kind == RAWSTR:
+                            self._store_rawstr(target, coerced[1])
+                        else:
+                            self.current_builder.store(
+                                coerced[1], self.variables[target]
+                            )
             return (OBJ, null_obj)
 
         # unknown op: degrade to dynamic null
