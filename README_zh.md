@@ -87,6 +87,7 @@ print(greet("Silu Programming"))
 | `silu to-source program.ir.json` | 将 IR 转回可读源码 |
 | `silu symbolic program.si` | 符号执行分析 |
 | `silu llvm program.ir.json --output program.ll` | 将 IR 降级为 LLVM IR |
+| `silu build program.si -o program` | 一条命令编译出原生可执行文件 |
 
 ### 符号执行
 
@@ -101,12 +102,12 @@ silu symbolic symbolic_demo.si
 ### 原生编译
 
 ```bash
-silu ir program.si --output program.ir.json   # Silu IR
-silu llvm program.ir.json --output program.ll # LLVM IR
-llc program.ll -o program.s                   # 汇编
-clang program.s -o program                    # 可执行文件
+silu build program.si -o program   # 一条命令：IR -> LLVM -> clang
 ./program
 ```
+
+（分步管线——`silu ir`、`silu llvm`、`llc`、`clang`——仍可用于
+逐阶段检查中间产物）
 
 类型注解直接驱动原生表示：带注解的 `int` / `float` / `bool` 编译为
 非装箱的机器值，`list[int]` / `list[float]` 编译为原始元素数组，

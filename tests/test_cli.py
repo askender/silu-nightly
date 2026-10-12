@@ -98,6 +98,30 @@ def test_ir_mode_with_source_string_and_format(capsys):
             mock_generate.assert_called_once_with("x = 5", "json", record_types=True)
 
 
+def test_build_mode_compiles_and_runs(tmp_path):
+    """silu build produces a working native executable in one command."""
+    import shutil
+    import subprocess
+
+    if shutil.which("clang") is None:
+        pytest.skip("clang not available")
+
+    program = tmp_path / "hello.si"
+    program.write_text('x: int = 6\ny: int = 7\nprint(x * y)\n')
+    binary = tmp_path / "hello_bin"
+
+    with patch.object(
+        sys, "argv", ["silu", "build", str(program), "-o", str(binary)]
+    ):
+        main()
+
+    assert binary.exists()
+    result = subprocess.run(
+        [str(binary)], capture_output=True, text=True, check=True
+    )
+    assert result.stdout == "42\n"
+
+
 def test_main_with_nonexistent_file(capsys):
     """Test main function with a nonexistent file."""
     with patch.object(sys, "argv", ["silu", "interpret", "nonexistent.si"]):

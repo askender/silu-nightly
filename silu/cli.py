@@ -258,6 +258,67 @@ def run_llvm_ir_generator(
         sys.exit(1)
 
 
+def run_build(source_file: str, output_file: str = None, **kwargs) -> None:
+    """One-command native build: Silu source -> IR -> LLVM IR -> clang.
+
+    Honors SILU_CODEGEN (typed default / dynamic) and SILU_CHECKS the
+    same way the step-by-step pipeline does."""
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not LLVM_AVAILABLE:
+        print(
+            "Error: native build not available. Please install llvmlite.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    clang = shutil.which("clang")
+    if clang is None:
+        print(
+            "Error: clang not found on PATH; it links the final executable.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        with open(source_file, "r", encoding="utf-8") as handle:
+            source_code = handle.read()
+        tree = ast.parse(source_code)
+        ir_result = SiluIRGenerator().visit(tree)
+        ir_json = json.dumps(ir_result)
+
+        codegen_mode = os.environ.get("SILU_CODEGEN", "typed")
+        if codegen_mode == "dynamic":
+            converter = SiluToLLVMConverter()
+        else:
+            from silu.typed_codegen import TypedCodegen
+
+            converter = TypedCodegen()
+        llvm_ir = converter.convert(ir_json)
+
+        out_path = output_file or os.path.splitext(os.path.basename(source_file))[0]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ll_path = os.path.join(tmpdir, "program.ll")
+            with open(ll_path, "w", encoding="utf-8") as handle:
+                handle.write(llvm_ir)
+            result = subprocess.run(
+                [clang, "-O2", ll_path, "-o", out_path],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                print(f"Error: clang failed:\n{result.stderr}", file=sys.stderr)
+                sys.exit(1)
+        print(f"Built executable: {out_path}")
+
+    except Exception as e:
+        print(f"Error building {source_file}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def run_ir_to_source_converter(
     ir_source: str, output_file: str = None, **kwargs
 ) -> None:
@@ -538,6 +599,16 @@ Examples:
             "--output", "-o", help="Output file to save LLVM IR (default: stdout)"
         )
 
+    # One-command native build subcommand
+    if LLVM_AVAILABLE:
+        build_parser = subparsers.add_parser(
+            "build", help="Compile a Silu source file to a native executable"
+        )
+        build_parser.add_argument("file", help="Silu source file to compile")
+        build_parser.add_argument(
+            "--output", "-o", help="Output executable path (default: source basename)"
+        )
+
     # Symbolic execution subcommand
     symbolic_parser = subparsers.add_parser(
         "symbolic", help="Perform symbolic execution"
@@ -593,6 +664,17 @@ def validate_arguments(args) -> None:
                 "Error: A Python source file must be provided for check mode.",
                 file=sys.stderr,
             )
+            sys.exit(1)
+    elif args.mode == "build":
+        # For build mode, only the source file is required
+        if not args.file:
+            print(
+                "Error: A Silu source file must be provided for build mode.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not Path(args.file).exists():
+            print(f"Error: File '{args.file}' does not exist.", file=sys.stderr)
             sys.exit(1)
         # Don't check file existence here for check mode - let run_check handle it
     elif args.mode in ["exec", "symbolic", "to-source", "llvm"]:
@@ -753,6 +835,10 @@ def main() -> None:
             else:
                 # Generate LLVM IR from IR file
                 run_llvm_ir_generator(args.file, is_file=True, **llvm_kwargs)
+
+        elif args.mode == "build":
+            # One-command native build
+            run_build(args.file, output_file=getattr(args, "output", None))
 
         elif args.mode == "symbolic":
             # Symbolic execution

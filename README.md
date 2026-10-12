@@ -95,6 +95,7 @@ print(greet("Silu Programming"))
 | `silu to-source program.ir.json` | Convert IR back to readable source |
 | `silu symbolic program.si` | Symbolic execution analysis |
 | `silu llvm program.ir.json --output program.ll` | Lower IR to LLVM IR |
+| `silu build program.si -o program` | One-command native executable |
 
 ### Symbolic Execution
 
@@ -110,12 +111,12 @@ the executor still runs with graceful degradation.
 ### Native Compilation
 
 ```bash
-silu ir program.si --output program.ir.json   # Silu IR
-silu llvm program.ir.json --output program.ll # LLVM IR
-llc program.ll -o program.s                   # Assembly
-clang program.s -o program                    # Executable
+silu build program.si -o program   # one command: IR -> LLVM -> clang
 ./program
 ```
+
+(the step-by-step pipeline - `silu ir`, `silu llvm`, `llc`, `clang` -
+remains available for inspecting each stage)
 
 Type annotations drive the native representation: annotated `int` /
 `float` / `bool` scalars compile to unboxed machine values,
