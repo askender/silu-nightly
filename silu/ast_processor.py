@@ -39,6 +39,9 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         ast.LtE: "<=",
         ast.Gt: ">",
         ast.GtE: ">=",
+        # Membership operators
+        ast.In: "in",
+        ast.NotIn: "not in",
         # Boolean operators
         ast.And: "and",
         ast.Or: "or",
@@ -381,6 +384,13 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         obj = self.visit(node.value)
         index = self.visit(node.slice)
         return self.process_subscript(obj, index)
+
+    def visit_Slice(self, node: ast.Slice) -> Any:
+        """Handle slice bounds (lower:upper:step)."""
+        lower = self.visit(node.lower) if node.lower else None
+        upper = self.visit(node.upper) if node.upper else None
+        step = self.visit(node.step) if node.step else None
+        return slice(lower, upper, step)
 
     def visit_Tuple(self, node: ast.Tuple) -> Any:
         """Handle tuple literals."""

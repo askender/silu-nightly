@@ -384,6 +384,9 @@ class TypedCodegen(SiluToLLVMConverter):
             return gv
 
         key_error_msg = panic_string(b"KeyError: key not found\n\0", "str_keyerr")
+        str_index_error_msg = panic_string(
+            b"IndexError: string index out of range\n\0", "str_idxerr"
+        )
 
         # void rawdict_reindex(i8* d, i64 new_size)
         # Rebuilds the index table at new_size and compacts the entries
@@ -1074,6 +1077,244 @@ class TypedCodegen(SiluToLLVMConverter):
         # equal prefixes: the shorter string sorts first
         length_diff = builder.sub(a_len, b_len)
         builder.ret(builder.select(is_equal, length_diff, memcmp_i64))
+
+        # i8* rawstr_char_at(i8* s, i64 index) - s[i] as a 1-byte rawstr.
+        # Byte semantics: for ASCII this equals Python's code-point
+        # indexing; negative indices adjust by the byte length.
+        self.rawstr_char_at = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p, i64]), name="rawstr_char_at"
+        )
+        entry = self.rawstr_char_at.append_basic_block("entry")
+        ok_block = self.rawstr_char_at.append_basic_block("ok")
+        err_block = self.rawstr_char_at.append_basic_block("index_error")
+        builder = ir.IRBuilder(entry)
+        s_arg, index_arg = self.rawstr_char_at.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = load_len(builder, s_struct)
+        is_neg = builder.icmp_signed("<", index_arg, zero64)
+        index_eff = builder.select(is_neg, builder.add(index_arg, s_len), index_arg)
+        below = builder.icmp_signed(">=", index_eff, zero64)
+        above = builder.icmp_signed("<", index_eff, s_len)
+        builder.cbranch(builder.and_(below, above), ok_block, err_block)
+
+        builder.position_at_end(err_block)
+        msg_ptr = builder.gep(str_index_error_msg, [zero32, zero32])
+        builder.call(self.printf, [msg_ptr])
+        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.unreachable()
+
+        builder.position_at_end(ok_block)
+        s_data = load_data(builder, s_struct)
+        byte_ptr = builder.gep(s_data, [index_eff])
+        char_buf = builder.call(self.malloc, [one64])
+        builder.store(builder.load(byte_ptr), char_buf)
+        char_struct = build_rawstr(one64, one64, char_buf)
+        builder.ret(builder.bitcast(char_struct, i8p))
+
+        # i8* rawstr_slice(i8* s, i64 lo, i64 hi) - s[lo:hi] with Python's
+        # clamping (negative bounds adjust, out-of-range clamps, an
+        # inverted range yields the empty string)
+        self.rawstr_slice = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p, i64, i64]),
+            name="rawstr_slice",
+        )
+        builder = ir.IRBuilder(self.rawstr_slice.append_basic_block("entry"))
+        s_arg, lo_arg, hi_arg = self.rawstr_slice.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = load_len(builder, s_struct)
+        s_data = load_data(builder, s_struct)
+
+        def clamp_bound(b, bound):
+            adjusted = b.select(
+                b.icmp_signed("<", bound, zero64), b.add(bound, s_len), bound
+            )
+            floored = b.select(
+                b.icmp_signed("<", adjusted, zero64), zero64, adjusted
+            )
+            return b.select(b.icmp_signed(">", floored, s_len), s_len, floored)
+
+        lo_eff = clamp_bound(builder, lo_arg)
+        hi_eff = clamp_bound(builder, hi_arg)
+        span = builder.sub(hi_eff, lo_eff)
+        out_len = builder.select(
+            builder.icmp_signed(">", span, zero64), span, zero64
+        )
+        # malloc(0) may return null; keep the buffer valid for memcpy
+        alloc_len = builder.select(
+            builder.icmp_signed(">", out_len, zero64), out_len, one64
+        )
+        out_buf = builder.call(self.malloc, [alloc_len])
+        builder.call(
+            self.memcpy,
+            [
+                out_buf,
+                builder.gep(s_data, [lo_eff]),
+                out_len,
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        slice_struct = build_rawstr(out_len, out_len, out_buf)
+        builder.ret(builder.bitcast(slice_struct, i8p))
+
+        # i1 rawstr_contains(i8* haystack, i8* needle) - substring scan;
+        # the empty needle is contained (Python: "" in s is True)
+        self.rawstr_contains = ir.Function(
+            self.module, ir.FunctionType(ir.IntType(1), [i8p, i8p]),
+            name="rawstr_contains",
+        )
+        entry = self.rawstr_contains.append_basic_block("entry")
+        len_check = self.rawstr_contains.append_basic_block("len_check")
+        scan_cond = self.rawstr_contains.append_basic_block("contains_cond")
+        scan_body = self.rawstr_contains.append_basic_block("contains_body")
+        scan_step = self.rawstr_contains.append_basic_block("contains_step")
+        hit_block = self.rawstr_contains.append_basic_block("contains_hit")
+        miss_block = self.rawstr_contains.append_basic_block("contains_miss")
+        builder = ir.IRBuilder(entry)
+        hay_arg, needle_arg = self.rawstr_contains.args
+        hay_struct = builder.bitcast(hay_arg, ir.PointerType(self.rawstr_struct_type))
+        needle_struct = builder.bitcast(
+            needle_arg, ir.PointerType(self.rawstr_struct_type)
+        )
+        hay_len = load_len(builder, hay_struct)
+        needle_len = load_len(builder, needle_struct)
+        hay_data = load_data(builder, hay_struct)
+        needle_data = load_data(builder, needle_struct)
+        scan_idx_ptr = builder.alloca(i64, name="rsc_i")
+        builder.store(zero64, scan_idx_ptr)
+        needle_empty = builder.icmp_signed("==", needle_len, zero64)
+        builder.cbranch(needle_empty, hit_block, len_check)
+
+        builder.position_at_end(len_check)
+        too_long = builder.icmp_signed(">", needle_len, hay_len)
+        builder.cbranch(too_long, miss_block, scan_cond)
+
+        builder.position_at_end(scan_cond)
+        # i scans 0..hay_len-needle_len inclusive, so the limit is a
+        # strict-less-than against last_start+1
+        idx = builder.load(scan_idx_ptr)
+        last_start = builder.sub(hay_len, needle_len)
+        keep_going = builder.icmp_signed("<=", idx, last_start)
+        builder.cbranch(keep_going, scan_body, miss_block)
+
+        builder.position_at_end(scan_body)
+        same = builder.icmp_signed(
+            "==",
+            builder.call(
+                self.memcmp,
+                [builder.gep(hay_data, [idx]), needle_data, needle_len],
+            ),
+            ir.Constant(ir.IntType(32), 0),
+        )
+        builder.cbranch(same, hit_block, scan_step)
+
+        builder.position_at_end(scan_step)
+        builder.store(builder.add(idx, one64), scan_idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(hit_block)
+        builder.ret(ir.Constant(ir.IntType(1), 1))
+
+        builder.position_at_end(miss_block)
+        builder.ret(ir.Constant(ir.IntType(1), 0))
+
+        # i1 rawdict_has(i8* d, i64 key) - probe without the KeyError panic
+        self.rawdict_has = ir.Function(
+            self.module, ir.FunctionType(ir.IntType(1), [i8p, i64]),
+            name="rawdict_has",
+        )
+        entry = self.rawdict_has.append_basic_block("entry")
+        probe_test = self.rawdict_has.append_basic_block("probe_test")
+        tomb_or_match = self.rawdict_has.append_basic_block("probe_tomb")
+        match_check = self.rawdict_has.append_basic_block("probe_match")
+        has_found = self.rawdict_has.append_basic_block("found")
+        probe_step = self.rawdict_has.append_basic_block("probe_step")
+        has_missing = self.rawdict_has.append_basic_block("missing")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg = self.rawdict_has.args
+        struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
+        mask = builder.load(dfield(builder, struct_ptr, 3))
+        slot_ptr = builder.alloca(i64, name="rdh_slot")
+        builder.store(builder.and_(key_arg, mask), slot_ptr)
+        builder.branch(probe_test)
+
+        builder.position_at_end(probe_test)
+        table_now = builder.load(dfield(builder, struct_ptr, 4))
+        slot_now = builder.load(slot_ptr)
+        slot_entry = builder.load(builder.gep(table_now, [slot_now]))
+        is_empty = builder.icmp_signed("==", slot_entry, zero64)
+        builder.cbranch(is_empty, has_missing, tomb_or_match)
+
+        builder.position_at_end(tomb_or_match)
+        is_tomb = builder.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
+        builder.cbranch(is_tomb, probe_step, match_check)
+
+        builder.position_at_end(match_check)
+        entry_index = builder.sub(slot_entry, one64)
+        keys_now = builder.load(dfield(builder, struct_ptr, 5))
+        stored_key = builder.load(builder.gep(keys_now, [entry_index]))
+        is_match = builder.icmp_signed("==", stored_key, key_arg)
+        builder.cbranch(is_match, has_found, probe_step)
+
+        builder.position_at_end(has_found)
+        builder.ret(ir.Constant(ir.IntType(1), 1))
+
+        builder.position_at_end(probe_step)
+        mask_step = builder.load(dfield(builder, struct_ptr, 3))
+        builder.store(
+            builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
+        )
+        builder.branch(probe_test)
+
+        builder.position_at_end(has_missing)
+        builder.ret(ir.Constant(ir.IntType(1), 0))
+
+        # i1 rawlist_contains_bits(i8* list, i64 elem_bits) - linear scan
+        # over the machine-word elements (f64 elements compare as bits)
+        self.rawlist_contains_bits = ir.Function(
+            self.module, ir.FunctionType(ir.IntType(1), [i8p, i64]),
+            name="rawlist_contains_bits",
+        )
+        entry = self.rawlist_contains_bits.append_basic_block("entry")
+        scan_cond = self.rawlist_contains_bits.append_basic_block("scan_cond")
+        scan_body = self.rawlist_contains_bits.append_basic_block("scan_body")
+        scan_step = self.rawlist_contains_bits.append_basic_block("scan_step")
+        found_block = self.rawlist_contains_bits.append_basic_block("found")
+        miss_block = self.rawlist_contains_bits.append_basic_block("miss")
+        builder = ir.IRBuilder(entry)
+        list_arg, bits_arg = self.rawlist_contains_bits.args
+        list_struct = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        list_len = builder.load(
+            builder.gep(list_struct, [zero32, ir.Constant(i32, 0)])
+        )
+        items = builder.bitcast(
+            builder.load(builder.gep(list_struct, [zero32, ir.Constant(i32, 2)])),
+            ir.PointerType(i64),
+        )
+        idx_ptr = builder.alloca(i64, name="rlc_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_cond)
+        idx = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", idx, list_len)
+        builder.cbranch(more, scan_body, miss_block)
+
+        builder.position_at_end(scan_body)
+        elem = builder.load(builder.gep(items, [idx]))
+        is_match = builder.icmp_signed("==", elem, bits_arg)
+        builder.cbranch(is_match, found_block, scan_step)
+
+        builder.position_at_end(scan_step)
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(found_block)
+        builder.ret(ir.Constant(ir.IntType(1), 1))
+
+        builder.position_at_end(miss_block)
+        builder.ret(ir.Constant(ir.IntType(1), 0))
 
         # PyObject* rawstr_to_pystr(i8* s) - boundary box (data copied)
         self.rawstr_to_pystr = ir.Function(
@@ -1779,6 +2020,44 @@ class TypedCodegen(SiluToLLVMConverter):
             return (I1, self.current_builder.fcmp_ordered(op, l_val, r_val))
         return (I1, self.current_builder.icmp_signed(op, l_val, r_val))
 
+    def _typed_contains(self, op: str, item_node: Any, container_node: Any):
+        """item in container: native scans for raw containers, boxed
+        pyobj_contains for everything else. Result is always i1."""
+        container_tv = self._convert_node(container_node)
+        if container_tv[0] == RAWSTR:
+            needle = self._coerce(self._convert_node(item_node), RAWSTR)
+            result = self.current_builder.call(
+                self.rawstr_contains, [container_tv[1], needle[1]]
+            )
+        elif container_tv[0] in RAWDICT_KINDS:
+            key = self._coerce(self._convert_node(item_node), I64)[1]
+            result = self.current_builder.call(
+                self.rawdict_has, [container_tv[1], key]
+            )
+        elif container_tv[0] in RAWLIST_KINDS:
+            elem_kind = RAWLIST_KINDS[container_tv[0]]
+            elem = self._coerce(self._convert_node(item_node), elem_kind)
+            elem_bits = elem[1]
+            if elem_kind == F64:
+                # bit-compare: a same-payload NaN matches (CPython's
+                # identity shortcut agrees); distinct NaNs compare equal
+                # here where CPython would say False
+                elem_bits = self.current_builder.bitcast(
+                    elem[1], ir.IntType(64)
+                )
+            result = self.current_builder.call(
+                self.rawlist_contains_bits, [container_tv[1], elem_bits]
+            )
+        else:
+            container = self._box(container_tv)
+            item = self._box(self._convert_node(item_node))
+            result = self.current_builder.call(
+                self.pyobj_contains, [container, item]
+            )
+        if op == "not in":
+            result = self.current_builder.not_(result)
+        return (I1, result)
+
     # ================== declarations ==================
 
     def _annotation_kind(self, node: Any) -> Optional[str]:
@@ -1916,7 +2195,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 if op == "/":
                     return F64  # truediv always rebinds to float
                 return F64 if F64 in (left, right) else I64
-            if op in ("==", "!=", "<", "<=", ">", ">=", "not"):
+            if op in ("==", "!=", "<", "<=", ">", ">=", "not", "in", "not in"):
                 return I1  # comparisons produce a bool whatever the operands
             if op in ("and", "or") and len(node) >= 3:
                 left, right = resolve(node[1]), resolve(node[2])
@@ -1939,6 +2218,8 @@ class TypedCodegen(SiluToLLVMConverter):
                     return I64
                 if base_kind == RAWLIST_F:
                     return F64
+                if base_kind == RAWSTR:
+                    return RAWSTR  # s[i] / s[a:b] both yield str
             return None
 
         def add(name: str, kind: Optional[str]):
@@ -1991,6 +2272,8 @@ class TypedCodegen(SiluToLLVMConverter):
                             iter_kind = I64
                         elif resolved == RAWLIST_F:
                             iter_kind = F64
+                        elif resolved == RAWSTR:
+                            iter_kind = RAWSTR  # for ch in s: 1-byte str
                     # the IR spells assign targets as bare names but for
                     # targets as name nodes; accept both
                     if isinstance(stmt[1], str):
@@ -2611,6 +2894,9 @@ class TypedCodegen(SiluToLLVMConverter):
             right = self._convert_node(node[2])
             return self._typed_compare(op, left, right)
 
+        if op in ("in", "not in") and len(node) >= 3:
+            return self._typed_contains(op, node[1], node[2])
+
         if op == "not":
             operand = self._convert_node(node[1])
             cond = self._to_i1_cond(operand)
@@ -2868,6 +3154,102 @@ class TypedCodegen(SiluToLLVMConverter):
                             val_bits, ir.DoubleType()
                         )
                     return (value_kind, val_bits)
+                if obj_tv[0] == RAWSTR:
+                    key_node = node[2]
+                    if (
+                        isinstance(key_node, list)
+                        and len(key_node) >= 4
+                        and key_node[0] == "slice"
+                    ):
+                        lower_node, upper_node, step_node = (
+                            key_node[1],
+                            key_node[2],
+                            key_node[3],
+                        )
+                        if step_node is not None:
+                            is_one = (
+                                isinstance(step_node, list)
+                                and len(step_node) >= 2
+                                and step_node[0] == "const"
+                                and step_node[1] == 1
+                            )
+                            if not is_one:
+                                # stepped str slices: box the string and
+                                # use the PyObject slice helper (it owns
+                                # both step directions and the bounds
+                                # defaults)
+                                i64t = ir.IntType(64)
+                                has_lo = ir.Constant(
+                                    ir.IntType(1), lower_node is not None
+                                )
+                                has_hi = ir.Constant(
+                                    ir.IntType(1), upper_node is not None
+                                )
+                                lo = (
+                                    ir.Constant(i64t, 0)
+                                    if lower_node is None
+                                    else self._coerce(
+                                        self._convert_node(lower_node), I64
+                                    )[1]
+                                )
+                                hi = (
+                                    ir.Constant(i64t, 0)
+                                    if upper_node is None
+                                    else self._coerce(
+                                        self._convert_node(upper_node), I64
+                                    )[1]
+                                )
+                                step = self._coerce(
+                                    self._convert_node(step_node), I64
+                                )[1]
+                                boxed = self._box(obj_tv)
+                                return (
+                                    OBJ,
+                                    self.current_builder.call(
+                                        self.pyobj_str_slice,
+                                        [boxed, lo, hi, step, has_lo, has_hi],
+                                    ),
+                                )
+                        struct_ptr = self.current_builder.bitcast(
+                            obj_tv[1],
+                            ir.PointerType(self.rawstr_struct_type),
+                        )
+                        str_len = self.current_builder.load(
+                            self.current_builder.gep(
+                                struct_ptr,
+                                [
+                                    ir.Constant(ir.IntType(32), 0),
+                                    ir.Constant(ir.IntType(32), 0),
+                                ],
+                            )
+                        )
+                        lo = (
+                            ir.Constant(ir.IntType(64), 0)
+                            if lower_node is None
+                            else self._coerce(
+                                self._convert_node(lower_node), I64
+                            )[1]
+                        )
+                        hi = (
+                            str_len
+                            if upper_node is None
+                            else self._coerce(
+                                self._convert_node(upper_node), I64
+                            )[1]
+                        )
+                        return (
+                            RAWSTR,
+                            self.current_builder.call(
+                                self.rawstr_slice, [obj_tv[1], lo, hi]
+                            ),
+                        )
+                    index = self._coerce(key_tv, I64)[1]
+                    return (
+                        RAWSTR,
+                        self.current_builder.call(
+                            self.rawstr_char_at, [obj_tv[1], index]
+                        ),
+                    )
                 obj = self._box(obj_tv)
                 key = self._box(key_tv)
                 return (
@@ -3198,6 +3580,75 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_builder.position_at_end(end_block)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
+    def _convert_rawstr_for_loop(
+        self, target_node: Any, str_tv: Tuple[str, Any], body_stmts: list
+    ) -> Tuple[str, Any]:
+        """for ch in raw_str: ch is a fresh 1-byte rawstr per iteration
+        (byte semantics - ASCII equals Python's code-point iteration)."""
+        i64 = ir.IntType(64)
+        str_ptr = str_tv[1]
+
+        cond_block = self.current_function.append_basic_block("siter_cond")
+        body_block = self.current_function.append_basic_block("siter_body")
+        incr_block = self.current_function.append_basic_block("siter_incr")
+        end_block = self.current_function.append_basic_block("siter_end")
+
+        counter_ptr = self.current_builder.alloca(i64, name="siter_idx")
+        self.current_builder.store(ir.Constant(i64, 0), counter_ptr)
+        struct_ptr = self.current_builder.bitcast(
+            str_ptr, ir.PointerType(self.rawstr_struct_type)
+        )
+        str_len = self.current_builder.load(
+            self.current_builder.gep(
+                struct_ptr,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            )
+        )
+        self.current_builder.branch(cond_block)
+
+        self.current_builder.position_at_end(cond_block)
+        index = self.current_builder.load(counter_ptr)
+        more = self.current_builder.icmp_signed("<", index, str_len)
+        self.current_builder.cbranch(more, body_block, end_block)
+
+        self.loop_break_blocks.append(end_block)
+        self.loop_continue_blocks.append(incr_block)
+
+        self.current_builder.position_at_end(body_block)
+        if (
+            isinstance(target_node, list)
+            and len(target_node) >= 2
+            and target_node[0] == "name"
+        ):
+            var_name = target_node[1]
+            ch = self.current_builder.call(
+                self.rawstr_char_at, [str_ptr, index]
+            )
+            self._declare_var(var_name, RAWSTR)
+            self.current_builder.store(ch, self.variables[var_name])
+
+        for stmt in body_stmts:
+            self._convert_node(stmt)
+            if self.current_builder.block.is_terminated:
+                break
+
+        if not self.current_builder.block.is_terminated:
+            self.current_builder.branch(incr_block)
+        self.loop_break_blocks.pop()
+        self.loop_continue_blocks.pop()
+
+        self.current_builder.position_at_end(incr_block)
+        self.current_builder.store(
+            self.current_builder.add(
+                self.current_builder.load(counter_ptr), ir.Constant(i64, 1)
+            ),
+            counter_ptr,
+        )
+        self.current_builder.branch(cond_block)
+
+        self.current_builder.position_at_end(end_block)
+        return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
     def _build_raw_list(self, element_nodes: list, kind: str) -> Tuple[str, Any]:
         """[a, b, c] literal stored into a rawlist-typed variable."""
         i8p = ir.PointerType(ir.IntType(8))
@@ -3222,6 +3673,8 @@ class TypedCodegen(SiluToLLVMConverter):
         iter_tv = self._convert_node(iter_node)
         if iter_tv[0] in RAWLIST_KINDS:
             return self._convert_rawlist_for_loop(target_node, iter_tv, body_stmts)
+        if iter_tv[0] == RAWSTR:
+            return self._convert_rawstr_for_loop(target_node, iter_tv, body_stmts)
         list_obj = self._box(iter_tv)
         if list_obj is None:
             return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))

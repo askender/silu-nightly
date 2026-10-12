@@ -518,6 +518,105 @@ class TestRawStr:
         )
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
+    def test_rawstr_index_is_native(self):
+        """s[i] reads one byte in place; the old path panicked with
+        'object is not subscriptable' after boxing."""
+        source = (
+            's: str = "hello"\n'
+            "a: str = s[1]\nb: str = s[-1]\n"
+            "print(a, b, len(a))\n"
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i8* @"rawstr_char_at"' in main
+        assert 'call {i32, i8*}* @"pyobj_subscript"' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_rawstr_slice_is_native(self):
+        """s[lo:hi] clamps bounds Python-style without boxing."""
+        source = (
+            's: str = "hello world"\n'
+            "print(s[0:5], s[6:], s[:5], s[-5:], s[3:2])\n"
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i8* @"rawstr_slice"' in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_rawstr_stepped_slice_falls_back(self):
+        """s[::2] / s[::-1] go through the boxed slice helper and keep
+        Python semantics (both step directions)."""
+        source = (
+            's: str = "hello world"\n'
+            "print(s[::2], s[::-1], s[4:0:-1])\n"
+        )
+        llvm_ir = _convert(source)
+
+        assert 'call {i32, i8*}* @"pyobj_str_slice"' in _main_body(llvm_ir)
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_rawstr_contains(self):
+        """sub in s scans bytes; the empty needle is always contained."""
+        source = (
+            's: str = "hello world"\n'
+            'print("wor" in s, "xyz" in s, "xyz" not in s)\n'
+            'print("" in s, "hello world!" not in s)\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i1 @"rawstr_contains"' in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_rawstr_for_loop(self):
+        """for ch in s iterates bytes natively; the loop variable is a
+        1-byte rawstr and never touches the PyObject runtime."""
+        source = (
+            's: str = "hello"\n'
+            "count: int = 0\n"
+            "for ch in s:\n"
+            '    if ch == "l":\n'
+            "        count += 1\n"
+            "print(count)\n"
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i8* @"rawstr_char_at"' in main
+        assert 'call {i32, i8*}* @"list_length"' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_contains_rawdict_and_rawlist(self):
+        """k in d probes the index table; x in l scans elements - both
+        without boxing the container."""
+        source = (
+            "d: dict[int, int] = {1: 10, 2: 20}\n"
+            "print(1 in d, 3 in d, 3 not in d)\n"
+            "l: list[int] = [5, 6, 7]\n"
+            "print(6 in l, 9 in l)\n"
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i1 @"rawdict_has"' in main
+        assert 'call i1 @"rawlist_contains_bits"' in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_contains_dynamic_fallback(self):
+        """Unannotated containers route to pyobj_contains."""
+        source = (
+            'd = {1: "a"}\nprint(1 in d, 2 in d)\n'
+            'l = ["x", "y"]\nprint("x" in l, "z" in l)\n'
+            's = "abc"\nprint("b" in s)\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i1 @"pyobj_contains"' in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
     def test_str_function_boundary(self):
         """rawstr params are copied at the call boundary and rawstr
         returns are copied at return, so callees cannot alias callers."""

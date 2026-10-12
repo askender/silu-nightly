@@ -1141,6 +1141,35 @@ class SiluToLLVMConverter:
         struct_ptr = self._load_list_struct(builder, self.list_length.args[0])
         builder.ret(builder.load(builder.gep(struct_ptr, [zero32, zero32])))
 
+        # i64 pyobj_iter_len(PyObject* obj) - length for `for` iteration:
+        # strings read the str struct, everything else the list struct
+        self.pyobj_iter_len = ir.Function(
+            self.module, ir.FunctionType(i64, [pyobj_ptr]), name="pyobj_iter_len"
+        )
+        entry = self.pyobj_iter_len.append_basic_block("entry")
+        str_block = self.pyobj_iter_len.append_basic_block("str_len_case")
+        list_block = self.pyobj_iter_len.append_basic_block("list_len_case")
+        builder = ir.IRBuilder(entry)
+        (iter_obj,) = self.pyobj_iter_len.args
+        iter_tag = builder.load(builder.gep(iter_obj, [zero32, zero32]))
+        is_str = builder.icmp_signed("==", iter_tag, ir.Constant(i32, 2))
+        builder.cbranch(is_str, str_block, list_block)
+
+        builder.position_at_end(str_block)
+        str_struct = builder.bitcast(
+            builder.load(builder.gep(iter_obj, [zero32, one32])),
+            ir.PointerType(self.pyobj.string_type),
+        )
+        builder.ret(
+            builder.sext(
+                builder.load(builder.gep(str_struct, [zero32, zero32])), i64
+            )
+        )
+
+        builder.position_at_end(list_block)
+        iter_list_ptr = self._load_list_struct(builder, iter_obj)
+        builder.ret(builder.load(builder.gep(iter_list_ptr, [zero32, zero32])))
+
         # PyObject* list_get(PyObject* list, PyObject* index)
         self.list_get = ir.Function(
             self.module,
@@ -2242,6 +2271,95 @@ class SiluToLLVMConverter:
         builder.position_at_end(missing_block)
         builder.ret(pyobj_null)
 
+        # i1 pyobj_contains(PyObject* container, PyObject* item)
+        # Membership test for `in` / `not in`: dict keys via probe,
+        # str substring via str_find, list elements via pyobj_eq scan.
+        self.pyobj_contains = ir.Function(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr]),
+            name="pyobj_contains",
+        )
+        entry = self.pyobj_contains.append_basic_block("entry")
+        str_check_block = self.pyobj_contains.append_basic_block("str_check")
+        list_check_block = self.pyobj_contains.append_basic_block("list_check")
+        dict_case = self.pyobj_contains.append_basic_block("dict_case")
+        str_case = self.pyobj_contains.append_basic_block("str_case")
+        list_case = self.pyobj_contains.append_basic_block("list_case")
+        list_cond = self.pyobj_contains.append_basic_block("contains_cond")
+        list_body = self.pyobj_contains.append_basic_block("contains_body")
+        list_hit = self.pyobj_contains.append_basic_block("contains_hit")
+        list_step = self.pyobj_contains.append_basic_block("contains_step")
+        list_miss = self.pyobj_contains.append_basic_block("contains_miss")
+        type_error = self.pyobj_contains.append_basic_block("type_error")
+        builder = ir.IRBuilder(entry)
+        container_arg, item_arg = self.pyobj_contains.args
+        container_tag = builder.load(
+            builder.gep(container_arg, [zero32, zero32])
+        )
+        is_dict = builder.icmp_signed("==", container_tag, ir.Constant(i32, 5))
+        builder.cbranch(is_dict, dict_case, str_check_block)
+
+        builder.position_at_end(str_check_block)
+        is_str = builder.icmp_signed("==", container_tag, ir.Constant(i32, 2))
+        builder.cbranch(is_str, str_case, list_check_block)
+
+        builder.position_at_end(list_check_block)
+        is_list = builder.icmp_signed("==", container_tag, ir.Constant(i32, 4))
+        builder.cbranch(is_list, list_case, type_error)
+
+        builder.position_at_end(dict_case)
+        out_slot = builder.alloca(i64, name="contains_slot")
+        found = builder.call(
+            self.dict_find_probe, [container_arg, item_arg, out_slot]
+        )
+        builder.ret(builder.icmp_signed(">=", found, zero64))
+
+        builder.position_at_end(str_case)
+        found_pyobj = builder.call(self.str_find, [container_arg, item_arg])
+        found_idx = self._load_number_as_i64(builder, found_pyobj)
+        builder.ret(builder.icmp_signed(">=", found_idx, zero64))
+
+        builder.position_at_end(list_case)
+        list_ptr = builder.bitcast(
+            builder.load(builder.gep(container_arg, [zero32, one32])),
+            ir.PointerType(self.list_struct_type),
+        )
+        list_len = builder.load(builder.gep(list_ptr, [zero32, zero32]))
+        items = builder.load(builder.gep(list_ptr, [zero32, ir.Constant(i32, 2)]))
+        idx_ptr = builder.alloca(i64, name="contains_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(list_cond)
+
+        builder.position_at_end(list_cond)
+        idx = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", idx, list_len)
+        builder.cbranch(more, list_body, list_miss)
+
+        builder.position_at_end(list_body)
+        elem = builder.load(builder.gep(items, [idx]))
+        eq_pyobj = builder.call(self.pyobj_eq, [elem, item_arg])
+        eq_val = self._load_number_as_i64(builder, eq_pyobj)
+        is_eq = builder.icmp_signed("!=", eq_val, zero64)
+        builder.cbranch(is_eq, list_hit, list_step)
+
+        builder.position_at_end(list_hit)
+        builder.ret(ir.Constant(ir.IntType(1), 1))
+
+        builder.position_at_end(list_step)
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(list_cond)
+
+        builder.position_at_end(list_miss)
+        builder.ret(ir.Constant(ir.IntType(1), 0))
+
+        builder.position_at_end(type_error)
+        err_msg = self._create_global_string_with_builder(
+            "TypeError: argument of type is not iterable\n", builder
+        )
+        builder.call(self.printf, [err_msg])
+        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.unreachable()
+
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
             self.module,
@@ -2384,6 +2502,173 @@ class SiluToLLVMConverter:
         builder.position_at_end(loop_done)
         builder.ret_void()
 
+        # PyObject* pyobj_str_char_at(PyObject* s, PyObject* index)
+        # s[i] on a boxed str: 1-byte string, negative indices adjust,
+        # out-of-range panics IndexError (byte semantics, ASCII-exact)
+        self.pyobj_str_char_at = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
+            name="pyobj_str_char_at",
+        )
+        entry = self.pyobj_str_char_at.append_basic_block("entry")
+        ok_block = self.pyobj_str_char_at.append_basic_block("ok")
+        err_block = self.pyobj_str_char_at.append_basic_block("index_error")
+        builder = ir.IRBuilder(entry)
+        s_arg, index_arg = self.pyobj_str_char_at.args
+        raw_index = self._load_number_as_i64(builder, index_arg)
+        str_struct = builder.bitcast(
+            builder.load(builder.gep(s_arg, [zero32, one32])),
+            ir.PointerType(self.pyobj.string_type),
+        )
+        s_len = builder.sext(
+            builder.load(builder.gep(str_struct, [zero32, zero32])), i64
+        )
+        is_neg = builder.icmp_signed("<", raw_index, zero64)
+        index_eff = builder.select(is_neg, builder.add(raw_index, s_len), raw_index)
+        in_range = builder.and_(
+            builder.icmp_signed(">=", index_eff, zero64),
+            builder.icmp_signed("<", index_eff, s_len),
+        )
+        builder.cbranch(in_range, ok_block, err_block)
+
+        builder.position_at_end(err_block)
+        idx_msg = self._create_global_string_with_builder(
+            "IndexError: string index out of range\n", builder
+        )
+        builder.call(self.printf, [idx_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        builder.position_at_end(ok_block)
+        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        char_buf = builder.call(self.malloc, [one64])
+        builder.store(
+            builder.load(builder.gep(chars, [index_eff])), char_buf
+        )
+        builder.ret(builder.call(self.create_str, [char_buf, one32]))
+
+        # PyObject* pyobj_str_slice(PyObject* s, i64 lo, i64 hi, i64 step,
+        #                           i1 has_lo, i1 has_hi)
+        # Python slice clamping in both directions; step == 0 panics.
+        self.pyobj_str_slice = ir.Function(
+            self.module,
+            ir.FunctionType(
+                pyobj_ptr, [pyobj_ptr, i64, i64, i64, ir.IntType(1), ir.IntType(1)]
+            ),
+            name="pyobj_str_slice",
+        )
+        entry = self.pyobj_str_slice.append_basic_block("entry")
+        step_ok = self.pyobj_str_slice.append_basic_block("step_ok")
+        zero_step = self.pyobj_str_slice.append_basic_block("zero_step")
+        copy_cond = self.pyobj_str_slice.append_basic_block("copy_cond")
+        copy_body = self.pyobj_str_slice.append_basic_block("copy_body")
+        copy_done = self.pyobj_str_slice.append_basic_block("copy_done")
+        builder = ir.IRBuilder(entry)
+        s_arg, lo_arg, hi_arg, step_arg, has_lo, has_hi = self.pyobj_str_slice.args
+        str_tag = builder.load(builder.gep(s_arg, [zero32, zero32]))
+        not_str = builder.icmp_signed("!=", str_tag, ir.Constant(i32, 2))
+        tag_error = self.pyobj_str_slice.append_basic_block("tag_error")
+        str_case = self.pyobj_str_slice.append_basic_block("str_case")
+        builder.cbranch(not_str, tag_error, str_case)
+
+        builder.position_at_end(tag_error)
+        tag_msg = self._create_global_string_with_builder(
+            "TypeError: only str slicing is supported\n", builder
+        )
+        builder.call(self.printf, [tag_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        builder.position_at_end(str_case)
+        str_struct = builder.bitcast(
+            builder.load(builder.gep(s_arg, [zero32, one32])),
+            ir.PointerType(self.pyobj.string_type),
+        )
+        s_len = builder.sext(
+            builder.load(builder.gep(str_struct, [zero32, zero32])), i64
+        )
+        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        step_zero = builder.icmp_signed("==", step_arg, zero64)
+        builder.cbranch(step_zero, zero_step, step_ok)
+
+        builder.position_at_end(zero_step)
+        step_msg = self._create_global_string_with_builder(
+            "ValueError: slice step cannot be zero\n", builder
+        )
+        builder.call(self.printf, [step_msg])
+        builder.call(self.exit_func, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        builder.position_at_end(step_ok)
+        neg_step = builder.icmp_signed("<", step_arg, zero64)
+        len_m1 = builder.sub(s_len, one64)
+
+        def clamp_bound(b, bound, has, default, floor, ceil):
+            adjusted = b.select(
+                b.icmp_signed("<", bound, zero64), b.add(bound, s_len), bound
+            )
+            picked = b.select(has, adjusted, default)
+            floored = b.select(b.icmp_signed("<", picked, floor), floor, picked)
+            return b.select(b.icmp_signed(">", floored, ceil), ceil, floored)
+
+        lo_eff = clamp_bound(
+            builder, lo_arg, has_lo,
+            builder.select(neg_step, len_m1, zero64),
+            zero64,
+            builder.select(neg_step, len_m1, s_len),
+        )
+        hi_eff = clamp_bound(
+            builder, hi_arg, has_hi,
+            builder.select(neg_step, ir.Constant(i64, -1), s_len),
+            builder.select(neg_step, ir.Constant(i64, -1), zero64),
+            builder.select(neg_step, len_m1, s_len),
+        )
+        # element count: forward span/step, backward span/(-step)
+        fwd_span = builder.sub(hi_eff, lo_eff)
+        fwd_count = builder.sdiv(builder.sub(fwd_span, one64), step_arg)
+        fwd = builder.select(
+            builder.icmp_signed(">", fwd_span, zero64),
+            builder.add(fwd_count, one64),
+            zero64,
+        )
+        neg_step_size = builder.sub(zero64, step_arg)
+        bwd_span = builder.sub(lo_eff, hi_eff)
+        bwd_count = builder.sdiv(builder.sub(bwd_span, one64), neg_step_size)
+        bwd = builder.select(
+            builder.icmp_signed(">", bwd_span, zero64),
+            builder.add(bwd_count, one64),
+            zero64,
+        )
+        count = builder.select(neg_step, bwd, fwd)
+        alloc_len = builder.select(
+            builder.icmp_signed(">", count, zero64), count, one64
+        )
+        out_buf = builder.call(self.malloc, [alloc_len])
+        idx_ptr = builder.alloca(i64, name="slice_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(copy_cond)
+
+        builder.position_at_end(copy_cond)
+        idx = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", idx, count)
+        builder.cbranch(more, copy_body, copy_done)
+
+        builder.position_at_end(copy_body)
+        src_index = builder.add(lo_eff, builder.mul(idx, step_arg))
+        builder.store(
+            builder.load(builder.gep(chars, [src_index])),
+            builder.gep(out_buf, [idx]),
+        )
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(copy_cond)
+
+        builder.position_at_end(copy_done)
+        builder.ret(
+            builder.call(
+                self.create_str, [out_buf, builder.trunc(count, i32)]
+            )
+        )
+
         # {i32,i8*}* pyobj_subscript(PyObject* obj, PyObject* key)
         # tag dispatch: 4 -> list_get, 5 -> dict_get_or(key, null)
         self.pyobj_subscript = ir.Function(
@@ -2393,6 +2678,8 @@ class SiluToLLVMConverter:
         )
         entry = self.pyobj_subscript.append_basic_block("entry")
         list_block = self.pyobj_subscript.append_basic_block("sub_list")
+        str_check = self.pyobj_subscript.append_basic_block("sub_str_check")
+        str_do = self.pyobj_subscript.append_basic_block("sub_str_do")
         dict_check = self.pyobj_subscript.append_basic_block("sub_dict_check")
         dict_do = self.pyobj_subscript.append_basic_block("sub_dict_do")
         error_block = self.pyobj_subscript.append_basic_block("sub_error")
@@ -2400,7 +2687,14 @@ class SiluToLLVMConverter:
         obj_arg, key_arg = self.pyobj_subscript.args
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
         is_list = builder.icmp_signed("==", tag, ir.Constant(i32, 4))
-        builder.cbranch(is_list, list_block, dict_check)
+        builder.cbranch(is_list, list_block, str_check)
+
+        builder.position_at_end(str_check)
+        is_str = builder.icmp_signed("==", tag, ir.Constant(i32, 2))
+        builder.cbranch(is_str, str_do, dict_check)
+
+        builder.position_at_end(str_do)
+        builder.ret(builder.call(self.pyobj_str_char_at, [obj_arg, key_arg]))
 
         builder.position_at_end(list_block)
         builder.ret(builder.call(self.list_get, [obj_arg, key_arg]))
@@ -3234,7 +3528,7 @@ class SiluToLLVMConverter:
         # Raw i64 index counter
         counter_ptr = builder.alloca(i64, name="iter_idx")
         builder.store(ir.Constant(i64, 0), counter_ptr)
-        list_len = builder.call(self.list_length, [list_obj])
+        list_len = builder.call(self.pyobj_iter_len, [list_obj])
         builder.branch(cond_block)
 
         builder.position_at_end(cond_block)
@@ -3257,7 +3551,8 @@ class SiluToLLVMConverter:
                     ir.PointerType(self.pyobj.pyobj_type), name=var_name
                 )
             item = builder.call(
-                self.list_get, [list_obj, builder.call(self.create_int, [index])]
+                self.pyobj_subscript,
+                [list_obj, builder.call(self.create_int, [index])],
             )
             builder.store(item, self.variables[var_name])
 
@@ -3497,6 +3792,20 @@ class SiluToLLVMConverter:
                 right = self._convert_node(node[2])
                 if left and right:
                     return self.current_builder.call(func, [left, right])
+            return None
+
+        elif op in ("in", "not in"):
+            # (in, item, container); result is always a bool PyObject
+            if len(node) >= 3:
+                item = self._convert_node(node[1])
+                container = self._convert_node(node[2])
+                if item and container:
+                    result = self.current_builder.call(
+                        self.pyobj_contains, [container, item]
+                    )
+                    if op == "not in":
+                        result = self.current_builder.not_(result)
+                    return self.current_builder.call(self.create_bool, [result])
             return None
 
         elif op == "call":
@@ -3962,9 +4271,54 @@ class SiluToLLVMConverter:
         elif op == "subscript":
             if len(node) >= 3:
                 obj_val = self._convert_node(node[1])
-                index_val = self._convert_node(node[2])
+                index_node = node[2]
+                if (
+                    isinstance(index_node, list)
+                    and len(index_node) >= 4
+                    and index_node[0] == "slice"
+                    and obj_val
+                ):
+                    # s[lo:hi:step]: missing bounds are resolved inside
+                    # the runtime helper (it owns the length)
+                    lower_node, upper_node, step_node = (
+                        index_node[1],
+                        index_node[2],
+                        index_node[3],
+                    )
+                    i64t = ir.IntType(64)
+                    has_lo = ir.Constant(ir.IntType(1), lower_node is not None)
+                    has_hi = ir.Constant(ir.IntType(1), upper_node is not None)
+                    lo = (
+                        self._load_number_as_i64(
+                            self.current_builder,
+                            self._convert_node(lower_node),
+                        )
+                        if lower_node is not None
+                        else ir.Constant(i64t, 0)
+                    )
+                    hi = (
+                        self._load_number_as_i64(
+                            self.current_builder,
+                            self._convert_node(upper_node),
+                        )
+                        if upper_node is not None
+                        else ir.Constant(i64t, 0)
+                    )
+                    step = (
+                        self._load_number_as_i64(
+                            self.current_builder,
+                            self._convert_node(step_node),
+                        )
+                        if step_node is not None
+                        else ir.Constant(i64t, 1)
+                    )
+                    return self.current_builder.call(
+                        self.pyobj_str_slice,
+                        [obj_val, lo, hi, step, has_lo, has_hi],
+                    )
+                index_val = self._convert_node(index_node)
                 if obj_val and index_val:
-                    # Runtime tag dispatch: list index vs dict key
+                    # Runtime tag dispatch: list index vs dict key vs str index
                     return self.current_builder.call(
                         self.pyobj_subscript, [obj_val, index_val]
                     )

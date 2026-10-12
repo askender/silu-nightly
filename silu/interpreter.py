@@ -279,6 +279,8 @@ class SiluInterpreter(BaseASTProcessor):
             "<=": lambda left, r: left <= r,
             ">": lambda left, r: left > r,
             ">=": lambda left, r: left >= r,
+            "in": lambda left, r: left in r,
+            "not in": lambda left, r: left not in r,
         }
 
         if len(operands) == 1:  # Unary

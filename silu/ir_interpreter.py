@@ -138,6 +138,8 @@ class IRInterpreter:
             "<=",
             ">",
             ">=",
+            "in",
+            "not in",
             "and",
             "or",
         }
@@ -1074,6 +1076,10 @@ class IRInterpreter:
             return left > right
         elif op == ">=":
             return left >= right
+        elif op == "in":
+            return left in right
+        elif op == "not in":
+            return left not in right
         elif op == "and":
             return left and right
         elif op == "or":
@@ -1165,6 +1171,13 @@ class IRInterpreter:
         obj_val = self.execute(obj)
         index_val = self.execute(index)
         return obj_val[index_val]
+
+    def _execute_slice(self, lower: Any, upper: Any, step: Any) -> slice:
+        """Execute slice bounds: lower:upper:step."""
+        lo = self.execute(lower) if lower is not None else None
+        hi = self.execute(upper) if upper is not None else None
+        st = self.execute(step) if step is not None else None
+        return slice(lo, hi, st)
 
     def _execute_subscript_assign(self, obj: Any, key: Any, value: Any) -> None:
         """Execute subscript assignment obj[key] = value."""
