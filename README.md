@@ -2,33 +2,46 @@
 
 **English** | [简体中文](README_zh.md)
 
-Silu (斯路) is a simple, AI-first programming language implemented in Python. It uses a Python-compatible syntax subset and is designed as a foundation for advanced AI reasoning capabilities: rigorous logical reasoning, symbolic execution, formal analysis, and native code generation.
+**Python syntax in, native binaries out.** Silu (斯路) takes a
+Python-compatible syntax subset and gives the same program three
+runtimes: a reference interpreter, a Z3-backed symbolic executor, and
+an LLVM compiler whose output runs at hand-written-Rust speed.
+
+| program | CPython | silu binary | Rust |
+|---|---|---|---|
+| n-body (50k steps) | 0.21s | 0.0065s | 0.0075s |
+| spectral-norm (n=300) | 0.29s | 0.0068s | 0.0056s |
+| string (48k concats) | 0.049s | 0.0032s | 0.0031s |
+| mandelbrot (80x24) | 0.044s | 0.0034s | 0.0033s |
+
+Across 11 benchmarks (including five Benchmarks Game classics) the
+compiled binaries average **~1.0x hand-written Rust, ~16x CPython,
+and ~600x the tree-walking interpreter** —
+[benchmarks/README.md](benchmarks/README.md) has the full table and
+methodology.
 
 ## Why Silu
 
-- **Python-compatible subset** — Silu reuses Python's parser, so most simple Python programs run unchanged. `silu check program.py` tells you exactly what is (and isn't) supported.
-- **One IR, many backends** — Every program lowers to a small tuple-based intermediate representation that can be interpreted directly, converted back to source, symbolically analyzed, or compiled to native code via LLVM.
-- **Symbolic execution built in** — Explore all execution paths of a function, generate path conditions with Z3, and produce concrete test inputs automatically.
-- **Beyond Silu source** — The same IR and symbolic-execution toolchain also accepts **C programs** (via pycparser), enabling path analysis and test-case generation for existing C code.
-
-## Vision & AI Roadmap
-
-Silu aims to become a platform for developing AI systems that can:
-
-- Combine rigorous logical reasoning with probabilistic reasoning
-- Achieve self-bootstrapping and self-correction
-- Conduct autonomous hypothesis testing and experimentation
-- Discover inconsistencies and drive curiosity-based learning
-
-Development stages:
-
-- **2025–2028**: Logic mastery (CFG, data flow, SMT verification)
-- **2028–2032**: Logic + probabilistic reasoning fusion
-- **2032–2036**: Self-bootstrapping and self-correction
-- **2036–2040**: Hypothesis-driven experimentation
-- **2040+**: Inconsistency detection and curiosity-driven knowledge creation
-
-See the [AI Development Plan](docs/plan.md) for the detailed roadmap and benchmarks.
+- **Rust-speed native compilation** — Type annotations drive unboxed
+  machine representations (`int`/`float`/`bool` scalars,
+  `list[int]`/`list[float]` arrays, `dict[int, int]`/`dict[int, float]`
+  hash maps, `str` as Rust-String-style owned buffers), and a
+  conservative inference gives unannotated code the same treatment
+  whenever it is provably safe. Python semantics are preserved
+  everywhere the proof does not reach.
+- **Symbolic execution built in** — Explore all execution paths of a
+  function, generate path conditions with Z3, and produce concrete
+  test inputs automatically. No other Python-subset compiler ships
+  this combination of speed and formal analysis.
+- **One IR, many backends** — Every program lowers to a small
+  tuple-based IR that can be interpreted, converted back to source,
+  symbolically analyzed, or compiled to native code via LLVM.
+- **Python-compatible subset** — Silu reuses Python's parser, so most
+  simple Python programs run unchanged. `silu check program.py` tells
+  you exactly what is (and isn't) supported.
+- **Beyond Silu source** — The same IR and symbolic-execution
+  toolchain also accepts **C programs** (via pycparser), enabling
+  path analysis and test-case generation for existing C code.
 
 ## Installation
 
@@ -89,7 +102,10 @@ print(greet("Silu Programming"))
 silu symbolic symbolic_demo.si
 ```
 
-For each function the executor reports every feasible path: its conditions, return value, and concrete test inputs that reach it. With Z3 installed, path constraints are solved exactly; without it, the executor still runs with graceful degradation.
+For each function the executor reports every feasible path: its
+conditions, return value, and concrete test inputs that reach it.
+With Z3 installed, path constraints are solved exactly; without it,
+the executor still runs with graceful degradation.
 
 ### Native Compilation
 
@@ -107,21 +123,20 @@ Type annotations drive the native representation: annotated `int` /
 `dict[int, int]` / `dict[int, float]` to a machine-word hash dict
 (open addressing with tombstones; `del d[k]` / `d.pop(k)` run
 natively and a load-factor rehash compacts deleted entries) and
-annotated `str` to Rust-String-style raw slots (assignment copies,
-append grows in place) — no PyObject boxing on those paths.
-Unannotated scalars get the same treatment when a conservative
-inference proves every assignment to a name produces one same type,
-and a two-pass signature analysis promotes whole functions: a
-parameter that is never rebound and receives one raw type at every
-call site arrives unboxed, and a return whose expressions all resolve
-to one raw type returns unboxed (conflicts keep the dynamic ABI, so
-Python rebinding semantics are preserved). Raw strings support
-`s[i]`, `s[a:b]` (stepped slices included), `sub in s` and
-`for ch in s` natively.
-Across 11 benchmark programs (including five Benchmarks Game
-classics) the compiled binaries average **1.1x hand-written Rust and
-~16x CPython**; see [benchmarks/README.md](benchmarks/README.md) for
-the full table and methodology.
+annotated `str` to Rust-String-style owned buffers (assignment
+copies, append grows in place, overwrite frees the old buffer) — no
+PyObject boxing on those paths. Unannotated scalars get the same
+treatment when a conservative inference proves every assignment to a
+name produces one same type, and a two-pass signature analysis
+promotes whole functions: a parameter that is never rebound and
+receives one raw type at every call site arrives unboxed, and a
+return whose expressions all resolve to one raw type returns unboxed
+(conflicts keep the dynamic ABI, so Python rebinding semantics are
+preserved). Strings follow Python's code point semantics throughout —
+`len`, `s[i]`, `s[a:b]` (stepped slices included), `sub in s` and
+`for ch in s` all run natively and agree with CPython on multi-byte
+text. `SILU_CHECKS=0` switches overflow and bounds panics to the
+Rust release profile for the last few percent in indexed inner loops.
 
 ### Analyzing C Programs (experimental)
 
@@ -137,12 +152,13 @@ This is currently used to analyze embedded/automotive-style state machines (see 
 
 ## Language Features
 
-- **Data types**: int, float, str, bool, bytes, list, dict
+- **Data types**: int, float, str (full code point semantics), bool, bytes, list, dict
 - **Control flow**: if/elif/else, while, for (with `range()`), match/case with full structural pattern matching (value, sequence, mapping, or, guard, capture, star patterns)
-- **Assignment**: simple, chained (`a = b = 1`), and tuple unpacking (`for key, value in d.items()`)
+- **Assignment**: simple, chained (`a = b = 1`), tuple unpacking (`for key, value in d.items()`), subscript delete (`del d[k]`)
+- **Operators**: arithmetic/comparison/bitwise, membership `in` / `not in` (strings, lists, dicts), string indexing and slicing with steps
 - **Functions**: user-defined functions, default arguments, and pure closures (read-only capture of the defining scope)
-- **Built-ins**: `print`, `type`, `isinstance`, type conversions, `len`, dictionary methods (`.keys()`, `.values()`, `.items()`)
-- **Safety**: built-in memory protection against runaway sequence multiplication and oversized `range()`/`extend()` operations
+- **Built-ins**: `print`, `type`, `isinstance`, type conversions, `len`, dict methods (`.keys()`, `.values()`, `.items()`, `.get()`, `.pop()`, `.setdefault()`, `.clear()`), list methods (`.append()`, `.pop()`, `.clear()`)
+- **Safety**: bounds/overflow/zero-division panics by default (Rust debug profile), optional release profile via `SILU_CHECKS=0`, plus memory protection against runaway sequence multiplication and oversized `range()`/`extend()` operations
 
 See the [Language Features guide](docs/language_features.md) for the complete syntax reference.
 
@@ -151,13 +167,15 @@ See the [Language Features guide](docs/language_features.md) for the complete sy
 ```
 silu/                    # The language implementation package
 ├── cli.py               # Unified command-line interface
-├── interpreter.py       # AST interpreter
+├── interpreter.py       # AST interpreter (reference semantics)
 ├── ir_generator.py      # AST → Silu IR
 ├── ir_interpreter.py    # Direct IR execution
 ├── ir_to_source.py      # IR → source (round-trip)
 ├── symbolic_executor.py # Symbolic execution engine (+ silu/symbolic/)
-└── silu_ir_to_llvm.py   # Silu IR → LLVM IR
-tests/                   # 340+ pytest tests
+├── typed_codegen.py     # Silu IR → LLVM IR (typed backend, main)
+└── silu_ir_to_llvm.py   # Silu IR → LLVM IR (dynamic base runtime)
+tests/                   # 630+ pytest tests
+benchmarks/              # 11-program suite vs CPython and Rust mirrors
 docs/                    # Technical documentation
 examples/                # Demo programs
 ir_generator_for_c.py    # C → Silu IR (pycparser-based)
@@ -173,6 +191,18 @@ ir_generator_for_c.py    # C → Silu IR (pycparser-based)
 - [LLVM IR Generation](docs/llvm_ir_generation.md) — native compilation via LLVM
 - [Interpreter Specification](docs/interpreter_spec.md) — core implementation details
 - [Development Guide](docs/development.md) — setup, testing, and contributing
+
+## Vision & AI Roadmap
+
+Silu's long-term bet is that rigorous logical reasoning and learned
+probabilistic reasoning belong in one language runtime. The concrete
+foundation is already in place — a control-flow-graph IR, an SMT-backed
+symbolic executor, and a native compiler whose output is trustworthy
+enough to verify against the reference interpreter. On top of that the
+roadmap layers probabilistic reasoning, self-correction, and
+hypothesis-driven experimentation; see the
+[AI Development Plan](docs/plan.md) for the staged milestones and how
+each stage reuses the verification toolchain below it.
 
 ## Development
 
