@@ -2404,6 +2404,78 @@ class SiluToLLVMConverter:
         )
         self._emit_panic(builder, err_msg)
 
+        # PyObject* pyobj_str_conv(PyObject* obj) - str(x) for scalars:
+        # int via %lld, float via float_repr (shortest round-trip),
+        # bool True/False, str identity, null/None the string "None".
+        self.pyobj_str_conv = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr]),
+            name="pyobj_str_conv",
+        )
+        entry = self.pyobj_str_conv.append_basic_block("entry")
+        float_case = self.pyobj_str_conv.append_basic_block("str_float")
+        bool_case = self.pyobj_str_conv.append_basic_block("str_bool")
+        str_case = self.pyobj_str_conv.append_basic_block("str_str")
+        fail_case = self.pyobj_str_conv.append_basic_block("str_fail")
+        builder = ir.IRBuilder(entry)
+        (strconv_arg,) = self.pyobj_str_conv.args
+        null_ptr = ir.Constant(pyobj_ptr, None)
+        is_null = builder.icmp_signed("==", strconv_arg, null_ptr)
+        null_block = self.pyobj_str_conv.append_basic_block("str_null")
+        dispatch_block = self.pyobj_str_conv.append_basic_block("dispatch")
+        builder.cbranch(is_null, null_block, dispatch_block)
+
+        builder.position_at_end(null_block)
+        none_ptr = self._create_global_string_with_builder("None", builder)
+        builder.ret(
+            builder.call(self.create_str, [none_ptr, ir.Constant(i32, 4)])
+        )
+
+        builder.position_at_end(dispatch_block)
+        str_tag = builder.load(builder.gep(strconv_arg, [zero32, zero32]))
+        switch = builder.switch(str_tag, fail_case)
+        switch.add_case(ir.Constant(i32, 0), entry_block := self.pyobj_str_conv.append_basic_block("str_int"))
+        switch.add_case(ir.Constant(i32, 1), float_case)
+        switch.add_case(ir.Constant(i32, 2), str_case)
+        switch.add_case(ir.Constant(i32, 3), bool_case)
+        switch.add_case(ir.Constant(i32, 6), null_block)
+
+        builder.position_at_end(entry_block)
+        int_val = self._load_number_as_i64(builder, strconv_arg)
+        int_buf = builder.call(self.malloc, [ir.Constant(i64, 24)])
+        int_fmt = self._create_global_string_with_builder("%lld", builder)
+        builder.call(self.snprintf, [int_buf, ir.Constant(i64, 24), int_fmt, int_val])
+        int_len = builder.trunc(
+            builder.call(self.strlen, [int_buf]), i32
+        )
+        builder.ret(builder.call(self.create_str, [int_buf, int_len]))
+
+        builder.position_at_end(float_case)
+        f64_val = self._load_number_as_f64(builder, strconv_arg)
+        fbuf = builder.call(self.float_repr, [f64_val])
+        flen = builder.trunc(builder.call(self.strlen, [fbuf]), i32)
+        builder.ret(builder.call(self.create_str, [fbuf, flen]))
+
+        builder.position_at_end(str_case)
+        builder.ret(strconv_arg)
+
+        builder.position_at_end(bool_case)
+        bool_val = self._load_number_as_i64(builder, strconv_arg)
+        is_true = builder.icmp_signed("!=", bool_val, zero64)
+        true_ptr = self._create_global_string_with_builder("True", builder)
+        false_ptr = self._create_global_string_with_builder("False", builder)
+        bool_ptr = builder.select(is_true, true_ptr, false_ptr)
+        bool_len = builder.select(
+            is_true, ir.Constant(i32, 4), ir.Constant(i32, 5)
+        )
+        builder.ret(builder.call(self.create_str, [bool_ptr, bool_len]))
+
+        builder.position_at_end(fail_case)
+        fail_msg = self._create_global_string_with_builder(
+            "TypeError: str() of this type is not supported", builder
+        )
+        self._emit_panic(builder, fail_msg)
+
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
             self.module,
@@ -3916,6 +3988,16 @@ class SiluToLLVMConverter:
                     # Add newline
                     newline_fmt = self._create_global_string("\n")
                     self.current_builder.call(self.printf, [newline_fmt])
+                    return None
+
+                elif func_name == "str":
+                    # scalar str() conversion: int/float/bool/str/None
+                    if len(args_node) == 1:
+                        arg_val = self._convert_node(args_node[0])
+                        if arg_val:
+                            return self.current_builder.call(
+                                self.pyobj_str_conv, [arg_val]
+                            )
                     return None
 
                 elif func_name == "len":

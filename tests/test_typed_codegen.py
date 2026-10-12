@@ -874,6 +874,23 @@ class TestCrossFunctionInference:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestStrConversion:
+    def test_str_of_scalars_matches_interpreter(self):
+        """str(x) works for int/float/bool/str and coerces into rawstr
+        context - it used to return None and crash the rawstr
+        conversion on concat."""
+        source = (
+            "x: int = 42\n"
+            's: str = "n" + str(x)\n'
+            "print(s)\n"
+            "print(str(1.5), str(True), str(False), str(None))\n"
+            'l: list[str] = []\n'
+            'l.append("a" + str(1))\n'
+            "print(l[0])\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestRawStrScopeDrops:
     def test_function_locals_and_params_dropped_at_exit(self):
         """A function's owned rawstr slots (params included) are freed

@@ -4752,6 +4752,19 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.current_builder.call(self.printf, [newline_fmt])
                 return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
+            if func_name == "str":
+                # scalar str() conversion; boxed path, the result coerces
+                # back to rawstr at the use site when annotated
+                if len(args_node) == 1:
+                    boxed = self._box(self._convert_node(args_node[0]))
+                    return (
+                        OBJ,
+                        self.current_builder.call(self.pyobj_str_conv, [boxed]),
+                    )
+                return (OBJ, ir.Constant(
+                    ir.PointerType(self.pyobj.pyobj_type), None
+                ))
+
             if func_name == "len":
                 if args_node:
                     arg_tv = self._convert_node(args_node[0])
