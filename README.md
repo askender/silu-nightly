@@ -96,6 +96,7 @@ print(greet("Silu Programming"))
 | `silu symbolic program.si` | Symbolic execution analysis |
 | `silu llvm program.ir.json --output program.ll` | Lower IR to LLVM IR |
 | `silu build program.si -o program` | One-command native executable |
+| `silu verify program.si` | Diff compiled output against the interpreter |
 
 ### Symbolic Execution
 

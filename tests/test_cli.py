@@ -98,6 +98,20 @@ def test_ir_mode_with_source_string_and_format(capsys):
             mock_generate.assert_called_once_with("x = 5", "json", record_types=True)
 
 
+def test_verify_mode_passes_for_matching_program(tmp_path):
+    """silu verify compiles and diffs against the interpreter."""
+    import shutil
+
+    if shutil.which("clang") is None:
+        pytest.skip("clang not available")
+
+    program = tmp_path / "ok.si"
+    program.write_text('x: int = 6\ny: int = 7\nprint(x * y)\n')
+
+    with patch.object(sys, "argv", ["silu", "verify", str(program)]):
+        main()  # must not raise SystemExit
+
+
 def test_runtime_panic_reports_source_line(tmp_path):
     """A runtime panic names the failing statement's source line."""
     import shutil

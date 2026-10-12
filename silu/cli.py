@@ -258,65 +258,109 @@ def run_llvm_ir_generator(
         sys.exit(1)
 
 
-def run_build(source_file: str, output_file: str = None, **kwargs) -> None:
-    """One-command native build: Silu source -> IR -> LLVM IR -> clang.
+def _compile_to_binary(source_file: str, out_path: str) -> None:
+    """Silu source -> IR -> LLVM IR -> clang executable.
 
     Honors SILU_CODEGEN (typed default / dynamic) and SILU_CHECKS the
-    same way the step-by-step pipeline does."""
+    same way the step-by-step pipeline does. Raises on any failure."""
     import json
     import shutil
     import subprocess
     import tempfile
 
     if not LLVM_AVAILABLE:
-        print(
-            "Error: native build not available. Please install llvmlite.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
+        raise RuntimeError("llvmlite is not installed")
     clang = shutil.which("clang")
     if clang is None:
-        print(
-            "Error: clang not found on PATH; it links the final executable.",
-            file=sys.stderr,
+        raise RuntimeError("clang not found on PATH")
+
+    with open(source_file, "r", encoding="utf-8") as handle:
+        source_code = handle.read()
+    tree = ast.parse(source_code)
+    ir_result = SiluIRGenerator().visit(tree)
+    ir_json = json.dumps(ir_result)
+
+    codegen_mode = os.environ.get("SILU_CODEGEN", "typed")
+    if codegen_mode == "dynamic":
+        converter = SiluToLLVMConverter()
+    else:
+        from silu.typed_codegen import TypedCodegen
+
+        converter = TypedCodegen()
+    llvm_ir = converter.convert(ir_json)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ll_path = os.path.join(tmpdir, "program.ll")
+        with open(ll_path, "w", encoding="utf-8") as handle:
+            handle.write(llvm_ir)
+        result = subprocess.run(
+            [clang, "-O2", ll_path, "-o", out_path],
+            capture_output=True,
+            text=True,
         )
-        sys.exit(1)
+        if result.returncode != 0:
+            raise RuntimeError(f"clang failed:\n{result.stderr}")
 
+
+def run_build(source_file: str, output_file: str = None, **kwargs) -> None:
+    """One-command native build: Silu source -> executable."""
     try:
-        with open(source_file, "r", encoding="utf-8") as handle:
-            source_code = handle.read()
-        tree = ast.parse(source_code)
-        ir_result = SiluIRGenerator().visit(tree)
-        ir_json = json.dumps(ir_result)
-
-        codegen_mode = os.environ.get("SILU_CODEGEN", "typed")
-        if codegen_mode == "dynamic":
-            converter = SiluToLLVMConverter()
-        else:
-            from silu.typed_codegen import TypedCodegen
-
-            converter = TypedCodegen()
-        llvm_ir = converter.convert(ir_json)
-
         out_path = output_file or os.path.splitext(os.path.basename(source_file))[0]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ll_path = os.path.join(tmpdir, "program.ll")
-            with open(ll_path, "w", encoding="utf-8") as handle:
-                handle.write(llvm_ir)
-            result = subprocess.run(
-                [clang, "-O2", ll_path, "-o", out_path],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                print(f"Error: clang failed:\n{result.stderr}", file=sys.stderr)
-                sys.exit(1)
+        _compile_to_binary(source_file, out_path)
         print(f"Built executable: {out_path}")
-
     except Exception as e:
         print(f"Error building {source_file}: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def run_verify(source_file: str, **kwargs) -> None:
+    """Differential verification: run the program under the reference
+    interpreter and as a compiled native binary, then diff the output.
+
+    The interpreter defines the language semantics, so any divergence
+    is a compiler bug. Exits 0 on match, 1 on mismatch."""
+    import subprocess
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            binary = os.path.join(tmpdir, "verify_bin")
+            _compile_to_binary(source_file, binary)
+            compiled = subprocess.run(
+                [binary], capture_output=True, text=True, timeout=300
+            )
+        interpreted = subprocess.run(
+            [sys.executable, "-m", "silu", "interpret", source_file],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except Exception as e:
+        print(f"Error verifying {source_file}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if (
+        compiled.stdout == interpreted.stdout
+        and compiled.returncode == interpreted.returncode
+    ):
+        print(f"PASS: {source_file} - compiled output matches the interpreter")
+        if interpreted.stdout:
+            print(interpreted.stdout, end="")
+        return
+
+    print(f"FAIL: {source_file} - compiled binary diverges", file=sys.stderr)
+    print(
+        f"  interpreter (exit {interpreted.returncode}):",
+        file=sys.stderr,
+    )
+    print(f"    {interpreted.stdout!r}", file=sys.stderr)
+    if interpreted.stderr:
+        print(f"    stderr: {interpreted.stderr!r}", file=sys.stderr)
+    print(f"  compiled (exit {compiled.returncode}):", file=sys.stderr)
+    print(f"    {compiled.stdout!r}", file=sys.stderr)
+    if compiled.stderr:
+        print(f"    stderr: {compiled.stderr!r}", file=sys.stderr)
+    sys.exit(1)
 
 
 def run_ir_to_source_converter(
@@ -609,6 +653,14 @@ Examples:
             "--output", "-o", help="Output executable path (default: source basename)"
         )
 
+    # Differential verification subcommand
+    if LLVM_AVAILABLE:
+        verify_parser = subparsers.add_parser(
+            "verify",
+            help="Verify compiled output matches the reference interpreter",
+        )
+        verify_parser.add_argument("file", help="Silu source file to verify")
+
     # Symbolic execution subcommand
     symbolic_parser = subparsers.add_parser(
         "symbolic", help="Perform symbolic execution"
@@ -665,11 +717,11 @@ def validate_arguments(args) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-    elif args.mode == "build":
-        # For build mode, only the source file is required
+    elif args.mode in ("build", "verify"):
+        # For build/verify modes, only the source file is required
         if not args.file:
             print(
-                "Error: A Silu source file must be provided for build mode.",
+                f"Error: A Silu source file must be provided for {args.mode} mode.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -839,6 +891,10 @@ def main() -> None:
         elif args.mode == "build":
             # One-command native build
             run_build(args.file, output_file=getattr(args, "output", None))
+
+        elif args.mode == "verify":
+            # Differential verification: interpreter vs compiled binary
+            run_verify(args.file)
 
         elif args.mode == "symbolic":
             # Symbolic execution

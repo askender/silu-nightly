@@ -88,6 +88,7 @@ print(greet("Silu Programming"))
 | `silu symbolic program.si` | 符号执行分析 |
 | `silu llvm program.ir.json --output program.ll` | 将 IR 降级为 LLVM IR |
 | `silu build program.si -o program` | 一条命令编译出原生可执行文件 |
+| `silu verify program.si` | 将编译产物输出与解释器对拍 |
 
 ### 符号执行
 
