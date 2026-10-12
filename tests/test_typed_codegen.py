@@ -874,6 +874,66 @@ class TestCrossFunctionInference:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestRawStrScopeDrops:
+    def test_function_locals_and_params_dropped_at_exit(self):
+        """A function's owned rawstr slots (params included) are freed
+        on every return path - Rust scope-exit drop."""
+        llvm_ir = _convert(
+            "def shout(name):\n"
+            '    t: str = "hi " + name\n'
+            '    t = t + "!"\n'
+            "    return t\n\n"
+            'print(shout("silu"))\n'
+        )
+        shout_body = llvm_ir.split('define i8* @"shout"')[1]
+
+        assert shout_body.count('call void @"rawstr_free"') >= 2
+        assert _run_main(llvm_ir) == "hi silu!\n"
+
+    def test_annotated_call_args_infer_raw_abi(self):
+        """shout(n) with n: str at module level: the resolver must see
+        annotated module names, not just inferred ones."""
+        llvm_ir = _convert(
+            "def shout(name):\n"
+            '    return "hi " + name\n\n'
+            'n: str = "x"\n'
+            "print(shout(n))\n"
+        )
+
+        assert 'define i8* @"shout"(i8*' in llvm_ir
+        assert _run_main(llvm_ir) == "hi x\n"
+
+    def test_discarded_call_result_is_dropped(self):
+        """shout(n) as an expression statement: the returned rawstr is
+        a temporary and gets freed right after the call."""
+        llvm_ir = _convert(
+            "def shout(name):\n"
+            '    return "hi " + name\n\n'
+            'n: str = "x"\n'
+            "i: int = 0\n"
+            "while i < 3:\n"
+            "    shout(n)\n"
+            "    i += 1\n"
+            'print("done")\n'
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'call void @"rawstr_free"' in main
+        assert _run_main(llvm_ir) == "done\n"
+
+    def test_assigned_call_result_is_not_dropped(self):
+        """t = shout(n): the slot owns the result - freeing it would
+        be a use-after-free."""
+        source = (
+            "def shout(name):\n"
+            '    return "hi " + name\n\n'
+            'n: str = "x"\n'
+            "t: str = shout(n)\n"
+            "print(t, len(t))\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 def _run_interpreter(source: str) -> str:
     """Reference output from the tree-walking interpreter."""
     import os

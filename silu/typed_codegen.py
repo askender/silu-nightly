@@ -2120,6 +2120,54 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_builder.call(self.rawstr_free, [old_ptr])
         self.current_builder.store(new_ptr, self.variables[name])
 
+    def _emit_local_rawstr_drops(self):
+        """Rust scope-exit drop for a function's owned rawstr slots.
+
+        Rawstr slots are always exclusively owned (name assignment,
+        parameter passing and returns all copy), so freeing every
+        function-local slot at each exit is safe; module globals are
+        excluded (their names are recorded in _module_kinds)."""
+        if self.current_function is None or self.current_function.name == "main":
+            return
+        module_kinds = getattr(self, "_module_kinds", set())
+        for name, kind in list(self.var_kinds.items()):
+            if (
+                kind == RAWSTR
+                and name not in module_kinds
+                and name in self.variables
+            ):
+                self.current_builder.call(
+                    self.rawstr_free,
+                    [self.current_builder.load(self.variables[name])],
+                )
+
+    # statement ops whose returned TypedValue aliases slot storage -
+    # their results must never be freed as temporaries
+    _STORAGE_ALIASING_STMT_OPS = {
+        "assign", "ann_assign", "aug_assign", "tuple_assign",
+        "subscript_assign", "subscript_aug_assign", "delete", "return",
+        "for", "while", "if", "if_expr", "func_def", "class_def",
+        "line", "break", "continue", "pass", "assert", "raise", "try",
+        "with", "import", "from_import", "match",
+    }
+
+    def _convert_statement(self, stmt: Any, skip_func_defs: bool = False):
+        """Convert one statement; a discarded rawstr expression result
+        (e.g. shout("x") as a statement) is a temporary and is dropped
+        like Rust's end-of-statement temporary drop. Assignment-family
+        statements return values that alias slot storage - never freed."""
+        result = self._convert_node(stmt, skip_func_defs)
+        if (
+            isinstance(result, tuple)
+            and len(result) == 2
+            and result[0] == RAWSTR
+            and isinstance(stmt, (list, tuple))
+            and stmt
+            and stmt[0] not in self._STORAGE_ALIASING_STMT_OPS
+        ):
+            self.current_builder.call(self.rawstr_free, [result[1]])
+        return result
+
     # ================== arithmetic ==================
 
     def _promote_pair(self, left: Tuple[str, Any], right: Tuple[str, Any], target: str):
@@ -2721,8 +2769,35 @@ class TypedCodegen(SiluToLLVMConverter):
             if kind:
                 annotated_ret[name] = kind
 
+        def collect_annotations(stmts: list, sink: Dict[str, str]):
+            """ann_assign kinds in a scope (the inference return value
+            only carries inferred candidates, so annotated names would
+            otherwise be invisible to the resolver)."""
+            for stmt in stmts if isinstance(stmts, list) else []:
+                if not isinstance(stmt, (list, tuple)) or not stmt:
+                    continue
+                if (
+                    stmt[0] == "ann_assign"
+                    and isinstance(stmt[1], str)
+                    and len(stmt) >= 4
+                ):
+                    kind = self._annotation_kind(stmt[3])
+                    if kind:
+                        sink[stmt[1]] = kind
+                elif stmt[0] == "if" and len(stmt) >= 4:
+                    collect_annotations(stmt[2], sink)
+                    collect_annotations(stmt[3], sink)
+                elif stmt[0] == "while" and len(stmt) >= 3:
+                    collect_annotations(stmt[2], sink)
+                elif stmt[0] == "for" and len(stmt) >= 4:
+                    collect_annotations(stmt[3], sink)
+
+        module_annotations: Dict[str, str] = {}
+        collect_annotations(self._module_stmt_list, module_annotations)
         module_kinds = self._infer_assign_kinds(self._module_stmt_list)
-        module_resolver = self._kind_resolver({}, dict(module_kinds), annotated_ret)
+        module_resolver = self._kind_resolver(
+            module_annotations, dict(module_kinds), annotated_ret
+        )
 
         # every call to a known function, scanning into nested
         # expressions (x = f(1) + 2) and all function bodies
@@ -2834,9 +2909,13 @@ class TypedCodegen(SiluToLLVMConverter):
                 param_env = {
                     p: k for p, k in zip(params, param_kinds) if k != OBJ
                 }
+                body_annotations: Dict[str, str] = {}
+                collect_annotations(body, body_annotations)
                 local_kinds = self._infer_assign_kinds(body, param_env)
                 body_resolver = self._kind_resolver(
-                    param_env, dict(local_kinds), annotated_ret
+                    {**param_env, **body_annotations},
+                    dict(local_kinds),
+                    annotated_ret,
                 )
                 returns: list = []
                 find_returns(body, returns)
@@ -2988,11 +3067,12 @@ class TypedCodegen(SiluToLLVMConverter):
             self.current_builder.store(func.args[index], self.variables[param_name])
 
         for stmt in func_def[3]:
-            self._convert_node(stmt)
+            self._convert_statement(stmt)
             if self.current_builder.block.is_terminated:
                 break
 
         if not self.current_builder.block.is_terminated:
+            self._emit_local_rawstr_drops()
             if ret_kind == RAWSTR:
                 # missing return: an empty owned string, never a null
                 # pointer (slots must stay dereferenceable)
@@ -3069,11 +3149,12 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.var_kinds[param_name] = OBJ
 
         for stmt in func_def[3]:
-            self._convert_node(stmt)
+            self._convert_statement(stmt)
             if self.current_builder.block.is_terminated:
                 break
 
         if not self.current_builder.block.is_terminated:
+            self._emit_local_rawstr_drops()
             null_val = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
             self.current_builder.ret(null_val)
 
@@ -3108,7 +3189,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 node[1] if len(node) > 1 else []
             )
             for stmt in node[1] if len(node) > 1 else []:
-                self._convert_node(stmt, skip_func_defs)
+                self._convert_statement(stmt, skip_func_defs)
             return (OBJ, null_obj)
 
         if op == "const":
@@ -3564,7 +3645,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
                 self.current_builder.position_at_end(then_block)
                 for stmt in node[2]:
-                    self._convert_node(stmt)
+                    self._convert_statement(stmt)
                     if self.current_builder.block.is_terminated:
                         break
                 if not self.current_builder.block.is_terminated:
@@ -3572,7 +3653,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
                 self.current_builder.position_at_end(else_block)
                 for stmt in node[3]:
-                    self._convert_node(stmt)
+                    self._convert_statement(stmt)
                     if self.current_builder.block.is_terminated:
                         break
                 if not self.current_builder.block.is_terminated:
@@ -3596,7 +3677,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.loop_continue_blocks.append(cond_block)
                 self.current_builder.position_at_end(body_block)
                 for stmt in node[2]:
-                    self._convert_node(stmt)
+                    self._convert_statement(stmt)
                     if self.current_builder.block.is_terminated:
                         break
                 self.loop_break_blocks.pop()
@@ -3630,6 +3711,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 value = self._convert_node(node[1]) if len(node) > 1 else None
                 if value is None:
                     if self.current_ret_kind == RAWSTR:
+                        self._emit_local_rawstr_drops()
                         empty_ptr = self._create_global_string("")
                         self.current_builder.ret(
                             self.current_builder.call(
@@ -3643,16 +3725,22 @@ class TypedCodegen(SiluToLLVMConverter):
                         F64: ir.Constant(ir.DoubleType(), 0.0),
                         I1: ir.Constant(ir.IntType(1), 0),
                     }[self.current_ret_kind]
+                    self._emit_local_rawstr_drops()
                     self.current_builder.ret(zero)
                     return (OBJ, null_obj)
                 coerced = self._coerce(value, self.current_ret_kind)
+                self._emit_local_rawstr_drops()
                 self.current_builder.ret(coerced[1])
                 return coerced
-            # dynamic function: box and return the PyObject
+            # dynamic function: box and return the PyObject (drops run
+            # after the value is boxed - boxing copies out)
             if len(node) > 1 and node[1] is not None:
                 value = self._convert_node(node[1])
-                self.current_builder.ret(self._box(value))
+                boxed = self._box(value)
+                self._emit_local_rawstr_drops()
+                self.current_builder.ret(boxed)
             else:
+                self._emit_local_rawstr_drops()
                 self.current_builder.ret(null_obj)
             return (OBJ, null_obj)
 
@@ -4133,7 +4221,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.current_builder.store(counter, self.variables[var_name])
 
         for stmt in body_stmts:
-            self._convert_node(stmt)
+            self._convert_statement(stmt)
             if self.current_builder.block.is_terminated:
                 break
 
@@ -4212,7 +4300,7 @@ class TypedCodegen(SiluToLLVMConverter):
             self.current_builder.store(element, self.variables[var_name])
 
         for stmt in body_stmts:
-            self._convert_node(stmt)
+            self._convert_statement(stmt)
             if self.current_builder.block.is_terminated:
                 break
 
@@ -4336,7 +4424,7 @@ class TypedCodegen(SiluToLLVMConverter):
             ))
 
         for stmt in body_stmts:
-            self._convert_node(stmt)
+            self._convert_statement(stmt)
             if self.current_builder.block.is_terminated:
                 break
 
@@ -4444,7 +4532,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.current_builder.store(item, self.variables[var_name])
 
         for stmt in body_stmts:
-            self._convert_node(stmt)
+            self._convert_statement(stmt)
             if self.current_builder.block.is_terminated:
                 break
 
