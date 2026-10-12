@@ -251,11 +251,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(empty_block)
         msg = self._create_global_string_with_builder(
-            "IndexError: pop from empty list\n", builder
+            "IndexError: pop from empty list", builder
         )
-        builder.call(self.printf, [msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
         items = builder.load(field(builder, struct_ptr, 2))
@@ -394,9 +392,9 @@ class TypedCodegen(SiluToLLVMConverter):
             )
             return gv
 
-        key_error_msg = panic_string(b"KeyError: key not found\n\0", "str_keyerr")
+        key_error_msg = panic_string(b"KeyError: key not found\0", "str_keyerr")
         str_index_error_msg = panic_string(
-            b"IndexError: string index out of range\n\0", "str_idxerr"
+            b"IndexError: string index out of range\0", "str_idxerr"
         )
 
         # void rawdict_reindex(i8* d, i64 new_size)
@@ -758,9 +756,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(missing)
         msg_ptr = builder.gep(key_error_msg, [zero32, zero32])
-        builder.call(self.printf, [msg_ptr])
-        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        builder.unreachable()
+        self._emit_panic(builder, msg_ptr)
 
         # i64 rawdict_del(i8* d, i64 key) - tombstones the slot, returns the
         # removed value's bits; panics KeyError when missing (Python del).
@@ -818,9 +814,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(missing)
         msg_ptr = builder.gep(key_error_msg, [zero32, zero32])
-        builder.call(self.printf, [msg_ptr])
-        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        builder.unreachable()
+        self._emit_panic(builder, msg_ptr)
 
         # PyObject* rawdict_to_pydict_ii/if(i8* d) - dynamic boundary
         for tag, make_value in (
@@ -917,7 +911,7 @@ class TypedCodegen(SiluToLLVMConverter):
             return b.load(sfield(b, struct_ptr, 3))
 
         type_error_msg = panic_string(
-            b"TypeError: expected str\n\0", "str_typeerr"
+            b"TypeError: expected str\0", "str_typeerr"
         )
 
         # i64 rawutf8_cp_count(i8* data, i64 len) - code points = bytes
@@ -1257,9 +1251,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(err_block)
         msg_ptr = builder.gep(str_index_error_msg, [zero32, zero32])
-        builder.call(self.printf, [msg_ptr])
-        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        builder.unreachable()
+        self._emit_panic(builder, msg_ptr)
 
         builder.position_at_end(ok_block)
         s_data = load_data(builder, s_struct)
@@ -1695,9 +1687,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(error_block)
         msg_ptr = builder.gep(type_error_msg, [zero32, zero32])
-        builder.call(self.printf, [msg_ptr])
-        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        builder.unreachable()
+        self._emit_panic(builder, msg_ptr)
 
         # void rawlist_get(i8* list, i64 index, i8* out_ptr, i64 elem_size)
         # Bounds are checked; OOB aborts like list_get.
@@ -1736,11 +1726,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(error_block)
         msg = self._create_global_string_with_builder(
-            "IndexError: list index out of range\n", builder
+            "IndexError: list index out of range", builder
         )
-        builder.call(self.printf, [msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
         items = builder.load(field(builder, struct_ptr, 2))
@@ -1786,11 +1774,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(error_block)
         msg = self._create_global_string_with_builder(
-            "IndexError: list assignment index out of range\n", builder
+            "IndexError: list assignment index out of range", builder
         )
-        builder.call(self.printf, [msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
         items = builder.load(field(builder, struct_ptr, 2))
@@ -1829,21 +1815,19 @@ class TypedCodegen(SiluToLLVMConverter):
 
             builder.position_at_end(bad_block)
             msg = self._create_global_string_with_builder(message, builder)
-            builder.call(self.printf, [msg])
-            builder.call(self.exit_func, [ir.Constant(i32, 1)])
-            builder.unreachable()
+            self._emit_panic(builder, msg)
             return func
 
         self.unbox_int = emit_unbox(
             "unbox_int",
             i64,
-            "TypeError: expected an int value\n",
+            "TypeError: expected an int value",
             lambda b, tag, as_i64, data: as_i64,
         )
         self.unbox_float = emit_unbox(
             "unbox_float",
             ir.DoubleType(),
-            "TypeError: expected a float value\n",
+            "TypeError: expected a float value",
             lambda b, tag, as_i64, data: b.select(
                 b.icmp_signed("==", tag, ir.Constant(i32, 1)),
                 b.load(b.bitcast(data, ir.PointerType(ir.DoubleType()))),
@@ -1853,7 +1837,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.unbox_bool = emit_unbox(
             "unbox_bool",
             ir.IntType(1),
-            "TypeError: expected a bool value\n",
+            "TypeError: expected a bool value",
             lambda b, tag, as_i64, data: b.icmp_signed(
                 "!=", as_i64, ir.Constant(i64, 0)
             ),
@@ -1945,7 +1929,7 @@ class TypedCodegen(SiluToLLVMConverter):
             if self.checks:
                 roundtrip = self.current_builder.sitofp(checked, ir.DoubleType())
                 exact = self.current_builder.fcmp_ordered("==", value, roundtrip)
-                self._panic_if(exact, "TypeError: float cannot be used as int\n")
+                self._panic_if(exact, "TypeError: float cannot be used as int")
             return (I64, checked)
         if kind == I64 and target == I1:
             return (
@@ -1965,9 +1949,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         self.current_builder.position_at_end(bad_block)
         msg = self._create_global_string_with_builder(message, self.current_builder)
-        self.current_builder.call(self.printf, [msg])
-        self.current_builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        self.current_builder.unreachable()
+        self._emit_panic(self.current_builder, msg)
         self.current_builder.position_at_end(ok_block)
 
     def _rawstr_append_operand(self, rhs_node: Any) -> Tuple[Any, Any, Any]:
@@ -2185,7 +2167,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.current_builder.fcmp_ordered(
                         "==", r_val, ir.Constant(ir.DoubleType(), 0.0)
                     ),
-                    "ZeroDivisionError: division by zero\n",
+                    "ZeroDivisionError: division by zero",
                 )
                 return (F64, self.current_builder.fdiv(l_val, r_val))
             if op == "//":
@@ -2193,7 +2175,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.current_builder.fcmp_ordered(
                         "==", r_val, ir.Constant(ir.DoubleType(), 0.0)
                     ),
-                    "ZeroDivisionError: division by zero\n",
+                    "ZeroDivisionError: division by zero",
                 )
                 quotient = self.current_builder.fdiv(l_val, r_val)
                 return (
@@ -2205,7 +2187,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.current_builder.fcmp_ordered(
                         "==", r_val, ir.Constant(ir.DoubleType(), 0.0)
                     ),
-                    "ZeroDivisionError: division by zero\n",
+                    "ZeroDivisionError: division by zero",
                 )
                 remainder = self.current_builder.frem(l_val, r_val)
                 zero = ir.Constant(ir.DoubleType(), 0.0)
@@ -2244,7 +2226,7 @@ class TypedCodegen(SiluToLLVMConverter):
         if op == "/":
             self._panic_if(
                 self.current_builder.icmp_signed("==", r_val, ir.Constant(i64, 0)),
-                "ZeroDivisionError: division by zero\n",
+                "ZeroDivisionError: division by zero",
             )
             l_f = self.current_builder.sitofp(l_val, ir.DoubleType())
             r_f = self.current_builder.sitofp(r_val, ir.DoubleType())
@@ -2252,13 +2234,13 @@ class TypedCodegen(SiluToLLVMConverter):
         if op == "//":
             self._panic_if(
                 self.current_builder.icmp_signed("==", r_val, ir.Constant(i64, 0)),
-                "ZeroDivisionError: division by zero\n",
+                "ZeroDivisionError: division by zero",
             )
             return (I64, self._floor_div_inline(l_val, r_val))
         if op == "%":
             self._panic_if(
                 self.current_builder.icmp_signed("==", r_val, ir.Constant(i64, 0)),
-                "ZeroDivisionError: division by zero\n",
+                "ZeroDivisionError: division by zero",
             )
             return (I64, self._py_mod_inline(l_val, r_val))
         raise NotImplementedError(f"typed binop {op}")
@@ -2304,7 +2286,7 @@ class TypedCodegen(SiluToLLVMConverter):
             as_i64 = builder.fptosi(result, i64)
             roundtrip = builder.sitofp(as_i64, ir.DoubleType())
             exact = builder.fcmp_ordered("==", result, roundtrip)
-            self._panic_if(exact, "TypeError: int pow result not exact\n")
+            self._panic_if(exact, "TypeError: int pow result not exact")
             return (I64, as_i64)
         lf = self._coerce(left, F64)
         rf = self._coerce(right, F64)
@@ -2319,7 +2301,7 @@ class TypedCodegen(SiluToLLVMConverter):
     def _overflow_checked(self, pair: Any, op: str) -> Any:
         result = self.current_builder.extract_value(pair, 0)
         overflowed = self.current_builder.extract_value(pair, 1)
-        self._panic_if(overflowed, f"OverflowError: integer overflow in {op}\n")
+        self._panic_if(overflowed, f"OverflowError: integer overflow in {op}")
         return result
 
     def _floor_div_inline(self, left: Any, right: Any) -> Any:
@@ -2398,14 +2380,10 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_builder.branch(err_block)
         self.current_builder.position_at_end(err_block)
         msg = self._create_global_string_with_builder(
-            f"AttributeError: raw {raw_kind} has no method '{method_name}'\n",
+            f"AttributeError: raw {raw_kind} has no method '{method_name}'",
             self.current_builder,
         )
-        self.current_builder.call(self.printf, [msg])
-        self.current_builder.call(
-            self.exit_func, [ir.Constant(ir.IntType(32), 1)]
-        )
-        self.current_builder.unreachable()
+        self._emit_panic(self.current_builder, msg)
         self.current_builder.position_at_end(cont_block)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
@@ -3117,6 +3095,14 @@ class TypedCodegen(SiluToLLVMConverter):
         op = node[0]
         null_obj = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
 
+        if op == "line":
+            # statement-position marker: remember the source line so a
+            # runtime panic further down can name it
+            self.current_builder.store(
+                ir.Constant(ir.IntType(64), node[1]), self.line_global
+            )
+            return (OBJ, null_obj)
+
         if op == "module":
             self._inferred_kinds = self._infer_assign_kinds(
                 node[1] if len(node) > 1 else []
@@ -3746,14 +3732,10 @@ class TypedCodegen(SiluToLLVMConverter):
 
                         self.current_builder.position_at_end(err_block)
                         msg = self._create_global_string_with_builder(
-                            "IndexError: list index out of range\n",
+                            "IndexError: list index out of range",
                             self.current_builder,
                         )
-                        self.current_builder.call(self.printf, [msg])
-                        self.current_builder.call(
-                            self.exit_func, [ir.Constant(ir.IntType(32), 1)]
-                        )
-                        self.current_builder.unreachable()
+                        self._emit_panic(self.current_builder, msg)
 
                         self.current_builder.position_at_end(ok_block)
                     items_i64 = self.current_builder.bitcast(
@@ -3934,14 +3916,10 @@ class TypedCodegen(SiluToLLVMConverter):
 
                         self.current_builder.position_at_end(err_block)
                         msg = self._create_global_string_with_builder(
-                            "IndexError: list assignment index out of range\n",
+                            "IndexError: list assignment index out of range",
                             self.current_builder,
                         )
-                        self.current_builder.call(self.printf, [msg])
-                        self.current_builder.call(
-                            self.exit_func, [ir.Constant(ir.IntType(32), 1)]
-                        )
-                        self.current_builder.unreachable()
+                        self._emit_panic(self.current_builder, msg)
 
                         self.current_builder.position_at_end(ok_block)
                     items_i64 = self.current_builder.bitcast(
@@ -4004,12 +3982,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
                 self.current_builder.cbranch(is_null, err_block, ok_block)
                 self.current_builder.position_at_end(err_block)
-                err_msg = self._create_global_string("KeyError: key not found\n")
-                self.current_builder.call(self.printf, [err_msg])
-                self.current_builder.call(
-                    self.exit_func, [ir.Constant(ir.IntType(32), 1)]
-                )
-                self.current_builder.unreachable()
+                err_msg = self._create_global_string("KeyError: key not found")
+                self._emit_panic(self.current_builder, err_msg)
                 self.current_builder.position_at_end(ok_block)
             return (OBJ, null_obj)
 

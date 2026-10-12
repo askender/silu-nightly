@@ -80,6 +80,10 @@ class IRInterpreter:
 
         opcode = ir_node[0]
 
+        # Source-line markers carry metadata for compiled backends only
+        if opcode == "line":
+            return None
+
         # Reset control flow flags for each statement
         if opcode not in ("return", "break", "continue"):
             self.should_return = False

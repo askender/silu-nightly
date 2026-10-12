@@ -9,6 +9,13 @@ import ast
 from silu.ir_generator import SiluIRGenerator
 
 
+def _no_markers(stmts):
+    """Drop ("line", n) markers from an IR statement list."""
+    return tuple(
+        s for s in stmts if not (isinstance(s, tuple) and s[0] == "line")
+    )
+
+
 class TestMatchIRGeneration:
     """Test IR generation for match statements."""
 
@@ -26,7 +33,7 @@ match x:
         ir = generator.visit(tree)
 
         # Extract the match statement
-        match_stmt = ir[1][0]  # First statement in module
+        match_stmt = _no_markers(ir[1])[0]  # First statement in module
         assert match_stmt[0] == "match"
         assert match_stmt[1] == ("name", "x")  # Subject
 
@@ -39,14 +46,14 @@ match x:
         assert case1[0] == "match_case"
         assert case1[1] == ("match_value", ("const", 1))  # Pattern
         assert case1[2] is None  # No guard
-        assert len(case1[3]) == 1  # Body has one statement
+        assert len(_no_markers(case1[3])) == 1  # Body has one statement
 
         # Second case: case 2
         case2 = cases[1]
         assert case2[0] == "match_case"
         assert case2[1] == ("match_value", ("const", 2))  # Pattern
         assert case2[2] is None  # No guard
-        assert len(case2[3]) == 1  # Body has one statement
+        assert len(_no_markers(case2[3])) == 1  # Body has one statement
 
     def test_match_or_patterns(self):
         """Test match with or patterns."""
@@ -59,7 +66,7 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
         case = cases[0]
 
@@ -83,7 +90,7 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
         case = cases[0]
 
@@ -107,7 +114,7 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
         case = cases[0]
 
@@ -141,7 +148,7 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
 
         # First case: capture pattern
@@ -173,7 +180,7 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
 
         # First case: with guard
@@ -204,7 +211,7 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
 
         # First case: [first, *rest]
@@ -237,7 +244,7 @@ match data:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
 
         # First case: nested mapping and sequence
@@ -275,13 +282,13 @@ def handle_value(x):
         ir = generator.visit(tree)
 
         # Extract function definition
-        func_def = ir[1][0]
+        func_def = _no_markers(ir[1])[0]
         assert func_def[0] == "func_def"
         assert func_def[1] == "handle_value"
 
         # Extract match statement from function body
         func_body = func_def[3]
-        match_stmt = func_body[0]
+        match_stmt = _no_markers(func_body)[0]
         assert match_stmt[0] == "match"
         assert match_stmt[1] == ("name", "x")
 
@@ -302,18 +309,18 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
 
         # First case with pass
         case1 = cases[0]
-        body1 = case1[3]
+        body1 = _no_markers(case1[3])
         assert len(body1) == 1
         assert body1[0] == ("pass",)
 
         # Second case with print
         case2 = cases[1]
-        body2 = case2[3]
+        body2 = _no_markers(case2[3])
         assert len(body2) == 1
         assert body2[0][0] == "call"
 
@@ -330,10 +337,10 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
         case = cases[0]
-        body = case[3]
+        body = _no_markers(case[3])
 
         # Should have 3 statements in body
         assert len(body) == 3
@@ -358,7 +365,7 @@ match x:
         generator = SiluIRGenerator()
         ir = generator.visit(tree)
 
-        match_stmt = ir[1][0]
+        match_stmt = _no_markers(ir[1])[0]
         cases = match_stmt[2]
 
         # Check different constant types

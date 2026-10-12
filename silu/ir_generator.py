@@ -95,11 +95,26 @@ class SiluIRGenerator(BaseASTProcessor):
         keywords_tuple = tuple(keywords.items()) if keywords else ()
         return ("call", func, args_tuple, keywords_tuple)
 
+    def _visit_stmts(self, stmts: List[Any]) -> Tuple:
+        """Visit a statement list, interleaving ("line", lineno) markers
+        so compiled backends can report source lines in runtime errors."""
+        out = []
+        for stmt in stmts:
+            lineno = getattr(stmt, "lineno", None)
+            if lineno is not None:
+                out.append(("line", lineno))
+            out.append(self.visit(stmt))
+        return tuple(out)
+
+    def visit_Module(self, node: ast.Module) -> Any:
+        """Generate module IR with line markers between statements."""
+        return self.process_container("module", self._visit_stmts(node.body))
+
     def process_control_flow(self, node_type: str, **kwargs) -> Tuple:
         """Generate control flow IR nodes."""
         if node_type == "function_def":
             # Process function body statements
-            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
+            body = self._visit_stmts(kwargs["body"])
             type_params = tuple(
                 self.visit(stmt) if stmt else None for stmt in kwargs["type_params"]
             )
@@ -118,7 +133,7 @@ class SiluIRGenerator(BaseASTProcessor):
             )
         elif node_type == "class_def":
             # Process class body statements
-            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
+            body = self._visit_stmts(kwargs["body"])
             bases = tuple(base for base in kwargs["bases"])
 
             # Collect class attributes and methods
@@ -143,9 +158,9 @@ class SiluIRGenerator(BaseASTProcessor):
             return ("return", kwargs["value"])
         elif node_type == "if":
             # Process if statement body and orelse
-            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
+            body = self._visit_stmts(kwargs["body"])
             orelse = (
-                tuple(self.visit(stmt) for stmt in kwargs["orelse"])
+                self._visit_stmts(kwargs["orelse"])
                 if kwargs["orelse"]
                 else ()
             )
@@ -153,12 +168,12 @@ class SiluIRGenerator(BaseASTProcessor):
         elif node_type == "while":
             # Process test_node ourselves for IR generation
             test = self.visit(kwargs["test_node"])
-            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
+            body = self._visit_stmts(kwargs["body"])
             return ("while", test, body)
         elif node_type == "for":
-            body = tuple(self.visit(stmt) for stmt in kwargs["body"])
+            body = self._visit_stmts(kwargs["body"])
             orelse = (
-                tuple(self.visit(stmt) for stmt in kwargs["orelse"])
+                self._visit_stmts(kwargs["orelse"])
                 if kwargs["orelse"]
                 else ()
             )
@@ -354,11 +369,11 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def visit_Try(self, node: ast.Try) -> Tuple:
         """Generate try-except IR."""
-        body = tuple(self.visit(stmt) for stmt in node.body)
+        body = self._visit_stmts(node.body)
         handlers = tuple(self.visit(h) for h in node.handlers)
-        orelse = tuple(self.visit(stmt) for stmt in node.orelse) if node.orelse else ()
+        orelse = self._visit_stmts(node.orelse) if node.orelse else ()
         finalbody = (
-            tuple(self.visit(stmt) for stmt in node.finalbody) if node.finalbody else ()
+            self._visit_stmts(node.finalbody) if node.finalbody else ()
         )
         return self._make_node("try", body, handlers, orelse, finalbody)
 
@@ -366,7 +381,7 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate exception handler IR."""
         exc_type = self.visit(node.type) if node.type else None
         name = node.name if node.name else None
-        body = tuple(self.visit(stmt) for stmt in node.body)
+        body = self._visit_stmts(node.body)
         return self._make_node("except", exc_type, name, body)
 
     def visit_Raise(self, node: ast.Raise) -> Tuple:
@@ -399,7 +414,7 @@ class SiluIRGenerator(BaseASTProcessor):
                 self.visit(item.optional_vars) if item.optional_vars else None
             )
             items.append((context_expr, optional_vars))
-        body = tuple(self.visit(stmt) for stmt in node.body)
+        body = self._visit_stmts(node.body)
         return self._make_node("with", tuple(items), body)
 
     # ================== Match Statements ==================
@@ -414,7 +429,7 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate match case IR."""
         pattern = self.visit(node.pattern)
         guard = self.visit(node.guard) if node.guard else None
-        body = tuple(self.visit(stmt) for stmt in node.body)
+        body = self._visit_stmts(node.body)
         return self._make_node("match_case", pattern, guard, body)
 
     # ================== Match Patterns ==================

@@ -98,6 +98,32 @@ def test_ir_mode_with_source_string_and_format(capsys):
             mock_generate.assert_called_once_with("x = 5", "json", record_types=True)
 
 
+def test_runtime_panic_reports_source_line(tmp_path):
+    """A runtime panic names the failing statement's source line."""
+    import shutil
+    import subprocess
+
+    if shutil.which("clang") is None:
+        pytest.skip("clang not available")
+
+    program = tmp_path / "boom.si"
+    program.write_text(
+        'l: list[int] = [1, 2]\n'
+        "d: dict[int, int] = {1: 10}\n"
+        "x: int = l[5]\n"
+    )
+    binary = tmp_path / "boom_bin"
+
+    with patch.object(
+        sys, "argv", ["silu", "build", str(program), "-o", str(binary)]
+    ):
+        main()
+
+    result = subprocess.run([str(binary)], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert result.stdout == "IndexError: list index out of range (line 3)\n"
+
+
 def test_build_mode_compiles_and_runs(tmp_path):
     """silu build produces a working native executable in one command."""
     import shutil

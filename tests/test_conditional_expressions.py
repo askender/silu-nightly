@@ -7,6 +7,13 @@ Tests for the if-else expression syntax: value_if_true if condition else value_i
 import ast
 from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
+
+
+def _no_markers(stmts):
+    """Drop ("line", n) markers from an IR statement list."""
+    return tuple(
+        s for s in stmts if not (isinstance(s, tuple) and s[0] == "line")
+    )
 from silu.ir_interpreter import IRInterpreter
 
 
@@ -128,7 +135,7 @@ result = 1 if True else 2
 
         # Check that the IR contains an if_expr node
         assert ir[0] == "module"
-        statements = ir[1]
+        statements = _no_markers(ir[1])
         assign_stmt = statements[0]
         assert assign_stmt[0] == "assign"
 

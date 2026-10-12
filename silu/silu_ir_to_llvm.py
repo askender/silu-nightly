@@ -171,6 +171,48 @@ class SiluToLLVMConverter:
         exit_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(32)])
         self.exit_func = ir.Function(self.module, exit_ty, name="exit")
 
+        # current source line, updated by ("line", n) IR markers so
+        # runtime errors can report where they happened
+        self.line_global = ir.GlobalVariable(
+            self.module, ir.IntType(64), name="__silu_line"
+        )
+        self.line_global.linkage = "internal"
+        self.line_global.initializer = ir.Constant(ir.IntType(64), 0)
+
+        # void silu_panic(i8* msg) - print "msg (line N)" and exit(1).
+        # Every runtime error path goes through here, including the
+        # shared runtime functions (the line global is read at panic
+        # time, so even line-less helpers report the failing statement).
+        i8p = ir.PointerType(ir.IntType(8))
+        self.silu_panic = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p]),
+            name="silu_panic",
+        )
+        entry = self.silu_panic.append_basic_block("entry")
+        line_block = self.silu_panic.append_basic_block("with_line")
+        plain_block = self.silu_panic.append_basic_block("no_line")
+        builder = ir.IRBuilder(entry)
+        (panic_msg,) = self.silu_panic.args
+        fmt_s = self._create_global_string_with_builder("%s", builder)
+        builder.call(self.printf, [fmt_s, panic_msg])
+        cur_line = builder.load(self.line_global)
+        has_line = builder.icmp_signed(
+            ">", cur_line, ir.Constant(ir.IntType(64), 0)
+        )
+        builder.cbranch(has_line, line_block, plain_block)
+
+        builder.position_at_end(line_block)
+        fmt_line = self._create_global_string_with_builder(" (line %d)\n", builder)
+        builder.call(self.printf, [fmt_line, cur_line])
+        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.unreachable()
+
+        builder.position_at_end(plain_block)
+        fmt_nl = self._create_global_string_with_builder("\n", builder)
+        builder.call(self.printf, [fmt_nl])
+        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
+        builder.unreachable()
+
         # libc helpers for Python-style float printing
         # (fmt is a fixed parameter of snprintf, not a vararg)
         snprintf_ty = ir.FunctionType(
@@ -506,13 +548,9 @@ class SiluToLLVMConverter:
         # Overflow case - print error and exit
         builder.position_at_end(overflow_block)
         error_msg = self._create_global_string_with_builder(
-            "Error: Integer overflow in addition\n", builder
+            "Error: Integer overflow in addition", builder
         )
-        builder.call(self.printf, [error_msg])
-
-        # Exit with error code 1
-        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        builder.unreachable()
+        self._emit_panic(builder, error_msg)
 
         # Success case - return result
         builder.position_at_end(success_block)
@@ -1217,11 +1255,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(error_block)
         error_msg = self._create_global_string_with_builder(
-            "IndexError: list index out of range\n", builder
+            "IndexError: list index out of range", builder
         )
-        builder.call(self.printf, [error_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, error_msg)
 
         builder.position_at_end(ok_block)
         items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
@@ -1264,11 +1300,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(error_block)
         error_msg = self._create_global_string_with_builder(
-            "IndexError: list assignment index out of range\n", builder
+            "IndexError: list assignment index out of range", builder
         )
-        builder.call(self.printf, [error_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, error_msg)
 
         builder.position_at_end(ok_block)
         items = builder.load(builder.gep(struct_ptr, [zero32, ir.Constant(i32, 2)]))
@@ -2366,11 +2400,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(type_error)
         err_msg = self._create_global_string_with_builder(
-            "TypeError: argument of type is not iterable\n", builder
+            "TypeError: argument of type is not iterable", builder
         )
-        builder.call(self.printf, [err_msg])
-        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        builder.unreachable()
+        self._emit_panic(builder, err_msg)
 
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
@@ -2545,11 +2577,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(err_block)
         idx_msg = self._create_global_string_with_builder(
-            "IndexError: string index out of range\n", builder
+            "IndexError: string index out of range", builder
         )
-        builder.call(self.printf, [idx_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, idx_msg)
 
         builder.position_at_end(ok_block)
         chars = builder.load(builder.gep(str_struct, [zero32, one32]))
@@ -2585,11 +2615,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(tag_error)
         tag_msg = self._create_global_string_with_builder(
-            "TypeError: only str slicing is supported\n", builder
+            "TypeError: only str slicing is supported", builder
         )
-        builder.call(self.printf, [tag_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, tag_msg)
 
         builder.position_at_end(str_case)
         str_struct = builder.bitcast(
@@ -2605,11 +2633,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(zero_step)
         step_msg = self._create_global_string_with_builder(
-            "ValueError: slice step cannot be zero\n", builder
+            "ValueError: slice step cannot be zero", builder
         )
-        builder.call(self.printf, [step_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, step_msg)
 
         builder.position_at_end(step_ok)
         neg_step = builder.icmp_signed("<", step_arg, zero64)
@@ -2735,19 +2761,15 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(key_error)
         key_msg = self._create_global_string_with_builder(
-            "KeyError: key not found\n", builder
+            "KeyError: key not found", builder
         )
-        builder.call(self.printf, [key_msg])
-        builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-        builder.unreachable()
+        self._emit_panic(builder, key_msg)
 
         builder.position_at_end(error_block)
         error_msg = self._create_global_string_with_builder(
-            "TypeError: object is not subscriptable\n", builder
+            "TypeError: object is not subscriptable", builder
         )
-        builder.call(self.printf, [error_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, error_msg)
 
         # void pyobj_subscript_set(PyObject* obj, PyObject* key, PyObject* value)
         self.pyobj_subscript_set = ir.Function(
@@ -2780,11 +2802,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(error_block)
         error_msg = self._create_global_string_with_builder(
-            "TypeError: object does not support item assignment\n", builder
+            "TypeError: object does not support item assignment", builder
         )
-        builder.call(self.printf, [error_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, error_msg)
 
         # void pyobj_clear(PyObject* obj) - clear() for lists and dicts
         self.pyobj_clear = ir.Function(
@@ -2817,11 +2837,9 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(error_block)
         error_msg = self._create_global_string_with_builder(
-            "AttributeError: object has no clear()\n", builder
+            "AttributeError: object has no clear()", builder
         )
-        builder.call(self.printf, [error_msg])
-        builder.call(self.exit_func, [ir.Constant(i32, 1)])
-        builder.unreachable()
+        self._emit_panic(builder, error_msg)
 
     def _create_str_repeat_runtime(self):
         """PyObject* str_repeat(PyObject* s, PyObject* count) - "ab" * 3.
@@ -3111,11 +3129,9 @@ class SiluToLLVMConverter:
 
             builder.position_at_end(fbad_block)
             fmsg = self._create_global_string_with_builder(
-                "ZeroDivisionError: division by zero\n", builder
+                "ZeroDivisionError: division by zero", builder
             )
-            builder.call(self.printf, [fmsg])
-            builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-            builder.unreachable()
+            self._emit_panic(builder, fmsg)
             builder.position_at_end(fok_block)
 
         float_result = float_apply(builder, left_f64, right_f64)
@@ -3136,11 +3152,9 @@ class SiluToLLVMConverter:
 
                 builder.position_at_end(zbad_block)
                 zmsg = self._create_global_string_with_builder(
-                    "ZeroDivisionError: division by zero\n", builder
+                    "ZeroDivisionError: division by zero", builder
                 )
-                builder.call(self.printf, [zmsg])
-                builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-                builder.unreachable()
+                self._emit_panic(builder, zmsg)
                 builder.position_at_end(zok_block)
 
             if overflow_check:
@@ -3155,11 +3169,9 @@ class SiluToLLVMConverter:
 
                 builder.position_at_end(obad_block)
                 omsg = self._create_global_string_with_builder(
-                    f"OverflowError: integer overflow in {func_name}\n", builder
+                    f"OverflowError: integer overflow in {func_name}", builder
                 )
-                builder.call(self.printf, [omsg])
-                builder.call(self.exit_func, [ir.Constant(ir.IntType(32), 1)])
-                builder.unreachable()
+                self._emit_panic(builder, omsg)
                 builder.position_at_end(ook_block)
             else:
                 int_result = int_apply(builder, left_i64, right_i64)
@@ -3396,6 +3408,13 @@ class SiluToLLVMConverter:
             string_content, self.current_builder
         )
 
+    def _emit_panic(self, builder: ir.IRBuilder, msg_ptr: ir.Value) -> None:
+        """Abort with a runtime error: prints the message plus the
+        current source line (from the __silu_line global), then exits.
+        Replaces the printf(msg); exit(1); unreachable() triple."""
+        builder.call(self.silu_panic, [msg_ptr])
+        builder.unreachable()
+
     def _create_global_string_with_builder(
         self, string_content: str, builder: ir.IRBuilder
     ) -> ir.Value:
@@ -3598,6 +3617,14 @@ class SiluToLLVMConverter:
             return None
 
         op = node[0]
+
+        if op == "line":
+            # statement-position marker: remember the source line so a
+            # runtime panic further down can name it
+            self.current_builder.store(
+                ir.Constant(ir.IntType(64), node[1]), self.line_global
+            )
+            return None
 
         if op == "module":
             # Convert all statements in module
@@ -4370,13 +4397,9 @@ class SiluToLLVMConverter:
                     self.current_builder.cbranch(is_null, err_block, ok_block)
                     self.current_builder.position_at_end(err_block)
                     err_msg = self._create_global_string_with_builder(
-                        "KeyError: key not found\n", self.current_builder
+                        "KeyError: key not found", self.current_builder
                     )
-                    self.current_builder.call(self.printf, [err_msg])
-                    self.current_builder.call(
-                        self.exit_func, [ir.Constant(ir.IntType(32), 1)]
-                    )
-                    self.current_builder.unreachable()
+                    self._emit_panic(self.current_builder, err_msg)
                     self.current_builder.position_at_end(ok_block)
             return None
 

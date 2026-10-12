@@ -21,6 +21,10 @@ class IRToSourceConverter:
         if isinstance(ir_node, tuple) and len(ir_node) >= 1:
             node_type = ir_node[0]
 
+            # Source-line markers are backend metadata, not source
+            if node_type == "line":
+                return ""
+
             # Handle different IR node types
             if node_type == "name":
                 return self._convert_name(ir_node)
