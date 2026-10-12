@@ -53,6 +53,10 @@ LLVM_KIND_TYPES = {
     F64: ir.DoubleType(),
     I1: ir.IntType(1),
     RAWSTR: ir.PointerType(ir.IntType(8)),  # rawstr passes as i8* in ABIs
+    RAWLIST_I: ir.PointerType(ir.IntType(8)),
+    RAWLIST_F: ir.PointerType(ir.IntType(8)),
+    RAWDICT_II: ir.PointerType(ir.IntType(8)),
+    RAWDICT_IF: ir.PointerType(ir.IntType(8)),
 }
 
 
@@ -75,6 +79,12 @@ class TypedCodegen(SiluToLLVMConverter):
         # fully-annotated numeric functions (raw machine ABI)
         self.static_funcs: Dict[str, Tuple[List[str], Optional[str], ir.Function]] = {}
         self.current_ret_kind: Optional[str] = None
+        # module statements and per-function signatures from the
+        # cross-function inference pre-pass (run at declaration time)
+        self._module_stmt_list: list = []
+        self._inferred_sigs: Dict[str, Tuple[List[str], Optional[str]]] = {}
+        # dynamic-ABI functions with raw-typed proven parameters
+        self._dyn_func_kinds: Dict[str, List[str]] = {}
 
         # math intrinsics / libc used by ** (sqrt fast path, general pow)
         sqrt_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
@@ -2127,29 +2137,18 @@ class TypedCodegen(SiluToLLVMConverter):
 
     # ================== conservative kind inference ==================
 
-    def _infer_assign_kinds(
-        self, stmts: list, param_kinds: Optional[Dict[str, str]] = None
-    ) -> Dict[str, str]:
-        """Kinds for unannotated names whose every assignment in this
-        scope provably yields one and the same raw scalar kind.
+    def _kind_resolver(
+        self,
+        annotations: Dict[str, str],
+        candidates: Dict[str, Optional[str]],
+        func_ret: Dict[str, str],
+    ):
+        """Build a resolve() closure over the given name environments.
 
         Resolution uses only literals, annotated names, names already
-        inferred earlier in the walk, and outer-scope kinds - never
-        method calls or other dynamic values. Any unknown operand or
-        kind conflict marks the name as PyObject storage, so Python's
-        rebind-a-name-to-any-type behaviour stays untouched (e.g.
-        ``x = 7`` then ``x = x / 2`` must keep x dynamic because the
-        truediv rebinding produces a float).
+        inferred earlier, and outer-scope kinds - never method calls or
+        other dynamic values.
         """
-        annotations: Dict[str, str] = dict(param_kinds or {})
-        candidates: Dict[str, Optional[str]] = {}
-        func_ret: Dict[str, str] = {}
-        for func_name, func_def in self.function_defs.items():
-            ret_kind = (
-                self._annotation_kind(func_def[5]) if len(func_def) > 5 else None
-            )
-            if ret_kind:
-                func_ret[func_name] = ret_kind
 
         def merge_arith(left: Optional[str], right: Optional[str]) -> Optional[str]:
             if left is None or right is None or left == OBJ or right == OBJ:
@@ -2221,6 +2220,39 @@ class TypedCodegen(SiluToLLVMConverter):
                 if base_kind == RAWSTR:
                     return RAWSTR  # s[i] / s[a:b] both yield str
             return None
+
+        return resolve
+
+    def _infer_assign_kinds(
+        self, stmts: list, param_kinds: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
+        """Kinds for unannotated names whose every assignment in this
+        scope provably yields one and the same raw scalar kind.
+
+        Resolution uses only literals, annotated names, names already
+        inferred earlier in the walk, and outer-scope kinds - never
+        method calls or other dynamic values. Any unknown operand or
+        kind conflict marks the name as PyObject storage, so Python's
+        rebind-a-name-to-any-type behaviour stays untouched (e.g.
+        ``x = 7`` then ``x = x / 2`` must keep x dynamic because the
+        truediv rebinding produces a float).
+        """
+        annotations: Dict[str, str] = dict(param_kinds or {})
+        candidates: Dict[str, Optional[str]] = {}
+        func_ret: Dict[str, str] = {}
+        for func_name, func_def in self.function_defs.items():
+            ret_kind = (
+                self._annotation_kind(func_def[5]) if len(func_def) > 5 else None
+            )
+            if ret_kind:
+                func_ret[func_name] = ret_kind
+        # functions promoted to a raw ABI by cross-function inference
+        # return raw values too
+        for func_name, (_params, ret_kind, _func) in self.static_funcs.items():
+            if ret_kind:
+                func_ret[func_name] = ret_kind
+
+        resolve = self._kind_resolver(annotations, candidates, func_ret)
 
         def add(name: str, kind: Optional[str]):
             if name in annotations:
@@ -2304,6 +2336,170 @@ class TypedCodegen(SiluToLLVMConverter):
             name: kind for name, kind in candidates.items() if kind is not None
         }
 
+    def _collect_function_defs(self, node):
+        """Also stash the module statement list for signature inference."""
+        if isinstance(node, list) and len(node) >= 2 and node[0] == "module":
+            self._module_stmt_list = node[1]
+        super()._collect_function_defs(node)
+
+    def _infer_function_signatures(self):
+        """Two-pass cross-function kind propagation.
+
+        Pass 1: an unannotated parameter that is never rebound in the
+        body takes the raw kind when every call site in the module
+        passes one and the same raw scalar kind for it.
+        Pass 2: an unannotated return takes the raw kind when every
+        return expression resolves to one and the same kind (params +
+        locals inferred). Resolution never uses other functions'
+        inferred returns, so recursion and call order stay harmless.
+        """
+        annotated_ret: Dict[str, str] = {}
+        for name, func_def in self.function_defs.items():
+            ret_annotation = func_def[5] if len(func_def) > 5 else None
+            kind = self._annotation_kind(ret_annotation)
+            if kind:
+                annotated_ret[name] = kind
+
+        module_kinds = self._infer_assign_kinds(self._module_stmt_list)
+        module_resolver = self._kind_resolver({}, dict(module_kinds), annotated_ret)
+
+        # every call to a known function, scanning into nested
+        # expressions (x = f(1) + 2) and all function bodies
+        calls: Dict[str, list] = {name: [] for name in self.function_defs}
+
+        def scan(node: Any):
+            if not isinstance(node, (list, tuple)):
+                return
+            if (
+                len(node) >= 3
+                and node[0] == "call"
+                and isinstance(node[1], (list, tuple))
+                and len(node[1]) >= 2
+                and node[1][0] == "name"
+                and node[1][1] in calls
+            ):
+                keywords = node[3] if len(node) > 3 else ()
+                calls[node[1][1]].append((node[2], keywords))
+            for child in node:
+                scan(child)
+
+        scan(self._module_stmt_list)
+        for func_def in self.function_defs.values():
+            scan(func_def[3] if len(func_def) > 3 else [])
+
+        def rebound_names(stmts: list, sink: set):
+            for stmt in stmts if isinstance(stmts, list) else []:
+                if not isinstance(stmt, (list, tuple)) or not stmt:
+                    continue
+                op = stmt[0]
+                if op in ("assign", "ann_assign", "aug_assign"):
+                    if isinstance(stmt[1], str):
+                        sink.add(stmt[1])
+                elif op == "for" and len(stmt) >= 4:
+                    target = stmt[1]
+                    if isinstance(target, str):
+                        sink.add(target)
+                    elif (
+                        isinstance(target, (list, tuple))
+                        and len(target) >= 2
+                        and target[0] == "name"
+                    ):
+                        sink.add(target[1])
+                    rebound_names(stmt[3], sink)
+                elif op == "if" and len(stmt) >= 4:
+                    rebound_names(stmt[2], sink)
+                    rebound_names(stmt[3], sink)
+                elif op == "while" and len(stmt) >= 3:
+                    rebound_names(stmt[2], sink)
+                elif op == "func_def":
+                    # a nested def rebinds its own name here; its body
+                    # is a separate scope
+                    if len(stmt) >= 2 and isinstance(stmt[1], str):
+                        sink.add(stmt[1])
+
+        def find_returns(stmts: list, sink: list):
+            for stmt in stmts if isinstance(stmts, list) else []:
+                if not isinstance(stmt, (list, tuple)) or not stmt:
+                    continue
+                if stmt[0] == "return":
+                    sink.append(stmt[1] if len(stmt) > 1 else None)
+                elif stmt[0] == "if" and len(stmt) >= 4:
+                    find_returns(stmt[2], sink)
+                    find_returns(stmt[3], sink)
+                elif stmt[0] == "while" and len(stmt) >= 3:
+                    find_returns(stmt[2], sink)
+                elif stmt[0] == "for" and len(stmt) >= 4:
+                    find_returns(stmt[3], sink)
+
+        sigs: Dict[str, Tuple[List[str], Optional[str]]] = {}
+        for name, func_def in self.function_defs.items():
+            params = func_def[2] if len(func_def) > 2 else []
+            param_annotations = func_def[4] if len(func_def) > 4 else ()
+            body = func_def[3] if len(func_def) > 3 else []
+
+            rebound: set = set()
+            rebound_names(body, rebound)
+
+            param_kinds: List[str] = []
+            for index, pname in enumerate(params):
+                annotation = (
+                    param_annotations[index]
+                    if index < len(param_annotations)
+                    else None
+                )
+                kind = self._annotation_kind(annotation)
+                if kind is None and pname not in rebound and calls[name]:
+                    inferred: Optional[str] = None
+                    ok = True
+                    for args, keywords in calls[name]:
+                        if keywords or len(args) != len(params):
+                            ok = False
+                            break
+                        arg_kind = module_resolver(args[index])
+                        if arg_kind not in (I64, F64, I1, RAWSTR):
+                            ok = False
+                            break
+                        if inferred is None:
+                            inferred = arg_kind
+                        elif inferred != arg_kind:
+                            ok = False
+                            break
+                    if ok and inferred is not None:
+                        kind = inferred
+                param_kinds.append(kind if kind is not None else OBJ)
+
+            ret_kind = annotated_ret.get(name)
+            if ret_kind is None:
+                param_env = {
+                    p: k for p, k in zip(params, param_kinds) if k != OBJ
+                }
+                local_kinds = self._infer_assign_kinds(body, param_env)
+                body_resolver = self._kind_resolver(
+                    param_env, dict(local_kinds), annotated_ret
+                )
+                returns: list = []
+                find_returns(body, returns)
+                inferred_ret: Optional[str] = None
+                ok = bool(returns)
+                for rexpr in returns:
+                    if rexpr is None:
+                        ok = False  # bare return yields None
+                        break
+                    rk = body_resolver(rexpr)
+                    if rk is None:
+                        ok = False
+                        break
+                    if inferred_ret is None:
+                        inferred_ret = rk
+                    elif inferred_ret != rk:
+                        ok = False
+                        break
+                if ok and inferred_ret is not None:
+                    ret_kind = inferred_ret
+
+            sigs[name] = (param_kinds, ret_kind)
+        return sigs
+
     def _dynamic_param_kinds(self, func_def: list) -> List[str]:
         """Parameter kinds for an unannotated function: annotations on
         individual parameters (list[int] etc.) still apply."""
@@ -2343,23 +2539,27 @@ class TypedCodegen(SiluToLLVMConverter):
     def _create_function_declarations(self):
         """Create raw-ABI functions for annotated ones, PyObject otherwise.
 
-        A dynamic (unannotated-return) function whose parameters declare
-        list[int]/list[float] gets those parameters typed as raw i8*
-        pointers; the rest stay PyObject*.
+        Cross-function inference (call sites + return expressions) can
+        promote an unannotated function to the raw ABI the same way
+        written annotations do; a function that stays dynamic-return
+        still gets raw-typed parameters when inference proves them.
         """
+        self._inferred_sigs = self._infer_function_signatures()
         for func_name, func_def in self.function_defs.items():
-            param_kinds, ret_kind = self._static_signature(func_def)
-            if param_kinds is not None:
+            # sigs merge written annotations with inference results
+            param_kinds, ret_kind = self._inferred_sigs[func_name]
+            if ret_kind is not None and all(kind != OBJ for kind in param_kinds):
                 param_types = [LLVM_KIND_TYPES[k] for k in param_kinds]
                 func_ty = ir.FunctionType(LLVM_KIND_TYPES[ret_kind], param_types)
                 func = ir.Function(self.module, func_ty, name=func_name)
                 self.static_funcs[func_name] = (param_kinds, ret_kind, func)
             else:
-                dyn_kinds = self._dynamic_param_kinds(func_def)
+                dyn_kinds = param_kinds
+                self._dyn_func_kinds[func_name] = dyn_kinds
                 param_types = []
                 for kind in dyn_kinds:
-                    if kind in RAWLIST_KINDS:
-                        param_types.append(ir.PointerType(ir.IntType(8)))
+                    if kind != OBJ:
+                        param_types.append(LLVM_KIND_TYPES[kind])
                     else:
                         param_types.append(
                             ir.PointerType(self.pyobj.pyobj_type)
@@ -2478,7 +2678,9 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = dict(self.variables)
         self.var_kinds = dict(self.var_kinds)
 
-        param_kinds_dyn = self._dynamic_param_kinds(func_def)
+        param_kinds_dyn = self._dyn_func_kinds.get(
+            func_def[1], self._dynamic_param_kinds(func_def)
+        )
         self._inferred_kinds = self._infer_assign_kinds(
             func_def[3],
             {
@@ -2489,10 +2691,10 @@ class TypedCodegen(SiluToLLVMConverter):
         for index, param_name in enumerate(func_def[2]):
             if index < len(func.args):
                 kind = param_kinds_dyn[index]
-                if kind in RAWLIST_KINDS:
-                    # raw-ABI parameter: store the pointer in an alloca
+                if kind != OBJ:
+                    # raw-ABI parameter: store the value in a typed alloca
                     param_alloca = self.current_builder.alloca(
-                        ir.PointerType(ir.IntType(8)), name=param_name
+                        LLVM_KIND_TYPES[kind], name=param_name
                     )
                     self.current_builder.store(func.args[index], param_alloca)
                     self.variables[param_name] = param_alloca
@@ -3974,7 +4176,12 @@ class TypedCodegen(SiluToLLVMConverter):
                 func = self.functions[func_name]
                 callee_def = self.function_defs.get(func_name)
                 callee_kinds = (
-                    self._dynamic_param_kinds(callee_def) if callee_def else []
+                    self._dyn_func_kinds.get(func_name)
+                    or (
+                        self._dynamic_param_kinds(callee_def)
+                        if callee_def
+                        else []
+                    )
                 )
                 boxed_args = []
                 for arg_index, arg_node in enumerate(args_node):
@@ -3984,7 +4191,9 @@ class TypedCodegen(SiluToLLVMConverter):
                         if arg_index < len(callee_kinds)
                         else OBJ
                     )
-                    if expected in RAWLIST_KINDS:
+                    if expected == OBJ:
+                        boxed_args.append(self._box(arg_tv))
+                    elif expected in RAWLIST_KINDS:
                         if arg_tv[0] in RAWLIST_KINDS:
                             boxed_args.append(arg_tv[1])
                         else:
@@ -3995,7 +4204,11 @@ class TypedCodegen(SiluToLLVMConverter):
                                 )
                             )
                     else:
-                        boxed_args.append(self._box(arg_tv))
+                        # proven raw scalar/str parameter: coerce in place
+                        # (str coercion copies at the boundary)
+                        boxed_args.append(
+                            self._coerce(arg_tv, expected)[1]
+                        )
                 if len(boxed_args) == len(func.args):
                     result = self.current_builder.call(func, boxed_args)
                     return (OBJ, result)

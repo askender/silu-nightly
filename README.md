@@ -110,7 +110,14 @@ natively and a load-factor rehash compacts deleted entries) and
 annotated `str` to Rust-String-style raw slots (assignment copies,
 append grows in place) — no PyObject boxing on those paths.
 Unannotated scalars get the same treatment when a conservative
-inference proves every assignment to a name produces one same type.
+inference proves every assignment to a name produces one same type,
+and a two-pass signature analysis promotes whole functions: a
+parameter that is never rebound and receives one raw type at every
+call site arrives unboxed, and a return whose expressions all resolve
+to one raw type returns unboxed (conflicts keep the dynamic ABI, so
+Python rebinding semantics are preserved). Raw strings support
+`s[i]`, `s[a:b]` (stepped slices included), `sub in s` and
+`for ch in s` natively.
 Across 11 benchmark programs (including five Benchmarks Game
 classics) the compiled binaries average **1.1x hand-written Rust and
 ~16x CPython**; see [benchmarks/README.md](benchmarks/README.md) for

@@ -642,6 +642,105 @@ class TestRawStr:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestCrossFunctionInference:
+    def test_unannotated_numeric_function_gets_raw_abi(self):
+        """def add(a, b): return a + b with all-int call sites promotes
+        to i64 params and i64 return - no PyObject boxing anywhere."""
+        llvm_ir = _convert(
+            "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n"
+        )
+
+        assert 'define i64 @"add"(i64' in llvm_ir
+        main = _main_body(llvm_ir)
+        assert 'call i64 @"add"(i64 2, i64 3)' in main
+        assert _run_main(llvm_ir) == "5\n"
+
+    def test_unannotated_str_function_gets_raw_abi(self):
+        """A str-concatenating helper infers rawstr param and return."""
+        llvm_ir = _convert(
+            'def greet(name):\n    return "hi " + name\n\n'
+            'print(greet("silu"))\n'
+        )
+
+        assert 'define i8* @"greet"(i8*' in llvm_ir
+        assert _run_main(llvm_ir) == "hi silu\n"
+
+    def test_conflicting_call_sites_stay_dynamic(self):
+        """mixed(1, 2) and mixed("x", "y"): one name, two kinds - the
+        function must keep the PyObject ABI (Python rebinding)."""
+        source = (
+            "def mixed(a, b):\n    return a + b\n\n"
+            'print(mixed(1, 2), mixed("x", "y"))\n'
+        )
+        llvm_ir = _convert(source)
+
+        assert 'define {i32, i8*}* @"mixed"' in llvm_ir
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_rebound_param_stays_dynamic(self):
+        """x = x + 1 inside the body rebinding-checks the parameter:
+        call-site kinds alone are not proof enough."""
+        source = (
+            "def bump(x):\n    x = x + 1\n    return x\n\n"
+            "print(bump(10))\n"
+        )
+        llvm_ir = _convert(source)
+
+        assert 'define {i32, i8*}* @"bump"' in llvm_ir
+        assert _run_main(llvm_ir) == "11\n"
+
+    def test_dynamic_return_with_proven_raw_params(self):
+        """A side-effecting helper (no return) keeps the boxed return
+        but its proven parameter still arrives as a raw i64."""
+        source = "def show(x):\n    print(x + 1)\n\nshow(5)\n"
+        llvm_ir = _convert(source)
+
+        assert 'define {i32, i8*}* @"show"(i64' in llvm_ir
+        assert _run_main(llvm_ir) == "6\n"
+
+    def test_inferred_return_kind_reaches_caller(self):
+        """y = add(2, 3) learns i64 from the inferred signature, so the
+        caller's arithmetic on y skips the PyObject runtime too."""
+        llvm_ir = _convert(
+            "def add(a, b):\n    return a + b\n\n"
+            "y = add(2, 3)\nprint(y * 4)\n"
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'call {i32, i8*}* @"pyobj_mul"' not in main
+        assert _run_main(llvm_ir) == "20\n"
+
+    def test_rawlist_params_without_return_annotation(self):
+        """def multiply(v: list[float], out: list[float]): ... has no
+        return annotation: dynamic return ABI, but the raw list params
+        must still get i8* (spectral-norm hits exactly this shape)."""
+        source = (
+            "def scale(v: list[float], out: list[float]):\n"
+            "    out[0] = v[0] * 2.0\n\n"
+            "src: list[float] = [1.5]\n"
+            "dst: list[float] = [0.0]\n"
+            "scale(src, dst)\n"
+            "print(dst[0])\n"
+        )
+        llvm_ir = _convert(source)
+
+        assert 'define {i32, i8*}* @"scale"(i8*' in llvm_ir
+        assert _run_main(llvm_ir) == "3.0\n"
+
+    def test_recursion_stays_conservative(self):
+        """fib calls itself with n - 1, which the module-level resolver
+        cannot see: the function keeps the dynamic ABI and still
+        computes correctly."""
+        source = (
+            "def fib(n):\n"
+            "    if n < 2:\n        return n\n"
+            "    return fib(n - 1) + fib(n - 2)\n\n"
+            "print(fib(15))\n"
+        )
+
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 def _run_interpreter(source: str) -> str:
     """Reference output from the tree-walking interpreter."""
     import os
