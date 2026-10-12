@@ -154,6 +154,18 @@ class SiluToLLVMConverter:
         self.memcpy = ir.Function(
             self.module, memcpy_ty, name="llvm.memcpy.p0i8.p0i8.i64"
         )
+        memset_ty = ir.FunctionType(
+            ir.VoidType(),
+            [
+                ir.PointerType(ir.IntType(8)),
+                ir.IntType(8),
+                ir.IntType(64),
+                ir.IntType(1),
+            ],
+        )
+        self.memset = ir.Function(
+            self.module, memset_ty, name="llvm.memset.p0i8.i64"
+        )
 
         # exit for runtime error aborts
         exit_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(32)])

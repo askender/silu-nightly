@@ -1279,6 +1279,158 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(has_missing)
         builder.ret(ir.Constant(ir.IntType(1), 0))
 
+        def emit_rawdict_probe(name, ret_type, arg_types, on_hit, on_miss):
+            """Shared tombstone-skipping probe for rawdict helpers.
+
+            on_hit(builder, func, entry_index) and on_miss(builder, func)
+            receive a positioned builder and must ret.
+            """
+            func = ir.Function(
+                self.module,
+                ir.FunctionType(ret_type, arg_types),
+                name=name,
+            )
+            entry = func.append_basic_block("entry")
+            probe_test = func.append_basic_block("probe_test")
+            tomb_or_match = func.append_basic_block("probe_tomb")
+            match_check = func.append_basic_block("probe_match")
+            hit_block = func.append_basic_block("hit")
+            probe_step = func.append_basic_block("probe_step")
+            miss_block = func.append_basic_block("miss")
+            b = ir.IRBuilder(entry)
+            dict_arg, key_arg = func.args[0], func.args[1]
+            struct_ptr = b.bitcast(
+                dict_arg, ir.PointerType(self.raw_dict_struct_type)
+            )
+            mask = b.load(dfield(b, struct_ptr, 3))
+            probe_slot = b.alloca(i64, name="probe_slot")
+            b.store(b.and_(key_arg, mask), probe_slot)
+            b.branch(probe_test)
+
+            b.position_at_end(probe_test)
+            table_now = b.load(dfield(b, struct_ptr, 4))
+            slot_now = b.load(probe_slot)
+            slot_entry = b.load(b.gep(table_now, [slot_now]))
+            is_empty = b.icmp_signed("==", slot_entry, zero64)
+            b.cbranch(is_empty, miss_block, tomb_or_match)
+
+            b.position_at_end(tomb_or_match)
+            is_tomb = b.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
+            b.cbranch(is_tomb, probe_step, match_check)
+
+            b.position_at_end(match_check)
+            entry_index = b.sub(slot_entry, one64)
+            keys_now = b.load(dfield(b, struct_ptr, 5))
+            stored_key = b.load(b.gep(keys_now, [entry_index]))
+            is_match = b.icmp_signed("==", stored_key, key_arg)
+            b.cbranch(is_match, hit_block, probe_step)
+
+            b.position_at_end(hit_block)
+            hit_slot = table_now
+            # on_hit may need the probe slot for tombstoning (pop)
+            on_hit(b, func, entry_index, slot_now, hit_slot)
+
+            b.position_at_end(probe_step)
+            mask_step = b.load(dfield(b, struct_ptr, 3))
+            b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
+            b.branch(probe_test)
+
+            b.position_at_end(miss_block)
+            on_miss(b, func)
+            return func
+
+        def probe_struct(b, func):
+            return b.bitcast(
+                func.args[0], ir.PointerType(self.raw_dict_struct_type)
+            )
+
+        def load_value_at(b, func, entry_index):
+            vals_now = b.load(dfield(b, probe_struct(b, func), 6))
+            return b.load(b.gep(vals_now, [entry_index]))
+
+        # i64 rawdict_get_or(i8* d, i64 key, i64 default_bits)
+        self.rawdict_get_or = emit_rawdict_probe(
+            "rawdict_get_or",
+            i64,
+            [i8p, i64, i64],
+            lambda b, func, entry_index, _slot, _table: b.ret(
+                load_value_at(b, func, entry_index)
+            ),
+            lambda b, func: b.ret(func.args[2]),
+        )
+
+        # i64 rawdict_pop_or(i8* d, i64 key, i64 default_bits)
+        def pop_or_hit(b, func, entry_index, slot_now, table_now):
+            b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
+            struct_ptr = probe_struct(b, func)
+            count = b.load(dfield(b, struct_ptr, 0))
+            b.store(b.sub(count, one64), dfield(b, struct_ptr, 0))
+            b.ret(load_value_at(b, func, entry_index))
+
+        self.rawdict_pop_or = emit_rawdict_probe(
+            "rawdict_pop_or",
+            i64,
+            [i8p, i64, i64],
+            pop_or_hit,
+            lambda b, func: b.ret(func.args[2]),
+        )
+
+        # i64 rawdict_setdefault(i8* d, i64 key, i64 value_bits)
+        def setdefault_miss(b, func):
+            b.call(self.rawdict_set, [func.args[0], func.args[1], func.args[2]])
+            b.ret(func.args[2])
+
+        self.rawdict_setdefault = emit_rawdict_probe(
+            "rawdict_setdefault",
+            i64,
+            [i8p, i64, i64],
+            lambda b, func, entry_index, _slot, _table: b.ret(
+                load_value_at(b, func, entry_index)
+            ),
+            setdefault_miss,
+        )
+
+        # void rawdict_clear(i8* d) - keep the table, drop every entry
+        self.rawdict_clear = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p]),
+            name="rawdict_clear",
+        )
+        builder = ir.IRBuilder(self.rawdict_clear.append_basic_block("entry"))
+        (clear_arg,) = self.rawdict_clear.args
+        clear_ptr = builder.bitcast(
+            clear_arg, ir.PointerType(self.raw_dict_struct_type)
+        )
+        builder.store(zero64, dfield(builder, clear_ptr, 0))
+        builder.store(zero64, dfield(builder, clear_ptr, 1))
+        clear_mask = builder.load(dfield(builder, clear_ptr, 3))
+        builder.call(
+            self.memset,
+            [
+                builder.bitcast(
+                    builder.load(dfield(builder, clear_ptr, 4)), i8p
+                ),
+                ir.Constant(ir.IntType(8), 0),
+                builder.mul(builder.add(clear_mask, one64), ir.Constant(i64, 8)),
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        builder.ret_void()
+
+        # void rawlist_clear(i8* list) - keep capacity, drop elements
+        self.rawlist_clear = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p]),
+            name="rawlist_clear",
+        )
+        builder = ir.IRBuilder(self.rawlist_clear.append_basic_block("entry"))
+        (rl_arg,) = self.rawlist_clear.args
+        rl_ptr = builder.bitcast(
+            rl_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        builder.store(
+            zero64, builder.gep(rl_ptr, [zero32, ir.Constant(i32, 0)])
+        )
+        builder.ret_void()
+
         # i1 rawlist_contains_bits(i8* list, i64 elem_bits) - linear scan
         # over the machine-word elements (f64 elements compare as bits)
         self.rawlist_contains_bits = ir.Function(
@@ -2036,6 +2188,27 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (I1, self.current_builder.fcmp_unordered("!=", l_val, r_val))
             return (I1, self.current_builder.fcmp_ordered(op, l_val, r_val))
         return (I1, self.current_builder.icmp_signed(op, l_val, r_val))
+
+    def _unsupported_raw_method(self, raw_kind: str, method_name: str):
+        """Fail loudly for a method the raw container does not implement:
+        the old fallback boxed the whole container and mutated the copy,
+        silently discarding the mutation (Rust: no such method)."""
+        func = self.current_builder.function
+        err_block = func.append_basic_block("raw_method_err")
+        cont_block = func.append_basic_block("raw_method_cont")
+        self.current_builder.branch(err_block)
+        self.current_builder.position_at_end(err_block)
+        msg = self._create_global_string_with_builder(
+            f"AttributeError: raw {raw_kind} has no method '{method_name}'\n",
+            self.current_builder,
+        )
+        self.current_builder.call(self.printf, [msg])
+        self.current_builder.call(
+            self.exit_func, [ir.Constant(ir.IntType(32), 1)]
+        )
+        self.current_builder.unreachable()
+        self.current_builder.position_at_end(cont_block)
+        return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
     def _typed_contains(self, op: str, item_node: Any, container_node: Any):
         """item in container: native scans for raw containers, boxed
@@ -3988,25 +4161,111 @@ class TypedCodegen(SiluToLLVMConverter):
                         elem_kind,
                         self.current_builder.call(self.rawlist_pop, [list_ptr]),
                     )
-                # unknown rawlist method: convert to PyObject list
-                boxed = self.current_builder.call(
-                    self.rawlist_to_pylist,
-                    [list_ptr, self.current_builder.call(self.rawlist_len, [list_ptr])],
-                )
-                return (OBJ, boxed)
+                if method_name == "clear" and not args_node:
+                    self.current_builder.call(self.rawlist_clear, [list_ptr])
+                    return (OBJ, ir.Constant(
+                        ir.PointerType(self.pyobj.pyobj_type), None
+                    ))
+                return self._unsupported_raw_method(raw_kind, method_name)
             if raw_kind in RAWDICT_KINDS:
                 value_kind = RAWDICT_KINDS[raw_kind]
-                if method_name == "pop" and len(args_node) == 1:
-                    key = self._coerce(self._convert_node(args_node[0]), I64)[1]
-                    bits = self.current_builder.call(
-                        self.rawdict_del, [raw_obj_tv[1], key]
-                    )
+
+                def dict_value_bits(value_node):
+                    value = self._coerce(self._convert_node(value_node), value_kind)
+                    bits = value[1]
+                    if value_kind == F64:
+                        bits = self.current_builder.bitcast(
+                            value[1], ir.IntType(64)
+                        )
+                    return bits
+
+                def bits_to_value(bits):
                     if value_kind == F64:
                         return (
                             F64,
                             self.current_builder.bitcast(bits, ir.DoubleType()),
                         )
                     return (I64, bits)
+
+                if method_name == "pop" and args_node:
+                    key = self._coerce(self._convert_node(args_node[0]), I64)[1]
+                    if len(args_node) == 1:
+                        # pop(k): rawdict_del panics KeyError when missing
+                        bits = self.current_builder.call(
+                            self.rawdict_del, [raw_obj_tv[1], key]
+                        )
+                    elif len(args_node) == 2:
+                        bits = self.current_builder.call(
+                            self.rawdict_pop_or,
+                            [
+                                raw_obj_tv[1],
+                                key,
+                                dict_value_bits(args_node[1]),
+                            ],
+                        )
+                    else:
+                        bits = None
+                    if bits is not None:
+                        return bits_to_value(bits)
+                if method_name == "get" and args_node:
+                    key = self._coerce(self._convert_node(args_node[0]), I64)[1]
+                    if len(args_node) == 2:
+                        bits = self.current_builder.call(
+                            self.rawdict_get_or,
+                            [
+                                raw_obj_tv[1],
+                                key,
+                                dict_value_bits(args_node[1]),
+                            ],
+                        )
+                        return bits_to_value(bits)
+                    if len(args_node) == 1:
+                        # get(k): value when present, None (null) otherwise
+                        present = self.current_builder.call(
+                            self.rawdict_has, [raw_obj_tv[1], key]
+                        )
+                        func = self.current_builder.function
+                        hit_block = func.append_basic_block("get_hit")
+                        miss_block = func.append_basic_block("get_miss")
+                        merge_block = func.append_basic_block("get_merge")
+                        self.current_builder.cbranch(
+                            present, hit_block, miss_block
+                        )
+                        self.current_builder.position_at_end(hit_block)
+                        bits = self.current_builder.call(
+                            self.rawdict_get, [raw_obj_tv[1], key]
+                        )
+                        boxed_hit = self._box(bits_to_value(bits))
+                        self.current_builder.branch(merge_block)
+                        self.current_builder.position_at_end(miss_block)
+                        self.current_builder.branch(merge_block)
+                        self.current_builder.position_at_end(merge_block)
+                        result = self.current_builder.phi(
+                            ir.PointerType(self.pyobj.pyobj_type)
+                        )
+                        result.add_incoming(boxed_hit, hit_block)
+                        result.add_incoming(
+                            ir.Constant(
+                                ir.PointerType(self.pyobj.pyobj_type), None
+                            ),
+                            miss_block,
+                        )
+                        return (OBJ, result)
+                if method_name == "setdefault" and len(args_node) == 2:
+                    key = self._coerce(self._convert_node(args_node[0]), I64)[1]
+                    bits = self.current_builder.call(
+                        self.rawdict_setdefault,
+                        [raw_obj_tv[1], key, dict_value_bits(args_node[1])],
+                    )
+                    return bits_to_value(bits)
+                if method_name == "clear" and not args_node:
+                    self.current_builder.call(
+                        self.rawdict_clear, [raw_obj_tv[1]]
+                    )
+                    return (OBJ, ir.Constant(
+                        ir.PointerType(self.pyobj.pyobj_type), None
+                    ))
+                return self._unsupported_raw_method(raw_kind, method_name)
             obj = self._box(raw_obj_tv)
             method_map = {
                 "append": (self.list_append, 1, True),

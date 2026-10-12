@@ -381,6 +381,50 @@ class TestRawDict:
         assert _run_main(_convert(source)) == "{2: 'b'} 1\n"
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
+    def test_rawdict_get_pop_setdefault_clear(self):
+        """The full raw dict method set runs natively (no boxing the
+        whole dict per call), including two-arg defaults."""
+        source = (
+            "d: dict[int, int] = {1: 10, 2: 20}\n"
+            "print(d.get(1), d.get(9), d.get(9, 99))\n"
+            "print(d.pop(1), d.pop(9, -1))\n"
+            "print(d.setdefault(3, 30), d.setdefault(3, 99))\n"
+            "print(len(d))\n"
+            "d.clear()\n"
+            "print(len(d), 1 in d)\n"
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i64 @"rawdict_get_or"' in main
+        assert 'call i64 @"rawdict_pop_or"' in main
+        assert 'call i64 @"rawdict_setdefault"' in main
+        assert 'call void @"rawdict_clear"' in main
+        assert 'call {i32, i8*}* @"rawdict_to_pydict' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_rawdict_float_methods(self):
+        """dict[int, float] methods bitcast values through the raw
+        runtime the same way subscripts do."""
+        source = (
+            "f: dict[int, float] = {1: 0.5}\n"
+            "print(f.get(2, 9.5), f.setdefault(2, 1.5), f.pop(1))\n"
+        )
+
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_rawlist_clear(self):
+        """list.clear() drops elements natively and keeps the list."""
+        source = (
+            "l: list[int] = [1, 2, 3]\n"
+            "l.clear()\n"
+            "print(len(l))\n"
+            "l.append(4)\n"
+            "print(l[0], len(l))\n"
+        )
+
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
 
 class TestLenWithoutBoxing:
     def test_len_on_rawlist_reads_length_field(self):
