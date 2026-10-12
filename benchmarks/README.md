@@ -60,8 +60,10 @@ measurement is process startup; the actual compute in most rows is
 several times faster than Rust's, whose own startup it also carries.
 
 Switches: SILU_CODEGEN=dynamic restores the all-PyObject backend;
-SILU_CHECKS=0 drops the overflow panics (Rust release semantics;
-zero-division checks always stay on, as in Rust).
+SILU_CHECKS=0 drops the overflow panics and the rawlist bounds
+branches (Rust release semantics; zero-division checks always stay
+on, as in Rust). Bounds branches matter in indexed inner loops -
+they block clang's auto-vectorizer the same way overflow checks do.
 
 ### SILU_CHECKS=1 vs SILU_CHECKS=0 (back-to-back runs)
 

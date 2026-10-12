@@ -65,8 +65,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def __init__(self):
         super().__init__()
-        # Overflow/precision panics follow Rust's release profile: set
-        # SILU_CHECKS=0 to disable them (values wrap). Zero-division
+        # Overflow/precision panics and rawlist bounds branches follow
+        # Rust's release profile: set SILU_CHECKS=0 to disable them
+        # (values wrap, out-of-range access is UB). Zero-division
         # checks always stay on - Rust also always checks those.
         self.checks = os.environ.get("SILU_CHECKS", "1") != "0"
         # kind of every named variable in the current scope
@@ -1408,7 +1409,10 @@ class TypedCodegen(SiluToLLVMConverter):
         adj_phi.add_incoming(index_arg, entry)
         adj_phi.add_incoming(adjusted, negative_block)
         in_range = builder.icmp_signed("<", adj_phi, length)
-        builder.cbranch(in_range, ok_block, error_block)
+        if self.checks:
+            builder.cbranch(in_range, ok_block, error_block)
+        else:
+            builder.branch(ok_block)
 
         builder.position_at_end(error_block)
         msg = self._create_global_string_with_builder(
@@ -1455,7 +1459,10 @@ class TypedCodegen(SiluToLLVMConverter):
         adj_phi.add_incoming(index_arg, entry)
         adj_phi.add_incoming(adjusted, neg_block)
         in_range = builder.icmp_signed("<", adj_phi, length)
-        builder.cbranch(in_range, ok_block, error_block)
+        if self.checks:
+            builder.cbranch(in_range, ok_block, error_block)
+        else:
+            builder.branch(ok_block)
 
         builder.position_at_end(error_block)
         msg = self._create_global_string_with_builder(
@@ -3316,22 +3323,23 @@ class TypedCodegen(SiluToLLVMConverter):
                     in_range = self.current_builder.icmp_signed(
                         "<", index_eff, length
                     )
-                    ok_block = self.current_function.append_basic_block("get_ok")
-                    err_block = self.current_function.append_basic_block("get_err")
-                    self.current_builder.cbranch(in_range, ok_block, err_block)
+                    if self.checks:
+                        ok_block = self.current_function.append_basic_block("get_ok")
+                        err_block = self.current_function.append_basic_block("get_err")
+                        self.current_builder.cbranch(in_range, ok_block, err_block)
 
-                    self.current_builder.position_at_end(err_block)
-                    msg = self._create_global_string_with_builder(
-                        "IndexError: list index out of range\n",
-                        self.current_builder,
-                    )
-                    self.current_builder.call(self.printf, [msg])
-                    self.current_builder.call(
-                        self.exit_func, [ir.Constant(ir.IntType(32), 1)]
-                    )
-                    self.current_builder.unreachable()
+                        self.current_builder.position_at_end(err_block)
+                        msg = self._create_global_string_with_builder(
+                            "IndexError: list index out of range\n",
+                            self.current_builder,
+                        )
+                        self.current_builder.call(self.printf, [msg])
+                        self.current_builder.call(
+                            self.exit_func, [ir.Constant(ir.IntType(32), 1)]
+                        )
+                        self.current_builder.unreachable()
 
-                    self.current_builder.position_at_end(ok_block)
+                        self.current_builder.position_at_end(ok_block)
                     items_i64 = self.current_builder.bitcast(
                         items, ir.PointerType(ir.IntType(64))
                     )
