@@ -171,7 +171,7 @@ class TestTypedCodegen:
         assert 'define i8* @"rawlist_new"' in llvm_ir
         assert 'call i64 @"rawlist_push"' in main
         assert 'rawlist' in llvm_ir  # get is now inlined
-        assert 'call void @"rawlist_set"' in main
+        assert 'call void @"rawlist_set"' not in main  # set is inlined too
         assert 'call {i32, i8*}* @"list_append"' not in main
 
     def test_rawlist_float_annotation(self):

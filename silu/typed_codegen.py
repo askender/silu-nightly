@@ -3648,22 +3648,70 @@ class TypedCodegen(SiluToLLVMConverter):
                     elem_kind = RAWLIST_KINDS[obj_tv[0]]
                     index = self._coerce(self._convert_node(node[2]), I64)[1]
                     value = self._coerce(self._convert_node(node[3]), elem_kind)
-                    slot = self.current_builder.alloca(
-                        LLVM_KIND_TYPES[elem_kind], name="set_slot"
+                    # inline store: negative indices adjust by +length
+                    # (Python semantics); the bounds branch is emitted
+                    # only under SILU_CHECKS. No call keeps the
+                    # surrounding loop vectorizable (spectral-norm
+                    # writes out[i] in its inner loop).
+                    struct_ptr = self.current_builder.bitcast(
+                        obj_tv[1], ir.PointerType(self.raw_list_struct_type)
                     )
-                    self.current_builder.store(value[1], slot)
-                    self.current_builder.call(
-                        self.rawlist_set,
-                        [
-                            obj_tv[1],
-                            index,
-                            self.current_builder.bitcast(
-                                slot, ir.PointerType(ir.IntType(8))
-                            ),
-                            ir.Constant(
-                                ir.IntType(64), self._rawlist_elem_size(obj_tv[0])
-                            ),
-                        ],
+                    length = self.current_builder.load(
+                        self.current_builder.gep(
+                            struct_ptr,
+                            [
+                                ir.Constant(ir.IntType(32), 0),
+                                ir.Constant(ir.IntType(32), 0),
+                            ],
+                        )
+                    )
+                    items = self.current_builder.load(
+                        self.current_builder.gep(
+                            struct_ptr,
+                            [
+                                ir.Constant(ir.IntType(32), 0),
+                                ir.Constant(ir.IntType(32), 2),
+                            ],
+                        )
+                    )
+                    is_negative = self.current_builder.icmp_signed(
+                        "<", index, ir.Constant(ir.IntType(64), 0)
+                    )
+                    adjusted = self.current_builder.add(index, length)
+                    index_eff = self.current_builder.select(
+                        is_negative, adjusted, index
+                    )
+                    if self.checks:
+                        in_range = self.current_builder.icmp_signed(
+                            "<", index_eff, length
+                        )
+                        ok_block = self.current_function.append_basic_block("set_ok")
+                        err_block = self.current_function.append_basic_block("set_err")
+                        self.current_builder.cbranch(in_range, ok_block, err_block)
+
+                        self.current_builder.position_at_end(err_block)
+                        msg = self._create_global_string_with_builder(
+                            "IndexError: list assignment index out of range\n",
+                            self.current_builder,
+                        )
+                        self.current_builder.call(self.printf, [msg])
+                        self.current_builder.call(
+                            self.exit_func, [ir.Constant(ir.IntType(32), 1)]
+                        )
+                        self.current_builder.unreachable()
+
+                        self.current_builder.position_at_end(ok_block)
+                    items_i64 = self.current_builder.bitcast(
+                        items, ir.PointerType(ir.IntType(64))
+                    )
+                    elem_bits = value[1]
+                    if elem_kind == F64:
+                        elem_bits = self.current_builder.bitcast(
+                            value[1], ir.IntType(64)
+                        )
+                    self.current_builder.store(
+                        elem_bits,
+                        self.current_builder.gep(items_i64, [index_eff]),
                     )
                     return (OBJ, null_obj)
                 if obj_tv[0] in RAWDICT_KINDS:
