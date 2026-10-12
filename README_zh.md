@@ -173,6 +173,7 @@ ir_generator_for_c.py    # C → Silu IR（基于 pycparser）
 - [AI 开发计划](docs/plan.md) — 长期推理路线图与基准测试
 - [CLI 使用指南](docs/cli_usage.md) — 完整的命令行参考
 - [语言特性](docs/language_features.md) — 语法与示例
+- [语义契约](docs/semantics.md) — Silu 与 Python 一致之处与有意分歧之处（i64、所有权、检查开关）
 - [IR 设计](docs/simple_ir_design.md) — 中间表示格式
 - [符号执行](docs/symbolic_execution.md) — 程序分析能力
 - [LLVM IR 生成](docs/llvm_ir_generation.md) — 基于 LLVM 的原生编译
