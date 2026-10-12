@@ -61,6 +61,10 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         """Process a subscript assignment operation (e.g., obj[key] = value)."""
         pass
 
+    def process_delete_subscript(self, obj: Any, key: Any) -> Any:
+        """Process a subscript deletion (e.g., del obj[key])."""
+        pass
+
     @abstractmethod
     def process_name(self, name: str, context: ast.AST) -> Any:
         """Process a name/variable reference."""
@@ -177,6 +181,20 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
                 )
 
         # Return the last result (consistent with Python behavior)
+        return results[-1] if results else None
+
+    def visit_Delete(self, node: ast.Delete) -> Any:
+        """Visit a delete statement (del obj[key])."""
+        results = []
+        for target in node.targets:
+            if isinstance(target, ast.Subscript):
+                obj = self.visit(target.value)
+                key = self.visit(target.slice)
+                results.append(self.process_delete_subscript(obj, key))
+            else:
+                raise NotImplementedError(
+                    f"Delete of {type(target).__name__} not supported"
+                )
         return results[-1] if results else None
 
     def visit_AugAssign(self, node: ast.AugAssign) -> Any:

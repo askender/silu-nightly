@@ -44,8 +44,12 @@ class SiluToLLVMConverter:
     """Converts Silu IR to LLVM IR."""
 
     def __init__(self):
-        # Initialize LLVM
-        llvm.initialize()
+        # Initialize LLVM (llvmlite >= 0.44 initializes automatically and
+        # its explicit initialize() raises; older versions require it)
+        try:
+            llvm.initialize()
+        except RuntimeError:
+            pass
         llvm.initialize_native_target()
         llvm.initialize_native_asmprinter()
 
@@ -3975,6 +3979,39 @@ class SiluToLLVMConverter:
                     self.current_builder.call(
                         self.pyobj_subscript_set, [obj_val, index_val, value_val]
                     )
+            return None
+
+        elif op == "delete":
+            # del obj[key]: dict_pop tombstones the entry; Python's del
+            # raises KeyError when the key is missing
+            if len(node) >= 3:
+                obj_val = self._convert_node(node[1])
+                key_val = self._convert_node(node[2])
+                if obj_val and key_val:
+                    popped = self.current_builder.call(
+                        self.dict_pop, [obj_val, key_val]
+                    )
+                    is_null = self.current_builder.icmp_unsigned(
+                        "==",
+                        popped,
+                        ir.Constant(
+                            ir.PointerType(self.pyobj.pyobj_type), None
+                        ),
+                    )
+                    func = self.current_builder.function
+                    ok_block = func.append_basic_block("del_ok")
+                    err_block = func.append_basic_block("del_keyerr")
+                    self.current_builder.cbranch(is_null, err_block, ok_block)
+                    self.current_builder.position_at_end(err_block)
+                    err_msg = self._create_global_string_with_builder(
+                        "KeyError: key not found\n", self.current_builder
+                    )
+                    self.current_builder.call(self.printf, [err_msg])
+                    self.current_builder.call(
+                        self.exit_func, [ir.Constant(ir.IntType(32), 1)]
+                    )
+                    self.current_builder.unreachable()
+                    self.current_builder.position_at_end(ok_block)
             return None
 
         elif op == "dict":

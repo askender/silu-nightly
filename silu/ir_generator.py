@@ -31,6 +31,10 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate subscript assignment IR node."""
         return ("subscript_assign", obj, key, value)
 
+    def process_delete_subscript(self, obj: Any, key: Any) -> Tuple:
+        """Generate subscript deletion IR node (del obj[key])."""
+        return ("delete", obj, key)
+
     def process_aug_assign(self, target: Any, op: str, value: Any) -> Tuple:
         """Generate augmented assignment IR node."""
         if isinstance(target, tuple) and len(target) == 2 and target[0] == "name":

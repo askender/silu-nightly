@@ -219,6 +219,15 @@ class SiluInterpreter(BaseASTProcessor):
                 f"'{type(obj).__name__}' object does not support item assignment"
             )
 
+    def process_delete_subscript(self, obj: Any, key: Any) -> None:
+        """Handle subscript deletion (e.g., del dict[key])."""
+        if isinstance(obj, dict):
+            del obj[key]
+        else:
+            raise TypeError(
+                f"'{type(obj).__name__}' object does not support item deletion"
+            )
+
     def process_name(self, name: str, context: ast.AST) -> Any:
         """Handle variable lookup or return name for assignment."""
         if isinstance(context, ast.Load):

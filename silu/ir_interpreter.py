@@ -1173,6 +1173,12 @@ class IRInterpreter:
         value_val = self.execute(value)
         obj_val[key_val] = value_val
 
+    def _execute_delete(self, obj: Any, key: Any) -> None:
+        """Execute subscript deletion: del obj[key]."""
+        obj_val = self.execute(obj)
+        key_val = self.execute(key)
+        del obj_val[key_val]
+
     def _execute_attribute_assign(self, obj: Any, attr: str, value: Any) -> None:
         """Execute attribute assignment obj.attr = value."""
         obj_val = self.execute(obj)

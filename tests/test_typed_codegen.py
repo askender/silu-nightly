@@ -145,7 +145,10 @@ class TestTypedCodegen:
         import llvmlite.binding as llvm
 
         llvm_ir = _convert('x: int = 5\ns = "hi"\nprint(x, s)\n')
-        llvm.initialize()
+        try:
+            llvm.initialize()
+        except RuntimeError:
+            pass  # llvmlite >= 0.44 initializes automatically
         llvm.parse_assembly(llvm_ir)
 
     def test_and_or_chain_on_unboxed_bools(self):
@@ -301,6 +304,82 @@ class TestRawDict:
         llvm_ir = _convert('d: dict = {}\nd[1] = "x"\nprint(d)\n')
 
         assert 'call void @"pyobj_subscript_set"' in _main_body(llvm_ir)
+
+    def test_rawdict_del_statement(self):
+        """del d[k] tombstones the entry and shrinks the live count."""
+        source = (
+            "d: dict[int, int] = {1: 10, 2: 20, 3: 30}\n"
+            "del d[2]\n"
+            "print(len(d), d[1], d[3])\n"
+        )
+        llvm_ir = _convert(source)
+
+        assert 'call i64 @"rawdict_del"' in _main_body(llvm_ir)
+        assert _run_main(llvm_ir) == "2 10 30\n"
+
+    def test_rawdict_delete_reinsert_churn(self):
+        """Delete/reinsert churn exercises tombstone reuse and the
+        compacting rehash; contents must match a Python reference."""
+        source = (
+            "d: dict[int, int] = {}\n"
+            "i: int = 0\nwhile i < 60:\n    d[i] = i * 2\n    i += 1\n"
+            "i = 0\nwhile i < 40:\n    del d[i]\n    i += 1\n"
+            "i = 0\nwhile i < 40:\n    d[i] = i + 1000\n    i += 1\n"
+            "total: int = 0\n"
+            "i = 0\nwhile i < 60:\n    total += d[i]\n    i += 1\n"
+            "print(total, len(d))\n"
+        )
+        reference = {}
+        for i in range(60):
+            reference[i] = i * 2
+        for i in range(40):
+            del reference[i]
+        for i in range(40):
+            reference[i] = i + 1000
+        expected = f"{sum(reference.values())} {len(reference)}\n"
+
+        assert _run_main(_convert(source)) == expected
+
+    def test_rawdict_pop_returns_value(self):
+        """d.pop(k) on a raw dict removes the entry and returns its value."""
+        source = (
+            "d: dict[int, int] = {1: 10, 2: 20}\n"
+            "v: int = d.pop(1)\n"
+            "print(v, len(d), d[2])\n"
+        )
+        llvm_ir = _convert(source)
+
+        assert 'call i64 @"rawdict_del"' in _main_body(llvm_ir)
+        assert _run_main(llvm_ir) == "10 1 20\n"
+
+    def test_rawdict_pop_float_value(self):
+        """dict[int, float].pop bitcasts the removed bits back to f64."""
+        source = (
+            "f: dict[int, float] = {1: 0.5, 2: 2.5}\n"
+            "v: float = f.pop(2)\n"
+            "print(v, len(f))\n"
+        )
+
+        assert _run_main(_convert(source)) == "2.5 1\n"
+
+    def test_rawdict_boxing_after_delete(self):
+        """print(d) after del walks the index table, so deleted entries
+        stay deleted across the PyObject boundary."""
+        source = (
+            "d: dict[int, int] = {1: 10, 2: 20, 3: 30}\n"
+            "del d[2]\n"
+            "print(d)\n"
+        )
+
+        assert _run_main(_convert(source)) == "{1: 10, 3: 30}\n"
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_dynamic_dict_del_statement(self):
+        """Unannotated dicts delete through the boxed runtime."""
+        source = 'd = {1: "a", 2: "b"}\ndel d[1]\nprint(d, len(d))\n'
+
+        assert _run_main(_convert(source)) == "{2: 'b'} 1\n"
+        assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
 class TestLenWithoutBoxing:

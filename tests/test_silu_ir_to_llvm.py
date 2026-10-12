@@ -52,7 +52,10 @@ class TestSiluToLLVMConverter:
         """Generated LLVM IR must be valid assembly."""
         llvm_ir = _convert('x = 5\nprint("Result:", x)\n')
 
-        llvm.initialize()
+        try:
+            llvm.initialize()
+        except RuntimeError:
+            pass  # llvmlite >= 0.44 initializes automatically
         llvm.parse_assembly(llvm_ir)
 
     def test_user_function_generated_and_called(self):

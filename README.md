@@ -104,7 +104,9 @@ clang program.s -o program                    # Executable
 Type annotations drive the native representation: annotated `int` /
 `float` / `bool` scalars compile to unboxed machine values,
 `list[int]` / `list[float]` to raw element arrays,
-`dict[int, int]` / `dict[int, float]` to a machine-word hash dict and
+`dict[int, int]` / `dict[int, float]` to a machine-word hash dict
+(open addressing with tombstones; `del d[k]` / `d.pop(k)` run
+natively and a load-factor rehash compacts deleted entries) and
 annotated `str` to Rust-String-style raw slots (assignment copies,
 append grows in place) — no PyObject boxing on those paths.
 Unannotated scalars get the same treatment when a conservative
