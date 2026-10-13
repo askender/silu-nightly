@@ -59,20 +59,23 @@ pure numerics):
 
 | program | silu-int | cpython | binary | rust | vs cpython | vs rust |
 |---|---|---|---|---|---|---|
-| wordcount (300k freq updates, `dict[str, int]`) | 6.4s | 0.097s | 0.053s | 0.015s | 1.8x | 0.3x |
-| k-nucleotide (200k DNA 4-mers, slice + `dict[str, int]`) | 13.7s | 0.80s | 0.047s | 0.015s | 17.2x | 0.3x |
-| json-parse (3k objects, hand-rolled descent parser) | 1.9s | 0.070s | 0.151s | 0.004s | 0.5x | 0.03x |
+| wordcount (300k freq updates, `dict[str, int]`) | 6.4s | 0.083s | 0.020s | 0.017s | 4.1x | 0.9x |
+| k-nucleotide (200k DNA 4-mers, slice + `dict[str, int]`) | 15.3s | 0.82s | 0.012s | 0.015s | 70.6x | 1.3x |
+| json-parse (3k objects, hand-rolled descent parser) | 1.9s | 0.072s | 0.161s | 0.004s | 0.4x | 0.03x |
 
 These three did their job: they exposed and pinned real defects -
 boxed dicts that grew only at 100% load (a read probe on a full table
 spun forever), `str()` missing from the compiled backends, pylist
-unboxing reading the wrong struct, allocas inside loop bodies. The
-remaining gaps are structural: wordcount crosses a boxed-list -> raw
-conversion per iteration, k-nucleotide pays two dict ops per step
-where Rust fuses entry(), and json-parse allocates a rawstr per
-character where the Rust mirror is zero-copy. Closing those means a
-raw `list[str]`, a fused get-or-insert op, and allocation-free
-character views.
+unboxing reading the wrong struct, allocas inside loop bodies - and
+then drove three representation wins: native str-key dicts (FNV-1a
+over the same open-addressing table), view-based keys (a boxed str or
+an in-place slice becomes a stack window, no copy; `d[s[i:i+k]]`
+allocates nothing), and fused char-vs-constant comparisons (`s[i] ==
+"x"` is one call, no character object). wordcount and k-nucleotide
+are now at 0.9x/1.3x Rust. json-parse's remaining gap is structural:
+every parsed string/token still becomes a Python object and the
+containers are boxed - closing it means a raw `list[str]` and
+struct-like records, which is the next representation tier.
 
 Overall geometric mean: **~490x vs silu-int, 13.9x vs CPython, 1.0x
 vs hand-written Rust** across 11 programs - every workload is within
