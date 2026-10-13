@@ -2248,10 +2248,17 @@ class SiluToLLVMConverter:
             builder, dict_arg
         )
         out_slot = builder.alloca(i64, name="set_slot")
-        # grow the table BEFORE probing: a full table would send the
-        # probe loop circling forever without finding an empty slot
-        at_capacity = builder.icmp_signed("==", used, builder.add(mask, one64))
-        builder.cbranch(at_capacity, rehash_block, capacity_check)
+        # grow the table BEFORE probing at 2/3 load, not at full: a
+        # table that becomes exactly full after this insert would send
+        # the NEXT read-side probe (dict_get on a missing key never
+        # grows) circling forever without finding an empty slot
+        table_cap = builder.add(mask, one64)
+        load_exceeded = builder.icmp_signed(
+            ">",
+            builder.mul(builder.add(used, one64), ir.Constant(i64, 3)),
+            builder.mul(table_cap, ir.Constant(i64, 2)),
+        )
+        builder.cbranch(load_exceeded, rehash_block, capacity_check)
 
         builder.position_at_end(rehash_block)
         builder.call(self.dict_rehash, [dict_arg])

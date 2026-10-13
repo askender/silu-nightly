@@ -874,6 +874,28 @@ class TestCrossFunctionInference:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestBoxedDictFullTable:
+    def test_get_missing_on_full_boxed_dict(self):
+        """dict_set used to grow only at 100% load, so a read-side
+        probe on a full table never found an empty slot and spun
+        forever. Repro: variable str keys, get+set in one statement."""
+        source = (
+            "vocab = []\n"
+            "i = 0\n"
+            "while i < 100:\n"
+            '    vocab.append("w" + str(i))\n'
+            "    i += 1\n"
+            "d = {}\n"
+            "i = 0\n"
+            "while i < 300:\n"
+            "    w = vocab[(i * 48271 + 11) % 100]\n"
+            "    d[w] = d.get(w, 0) + 1\n"
+            "    i += 1\n"
+            'print(len(d), d["w5"])\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestStrConversion:
     def test_str_of_scalars_matches_interpreter(self):
         """str(x) works for int/float/bool/str and coerces into rawstr
