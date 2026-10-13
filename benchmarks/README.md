@@ -77,9 +77,13 @@ stdin (generated once by scripts/gen_json_input.py - generation is
 scaffolding, not measured work; CPython's 0.4x number reflects its C
 json module versus our hand-written parser loop). It collects names
 into a raw `list[str]` and slices each string once instead of
-per-char concat; the remaining gap vs hand-written Rust is cursor
-representation (a boxed `pos[0]` vs a register `&mut usize`) and
-function-boundary costs in the recursive-descent cluster.
+per-char concat. A cursor-idiom experiment (hoisting `pos[0]` into a
+plain `p: int` local with sync discipline at call boundaries) ran at
+the same 84ms as the boxed version - profiling places the gap to
+Rust in the per-character materialization (`ch = s[pos[0]]` allocates
+a one-char rawstr plus comparisons) and the recursive-descent call
+structure, not cursor boxing; the benchmark keeps the readable boxed
+form and the idiom remains available for hot single-function loops.
 
 Overall geometric mean: **~490x vs silu-int, 13.9x vs CPython, 1.0x
 vs hand-written Rust** across 11 programs - every workload is within
