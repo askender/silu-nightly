@@ -42,7 +42,9 @@ OBJ = "obj"
 ANNOTATION_KINDS = {"int": I64, "float": F64, "bool": I1}
 RAWLIST_I = "rawlist_i64"  # list[int]: Vec<i64>-style raw element array
 RAWLIST_F = "rawlist_f64"  # list[float]
-RAWLIST_KINDS = {RAWLIST_I: I64, RAWLIST_F: F64}
+RAWSTR = "rawstr"  # str: {len, cap, data} with exclusive slot ownership
+RAWLIST_S = "rawlist_str"  # list[str]: slots own a copy of each element
+RAWLIST_KINDS = {RAWLIST_I: I64, RAWLIST_F: F64, RAWLIST_S: RAWSTR}
 RAWDICT_II = "rawdict_ii"  # dict[int, int]: machine-word open addressing
 RAWDICT_IF = "rawdict_if"  # dict[int, float] (values as f64 bit patterns)
 RAWDICT_SI = "rawdict_si"  # dict[str, int]: same table, rawstr keys
@@ -54,7 +56,6 @@ RAWDICT_KINDS = {
     RAWDICT_SF: F64,
 }  # kind -> value kind
 RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF)  # kinds with rawstr keys
-RAWSTR = "rawstr"  # str: {len, cap, data} with exclusive slot ownership
 RAW_STORAGE_KINDS = {**RAWLIST_KINDS, **RAWDICT_KINDS, RAWSTR: RAWSTR}
 LLVM_KIND_TYPES = {
     I64: ir.IntType(64),
@@ -63,6 +64,7 @@ LLVM_KIND_TYPES = {
     RAWSTR: ir.PointerType(ir.IntType(8)),  # rawstr passes as i8* in ABIs
     RAWLIST_I: ir.PointerType(ir.IntType(8)),
     RAWLIST_F: ir.PointerType(ir.IntType(8)),
+    RAWLIST_S: ir.PointerType(ir.IntType(8)),
     RAWDICT_II: ir.PointerType(ir.IntType(8)),
     RAWDICT_IF: ir.PointerType(ir.IntType(8)),
     RAWDICT_SI: ir.PointerType(ir.IntType(8)),
@@ -1921,6 +1923,348 @@ class TypedCodegen(SiluToLLVMConverter):
         )
         builder.ret_void()
 
+        # ---- str lists: list[str] ----
+        # Same element-array layout as list[int] (8-byte slots holding
+        # rawstr pointers). The LIST owns a copy of every element
+        # (rawstr_copy on push/set); readers receive their own copy
+        # (an element read out is owned by the reading slot), so
+        # overwrite and scope drops free exactly what the list owns.
+
+        # void rawlist_str_push(i8* list, i8* s) - copies the string in
+        self.rawlist_str_push = ir.Function(
+            self.module,
+            ir.FunctionType(i64, [i8p, i8p]),
+            name="rawlist_str_push",
+        )
+        entry = self.rawlist_str_push.append_basic_block("entry")
+        grow_block = self.rawlist_str_push.append_basic_block("grow")
+        copy_block = self.rawlist_str_push.append_basic_block("grow_copy")
+        do_push = self.rawlist_str_push.append_basic_block("do_push")
+        builder = ir.IRBuilder(entry)
+        list_arg, elem_arg = self.rawlist_str_push.args
+        struct_ptr = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        length = builder.load(field(builder, struct_ptr, 0))
+        capacity = builder.load(field(builder, struct_ptr, 1))
+        builder.cbranch(
+            builder.icmp_signed("==", length, capacity), grow_block, do_push
+        )
+
+        builder.position_at_end(grow_block)
+        new_capacity = builder.mul(capacity, ir.Constant(i64, 2))
+        fresh = builder.call(
+            self.malloc,
+            [builder.mul(new_capacity, ir.Constant(i64, 8))],
+        )
+        builder.cbranch(
+            builder.icmp_signed(">", length, zero64), copy_block, do_push
+        )
+
+        builder.position_at_end(copy_block)
+        old_items = builder.load(field(builder, struct_ptr, 2))
+        builder.call(
+            self.memcpy,
+            [
+                fresh,
+                old_items,
+                builder.mul(length, ir.Constant(i64, 8)),
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        builder.store(new_capacity, field(builder, struct_ptr, 1))
+        builder.store(fresh, field(builder, struct_ptr, 2))
+        builder.branch(do_push)
+
+        builder.position_at_end(do_push)
+        items = builder.load(field(builder, struct_ptr, 2))
+        length_now = builder.load(field(builder, struct_ptr, 0))
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        owned = builder.call(self.rawstr_copy, [elem_arg])
+        builder.store(
+            builder.ptrtoint(owned, i64), builder.gep(items_i64, [length_now])
+        )
+        new_length = builder.add(length_now, one64)
+        builder.store(new_length, field(builder, struct_ptr, 0))
+        builder.ret(new_length)
+
+        # i8* rawlist_str_pop(i8* list) - drops the slot and returns a
+        # fresh copy (the popped value outlives the list)
+        self.rawlist_str_pop = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p]), name="rawlist_str_pop"
+        )
+        entry = self.rawlist_str_pop.append_basic_block("entry")
+        empty_block = self.rawlist_str_pop.append_basic_block("pop_empty")
+        ok_block = self.rawlist_str_pop.append_basic_block("pop_ok")
+        builder = ir.IRBuilder(entry)
+        struct_ptr = builder.bitcast(
+            self.rawlist_str_pop.args[0], ir.PointerType(self.raw_list_struct_type)
+        )
+        length = builder.load(field(builder, struct_ptr, 0))
+        builder.cbranch(
+            builder.icmp_signed("==", length, zero64), empty_block, ok_block
+        )
+
+        builder.position_at_end(empty_block)
+        msg = self._create_global_string_with_builder(
+            "IndexError: pop from empty list", builder
+        )
+        self._emit_panic(builder, msg)
+
+        builder.position_at_end(ok_block)
+        items = builder.load(field(builder, struct_ptr, 2))
+        last_index = builder.sub(length, one64)
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        slot = builder.gep(items_i64, [last_index])
+        bits = builder.load(slot)
+        copy = builder.call(
+            self.rawstr_copy, [builder.inttoptr(bits, i8p)]
+        )
+        builder.call(self.rawstr_free, [builder.inttoptr(bits, i8p)])
+        builder.store(zero64, slot)
+        builder.store(last_index, field(builder, struct_ptr, 0))
+        builder.ret(copy)
+
+        # void rawlist_str_set(i8* list, i64 index, i8* s) - bounds
+        # checked under SILU_CHECKS; frees the old element, stores a copy
+        self.rawlist_str_set = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i64, i8p]),
+            name="rawlist_str_set",
+        )
+        entry = self.rawlist_str_set.append_basic_block("entry")
+        neg_block = self.rawlist_str_set.append_basic_block("negative")
+        bounds_block = self.rawlist_str_set.append_basic_block("bounds")
+        ok_block = self.rawlist_str_set.append_basic_block("ok")
+        error_block = self.rawlist_str_set.append_basic_block("index_error")
+        builder = ir.IRBuilder(entry)
+        list_arg, index_arg, elem_arg = self.rawlist_str_set.args
+        struct_ptr = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        length = builder.load(field(builder, struct_ptr, 0))
+        builder.cbranch(
+            builder.icmp_signed("<", index_arg, zero64), neg_block, bounds_block
+        )
+
+        builder.position_at_end(neg_block)
+        adjusted = builder.add(index_arg, length)
+        builder.branch(bounds_block)
+
+        builder.position_at_end(bounds_block)
+        adj_phi = builder.phi(i64)
+        adj_phi.add_incoming(index_arg, entry)
+        adj_phi.add_incoming(adjusted, neg_block)
+        in_range = builder.icmp_signed("<", adj_phi, length)
+        if self.checks:
+            builder.cbranch(in_range, ok_block, error_block)
+        else:
+            builder.branch(ok_block)
+
+        builder.position_at_end(error_block)
+        msg = self._create_global_string_with_builder(
+            "IndexError: list assignment index out of range", builder
+        )
+        self._emit_panic(builder, msg)
+
+        builder.position_at_end(ok_block)
+        items = builder.load(field(builder, struct_ptr, 2))
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        slot = builder.gep(items_i64, [adj_phi])
+        old_bits = builder.load(slot)
+        is_dead = builder.icmp_signed("==", old_bits, zero64)
+        dead_block = self.rawlist_str_set.append_basic_block("set_dead")
+        live_block = self.rawlist_str_set.append_basic_block("set_live")
+        store_block = self.rawlist_str_set.append_basic_block("set_store")
+        builder.cbranch(is_dead, dead_block, live_block)
+
+        builder.position_at_end(dead_block)
+        builder.branch(store_block)
+
+        builder.position_at_end(live_block)
+        builder.call(self.rawstr_free, [builder.inttoptr(old_bits, i8p)])
+        builder.branch(store_block)
+
+        builder.position_at_end(store_block)
+        owned = builder.call(self.rawstr_copy, [elem_arg])
+        builder.store(builder.ptrtoint(owned, i64), slot)
+        builder.ret_void()
+
+        # i8* rawlist_str_get(i8* list, i64 index) - returns a fresh copy
+        # (the slot keeps its own); bounds like rawlist_str_set
+        self.rawlist_str_get = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i64]),
+            name="rawlist_str_get",
+        )
+        entry = self.rawlist_str_get.append_basic_block("entry")
+        neg_block = self.rawlist_str_get.append_basic_block("negative")
+        bounds_block = self.rawlist_str_get.append_basic_block("bounds")
+        ok_block = self.rawlist_str_get.append_basic_block("ok")
+        error_block = self.rawlist_str_get.append_basic_block("index_error")
+        builder = ir.IRBuilder(entry)
+        list_arg, index_arg = self.rawlist_str_get.args
+        struct_ptr = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        length = builder.load(field(builder, struct_ptr, 0))
+        builder.cbranch(
+            builder.icmp_signed("<", index_arg, zero64), neg_block, bounds_block
+        )
+
+        builder.position_at_end(neg_block)
+        adjusted = builder.add(index_arg, length)
+        builder.branch(bounds_block)
+
+        builder.position_at_end(bounds_block)
+        adj_phi = builder.phi(i64)
+        adj_phi.add_incoming(index_arg, entry)
+        adj_phi.add_incoming(adjusted, neg_block)
+        in_range = builder.icmp_signed("<", adj_phi, length)
+        if self.checks:
+            builder.cbranch(in_range, ok_block, error_block)
+        else:
+            builder.branch(ok_block)
+
+        builder.position_at_end(error_block)
+        msg = self._create_global_string_with_builder(
+            "IndexError: list index out of range", builder
+        )
+        self._emit_panic(builder, msg)
+
+        builder.position_at_end(ok_block)
+        items = builder.load(field(builder, struct_ptr, 2))
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        bits = builder.load(builder.gep(items_i64, [adj_phi]))
+        copy = builder.call(
+            self.rawstr_copy, [builder.inttoptr(bits, i8p)]
+        )
+        builder.ret(copy)
+
+        # i8* rawlist_str_ptr(i8* list, i64 index) - borrowed pointer for
+        # view positions (dict keys); no copy, no bounds re-check beyond
+        # the caller's
+        self.rawlist_str_ptr = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i64]),
+            name="rawlist_str_ptr",
+        )
+        builder = ir.IRBuilder(self.rawlist_str_ptr.append_basic_block("entry"))
+        list_arg, index_arg = self.rawlist_str_ptr.args
+        struct_ptr = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        items = builder.load(field(builder, struct_ptr, 2))
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        bits = builder.load(builder.gep(items_i64, [index_arg]))
+        builder.ret(builder.inttoptr(bits, i8p))
+
+        # i1 rawlist_str_contains(i8* list, i8* s) - rawstr_eq scan
+        self.rawlist_str_contains = ir.Function(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [i8p, i8p]),
+            name="rawlist_str_contains",
+        )
+        entry = self.rawlist_str_contains.append_basic_block("entry")
+        scan_cond = self.rawlist_str_contains.append_basic_block("scan_cond")
+        scan_body = self.rawlist_str_contains.append_basic_block("scan_body")
+        scan_step = self.rawlist_str_contains.append_basic_block("scan_step")
+        found_block = self.rawlist_str_contains.append_basic_block("found")
+        miss_block = self.rawlist_str_contains.append_basic_block("miss")
+        builder = ir.IRBuilder(entry)
+        list_arg, elem_arg = self.rawlist_str_contains.args
+        list_struct = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        list_len = builder.load(
+            builder.gep(list_struct, [zero32, ir.Constant(i32, 0)])
+        )
+        items = builder.load(
+            builder.gep(list_struct, [zero32, ir.Constant(i32, 2)])
+        )
+        idx_ptr = builder.alloca(i64, name="rlsc_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_cond)
+        idx = builder.load(idx_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, list_len), scan_body, miss_block
+        )
+
+        builder.position_at_end(scan_body)
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        bits = builder.load(builder.gep(items_i64, [idx]))
+        is_match = builder.call(
+            self.rawstr_eq,
+            [builder.inttoptr(bits, i8p), elem_arg],
+        )
+        builder.cbranch(is_match, found_block, scan_step)
+
+        builder.position_at_end(scan_step)
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(found_block)
+        builder.ret(ir.Constant(ir.IntType(1), 1))
+
+        builder.position_at_end(miss_block)
+        builder.ret(ir.Constant(ir.IntType(1), 0))
+
+        # void rawlist_str_clear(i8* list) - free every element, keep cap
+        self.rawlist_str_clear = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p]),
+            name="rawlist_str_clear",
+        )
+        entry = self.rawlist_str_clear.append_basic_block("entry")
+        clear_cond = self.rawlist_str_clear.append_basic_block("clear_cond")
+        clear_body = self.rawlist_str_clear.append_basic_block("clear_body")
+        clear_skip = self.rawlist_str_clear.append_basic_block("clear_skip")
+        clear_done = self.rawlist_str_clear.append_basic_block("clear_done")
+        builder = ir.IRBuilder(entry)
+        (clear_arg,) = self.rawlist_str_clear.args
+        clear_ptr = builder.bitcast(
+            clear_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        clear_len = builder.load(field(builder, clear_ptr, 0))
+        clear_items = builder.load(field(builder, clear_ptr, 2))
+        clear_i = builder.alloca(i64, name="rlcl_i")
+        builder.store(zero64, clear_i)
+        builder.branch(clear_cond)
+
+        builder.position_at_end(clear_cond)
+        idx = builder.load(clear_i)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, clear_len), clear_body, clear_done
+        )
+
+        builder.position_at_end(clear_body)
+        clear_items_i64 = builder.bitcast(clear_items, ir.PointerType(i64))
+        bits = builder.load(builder.gep(clear_items_i64, [idx]))
+        is_dead = builder.icmp_signed("==", bits, zero64)
+        dead_block = self.rawlist_str_clear.append_basic_block("cl_dead")
+        live_block = self.rawlist_str_clear.append_basic_block("cl_live")
+        builder.cbranch(is_dead, dead_block, live_block)
+
+        builder.position_at_end(dead_block)
+        builder.branch(clear_skip)
+
+        builder.position_at_end(live_block)
+        builder.call(self.rawstr_free, [builder.inttoptr(bits, i8p)])
+        builder.store(zero64, builder.gep(clear_items_i64, [idx]))
+        builder.branch(clear_skip)
+
+        builder.position_at_end(clear_skip)
+        builder.store(builder.add(idx, one64), clear_i)
+        builder.branch(clear_cond)
+
+        builder.position_at_end(clear_done)
+        builder.store(zero64, field(builder, clear_ptr, 0))
+        builder.ret_void()
+
+
+
+
         # i1 rawlist_contains_bits(i8* list, i64 elem_bits) - linear scan
         # over the machine-word elements (f64 elements compare as bits)
         self.rawlist_contains_bits = ir.Function(
@@ -2641,6 +2985,86 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.ret(result)
             setattr(self, f"rawdict_to_pydict_{tag}", func)
 
+        # PyObject* rawlist_str_to_pylist(i8* list, i64 length)
+        self.rawlist_str_to_pylist = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [i8p, i64]),
+            name="rawlist_str_to_pylist",
+        )
+        entry = self.rawlist_str_to_pylist.append_basic_block("entry")
+        loop_check = self.rawlist_str_to_pylist.append_basic_block("cvt_check")
+        loop_body = self.rawlist_str_to_pylist.append_basic_block("cvt_body")
+        loop_done = self.rawlist_str_to_pylist.append_basic_block("cvt_done")
+        builder = ir.IRBuilder(entry)
+        list_arg, length_arg = self.rawlist_str_to_pylist.args
+        src_struct = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        items = builder.load(field(builder, src_struct, 2))
+        result = builder.call(self.create_list, [])
+        idx_ptr = builder.alloca(i64, name="cvt_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_check)
+        i_val = builder.load(idx_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", i_val, length_arg), loop_body, loop_done
+        )
+
+        builder.position_at_end(loop_body)
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        bits = builder.load(builder.gep(items_i64, [i_val]))
+        boxed = builder.call(
+            self.rawstr_to_pystr, [builder.inttoptr(bits, i8p)]
+        )
+        builder.call(self.list_append, [result, boxed])
+        builder.store(builder.add(i_val, one64), idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_done)
+        builder.ret(result)
+
+        # i8* pylist_to_rawlist_str(PyObject* list) - box -> raw, copying
+        # each element (tag check: non-str elements panic)
+        self.pylist_to_rawlist_str = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [pyobj_ptr]),
+            name="pylist_to_rawlist_str",
+        )
+        entry = self.pylist_to_rawlist_str.append_basic_block("entry")
+        loop_check = self.pylist_to_rawlist_str.append_basic_block("p2s_check")
+        loop_body = self.pylist_to_rawlist_str.append_basic_block("p2s_body")
+        loop_done = self.pylist_to_rawlist_str.append_basic_block("p2s_done")
+        builder = ir.IRBuilder(entry)
+        (list_arg,) = self.pylist_to_rawlist_str.args
+        struct_ptr = builder.bitcast(
+            builder.load(builder.gep(list_arg, [zero32b, one32b])),
+            ir.PointerType(self.list_struct_type),
+        )
+        length = builder.load(field(builder, struct_ptr, 0))
+        items = builder.load(field(builder, struct_ptr, 2))
+        raw = builder.call(self.rawlist_new, [ir.Constant(i64, 8)])
+        idx_ptr = builder.alloca(i64, name="p2s_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_check)
+        i_val = builder.load(idx_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", i_val, length), loop_body, loop_done
+        )
+
+        builder.position_at_end(loop_body)
+        elem = builder.load(builder.gep(items, [i_val]))
+        raw_elem = builder.call(self.pystr_to_rawstr, [elem])
+        builder.call(self.rawlist_str_push, [raw, raw_elem])
+        builder.store(builder.add(i_val, one64), idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_done)
+        builder.ret(raw)
+
         # void rawlist_get(i8* list, i64 index, i8* out_ptr, i64 elem_size)
         # Bounds are checked; OOB aborts like list_get.
         self.rawlist_get = ir.Function(
@@ -2818,8 +3242,12 @@ class TypedCodegen(SiluToLLVMConverter):
         if kind == OBJ:
             return value
         if kind in RAWLIST_KINDS:
+            if kind == RAWLIST_S:
+                converter = self.rawlist_str_to_pylist
+            else:
+                converter = self.rawlist_to_pylist
             return self.current_builder.call(
-                self.rawlist_to_pylist,
+                converter,
                 [value, self.current_builder.call(self.rawlist_len, [value])],
             )
         if kind in RAWDICT_KINDS:
@@ -2842,6 +3270,10 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def _unbox(self, obj: Any, kind: str) -> Any:
         """PyObject* -> raw value of `kind` (panics on type mismatch)."""
+        if kind == RAWLIST_S:
+            return self.current_builder.call(
+                self.pylist_to_rawlist_str, [obj]
+            )
         if kind == I64:
             return self.current_builder.call(self.unbox_int, [obj])
         if kind == F64:
@@ -3750,6 +4182,11 @@ class TypedCodegen(SiluToLLVMConverter):
                 item_node,
                 self.rawdict_has, self.rawdict_str_has,
             )
+        elif container_tv[0] == RAWLIST_S:
+            elem = self._coerce(self._convert_node(item_node), RAWSTR)
+            result = self.current_builder.call(
+                self.rawlist_str_contains, [container_tv[1], elem[1]]
+            )
         elif container_tv[0] in RAWLIST_KINDS:
             elem_kind = RAWLIST_KINDS[container_tv[0]]
             elem = self._coerce(self._convert_node(item_node), elem_kind)
@@ -3812,6 +4249,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 return RAWLIST_I
             if element == F64:
                 return RAWLIST_F
+            if node[2][1] == "str":
+                return RAWLIST_S
         if (
             isinstance(node, list)
             and len(node) >= 3
@@ -3912,6 +4351,17 @@ class TypedCodegen(SiluToLLVMConverter):
             if op == "if_expr" and len(node) >= 4:
                 then_kind, else_kind = resolve(node[2]), resolve(node[3])
                 return then_kind if then_kind == else_kind else None
+            if op == "list":
+                # [str, str, ...] literal: raw str list when every
+                # element resolves to rawstr (a non-constant element
+                # resolves dynamically and keeps the list boxed)
+                elements = node[1] if len(node) >= 2 else []
+                if not elements:
+                    return None
+                kinds = [resolve(e) for e in elements]
+                if kinds and all(k == RAWSTR for k in kinds):
+                    return RAWLIST_S
+                return None
             if op == "call" and isinstance(node[1], list) and node[1][0] == "name":
                 callee = node[1][1]
                 if callee == "len":
@@ -3967,7 +4417,7 @@ class TypedCodegen(SiluToLLVMConverter):
         def add(name: str, kind: Optional[str]):
             if name in annotations:
                 return  # declared kind always wins
-            if kind not in (I64, F64, I1, RAWSTR):
+            if kind not in (I64, F64, I1, RAWSTR, RAWLIST_S):
                 kind = None
             if name not in candidates:
                 candidates[name] = kind
@@ -4014,6 +4464,8 @@ class TypedCodegen(SiluToLLVMConverter):
                             iter_kind = I64
                         elif resolved == RAWLIST_F:
                             iter_kind = F64
+                        elif resolved == RAWLIST_S:
+                            iter_kind = RAWSTR  # a copy per iteration
                         elif resolved == RAWSTR:
                             iter_kind = RAWSTR  # for ch in s: 1-byte str
                     # the IR spells assign targets as bare names but for
@@ -4723,6 +5175,31 @@ class TypedCodegen(SiluToLLVMConverter):
             ):
                 obj_tv = self._convert_node(target_node[1])
                 key_tv = self._convert_node(target_node[2])
+                if obj_tv[0] == RAWLIST_S:
+                    # l[i] <op>= v on str elements: copy-out, combine,
+                    # set (which drops the old slot and copies in)
+                    index = self._coerce(key_tv, I64)[1]
+                    current = (
+                        RAWSTR,
+                        self.current_builder.call(
+                            self.rawlist_str_get, [obj_tv[1], index]
+                        ),
+                    )
+                    result = self._typed_binop("+", current, right_tv) if bin_op == "+" else None
+                    if result is None:
+                        # unsupported op on strings: fallback via boxed
+                        current_boxed = self._box(current)
+                        result = self._typed_binop(
+                            bin_op, (OBJ, current_boxed), right_tv
+                        )
+                        coerced = self._coerce(result, RAWSTR)
+                    else:
+                        coerced = self._coerce(result, RAWSTR)
+                    self.current_builder.call(
+                        self.rawlist_str_set,
+                        [obj_tv[1], index, coerced[1]],
+                    )
+                    return coerced
                 if obj_tv[0] in RAWLIST_KINDS:
                     elem_kind = RAWLIST_KINDS[obj_tv[0]]
                     index = self._coerce(key_tv, I64)[1]
@@ -5099,6 +5576,16 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
                     return (value_kind, val_bits)
                 key_tv = self._convert_node(node[2])
+                if obj_tv[0] == RAWLIST_S:
+                    # element read hands the caller its own copy (slots
+                    # are shared; the reading slot owns the copy)
+                    index = self._coerce(key_tv, I64)[1]
+                    return (
+                        RAWSTR,
+                        self.current_builder.call(
+                            self.rawlist_str_get, [obj_tv[1], index]
+                        ),
+                    )
                 if obj_tv[0] in RAWLIST_KINDS:
                     elem_kind = RAWLIST_KINDS[obj_tv[0]]
                     index = self._coerce(key_tv, I64)[1]
@@ -5268,6 +5755,15 @@ class TypedCodegen(SiluToLLVMConverter):
         if op == "subscript_assign":
             if len(node) >= 4:
                 obj_tv = self._convert_node(node[1])
+                if obj_tv[0] == RAWLIST_S:
+                    # copy-on-write into the slot (old element freed)
+                    index = self._coerce(self._convert_node(node[2]), I64)[1]
+                    value = self._coerce(self._convert_node(node[3]), RAWSTR)
+                    self.current_builder.call(
+                        self.rawlist_str_set,
+                        [obj_tv[1], index, value[1]],
+                    )
+                    return (OBJ, null_obj)
                 if obj_tv[0] in RAWLIST_KINDS:
                     elem_kind = RAWLIST_KINDS[obj_tv[0]]
                     index = self._coerce(self._convert_node(node[2]), I64)[1]
@@ -5617,7 +6113,9 @@ class TypedCodegen(SiluToLLVMConverter):
     def _convert_rawlist_for_loop(
         self, target_node: Any, list_tv: Tuple[str, Any], body_stmts: list
     ) -> Tuple[str, Any]:
-        """for x in raw_list: x loads as an unboxed element."""
+        """for x in raw_list: x loads as an unboxed element. For str
+        lists the target receives a fresh copy each iteration (the
+        drop-on-overwrite slot discipline frees the previous one)."""
         i64 = ir.IntType(64)
         elem_kind = RAWLIST_KINDS[list_tv[0]]
         list_ptr = list_tv[1]
@@ -5666,10 +6164,18 @@ class TypedCodegen(SiluToLLVMConverter):
             element = self.current_builder.load(
                 self.current_builder.gep(items_i64, [index])
             )
-            if elem_kind == F64:
-                element = self.current_builder.bitcast(element, ir.DoubleType())
-            self._declare_var(var_name, elem_kind)
-            self.current_builder.store(element, self.variables[var_name])
+            if list_tv[0] == RAWLIST_S:
+                copy = self.current_builder.call(
+                    self.rawstr_copy,
+                    [self.current_builder.inttoptr(element, ir.PointerType(ir.IntType(8)))],
+                )
+                self._declare_var(var_name, RAWSTR)
+                self._store_rawstr(var_name, copy)
+            else:
+                if elem_kind == F64:
+                    element = self.current_builder.bitcast(element, ir.DoubleType())
+                self._declare_var(var_name, elem_kind)
+                self.current_builder.store(element, self.variables[var_name])
 
         for stmt in body_stmts:
             self._convert_statement(stmt)
@@ -5837,9 +6343,20 @@ class TypedCodegen(SiluToLLVMConverter):
         return b.select(two, ir.Constant(i64, 2), len3)
 
     def _build_raw_list(self, element_nodes: list, kind: str) -> Tuple[str, Any]:
-        """[a, b, c] literal stored into a rawlist-typed variable."""
+        """[a, b, c] literal stored into a rawlist-typed variable. Str
+        lists take copies of every element (the list owns them)."""
         i8p = ir.PointerType(ir.IntType(8))
         elem_kind = RAWLIST_KINDS[kind]
+        if kind == RAWLIST_S:
+            list_ptr = self.current_builder.call(
+                self.rawlist_new, [ir.Constant(ir.IntType(64), 8)]
+            )
+            for element_node in element_nodes:
+                elem = self._coerce(self._convert_node(element_node), RAWSTR)
+                self.current_builder.call(
+                    self.rawlist_str_push, [list_ptr, elem[1]]
+                )
+            return (kind, list_ptr)
         elem_size = self._rawlist_elem_size(kind)
         list_ptr = self.current_builder.call(
             self.rawlist_new,
@@ -5944,16 +6461,22 @@ class TypedCodegen(SiluToLLVMConverter):
                 list_ptr = raw_obj_tv[1]
                 if method_name == "append" and args_node:
                     elem = self._coerce(self._convert_node(args_node[0]), elem_kind)
-                    elem_bits = elem[1]
-                    if elem_kind == F64:
-                        # doubles travel as their bit pattern (8 bytes)
-                        elem_bits = self.current_builder.bitcast(
-                            elem[1], ir.IntType(64)
+                    if raw_kind == RAWLIST_S:
+                        # the list stores its own copy of the string
+                        self.current_builder.call(
+                            self.rawlist_str_push, [list_ptr, elem[1]]
                         )
-                    self.current_builder.call(
-                        self.rawlist_push,
-                        [list_ptr, elem_bits],
-                    )
+                    else:
+                        elem_bits = elem[1]
+                        if elem_kind == F64:
+                            # doubles travel as their bit pattern (8 bytes)
+                            elem_bits = self.current_builder.bitcast(
+                                elem[1], ir.IntType(64)
+                            )
+                        self.current_builder.call(
+                            self.rawlist_push,
+                            [list_ptr, elem_bits],
+                        )
                     return (raw_kind, list_ptr)
                 if method_name == "len":
                     return (
@@ -5961,12 +6484,24 @@ class TypedCodegen(SiluToLLVMConverter):
                         self.current_builder.call(self.rawlist_len, [list_ptr]),
                     )
                 if method_name == "pop" and not args_node:
+                    if raw_kind == RAWLIST_S:
+                        return (
+                            RAWSTR,
+                            self.current_builder.call(
+                                self.rawlist_str_pop, [list_ptr]
+                            ),
+                        )
                     return (
                         elem_kind,
                         self.current_builder.call(self.rawlist_pop, [list_ptr]),
                     )
                 if method_name == "clear" and not args_node:
-                    self.current_builder.call(self.rawlist_clear, [list_ptr])
+                    if raw_kind == RAWLIST_S:
+                        self.current_builder.call(
+                            self.rawlist_str_clear, [list_ptr]
+                        )
+                    else:
+                        self.current_builder.call(self.rawlist_clear, [list_ptr])
                     return (OBJ, ir.Constant(
                         ir.PointerType(self.pyobj.pyobj_type), None
                     ))

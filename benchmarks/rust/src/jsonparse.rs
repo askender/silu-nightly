@@ -78,13 +78,21 @@ fn main() {
     let data = parse_value(doc.as_bytes(), &mut pos);
     if let Json::Arr(items) = data {
         let mut total: i64 = 0;
+        let mut names: Vec<String> = Vec::new();
+        let mut checksum: i64 = 0;
         for item in &items {
             if let Json::Obj(map) = item {
                 if let Json::Int(v) = map["id"] {
                     total += v;
                 }
+                if let Json::Str(name) = &map["name"] {
+                    names.push(name.clone());
+                }
             }
         }
-        println!("{} {}", total, items.len());
+        for name in &names {
+            checksum += name.len() as i64;
+        }
+        println!("{} {} {} {}", total, items.len(), checksum, names.len());
     }
 }

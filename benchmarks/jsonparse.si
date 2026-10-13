@@ -26,12 +26,13 @@ def digit_value(ch: str) -> int:
     return 9
 
 def parse_string(s: str, pos: list[int]):
-    pos[0] += 1  # opening quote
-    out: str = ""
+    # scan to the closing quote, then one slice (no per-char concat)
+    pos[0] += 1
+    start: int = pos[0]
     while s[pos[0]] != '"':
-        out = out + s[pos[0]]
         pos[0] += 1
-    pos[0] += 1  # closing quote
+    out: str = s[start:pos[0]]
+    pos[0] += 1
     return out
 
 def parse_number(s: str, pos: list[int]) -> int:
@@ -82,10 +83,19 @@ while i < 3000:
     i += 1
 doc = doc + "]"
 
+# collect the parsed "name" values into a raw str list and checksum
+# them - exercises list[str] end to end
+names: list[str] = []
 data = parse_value(doc, [0])
 total: int = 0
 i = 0
 while i < len(data):
     total += data[i]["id"]
+    names.append(data[i]["name"])
     i += 1
-print(total, len(data))
+checksum: int = 0
+i = 0
+while i < len(names):
+    checksum += len(names[i])
+    i += 1
+print(total, len(data), checksum, len(names))

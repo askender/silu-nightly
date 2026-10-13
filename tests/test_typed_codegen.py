@@ -950,6 +950,82 @@ class TestRawStrDict:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestRawStrList:
+    def test_str_list_annotation_is_raw(self):
+        """list[str] uses the str-element raw array, not PyObject."""
+        llvm_ir = _convert(
+            'l: list[str] = ["a", "b"]\nl.append("c")\n'
+            'x: str = l[0]\nprint(len(l), x, l[-1])\n'
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'define i64 @"rawlist_str_push"' in llvm_ir
+        assert 'call i64 @"rawlist_str_push"' in main
+        assert 'call i8* @"rawlist_str_get"' in main
+        assert 'call void @"list_append"' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(
+            'l: list[str] = ["a", "b"]\nl.append("c")\n'
+            'x: str = l[0]\nprint(len(l), x, l[-1])\n'
+        )
+
+    def test_str_list_full_semantics(self):
+        """append/index/negative/set/pop/in/for/clear/boxing all match
+        the interpreter; reads copy (mutation isolation)."""
+        source = (
+            'words: list[str] = ["alpha", "beta"]\n'
+            'words.append("gamma")\n'
+            'print(len(words), words[0], words[-1])\n'
+            "w: str = words[1]\n"
+            'words[1] = "BETA"\n'
+            "print(w, words[1])\n"
+            'print("beta" in words, "BETA" in words)\n'
+            "p: str = words.pop()\n"
+            "print(p, len(words))\n"
+            "total: int = 0\n"
+            "for x in words:\n"
+            "    total += len(x)\n"
+            "print(total)\n"
+            "print(words)\n"
+            "words.clear()\n"
+            "print(len(words))\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_str_list_inferred_from_literal(self):
+        """u = ["a", "b"] with every element a str constant infers the
+        raw str list; a mixed literal stays boxed."""
+        llvm_ir = _convert('u = ["a", "b"]\nu.append("c")\nprint(u[0])\n')
+        main = _main_body(llvm_ir)
+
+        assert 'call i64 @"rawlist_str_push"' in main
+        assert _run_main(llvm_ir) == _run_interpreter(
+            'u = ["a", "b"]\nu.append("c")\nprint(u[0])\n'
+        )
+
+    def test_str_list_element_as_dict_key(self):
+        """d[l[i]] uses the borrowed pointer (no copy at the key)."""
+        source = (
+            'd: dict[str, int] = {}\n'
+            'l: list[str] = ["k0", "k1", "k2"]\n'
+            "i: int = 0\n"
+            "while i < 3:\n"
+            "    d[l[i]] = d.get(l[i], 0) + i\n"
+            "    i += 1\n"
+            'print(len(d), d["k1"])\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_str_list_multibyte(self):
+        """CJK elements keep code point semantics end to end."""
+        source = (
+            'l: list[str] = ["你好", "世界"]\n'
+            "print(len(l), l[0], l[1][1])\n"
+            'l[1] = "斯路"\n'
+            "print(l[1], len(l[1]))\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestCharCompareFusion:
     def test_char_vs_const_never_allocates(self):
         """s[i] == "x" fuses to rawstr_at_eq_cstr: no rawstr per

@@ -61,7 +61,7 @@ pure numerics):
 |---|---|---|---|---|---|---|
 | wordcount (300k freq updates, `dict[str, int]`) | 6.4s | 0.083s | 0.020s | 0.017s | 4.1x | 0.9x |
 | k-nucleotide (200k DNA 4-mers, slice + `dict[str, int]`) | 15.3s | 0.82s | 0.012s | 0.015s | 70.6x | 1.3x |
-| json-parse (3k objects, hand-rolled descent parser) | 1.9s | 0.072s | 0.161s | 0.004s | 0.4x | 0.03x |
+| json-parse (3k objects, hand-rolled descent parser + name collection into `list[str]`) | 2.3s | 0.087s | 0.19s | 0.005s | 0.4x | 0.03x |
 
 These three did their job: they exposed and pinned real defects -
 boxed dicts that grew only at 100% load (a read probe on a full table
@@ -72,10 +72,11 @@ over the same open-addressing table), view-based keys (a boxed str or
 an in-place slice becomes a stack window, no copy; `d[s[i:i+k]]`
 allocates nothing), and fused char-vs-constant comparisons (`s[i] ==
 "x"` is one call, no character object). wordcount and k-nucleotide
-are now at 0.9x/1.3x Rust. json-parse's remaining gap is structural:
-every parsed string/token still becomes a Python object and the
-containers are boxed - closing it means a raw `list[str]` and
-struct-like records, which is the next representation tier.
+are now at 0.9x/1.3x Rust. json-parse now collects names into a raw
+`list[str]` (copy-on-read, drop-on-overwrite) and slices each string
+once instead of per-char concat; its remaining gap is structural -
+objects still box into dicts - closing it means struct-like records,
+the next representation tier.
 
 Overall geometric mean: **~490x vs silu-int, 13.9x vs CPython, 1.0x
 vs hand-written Rust** across 11 programs - every workload is within
