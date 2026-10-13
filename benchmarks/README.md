@@ -61,7 +61,7 @@ pure numerics):
 |---|---|---|---|---|---|---|
 | wordcount (300k freq updates, `dict[str, int]`) | 6.4s | 0.083s | 0.020s | 0.017s | 4.1x | 0.9x |
 | k-nucleotide (200k DNA 4-mers, slice + `dict[str, int]`) | 15.3s | 0.82s | 0.012s | 0.015s | 70.6x | 1.3x |
-| json-parse (3k objects from stdin, hand-rolled descent parser + `list[str]` collection) | 1.6s | 0.037s | 0.082s | 0.004s | 0.4x | 0.05x |
+| json-parse (3k objects from stdin, hand-rolled descent parser + `list[str]` collection) | 1.6s | 0.037s | 0.076s | 0.004s | 0.4x | 0.06x |
 
 These three did their job: they exposed and pinned real defects -
 boxed dicts that grew only at 100% load (a read probe on a full table

@@ -82,6 +82,9 @@ class TypedCodegen(SiluToLLVMConverter):
         # (values wrap, out-of-range access is UB). Zero-division
         # checks always stay on - Rust also always checks those.
         self.checks = os.environ.get("SILU_CHECKS", "1") != "0"
+        # scalar cursor promotion (SILU_SCALARS=0 disables): a
+        # list[int] used only as x[0] in a scope becomes a local i64
+        self.scalar_cursors = os.environ.get("SILU_SCALARS", "1") != "0"
         # kind of every named variable in the current scope
         self.var_kinds: Dict[str, str] = {}
         # unannotated names promoted to raw storage by the assignment
@@ -98,6 +101,10 @@ class TypedCodegen(SiluToLLVMConverter):
         self._inferred_sigs: Dict[str, Tuple[List[str], Optional[str]]] = {}
         # dynamic-ABI functions with raw-typed proven parameters
         self._dyn_func_kinds: Dict[str, List[str]] = {}
+        # scope-local scalar cursor promotions: name -> element kind
+        # (empty when SILU_SCALARS=0; per-scope, see the inference walk)
+        self.cursor_kinds: Dict[str, str] = {}
+        self._cursor_slots: Dict[Any, Any] = {}
 
         # math intrinsics / libc used by ** (sqrt fast path, general pow)
         sqrt_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
@@ -3275,6 +3282,8 @@ class TypedCodegen(SiluToLLVMConverter):
             return self.current_builder.call(
                 self.pylist_to_rawlist_str, [obj]
             )
+        if kind == RAWLIST_I:
+            return self.current_builder.call(self.pylist_to_rawlist, [obj])
         if kind == I64:
             return self.current_builder.call(self.unbox_int, [obj])
         if kind == F64:
@@ -3506,6 +3515,39 @@ class TypedCodegen(SiluToLLVMConverter):
         if name in self.variables:
             return (OBJ, self.current_builder.load(self.variables[name]))
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _cursor_slot(self, name: str):
+        """The i64 slot backing a promoted scalar cursor (created once
+        per scope in the entry block; seeded from the boxed list)."""
+        slot_key = ("cursor", name)
+        if slot_key in self._cursor_slots:
+            return self._cursor_slots[slot_key]
+        saved_block = self.current_builder.block
+        builder = self.current_builder
+        entry = self.current_function.entry_basic_block
+        # the slot alloca sits with the other entry allocas; the one-time
+        # seed sits at the END of the entry block (before its terminator)
+        # - a seed emitted at the first *use* would re-run every loop
+        # iteration and clobber the cursor with the boxed list's stale [0]
+        builder.position_at_start(entry)
+        slot = builder.alloca(ir.IntType(64), name=f"{name}_cur")
+        builder.position_at_end(saved_block)
+        if entry.is_terminated:
+            builder.position_before(entry.terminator)
+        else:
+            builder.position_at_end(entry)
+        boxed = builder.load(self.variables[name])
+        out = builder.alloca(ir.IntType(64))
+        builder.call(
+            self.rawlist_get,
+            [boxed, ir.Constant(ir.IntType(64), 0),
+             builder.bitcast(out, ir.PointerType(ir.IntType(8))),
+             ir.Constant(ir.IntType(64), 8)],
+        )
+        builder.store(builder.load(out), slot)
+        builder.position_at_end(saved_block)
+        self._cursor_slots[slot_key] = slot
+        return slot
 
     def _entry_alloca(self, ty: Any, name: str):
         """Allocate in the function entry block (a mid-block alloca in a
@@ -4384,6 +4426,77 @@ class TypedCodegen(SiluToLLVMConverter):
 
         return resolve
 
+    def _param_shared_names(self) -> set:
+        """Names that appear as a parameter of more than one function:
+        their boxed list is shared across frames, so per-function slot
+        promotion would fork the cursor."""
+        seen: Dict[str, int] = {}
+        for func_def in self.function_defs.values():
+            for param in func_def[2] if len(func_def) > 2 else ():
+                seen[param] = seen.get(param, 0) + 1
+        return {name for name, count in seen.items() if count > 1}
+
+    def _infer_cursors(
+        self, stmts: list, shared: set = frozenset(),
+        annotations: Dict[str, str] = None,
+    ) -> Dict[str, str]:
+        annotations = annotations or {}
+        """Scalar cursor promotion for one scope (SILU_SCALARS=0 off).
+
+        pos: list[int] whose EVERY occurrence in this scope is the
+        one-element subscript pos[0] (read or write) behaves as a
+        plain scalar slot; the codegen keeps it in a local i64. Any
+        other use of the name - passing pos itself, len(pos), a
+        different index, pos = ... (rebind), a for-target - kills the
+        candidate. Failure mode is the ordinary boxed path, never
+        wrong code. One flat walk, no statement-type dispatch. The
+        result is scoped to the caller (no instance state)."""
+        if not self.scalar_cursors:
+            return {}
+        scalar_uses: Dict[str, int] = {}
+        other_uses: Dict[str, int] = {}
+
+        def count_uses(node):
+            if not isinstance(node, (list, tuple)):
+                return
+            if (
+                len(node) >= 3
+                and node[0] == "subscript"
+                and isinstance(node[1], (list, tuple))
+                and len(node[1]) >= 2
+                and node[1][0] == "name"
+                and isinstance(node[2], (list, tuple))
+                and len(node[2]) >= 2
+                and node[2][0] == "const"
+                and node[2][1] == 0
+            ):
+                name = node[1][1]
+                scalar_uses[name] = scalar_uses.get(name, 0) + 1
+                return  # the index expression belongs to other names
+            if (
+                isinstance(node, (list, tuple))
+                and len(node) >= 2
+                and node[0] == "name"
+                and isinstance(node[1], str)
+            ):
+                name = node[1]
+                other_uses[name] = other_uses.get(name, 0) + 1
+                return
+            for child in node:
+                count_uses(child)
+
+        count_uses(stmts)
+        # only int-element lists promote in this first cut: the slot is
+        # an i64 and f64 slots need bit-pattern care end to end
+        return {
+            name: RAWLIST_I
+            for name, sc in scalar_uses.items()
+            if sc > 0
+            and other_uses.get(name, 0) == 0
+            and name not in shared
+            and annotations.get(name) == RAWLIST_I
+        }
+
     def _infer_assign_kinds(
         self, stmts: list, param_kinds: Optional[Dict[str, str]] = None
     ) -> Dict[str, str]:
@@ -4495,6 +4608,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 # introduce no assignments in this scope
 
         walk(stmts)
+
         return {
             name: kind for name, kind in candidates.items() if kind is not None
         }
@@ -4801,6 +4915,20 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
         self.current_ret_kind = ret_kind
+        old_cursor_kinds = self.cursor_kinds
+        old_cursor_slots = self._cursor_slots
+        param_annotations = func_def[4] if len(func_def) > 4 else ()
+        param_kind_env = {
+            pname: self._annotation_kind(
+                param_annotations[index]
+                if index < len(param_annotations) else None
+            ) or OBJ
+            for index, pname in enumerate(func_def[2])
+        }
+        self.cursor_kinds = self._infer_cursors(
+            func_def[3], self._param_shared_names(), param_kind_env
+        )
+        self._cursor_slots = {}
         self._inferred_kinds = self._infer_assign_kinds(
             func_def[3],
             {
@@ -4859,6 +4987,8 @@ class TypedCodegen(SiluToLLVMConverter):
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
+        self.cursor_kinds = old_cursor_kinds
+        self._cursor_slots = old_cursor_slots
         self._scope_depth = getattr(self, "_scope_depth", 1) - 1
 
     def _generate_dynamic_function_body(self, func: ir.Function, func_def: list):
@@ -4874,6 +5004,19 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
         self.current_ret_kind = None
+        old_cursor_kinds = self.cursor_kinds
+        old_cursor_slots = self._cursor_slots
+        self.cursor_kinds = self._infer_cursors(
+            func_def[3],
+            self._param_shared_names(),
+            {
+                name: kind
+                for name, kind in self._dyn_func_kinds.get(
+                    func_def[1], []
+                ) and {} or {}
+            },
+        )
+        self._cursor_slots = {}
         self._scope_depth = getattr(self, "_scope_depth", 0) + 1
         if self._scope_depth == 1:
             self._module_vars = set(self.variables.keys())
@@ -4926,6 +5069,8 @@ class TypedCodegen(SiluToLLVMConverter):
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
+        self.cursor_kinds = old_cursor_kinds
+        self._cursor_slots = old_cursor_slots
         self._scope_depth = getattr(self, "_scope_depth", 1) - 1
 
     # ================== statement / expression dispatch ==================
@@ -5182,6 +5327,20 @@ class TypedCodegen(SiluToLLVMConverter):
                 and len(target_node) >= 3
                 and target_node[0] == "subscript"
             ):
+                if (
+                    isinstance(target_node[1], (list, tuple))
+                    and len(target_node[1]) >= 2
+                    and target_node[1][0] == "name"
+                    and target_node[1][1] in self.cursor_kinds
+                    and isinstance(target_node[2], (list, tuple))
+                    and target_node[2][:2] == ["const", 0]
+                ):
+                    slot = self._cursor_slot(target_node[1][1])
+                    current = (I64, self.current_builder.load(slot))
+                    result = self._typed_binop(bin_op, current, right_tv)
+                    coerced = self._coerce(result, I64)
+                    self.current_builder.store(coerced[1], slot)
+                    return coerced
                 obj_tv = self._convert_node(target_node[1])
                 key_tv = self._convert_node(target_node[2])
                 if obj_tv[0] == RAWLIST_S:
@@ -5568,6 +5727,22 @@ class TypedCodegen(SiluToLLVMConverter):
 
         if op == "subscript":
             if len(node) >= 3:
+                # scalar cursor read: pos[0] on a promoted name is a
+                # plain i64 load (the slot exists in this scope only)
+                if (
+                    isinstance(node[1], (list, tuple))
+                    and len(node[1]) >= 2
+                    and node[1][0] == "name"
+                    and node[1][1] in self.cursor_kinds
+                    and isinstance(node[2], (list, tuple))
+                    and node[2][:2] == ["const", 0]
+                ):
+                    return (
+                        I64,
+                        self.current_builder.load(
+                            self._cursor_slot(node[1][1])
+                        ),
+                    )
                 obj_tv = self._convert_node(node[1])
                 if obj_tv[0] in RAWDICT_KINDS:
                     # machine-word lookup; rawdict_get panics KeyError
@@ -5763,6 +5938,21 @@ class TypedCodegen(SiluToLLVMConverter):
 
         if op == "subscript_assign":
             if len(node) >= 4:
+                if (
+                    isinstance(node[1], (list, tuple))
+                    and len(node[1]) >= 2
+                    and node[1][0] == "name"
+                    and node[1][1] in self.cursor_kinds
+                    and isinstance(node[2], (list, tuple))
+                    and node[2][:2] == ["const", 0]
+                ):
+                    value = self._coerce(
+                        self._convert_node(node[3]), I64
+                    )
+                    self.current_builder.store(
+                        value[1], self._cursor_slot(node[1][1])
+                    )
+                    return (OBJ, null_obj)
                 obj_tv = self._convert_node(node[1])
                 if obj_tv[0] == RAWLIST_S:
                     # copy-on-write into the slot (old element freed)

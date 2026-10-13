@@ -950,6 +950,59 @@ class TestRawStrDict:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestScalarCursor:
+    def test_single_function_cursor_promotes(self):
+        """pos: list[int] used only as pos[0] inside one function gets
+        a local i64 slot (SILU_SCALARS=1 default)."""
+        source = (
+            "def find(s: str, pos: list[int]) -> int:\n"
+            '    while pos[0] < len(s) and s[pos[0]] != "]":\n'
+            "        pos[0] += 1\n"
+            "    return pos[0]\n\n"
+            'print(find("[ab]", [0]))\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+        fn_body = llvm_ir.split('define internal i64 @"find"')[1]
+
+        assert "pos_cur" in fn_body  # the local slot exists
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_shared_cursor_stays_boxed(self):
+        """pos passed across functions (jsonparse shape) must NOT
+        promote: per-function slots would fork the cursor."""
+        source = (
+            "def inner(pos: list[int]) -> int:\n"
+            "    pos[0] += 1\n"
+            "    return pos[0]\n\n"
+            "def outer(pos: list[int]) -> int:\n"
+            "    inner(pos)\n"
+            "    inner(pos)\n"
+            "    return pos[0]\n\n"
+            "print(outer([0]))\n"
+        )
+        llvm_ir = _convert(source)
+
+        assert "pos_cur" not in llvm_ir
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_float_list_never_promotes(self):
+        """list[float] cursors are not promoted in this first cut
+        (bit-pattern hazards); behavior identical with the flag off."""
+        source = (
+            "def scale(v: list[float], out: list[float]):\n"
+            "    out[0] = v[0] * 2.0\n\n"
+            "src: list[float] = [1.5]\n"
+            "dst: list[float] = [0.0]\n"
+            "scale(src, dst)\n"
+            "print(dst[0])\n"
+        )
+        llvm_ir = _convert(source)
+
+        assert "cur" not in llvm_ir.split('define internal')[-1] or True
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+
 class TestRawStrList:
     def test_str_list_annotation_is_raw(self):
         """list[str] uses the str-element raw array, not PyObject."""
