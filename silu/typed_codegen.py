@@ -1650,6 +1650,39 @@ class TypedCodegen(SiluToLLVMConverter):
             setdefault_miss,
         )
 
+        # i8* rawdict_int_slotof(i8* d, i64 key) - pointer to the
+        # value's storage slot (must exist; entry() guarantees it)
+        def slotof_hit(b, func, entry_index, _slot, _table):
+            vals_now = b.load(dfield(b, probe_struct(b, func), 6))
+            b.ret(b.bitcast(b.gep(vals_now, [entry_index]), i8p))
+
+        def slotof_miss(b, func):
+            self._emit_panic(b, b.gep(key_error_msg, [zero32, zero32]))
+
+        self.rawdict_int_slotof = emit_rawdict_probe(
+            "rawdict_int_slotof", i8p, [i8p, i64], slotof_hit, slotof_miss
+        )
+
+        # i8* rawdict_int_entry(i8* d, i64 key, i64 default_bits) -
+        # Rust's entry().or_insert(): one probe on the hit path; the
+        # miss path inserts the default and re-probes (misses are the
+        # rare first sighting of each key)
+        def int_entry_miss(b, func):
+            b.call(
+                self.rawdict_set,
+                [func.args[0], func.args[1], func.args[2]],
+            )
+            b.ret(
+                b.call(
+                    self.rawdict_int_slotof, [func.args[0], func.args[1]]
+                )
+            )
+
+        self.rawdict_int_entry = emit_rawdict_probe(
+            "rawdict_int_entry", i8p, [i8p, i64, i64],
+            slotof_hit, int_entry_miss,
+        )
+
         # void rawdict_clear(i8* d) - keep the table, drop every entry
         self.rawdict_clear = ir.Function(
             self.module, ir.FunctionType(ir.VoidType(), [i8p]),
@@ -2266,6 +2299,33 @@ class TypedCodegen(SiluToLLVMConverter):
                 str_value_at(b, func, entry_index)
             ),
             str_setdefault_miss,
+        )
+
+        # i8* rawdict_str_slotof(i8* d, i8* key) - value slot pointer
+        def str_slotof_hit(b, func, entry_index, _slot, _table):
+            vals_now = b.load(dfield(b, str_probe_struct(b, func), 6))
+            b.ret(b.bitcast(b.gep(vals_now, [entry_index]), i8p))
+
+        self.rawdict_str_slotof = emit_rawdict_str_probe(
+            "rawdict_str_slotof", i8p, [i8p, i8p], str_slotof_hit,
+            str_key_error,
+        )
+
+        # i8* rawdict_str_entry(i8* d, i8* key, i64 default_bits)
+        def str_entry_miss(b, func):
+            b.call(
+                self.rawdict_str_set,
+                [func.args[0], func.args[1], func.args[2]],
+            )
+            b.ret(
+                b.call(
+                    self.rawdict_str_slotof, [func.args[0], func.args[1]]
+                )
+            )
+
+        self.rawdict_str_entry = emit_rawdict_str_probe(
+            "rawdict_str_entry", i8p, [i8p, i8p, i64],
+            str_slotof_hit, str_entry_miss,
         )
 
         # void rawdict_str_clear(i8* d) - free every key copy, keep table
@@ -4831,6 +4891,65 @@ class TypedCodegen(SiluToLLVMConverter):
                 if obj_tv[0] in RAWDICT_KINDS:
                     key_tv = self._convert_node(node[2])
                     value_kind = RAWDICT_KINDS[obj_tv[0]]
+
+                    # d[k] = d.get(k, default) <op> rhs - the counting
+                    # idiom. One probe via entry() (Rust's
+                    # entry().or_insert) instead of get+set's two.
+                    value_node = node[3]
+                    if (
+                        isinstance(value_node, list)
+                        and len(value_node) >= 3
+                        and isinstance(value_node[1], list)
+                        and len(value_node[1]) >= 3
+                        and value_node[1][0] == "call"
+                        and isinstance(value_node[1][1], list)
+                        and len(value_node[1][1]) >= 3
+                        and value_node[1][1][0] == "attribute"
+                        and value_node[1][1][1] == node[1]
+                        and value_node[1][1][2] == "get"
+                        and isinstance(value_node[1][2], (list, tuple))
+                        and len(value_node[1][2]) == 2
+                        and value_node[1][2][0] == node[2]
+                    ):
+                        binop = value_node[0]
+                        default_bits_tv = self._coerce(
+                            self._convert_node(value_node[1][2][1]),
+                            value_kind,
+                        )
+                        default_bits = default_bits_tv[1]
+                        if value_kind == F64:
+                            default_bits = self.current_builder.bitcast(
+                                default_bits, ir.IntType(64)
+                            )
+                        right_tv = self._convert_node(value_node[2])
+                        slot = self._rawdict_key_call(
+                            obj_tv[0], obj_tv[1], key_tv,
+                            self.rawdict_int_entry, self.rawdict_str_entry,
+                            (default_bits,),
+                        )
+                        slot_i64 = self.current_builder.bitcast(
+                            slot, ir.PointerType(ir.IntType(64))
+                        )
+                        current_bits = self.current_builder.load(slot_i64)
+                        if value_kind == F64:
+                            current_tv = (
+                                F64,
+                                self.current_builder.bitcast(
+                                    current_bits, ir.DoubleType()
+                                ),
+                            )
+                        else:
+                            current_tv = (I64, current_bits)
+                        result = self._typed_binop(binop, current_tv, right_tv)
+                        coerced = self._coerce(result, value_kind)
+                        store_bits = coerced[1]
+                        if value_kind == F64:
+                            store_bits = self.current_builder.bitcast(
+                                store_bits, ir.IntType(64)
+                            )
+                        self.current_builder.store(store_bits, slot_i64)
+                        return (OBJ, null_obj)
+
                     value = self._coerce(self._convert_node(node[3]), value_kind)
                     val_bits = value[1]
                     if value_kind == F64:

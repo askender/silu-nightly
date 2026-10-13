@@ -950,6 +950,58 @@ class TestRawStrDict:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestDictEntryFusion:
+    def test_counting_idiom_uses_entry(self):
+        """d[k] = d.get(k, 0) + v compiles to one probe via
+        rawdict_*_entry (Rust's entry().or_insert), not get+set."""
+        for annotation, fn in (
+            ("dict[str, int]", "rawdict_str_entry"),
+            ("dict[int, int]", "rawdict_int_entry"),
+        ):
+            llvm_ir = _convert(
+                f"d: {annotation} = {{}}\n"
+                "i: int = 0\n"
+                "while i < 100:\n"
+                + (
+                    '    k: str = "k" + str(i % 10)\n'
+                    if annotation.startswith("dict[str")
+                    else "    k: int = i % 10\n"
+                )
+                + "    d[k] = d.get(k, 0) + 1\n"
+                "    i += 1\n"
+                "print(len(d))\n"
+            )
+            main = _main_body(llvm_ir)
+            assert f'call i8* @"{fn}"' in main
+
+    def test_entry_idiom_matches_interpreter(self):
+        source = (
+            'd: dict[str, int] = {}\n'
+            "i: int = 0\n"
+            "while i < 1000:\n"
+            '    w: str = "k" + str(i % 50)\n'
+            "    d[w] = d.get(w, 0) + 1\n"
+            "    i += 1\n"
+            'print(len(d), d["k7"])\n'
+            "e: dict[int, float] = {}\n"
+            "i = 0\n"
+            "while i < 100:\n"
+            "    e[i % 10] = e.get(i % 10, 0.5) * 2.0\n"
+            "    i += 1\n"
+            "print(len(e), e[3])\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_plain_set_still_plain(self):
+        """d[k] = v (no get idiom) must NOT use entry()."""
+        llvm_ir = _convert(
+            'd: dict[str, int] = {}\nd["a"] = 5\nprint(d["a"])\n'
+        )
+        main = _main_body(llvm_ir)
+        assert "rawdict_str_entry" not in main
+        assert 'call void @"rawdict_str_set"' in main
+
+
 class TestBoxedDictFullTable:
     def test_get_missing_on_full_boxed_dict(self):
         """dict_set used to grow only at 100% load, so a read-side
