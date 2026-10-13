@@ -1427,6 +1427,69 @@ class TypedCodegen(SiluToLLVMConverter):
         slice_struct = build_rawstr(out_len, out_len, out_buf, out_cp)
         builder.ret(builder.bitcast(slice_struct, i8p))
 
+        # {i8*, i64} rawstr_slice_parts(i8* s, i64 lo, i64 hi) - the
+        # slice's (data, len) without allocating anything; for
+        # immediately-consumed positions (dict keys)
+        self.rawstr_slice_parts = ir.Function(
+            self.module,
+            ir.FunctionType(
+                ir.LiteralStructType([i8p, i64]), [i8p, i64, i64]
+            ),
+            name="rawstr_slice_parts",
+        )
+        entry = self.rawstr_slice_parts.append_basic_block("entry")
+        ascii_block = self.rawstr_slice_parts.append_basic_block("ascii")
+        walk_block = self.rawstr_slice_parts.append_basic_block("walk")
+        join_block = self.rawstr_slice_parts.append_basic_block("join")
+        builder = ir.IRBuilder(entry)
+        s_arg, lo_arg, hi_arg = self.rawstr_slice_parts.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_cp = load_cp(builder, s_struct)
+        s_data = load_data(builder, s_struct)
+
+        def clamp_view_bound(b, bound):
+            adjusted = b.select(
+                b.icmp_signed("<", bound, zero64), b.add(bound, s_cp), bound
+            )
+            floored = b.select(
+                b.icmp_signed("<", adjusted, zero64), zero64, adjusted
+            )
+            return b.select(b.icmp_signed(">", floored, s_cp), s_cp, floored)
+
+        lo_eff = clamp_view_bound(builder, lo_arg)
+        hi_eff = clamp_view_bound(builder, hi_arg)
+        is_ascii = builder.icmp_signed(
+            "==", load_len(builder, s_struct), s_cp
+        )
+        builder.cbranch(is_ascii, ascii_block, walk_block)
+
+        builder.position_at_end(ascii_block)
+        builder.branch(join_block)
+
+        builder.position_at_end(walk_block)
+        walked_lo = builder.call(self.rawutf8_cp_offset, [s_data, lo_eff])
+        walked_hi = builder.call(self.rawutf8_cp_offset, [s_data, hi_eff])
+        builder.branch(join_block)
+
+        builder.position_at_end(join_block)
+        off_lo = builder.phi(i64)
+        off_lo.add_incoming(lo_eff, ascii_block)
+        off_lo.add_incoming(walked_lo, walk_block)
+        off_hi = builder.phi(i64)
+        off_hi.add_incoming(hi_eff, ascii_block)
+        off_hi.add_incoming(walked_hi, walk_block)
+        span_cp = builder.sub(hi_eff, lo_eff)
+        has_span = builder.icmp_signed(">", span_cp, zero64)
+        raw_span = builder.sub(off_hi, off_lo)
+        out_len = builder.select(has_span, raw_span, zero64)
+        out_data = builder.select(
+            has_span, builder.gep(s_data, [off_lo]), s_data
+        )
+        result = ir.Constant(ir.LiteralStructType([i8p, i64]), ir.Undefined)
+        result = builder.insert_value(result, out_data, 0)
+        result = builder.insert_value(result, out_len, 1)
+        builder.ret(result)
+
         # i1 rawstr_contains(i8* haystack, i8* needle) - substring scan;
         # the empty needle is contained (Python: "" in s is True)
         self.rawstr_contains = ir.Function(
@@ -2877,6 +2940,17 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, self.current_builder.load(self.variables[name]))
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
+    def _entry_alloca(self, ty: Any, name: str):
+        """Allocate in the function entry block (a mid-block alloca in a
+        loop would grow the stack per iteration)."""
+        saved_block = self.current_builder.block
+        self.current_builder.position_at_start(
+            self.current_function.entry_basic_block
+        )
+        slot = self.current_builder.alloca(ty, name=name)
+        self.current_builder.position_at_end(saved_block)
+        return slot
+
     def _store_rawstr(self, name: str, new_ptr: Any):
         """Drop the slot's previous buffer (Rust drop on overwrite), then
         store the new one. Ownership is exclusive, so freeing the old
@@ -3269,7 +3343,156 @@ class TypedCodegen(SiluToLLVMConverter):
     def _rawdict_call_fn(kind: str, int_fn: Any, str_fn: Any):
         return str_fn if kind in RAWDICT_STR_KINDS else int_fn
 
+    def _rawstr_stack_view(self, data_ptr: Any, byte_len: Any):
+        """A stack rawstr struct pointing at borrowed bytes - heap-free
+        for dict key operations (the dict only reads, or copies on
+        insert). Allocated in the entry block so loops reuse the slot."""
+        view = self._entry_alloca(self.rawstr_struct_type, "str_view")
+        for field_index, field_value in (
+            (0, byte_len),
+            (1, byte_len),
+            (3, byte_len),  # cp_len unused by dict ops; keep it sane
+        ):
+            self.current_builder.store(
+                field_value,
+                self.current_builder.gep(
+                    view,
+                    [
+                        ir.Constant(ir.IntType(32), 0),
+                        ir.Constant(ir.IntType(32), field_index),
+                    ],
+                ),
+            )
+        self.current_builder.store(
+            data_ptr,
+            self.current_builder.gep(
+                view,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 2)],
+            ),
+        )
+        return self.current_builder.bitcast(view, ir.PointerType(ir.IntType(8)))
+
+    def _rawstr_key_view_node(self, key_node: Any):
+        """(ptr, temp) for a str-dict key position. A slice with
+        explicit bounds becomes a view of the parent's bytes (no
+        allocation); a boxed str is viewed through its PyObject buffer
+        (no conversion); a rawstr is borrowed; anything else coerces
+        (pystr_to_rawstr) and is freed by the caller."""
+        # d[s[lo:hi]]: view into s, never materializing the slice
+        if (
+            isinstance(key_node, list)
+            and len(key_node) >= 3
+            and key_node[0] == "subscript"
+            and isinstance(key_node[2], list)
+            and len(key_node[2]) >= 4
+            and key_node[2][0] == "slice"
+            and key_node[2][1] is not None
+            and key_node[2][2] is not None
+            and (
+                key_node[2][3] is None
+                or (
+                    isinstance(key_node[2][3], list)
+                    and key_node[2][3][:2] == ["const", 1]
+                )
+            )
+        ):
+            base_tv = self._convert_node(key_node[1])
+            if base_tv[0] == RAWSTR:
+                lo = self._coerce(
+                    self._convert_node(key_node[2][1]), I64
+                )[1]
+                hi = self._coerce(
+                    self._convert_node(key_node[2][2]), I64
+                )[1]
+                parts = self.current_builder.call(
+                    self.rawstr_slice_parts, [base_tv[1], lo, hi]
+                )
+                data = self.current_builder.extract_value(parts, 0)
+                length = self.current_builder.extract_value(parts, 1)
+                return self._rawstr_stack_view(data, length), None
+
+        return self._rawstr_key_view_tv(self._convert_node(key_node))
+
+    def _rawstr_key_view_tv(self, key_tv):
+        """(ptr, temp) view/borrow for an already-evaluated key value."""
+        if key_tv[0] == RAWSTR:
+            return key_tv[1], None
+        if key_tv[0] == OBJ:
+            # view the boxed string's buffer in place; tag-checked so a
+            # non-str key fails with the same TypeError as a conversion
+            obj = key_tv[1]
+            tag = self.current_builder.load(
+                self.current_builder.gep(
+                    obj, [ir.Constant(ir.IntType(32), 0),
+                          ir.Constant(ir.IntType(32), 0)]
+                )
+            )
+            is_str = self.current_builder.icmp_signed(
+                "==", tag, ir.Constant(ir.IntType(32), 2)
+            )
+            func = self.current_builder.function
+            ok_block = func.append_basic_block("key_str_ok")
+            err_block = func.append_basic_block("key_str_err")
+            self.current_builder.cbranch(is_str, ok_block, err_block)
+
+            self.current_builder.position_at_end(err_block)
+            msg = self._create_global_string_with_builder(
+                "TypeError: expected str key", self.current_builder
+            )
+            self._emit_panic(self.current_builder, msg)
+
+            self.current_builder.position_at_end(ok_block)
+            str_struct = self.current_builder.bitcast(
+                self.current_builder.load(
+                    self.current_builder.gep(
+                        obj, [ir.Constant(ir.IntType(32), 0),
+                              ir.Constant(ir.IntType(32), 1)]
+                    )
+                ),
+                ir.PointerType(self.pyobj.string_type),
+            )
+            chars = self.current_builder.load(
+                self.current_builder.gep(
+                    str_struct, [ir.Constant(ir.IntType(32), 0),
+                                 ir.Constant(ir.IntType(32), 1)]
+                )
+            )
+            box_len = self.current_builder.load(
+                self.current_builder.gep(
+                    str_struct, [ir.Constant(ir.IntType(32), 0),
+                                 ir.Constant(ir.IntType(32), 0)]
+                )
+            )
+            wide_len = self.current_builder.sext(box_len, ir.IntType(64))
+            return self._rawstr_stack_view(chars, wide_len), None
+        coerced = self._coerce(key_tv, RAWSTR)
+        return coerced[1], coerced[1]
+
     def _rawdict_key_call(
+        self,
+        kind: str,
+        dict_ptr: Any,
+        key_node: Any,
+        int_fn: Any,
+        str_fn: Any,
+        tail_args: tuple = (),
+    ):
+        """Call a rawdict key operation; a coerced key temporary is
+        freed right after the call."""
+        if kind in RAWDICT_STR_KINDS:
+            key, temp = self._rawstr_key_view_node(key_node)
+        else:
+            key = self._coerce(self._convert_node(key_node), I64)[1]
+            temp = None
+        result = self.current_builder.call(
+            self._rawdict_call_fn(kind, int_fn, str_fn),
+            [dict_ptr, key, *tail_args],
+        )
+        if temp is not None:
+            self.current_builder.call(self.rawstr_free, [temp])
+        return result
+
+    def _rawdict_key_call_tv(
         self,
         kind: str,
         dict_ptr: Any,
@@ -3278,14 +3501,13 @@ class TypedCodegen(SiluToLLVMConverter):
         str_fn: Any,
         tail_args: tuple = (),
     ):
-        """Call a rawdict key operation; a key coerced from a non-rawstr
-        value is a temporary freed right after the call."""
-        key = self._rawdict_key_from_tv(kind, key_tv)
-        temp = (
-            key
-            if kind in RAWDICT_STR_KINDS and key_tv[0] != RAWSTR
-            else None
-        )
+        """Like _rawdict_key_call but for an already-evaluated key
+        (the caller converted it to share with sibling branches)."""
+        if kind in RAWDICT_STR_KINDS:
+            key, temp = self._rawstr_key_view_tv(key_tv)
+        else:
+            key = self._coerce(key_tv, I64)[1]
+            temp = None
         result = self.current_builder.call(
             self._rawdict_call_fn(kind, int_fn, str_fn),
             [dict_ptr, key, *tail_args],
@@ -3310,7 +3532,7 @@ class TypedCodegen(SiluToLLVMConverter):
         elif container_tv[0] in RAWDICT_KINDS:
             result = self._rawdict_key_call(
                 container_tv[0], container_tv[1],
-                self._convert_node(item_node),
+                item_node,
                 self.rawdict_has, self.rawdict_str_has,
             )
         elif container_tv[0] in RAWLIST_KINDS:
@@ -4236,7 +4458,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
                     self._rawdict_key_call(
                         annotation_kind, raw_ptr,
-                        self._convert_node(pair_node[0]),
+                        pair_node[0],
                         self.rawdict_set, self.rawdict_str_set,
                         (val_bits,),
                     )
@@ -4324,7 +4546,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 if obj_tv[0] in RAWDICT_KINDS:
                     # d[k] <op>= v: lookup, combine, store back
                     value_kind = RAWDICT_KINDS[obj_tv[0]]
-                    current_bits = self._rawdict_key_call(
+                    current_bits = self._rawdict_key_call_tv(
                         obj_tv[0], obj_tv[1], key_tv,
                         self.rawdict_get, self.rawdict_str_get,
                     )
@@ -4344,7 +4566,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         stored_bits = self.current_builder.bitcast(
                             coerced[1], ir.IntType(64)
                         )
-                    self._rawdict_key_call(
+                    self._rawdict_key_call_tv(
                         obj_tv[0], obj_tv[1], key_tv,
                         self.rawdict_set, self.rawdict_str_set,
                         (stored_bits,),
@@ -4639,6 +4861,21 @@ class TypedCodegen(SiluToLLVMConverter):
         if op == "subscript":
             if len(node) >= 3:
                 obj_tv = self._convert_node(node[1])
+                if obj_tv[0] in RAWDICT_KINDS:
+                    # machine-word lookup; rawdict_get panics KeyError
+                    # on a missing key (Python raises, Rust panics).
+                    # The key node goes in unevaluated so slice keys
+                    # become views without materializing
+                    val_bits = self._rawdict_key_call(
+                        obj_tv[0], obj_tv[1], node[2],
+                        self.rawdict_get, self.rawdict_str_get,
+                    )
+                    value_kind = RAWDICT_KINDS[obj_tv[0]]
+                    if value_kind == F64:
+                        val_bits = self.current_builder.bitcast(
+                            val_bits, ir.DoubleType()
+                        )
+                    return (value_kind, val_bits)
                 key_tv = self._convert_node(node[2])
                 if obj_tv[0] in RAWLIST_KINDS:
                     elem_kind = RAWLIST_KINDS[obj_tv[0]]
@@ -4702,19 +4939,6 @@ class TypedCodegen(SiluToLLVMConverter):
                             element, ir.DoubleType()
                         )
                     return (elem_kind, element)
-                if obj_tv[0] in RAWDICT_KINDS:
-                    # machine-word lookup; rawdict_get panics KeyError
-                    # on a missing key (Python raises, Rust panics)
-                    val_bits = self._rawdict_key_call(
-                        obj_tv[0], obj_tv[1], key_tv,
-                        self.rawdict_get, self.rawdict_str_get,
-                    )
-                    value_kind = RAWDICT_KINDS[obj_tv[0]]
-                    if value_kind == F64:
-                        val_bits = self.current_builder.bitcast(
-                            val_bits, ir.DoubleType()
-                        )
-                    return (value_kind, val_bits)
                 if obj_tv[0] == RAWSTR:
                     key_node = node[2]
                     if (
@@ -4889,7 +5113,6 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                     return (OBJ, null_obj)
                 if obj_tv[0] in RAWDICT_KINDS:
-                    key_tv = self._convert_node(node[2])
                     value_kind = RAWDICT_KINDS[obj_tv[0]]
 
                     # d[k] = d.get(k, default) <op> rhs - the counting
@@ -4923,7 +5146,7 @@ class TypedCodegen(SiluToLLVMConverter):
                             )
                         right_tv = self._convert_node(value_node[2])
                         slot = self._rawdict_key_call(
-                            obj_tv[0], obj_tv[1], key_tv,
+                            obj_tv[0], obj_tv[1], node[2],
                             self.rawdict_int_entry, self.rawdict_str_entry,
                             (default_bits,),
                         )
@@ -4957,7 +5180,7 @@ class TypedCodegen(SiluToLLVMConverter):
                             value[1], ir.IntType(64)
                         )
                     self._rawdict_key_call(
-                        obj_tv[0], obj_tv[1], key_tv,
+                        obj_tv[0], obj_tv[1], node[2],
                         self.rawdict_set, self.rawdict_str_set,
                         (val_bits,),
                     )
@@ -4977,7 +5200,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 if obj_tv[0] in RAWDICT_KINDS:
                     self._rawdict_key_call(
                         obj_tv[0], obj_tv[1],
-                        self._convert_node(node[2]),
+                        node[2],
                         self.rawdict_del, self.rawdict_str_del,
                     )
                     return (OBJ, null_obj)
@@ -5550,12 +5773,12 @@ class TypedCodegen(SiluToLLVMConverter):
                     key_tv = self._convert_node(args_node[0])
                     if len(args_node) == 1:
                         # pop(k): rawdict_del panics KeyError when missing
-                        bits = self._rawdict_key_call(
+                        bits = self._rawdict_key_call_tv(
                             raw_kind, raw_obj_tv[1], key_tv,
                             self.rawdict_del, self.rawdict_str_del,
                         )
                     elif len(args_node) == 2:
-                        bits = self._rawdict_key_call(
+                        bits = self._rawdict_key_call_tv(
                             raw_kind, raw_obj_tv[1], key_tv,
                             self.rawdict_pop_or, self.rawdict_str_pop_or,
                             (dict_value_bits(args_node[1]),),
@@ -5567,17 +5790,28 @@ class TypedCodegen(SiluToLLVMConverter):
                 if method_name == "get" and args_node:
                     key_tv = self._convert_node(args_node[0])
                     if len(args_node) == 2:
-                        bits = self._rawdict_key_call(
+                        bits = self._rawdict_key_call_tv(
                             raw_kind, raw_obj_tv[1], key_tv,
                             self.rawdict_get_or, self.rawdict_str_get_or,
                             (dict_value_bits(args_node[1]),),
                         )
                         return bits_to_value(bits)
                     if len(args_node) == 1:
-                        # get(k): value when present, None (null) otherwise
-                        present = self._rawdict_key_call(
-                            raw_kind, raw_obj_tv[1], key_tv,
-                            self.rawdict_has, self.rawdict_str_has,
+                        # get(k): value when present, None (null)
+                        # otherwise. Materialize the key once: the view
+                        # helper may branch (tag check), which would
+                        # break the hit/miss phi if done per call
+                        if raw_kind in RAWDICT_STR_KINDS:
+                            key_ptr, key_temp = self._rawstr_key_view_tv(key_tv)
+                        else:
+                            key_ptr = self._coerce(key_tv, I64)[1]
+                            key_temp = None
+                        present = self.current_builder.call(
+                            self._rawdict_call_fn(
+                                raw_kind, self.rawdict_has,
+                                self.rawdict_str_has,
+                            ),
+                            [raw_obj_tv[1], key_ptr],
                         )
                         func = self.current_builder.function
                         hit_block = func.append_basic_block("get_hit")
@@ -5587,13 +5821,24 @@ class TypedCodegen(SiluToLLVMConverter):
                             present, hit_block, miss_block
                         )
                         self.current_builder.position_at_end(hit_block)
-                        bits = self._rawdict_key_call(
-                            raw_kind, raw_obj_tv[1], key_tv,
-                            self.rawdict_get, self.rawdict_str_get,
+                        bits = self.current_builder.call(
+                            self._rawdict_call_fn(
+                                raw_kind, self.rawdict_get,
+                                self.rawdict_str_get,
+                            ),
+                            [raw_obj_tv[1], key_ptr],
                         )
+                        if key_temp is not None:
+                            self.current_builder.call(
+                                self.rawstr_free, [key_temp]
+                            )
                         boxed_hit = self._box(bits_to_value(bits))
                         self.current_builder.branch(merge_block)
                         self.current_builder.position_at_end(miss_block)
+                        if key_temp is not None:
+                            self.current_builder.call(
+                                self.rawstr_free, [key_temp]
+                            )
                         self.current_builder.branch(merge_block)
                         self.current_builder.position_at_end(merge_block)
                         result = self.current_builder.phi(
@@ -5610,7 +5855,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 if method_name == "setdefault" and len(args_node) == 2:
                     bits = self._rawdict_key_call(
                         raw_kind, raw_obj_tv[1],
-                        self._convert_node(args_node[0]),
+                        args_node[0],
                         self.rawdict_setdefault, self.rawdict_str_setdefault,
                         (dict_value_bits(args_node[1]),),
                     )

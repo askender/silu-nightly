@@ -950,6 +950,53 @@ class TestRawStrDict:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestStrKeyViews:
+    def test_slice_key_is_a_view(self):
+        """d[s[a:b]] never materializes the slice: rawstr_slice_parts
+        hands the dict a borrowed (data, len) window."""
+        source = (
+            'd: dict[str, int] = {}\n'
+            's: str = "aaxbbxcc"\n'
+            "i: int = 0\n"
+            "while i < 8:\n"
+            "    d[s[i:i + 2]] = i\n"
+            "    i += 2\n"
+            'print(len(d), d["aa"], d["xc"])\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call {i8*, i64} @"rawstr_slice_parts"' in main
+        assert 'call i8* @"rawstr_slice"' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_boxed_str_key_is_viewed_not_converted(self):
+        """A PyObject str key is viewed through its buffer (tag-checked
+        stack view), skipping pystr_to_rawstr entirely."""
+        source = (
+            'd: dict[str, int] = {"a": 1}\n'
+            'k = "a"\n'
+            'd[k] = d.get(k, 0) + 1\n'
+            'print(d["a"])\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i8* @"pystr_to_rawstr"' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_slice_view_nonascii_matches(self):
+        """View keys keep code point semantics on multi-byte text."""
+        source = (
+            'd: dict[str, int] = {}\n'
+            's: str = "你好世界你好"\n'
+            'd[s[0:2]] = 1\n'
+            'd[s[4:6]] = 2\n'
+            'print(len(d), d["你好"], d.get("世界", -1))\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestDictEntryFusion:
     def test_counting_idiom_uses_entry(self):
         """d[k] = d.get(k, 0) + v compiles to one probe via

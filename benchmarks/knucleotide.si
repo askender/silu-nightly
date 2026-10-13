@@ -21,13 +21,12 @@ k: int = 4
 counts: dict[str, int] = {}
 i = 0
 while i + k <= n:
-    mer = dna[i:i + k]
-    counts[mer] = counts.get(mer, 0) + 1
+    counts[dna[i:i + k]] = counts.get(dna[i:i + k], 0) + 1
     i += 1
 
 total: int = 0
 i = 0
 while i + k <= n:
-    total += counts.get(dna[i:i + k], 0)
+    total += counts[dna[i:i + k]]
     i += 1
 print(total, len(counts), counts.get("AAAA", 0), counts.get("ACGT", 0))
