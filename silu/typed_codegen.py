@@ -110,6 +110,12 @@ class TypedCodegen(SiluToLLVMConverter):
         # (empty when SILU_SCALARS=0; per-scope, see the inference walk)
         self.cursor_kinds: Dict[str, str] = {}
         self._cursor_slots: Dict[Any, Any] = {}
+        # char-view aliases (scope-local, see _char_alias_* methods):
+        # alias name -> (parent str name, str TypedValue, index node).
+        # Reads of an aliased name replay the view; any invalidating
+        # statement materializes the copy first. Failure mode is the
+        # plain boxed path.
+        self._char_aliases: Dict[str, Any] = {}
 
         # math intrinsics / libc used by ** (sqrt fast path, general pow)
         sqrt_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
@@ -3571,6 +3577,73 @@ class TypedCodegen(SiluToLLVMConverter):
         self._cursor_slots[slot_key] = slot
         return slot
 
+    def _char_alias_invalidate_before(self, stmt: Any):
+        """Kill aliases an upcoming statement would invalidate: any
+        call (conservative - the callee may write the parent), any
+        write whose target names a parent string, any new char view
+        creation (ch2 = s2[j]). Materializes affected aliases into
+        their slots first, so later reads still see the old value."""
+        if not self._char_aliases:
+            return
+        op = stmt[0] if isinstance(stmt, (list, tuple)) and stmt else None
+
+        parent_names = {
+            entry[0] for entry in self._char_aliases.values()
+        }
+
+        def targets_parent(target_node):
+            if isinstance(target_node, str):
+                return target_node in parent_names
+            if (
+                isinstance(target_node, (list, tuple))
+                and len(target_node) >= 2
+                and target_node[0] == "name"
+                and isinstance(target_node[1], str)
+            ):
+                return target_node[1] in parent_names
+            if (
+                isinstance(target_node, (list, tuple))
+                and len(target_node) >= 3
+                and target_node[0] == "subscript"
+                and isinstance(target_node[1], (list, tuple))
+                and len(target_node[1]) >= 2
+                and target_node[1][0] == "name"
+            ):
+                return target_node[1][1] in parent_names
+            return False
+
+        if op == "call" or (
+            op in (
+                "assign", "ann_assign", "aug_assign", "subscript_assign",
+                "subscript_aug_assign", "delete",
+            )
+            and targets_parent(stmt[1])
+        ):
+            self._char_alias_kill_all()
+
+    def _char_alias_kill_all(self):
+        """Materialize every live alias into its named slot (copy) and
+        clear the table - called on any statement that could invalidate
+        the borrowed windows (writes to the parent string, any call,
+        another char view creation shares nothing but stays simple)."""
+        for name, (_str_name, str_tv, index_node) in list(
+            self._char_aliases.items()
+        ):
+            index = self._coerce(
+                self._convert_node(index_node), I64
+            )[1]
+            view = self._emit_char_view(str_tv[1], index)
+            coerced = self._coerce(view, RAWSTR)
+            self._declare_var(name, RAWSTR)
+            self._store_rawstr(name, coerced[1])
+        self._char_aliases.clear()
+
+    def _char_alias_read(self, name: str):
+        """Replay a live alias as a fresh view (re-runs bounds check and
+        offset arithmetic - register work, no allocation)."""
+        str_tv, index_node = self._char_aliases[name]
+        return self._emit_char_view(str_tv[1], index_node)
+
     def _entry_alloca(self, ty: Any, name: str):
         """Allocate in the function entry block (a mid-block alloca in a
         loop would grow the stack per iteration)."""
@@ -3626,6 +3699,7 @@ class TypedCodegen(SiluToLLVMConverter):
         (e.g. shout("x") as a statement) is a temporary and is dropped
         like Rust's end-of-statement temporary drop. Assignment-family
         statements return values that alias slot storage - never freed."""
+        self._char_alias_invalidate_before(stmt)
         result = self._convert_node(stmt, skip_func_defs)
         if (
             isinstance(result, tuple)
@@ -5187,6 +5261,14 @@ class TypedCodegen(SiluToLLVMConverter):
             )
 
         if op == "name":
+            if node[1] in self._char_aliases:
+                # live char-view alias: replay the window (register
+                # arithmetic, no allocation)
+                _str_name, str_tv, index_node = self._char_aliases[node[1]]
+                index = self._coerce(
+                    self._convert_node(index_node), I64
+                )[1]
+                return self._emit_char_view(str_tv[1], index)
             return self._load_var(node[1])
 
         if op in ("assign", "ann_assign"):
@@ -5202,6 +5284,36 @@ class TypedCodegen(SiluToLLVMConverter):
                 # unannotated rebinding: raw storage only when the
                 # pre-pass proved every assignment yields one same kind
                 annotation_kind = self._inferred_kinds.get(target) or OBJ
+            if (
+                isinstance(target, str)
+                and isinstance(value_node, list)
+                and len(value_node) >= 3
+                and value_node[0] == "subscript"
+                and isinstance(value_node[1], list)
+                and len(value_node[1]) >= 2
+                and value_node[1][0] == "name"
+                and self.var_kinds.get(value_node[1][1]) == RAWSTR
+                and not (
+                    isinstance(value_node[2], list)
+                    and len(value_node[2]) >= 4
+                    and value_node[2][0] == "slice"
+                )
+            ):
+                # ch = s[i]: register a live char-view alias. Reads of
+                # ch replay the view (register arithmetic only); an
+                # invalidating statement materializes the copy first.
+                # The name itself stays a RAWSTR slot (never written
+                # while the alias lives) so later fallback reads work.
+                str_name = value_node[1][1]
+                str_tv = self._load_var(str_name)
+                self._char_aliases[target] = (str_name, str_tv, value_node[2])
+                self._declare_var(target, RAWSTR)
+                # slot stays unwritten while the alias lives; reads go
+                # through the alias replay. An invalidating statement
+                # materializes the current view into the slot first.
+                # (The returned value is unused: assign is in the
+                # statement blacklist, its result is never freed.)
+                return (RAWSTR, None)
             if (
                 annotation_kind == RAWSTR
                 and isinstance(target, str)

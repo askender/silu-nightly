@@ -1003,6 +1003,60 @@ class TestCharView:
         assert "IndexError" in r.stdout
 
 
+class TestCharViewAlias:
+    def test_alias_reads_replay_across_statements(self):
+        """ch = s[i]; if ch == ... - the name replays the borrowed view
+        across statements without materializing (IR has no char_at)."""
+        source = (
+            's: str = "hello world"\n'
+            "ch: str = s[4]\n"
+            'if ch == "o":\n'
+            '    print("o4")\n'
+            'print(ch == "o", ch != "x")\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i8* @"rawstr_char_at"' not in main
+        assert 'call i8* @"malloc"' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_alias_invalidated_by_write_to_parent(self):
+        """A write to the parent string materializes the alias copy
+        first - later reads still see the old value."""
+        source = (
+            's: str = "hello"\n'
+            "ch: str = s[1]\n"
+            's = "xyz"\n'
+            "print(ch)\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_alias_invalidated_by_call(self):
+        """Any call kills the aliases (conservative): later reads see
+        the materialized copy."""
+        source = (
+            's: str = "hello"\n'
+            "ch: str = s[1]\n"
+            "i: int = 0\n"
+            "while i < 2:\n"
+            '    if ch == "e":\n'
+            '        print("e", i)\n'
+            "    i += 1\n"
+            'print("done")\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_alias_multibyte(self):
+        """CJK aliases replay with code point semantics."""
+        source = (
+            's: str = "你好世界"\n'
+            "ch: str = s[2]\n"
+            'print(ch, ch == "好")\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestScalarCursor:
     def test_single_function_cursor_promotes(self):
         """pos: list[int] used only as pos[0] inside one function gets
