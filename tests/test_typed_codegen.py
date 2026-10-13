@@ -91,7 +91,7 @@ class TestTypedCodegen:
             "x: int = add(2, 3)\nprint(x)\n"
         )
 
-        assert 'define i64 @"add"(i64' in llvm_ir
+        assert 'define internal i64 @\"add\"(i64' in llvm_ir
         assert "add i64" in llvm_ir
 
     def test_recursive_typed_function(self):
@@ -103,7 +103,7 @@ class TestTypedCodegen:
             "print(fib(10))\n"
         )
 
-        assert 'define i64 @"fib"(i64' in llvm_ir
+        assert 'define internal i64 @\"fib\"(i64' in llvm_ir
         assert 'call i64 @"fib"' in llvm_ir
 
     def test_dynamic_fallback_for_unannotated(self):
@@ -783,7 +783,7 @@ class TestCrossFunctionInference:
             "def add(a, b):\n    return a + b\n\nprint(add(2, 3))\n"
         )
 
-        assert 'define i64 @"add"(i64' in llvm_ir
+        assert 'define internal i64 @\"add\"(i64' in llvm_ir
         main = _main_body(llvm_ir)
         assert 'call i64 @"add"(i64 2, i64 3)' in main
         assert _run_main(llvm_ir) == "5\n"
@@ -795,7 +795,7 @@ class TestCrossFunctionInference:
             'print(greet("silu"))\n'
         )
 
-        assert 'define i8* @"greet"(i8*' in llvm_ir
+        assert 'define internal i8* @\"greet\"(i8*' in llvm_ir
         assert _run_main(llvm_ir) == "hi silu\n"
 
     def test_conflicting_call_sites_stay_dynamic(self):
@@ -807,7 +807,7 @@ class TestCrossFunctionInference:
         )
         llvm_ir = _convert(source)
 
-        assert 'define {i32, i8*}* @"mixed"' in llvm_ir
+        assert 'define internal {i32, i8*}* @"mixed"' in llvm_ir
         assert _run_main(llvm_ir) == _run_interpreter(source)
 
     def test_rebound_param_stays_dynamic(self):
@@ -819,7 +819,7 @@ class TestCrossFunctionInference:
         )
         llvm_ir = _convert(source)
 
-        assert 'define {i32, i8*}* @"bump"' in llvm_ir
+        assert 'define internal {i32, i8*}* @"bump"' in llvm_ir
         assert _run_main(llvm_ir) == "11\n"
 
     def test_dynamic_return_with_proven_raw_params(self):
@@ -828,7 +828,7 @@ class TestCrossFunctionInference:
         source = "def show(x):\n    print(x + 1)\n\nshow(5)\n"
         llvm_ir = _convert(source)
 
-        assert 'define {i32, i8*}* @"show"(i64' in llvm_ir
+        assert 'define internal {i32, i8*}* @\"show\"(i64' in llvm_ir
         assert _run_main(llvm_ir) == "6\n"
 
     def test_inferred_return_kind_reaches_caller(self):
@@ -857,7 +857,7 @@ class TestCrossFunctionInference:
         )
         llvm_ir = _convert(source)
 
-        assert 'define {i32, i8*}* @"scale"(i8*' in llvm_ir
+        assert 'define internal {i32, i8*}* @\"scale\"(i8*' in llvm_ir
         assert _run_main(llvm_ir) == "3.0\n"
 
     def test_recursion_stays_conservative(self):
@@ -1234,7 +1234,7 @@ class TestRawStrScopeDrops:
             "    return t\n\n"
             'print(shout("silu"))\n'
         )
-        shout_body = llvm_ir.split('define i8* @"shout"')[1]
+        shout_body = llvm_ir.split('define internal i8* @"shout"')[1]
 
         assert shout_body.count('call void @"rawstr_free"') >= 2
         assert _run_main(llvm_ir) == "hi silu!\n"
@@ -1249,7 +1249,7 @@ class TestRawStrScopeDrops:
             "print(shout(n))\n"
         )
 
-        assert 'define i8* @"shout"(i8*' in llvm_ir
+        assert 'define internal i8* @\"shout\"(i8*' in llvm_ir
         assert _run_main(llvm_ir) == "hi x\n"
 
     def test_discarded_call_result_is_dropped(self):

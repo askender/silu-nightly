@@ -4746,6 +4746,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 param_types = [LLVM_KIND_TYPES[k] for k in param_kinds]
                 func_ty = ir.FunctionType(LLVM_KIND_TYPES[ret_kind], param_types)
                 func = ir.Function(self.module, func_ty, name=func_name)
+                # module-private + inline hint: the recursive-descent
+                # clusters (parsers etc.) only pay off inlined
+                func.linkage = "internal"
+                func.attributes.add("alwaysinline")
                 self.static_funcs[func_name] = (param_kinds, ret_kind, func)
             else:
                 dyn_kinds = param_kinds
@@ -4762,6 +4766,10 @@ class TypedCodegen(SiluToLLVMConverter):
                     ir.PointerType(self.pyobj.pyobj_type), param_types
                 )
                 func = ir.Function(self.module, func_ty, name=func_name)
+                # module-private: enables IPO on the boxed cluster too
+                # (small enough that alwaysinline would bloat; LLVM's
+                # regular inliner decides)
+                func.linkage = "internal"
                 self.functions[func_name] = func
 
     def _generate_function_bodies(self):
