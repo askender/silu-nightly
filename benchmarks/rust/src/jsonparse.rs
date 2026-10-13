@@ -63,16 +63,9 @@ fn parse_value(b: &[u8], pos: &mut usize) -> Json {
 }
 
 fn main() {
-    let mut doc = String::from("[");
-    let mut i = 0;
-    while i < 3000 {
-        doc.push_str(&format!("{{\"id\":{},\"name\":\"item{}\"}}", i, i));
-        if i + 1 < 3000 {
-            doc.push(',');
-        }
-        i += 1;
-    }
-    doc.push(']');
+    use std::io::Read;
+    let mut doc = String::new();
+    std::io::stdin().read_to_string(&mut doc).unwrap();
 
     let mut pos = 0usize;
     let data = parse_value(doc.as_bytes(), &mut pos);

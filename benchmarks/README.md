@@ -61,7 +61,7 @@ pure numerics):
 |---|---|---|---|---|---|---|
 | wordcount (300k freq updates, `dict[str, int]`) | 6.4s | 0.083s | 0.020s | 0.017s | 4.1x | 0.9x |
 | k-nucleotide (200k DNA 4-mers, slice + `dict[str, int]`) | 15.3s | 0.82s | 0.012s | 0.015s | 70.6x | 1.3x |
-| json-parse (3k objects, hand-rolled descent parser + name collection into `list[str]`) | 2.3s | 0.087s | 0.19s | 0.005s | 0.4x | 0.03x |
+| json-parse (3k objects from stdin, hand-rolled descent parser + `list[str]` collection) | 1.6s | 0.037s | 0.082s | 0.004s | 0.4x | 0.05x |
 
 These three did their job: they exposed and pinned real defects -
 boxed dicts that grew only at 100% load (a read probe on a full table
@@ -72,11 +72,14 @@ over the same open-addressing table), view-based keys (a boxed str or
 an in-place slice becomes a stack window, no copy; `d[s[i:i+k]]`
 allocates nothing), and fused char-vs-constant comparisons (`s[i] ==
 "x"` is one call, no character object). wordcount and k-nucleotide
-are now at 0.9x/1.3x Rust. json-parse now collects names into a raw
-`list[str]` (copy-on-read, drop-on-overwrite) and slices each string
-once instead of per-char concat; its remaining gap is structural -
-objects still box into dicts - closing it means struct-like records,
-the next representation tier.
+are now at 0.9x/1.3x Rust. json-parse reads its document from
+stdin (generated once by scripts/gen_json_input.py - generation is
+scaffolding, not measured work; CPython's 0.4x number reflects its C
+json module versus our hand-written parser loop). It collects names
+into a raw `list[str]` and slices each string once instead of
+per-char concat; the remaining gap vs hand-written Rust is cursor
+representation (a boxed `pos[0]` vs a register `&mut usize`) and
+function-boundary costs in the recursive-descent cluster.
 
 Overall geometric mean: **~490x vs silu-int, 13.9x vs CPython, 1.0x
 vs hand-written Rust** across 11 programs - every workload is within

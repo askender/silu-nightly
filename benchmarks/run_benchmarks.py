@@ -31,26 +31,32 @@ if not SILU.exists():
 CPYTHON = sys.executable
 
 
-def run(cmd, timeout=300):
+def run(cmd, timeout=300, stdin_path=None):
     if isinstance(cmd, dict):
         cwd = cmd["cwd"]
         cmd = cmd["cmd"]
     else:
         cwd = None
-    return subprocess.run(
-        [str(c) for c in cmd],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=cwd,
-    )
+    stdin_handle = open(stdin_path, "r") if stdin_path else None
+    try:
+        return subprocess.run(
+            [str(c) for c in cmd],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+            stdin=stdin_handle,
+        )
+    finally:
+        if stdin_handle:
+            stdin_handle.close()
 
 
-def median_time(cmd, runs, timeout=300):
+def median_time(cmd, runs, timeout=300, stdin_path=None):
     times = []
     for _ in range(runs):
         start = time.perf_counter()
-        result = run(cmd, timeout=timeout)
+        result = run(cmd, timeout=timeout, stdin_path=stdin_path)
         elapsed = time.perf_counter() - start
         if result.returncode != 0:
             raise RuntimeError(f"{cmd} failed: {result.stderr[:200]}")
@@ -127,17 +133,36 @@ def main():
                 print(f"{program.stem:<10}  SKIP (clang failed)")
                 continue
 
+            # programs reading stdin (jsonparse) share a pre-generated
+            # input file; generation is scaffolding, not measured work
+            stdin_path = Path(tmp) / "shared_input.txt"
+            stdin_arg = None
+            if program.stem == "jsonparse":
+                gen = REPO / "scripts" / "gen_json_input.py"
+                gen_result = run([CPYTHON, gen])
+                if gen_result.returncode != 0:
+                    print(f"{program.stem:<10}  SKIP (input generation failed)")
+                    continue
+                stdin_path.write_text(gen_result.stdout)
+                stdin_arg = str(stdin_path)
+
             interp_time, interp_out = median_time(
-                [SILU, "interpret", program], args.runs
+                [SILU, "interpret", program], args.runs, stdin_path=stdin_arg
             )
-            cpython_time, cpython_out = median_time([CPYTHON, program], args.runs)
-            bin_time, bin_out = median_time([binary], args.runs)
+            cpython_time, cpython_out = median_time(
+                [CPYTHON, program], args.runs, stdin_path=stdin_arg
+            )
+            bin_time, bin_out = median_time(
+                [binary], args.runs, stdin_path=stdin_arg
+            )
 
             rust_time = None
             rust_out = None
             rust_bin = rust_bins.get(program.stem)
             if rust_bin is not None:
-                rust_time, rust_out = median_time([rust_bin], args.runs)
+                rust_time, rust_out = median_time(
+                    [rust_bin], args.runs, stdin_path=stdin_arg
+                )
 
             outputs = [interp_out, bin_out, cpython_out]
             if rust_out is not None:

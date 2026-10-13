@@ -911,9 +911,10 @@ class TypedCodegen(SiluToLLVMConverter):
         # equals code point semantics.
         self.rawstr_struct_type = ir.LiteralStructType([i64, i64, i8p, i64])
 
-        self.realloc = ir.Function(
-            self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
-        )
+        if not hasattr(self, "realloc"):
+            self.realloc = ir.Function(
+                self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
+            )
 
         def sfield(b, struct_ptr, index):
             return b.gep(struct_ptr, [zero32, ir.Constant(i32, index)])
@@ -6682,6 +6683,12 @@ class TypedCodegen(SiluToLLVMConverter):
                 newline_fmt = self._create_global_string("\n")
                 self.current_builder.call(self.printf, [newline_fmt])
                 return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+            if func_name == "input":
+                return (
+                    OBJ,
+                    self.current_builder.call(self.pyobj_input, []),
+                )
 
             if func_name == "str":
                 # scalar str() conversion; boxed path, the result coerces

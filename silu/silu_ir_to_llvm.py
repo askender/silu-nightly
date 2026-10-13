@@ -2483,6 +2483,74 @@ class SiluToLLVMConverter:
         )
         self._emit_panic(builder, fail_msg)
 
+        # PyObject* pyobj_input() - read one line from stdin (EOF -> "")
+        # Python input() semantics: trailing newline stripped
+        i8p = ir.PointerType(ir.IntType(8))
+        self.getchar = ir.Function(
+            self.module, ir.FunctionType(i32, []), name="getchar"
+        )
+        if not hasattr(self, "realloc"):
+            self.realloc = ir.Function(
+                self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
+            )
+        self.pyobj_input = ir.Function(
+            self.module, ir.FunctionType(pyobj_ptr, []), name="pyobj_input"
+        )
+        entry = self.pyobj_input.append_basic_block("entry")
+        read_cond = self.pyobj_input.append_basic_block("read_cond")
+        read_body = self.pyobj_input.append_basic_block("read_body")
+        eof_block = self.pyobj_input.append_basic_block("read_eof")
+        builder = ir.IRBuilder(entry)
+        # dynamic byte buffer, geometric growth
+        cap_ptr = builder.alloca(i64, name="in_cap")
+        len_ptr = builder.alloca(i64, name="in_len")
+        buf_ptr = builder.alloca(i8p, name="in_buf")
+        builder.store(ir.Constant(i64, 64), cap_ptr)
+        builder.store(zero64, len_ptr)
+        builder.store(builder.call(self.malloc, [ir.Constant(i64, 64)]), buf_ptr)
+        builder.branch(read_cond)
+
+        builder.position_at_end(read_cond)
+        ch = builder.call(self.getchar, [])
+        is_eof = builder.icmp_signed("==", ch, ir.Constant(i32, -1))
+        is_nl = builder.icmp_signed("==", ch, ir.Constant(i32, 10))
+        done_read = builder.or_(is_eof, is_nl)
+        builder.cbranch(done_read, eof_block, read_body)
+
+        builder.position_at_end(read_body)
+        curlen = builder.load(len_ptr)
+        curcap = builder.load(cap_ptr)
+        needs_grow = builder.icmp_signed("==", curlen, curcap)
+        grow_block = self.pyobj_input.append_basic_block("read_grow")
+        store_block = self.pyobj_input.append_basic_block("read_store")
+        builder.cbranch(needs_grow, grow_block, store_block)
+
+        builder.position_at_end(grow_block)
+        newcap = builder.mul(curcap, ir.Constant(i64, 2))
+        grown = builder.call(
+            self.realloc, [builder.load(buf_ptr), newcap]
+        )
+        builder.store(newcap, cap_ptr)
+        builder.store(grown, buf_ptr)
+        builder.branch(store_block)
+
+        builder.position_at_end(store_block)
+        buf_now = builder.load(buf_ptr)
+        len_now = builder.load(len_ptr)
+        byte_val = builder.trunc(ch, ir.IntType(8))
+        builder.store(
+            byte_val, builder.gep(buf_now, [len_now])
+        )
+        builder.store(builder.add(len_now, one64), len_ptr)
+        builder.branch(read_cond)
+
+        builder.position_at_end(eof_block)
+        buf_final = builder.load(buf_ptr)
+        len_final = builder.load(len_ptr)
+        builder.ret(
+            builder.call(self.create_str, [buf_final, builder.trunc(len_final, i32)])
+        )
+
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
             self.module,
@@ -3996,6 +4064,9 @@ class SiluToLLVMConverter:
                     newline_fmt = self._create_global_string("\n")
                     self.current_builder.call(self.printf, [newline_fmt])
                     return None
+
+                elif func_name == "input":
+                    return self.current_builder.call(self.pyobj_input, [])
 
                 elif func_name == "str":
                     # scalar str() conversion: int/float/bool/str/None

@@ -111,6 +111,7 @@ class Environment:
                 "float_type": float,
                 "str_type": str,
                 "bool_type": bool,
+                "input": input,
                 "MemoryError": MemoryError,
             }
         )
