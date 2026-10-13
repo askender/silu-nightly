@@ -1,0 +1,33 @@
+# k-mer frequency counting over a deterministic DNA string (LCG).
+# Exercises str slicing per iteration and dict[str, int] updates.
+n: int = 200000
+dna: str = ""
+i: int = 0
+state: int = 42
+while i < n:
+    state = (state * 48271 + 11) % 2147483647
+    r = state % 4
+    if r == 0:
+        dna = dna + "A"
+    elif r == 1:
+        dna = dna + "C"
+    elif r == 2:
+        dna = dna + "G"
+    else:
+        dna = dna + "T"
+    i += 1
+
+k: int = 4
+counts = {}
+i = 0
+while i + k <= n:
+    mer = dna[i:i + k]
+    counts[mer] = counts.get(mer, 0) + 1
+    i += 1
+
+total: int = 0
+i = 0
+while i + k <= n:
+    total += counts.get(dna[i:i + k], 0)
+    i += 1
+print(total, len(counts), counts.get("AAAA", 0), counts.get("ACGT", 0))

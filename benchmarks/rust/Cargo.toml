@@ -53,3 +53,11 @@ path = "src/spectral.rs"
 
 [profile.release]
 opt-level = 3
+
+[[bin]]
+name = "wordcount"
+path = "src/wordcount.rs"
+
+[[bin]]
+name = "knucleotide"
+path = "src/knucleotide.rs"
