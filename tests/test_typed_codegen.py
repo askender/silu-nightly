@@ -984,10 +984,23 @@ class TestCharView:
         )
         llvm_ir = _convert(source)
         assert _run_main(llvm_ir) == _run_interpreter(source)
-        # out of range still panics with the right message
+        # out of range still panics with the right message (built binary,
+        # not MCJIT - the panic's exit(1) would kill the pytest process)
+        import shutil
+        import subprocess as sp
+        if shutil.which("clang") is None:
+            return
         bad = 's: str = "hi"\nprint(s[9] == "x")\n'
-        out = _run_main(_convert(bad))
-        assert "IndexError" in out
+        bad_path = "/tmp/_cv_oob.si"
+        with open(bad_path, "w") as fh:
+            fh.write(bad)
+        import sys as _sys
+        r = sp.run([_sys.executable, "-m", "silu", "build", bad_path,
+                    "-o", "/tmp/_cv_oob"], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        r = sp.run(["/tmp/_cv_oob"], capture_output=True, text=True)
+        assert r.returncode == 1
+        assert "IndexError" in r.stdout
 
 
 class TestScalarCursor:
