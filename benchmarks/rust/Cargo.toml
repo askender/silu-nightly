@@ -61,3 +61,7 @@ path = "src/wordcount.rs"
 [[bin]]
 name = "knucleotide"
 path = "src/knucleotide.rs"
+
+[[bin]]
+name = "jsonparse"
+path = "src/jsonparse.rs"

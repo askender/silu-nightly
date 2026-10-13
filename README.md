@@ -14,7 +14,8 @@ an LLVM compiler whose output runs at hand-written-Rust speed.
 | string (48k concats) | 0.049s | 0.0032s | 0.0031s |
 | mandelbrot (80x24) | 0.044s | 0.0034s | 0.0033s |
 
-Across 11 benchmarks (including five Benchmarks Game classics) the
+Across 14 benchmarks (including five Benchmarks Game classics and
+three real-world-flavored workloads) the
 compiled binaries average **~1.0x hand-written Rust, ~16x CPython,
 and ~600x the tree-walking interpreter** —
 [benchmarks/README.md](benchmarks/README.md) has the full table and
@@ -177,7 +178,7 @@ silu/                    # The language implementation package
 ├── typed_codegen.py     # Silu IR → LLVM IR (typed backend, main)
 └── silu_ir_to_llvm.py   # Silu IR → LLVM IR (dynamic base runtime)
 tests/                   # 630+ pytest tests
-benchmarks/              # 11-program suite vs CPython and Rust mirrors
+benchmarks/              # 14-program suite vs CPython and Rust mirrors
 docs/                    # Technical documentation
 examples/                # Demo programs
 ir_generator_for_c.py    # C → Silu IR (pycparser-based)

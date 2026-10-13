@@ -53,6 +53,27 @@ Benchmarks Game classics:
 | binary-trees (depth 4-14) | 0.90s | 0.030s | 0.003s | 0.0034s | 9.7x | 1.1x |
 | mandelbrot (80x24 ASCII) | 1.13s | 0.033s | 0.0029s | 0.0032s | 11.4x | 1.1x |
 
+Real-world-flavored workloads (added after the core suite to hunt
+gaps; these exercise str-key dicts, slicing and parsing instead of
+pure numerics):
+
+| program | silu-int | cpython | binary | rust | vs cpython | vs rust |
+|---|---|---|---|---|---|---|
+| wordcount (300k freq updates, `dict[str, int]`) | 6.4s | 0.097s | 0.053s | 0.015s | 1.8x | 0.3x |
+| k-nucleotide (200k DNA 4-mers, slice + `dict[str, int]`) | 13.7s | 0.80s | 0.047s | 0.015s | 17.2x | 0.3x |
+| json-parse (3k objects, hand-rolled descent parser) | 1.9s | 0.070s | 0.151s | 0.004s | 0.5x | 0.03x |
+
+These three did their job: they exposed and pinned real defects -
+boxed dicts that grew only at 100% load (a read probe on a full table
+spun forever), `str()` missing from the compiled backends, pylist
+unboxing reading the wrong struct, allocas inside loop bodies. The
+remaining gaps are structural: wordcount crosses a boxed-list -> raw
+conversion per iteration, k-nucleotide pays two dict ops per step
+where Rust fuses entry(), and json-parse allocates a rawstr per
+character where the Rust mirror is zero-copy. Closing those means a
+raw `list[str]`, a fused get-or-insert op, and allocation-free
+character views.
+
 Overall geometric mean: **~490x vs silu-int, 13.9x vs CPython, 1.0x
 vs hand-written Rust** across 11 programs - every workload is within
 measurement noise of the Rust mirrors. Note that ~2.6ms of each binary

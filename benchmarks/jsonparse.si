@@ -1,0 +1,91 @@
+# JSON parsing: recursive descent over a deterministically generated
+# document. Exercises str indexing (O(1) on ASCII via the fast path),
+# in-place string building, recursion, and boxed result containers.
+# (Cursor is a one-element list[int] so mutations stay visible across
+# calls; Python lists are references.)
+
+def digit_value(ch: str) -> int:
+    if ch == "0":
+        return 0
+    if ch == "1":
+        return 1
+    if ch == "2":
+        return 2
+    if ch == "3":
+        return 3
+    if ch == "4":
+        return 4
+    if ch == "5":
+        return 5
+    if ch == "6":
+        return 6
+    if ch == "7":
+        return 7
+    if ch == "8":
+        return 8
+    return 9
+
+def parse_string(s: str, pos: list[int]):
+    pos[0] += 1  # opening quote
+    out: str = ""
+    while s[pos[0]] != '"':
+        out = out + s[pos[0]]
+        pos[0] += 1
+    pos[0] += 1  # closing quote
+    return out
+
+def parse_number(s: str, pos: list[int]) -> int:
+    n: int = 0
+    while pos[0] < len(s) and s[pos[0]] >= "0" and s[pos[0]] <= "9":
+        n = n * 10 + digit_value(s[pos[0]])
+        pos[0] += 1
+    return n
+
+def parse_array(s: str, pos: list[int]):
+    result = []
+    pos[0] += 1  # [
+    while s[pos[0]] != "]":
+        result.append(parse_value(s, pos))
+        if s[pos[0]] == ",":
+            pos[0] += 1
+    pos[0] += 1  # ]
+    return result
+
+def parse_object(s: str, pos: list[int]):
+    result = {}
+    pos[0] += 1  # {
+    while s[pos[0]] != "}":
+        key = parse_string(s, pos)
+        pos[0] += 1  # colon
+        result[key] = parse_value(s, pos)
+        if s[pos[0]] == ",":
+            pos[0] += 1
+    pos[0] += 1  # }
+    return result
+
+def parse_value(s: str, pos: list[int]):
+    ch = s[pos[0]]
+    if ch == "{":
+        return parse_object(s, pos)
+    if ch == "[":
+        return parse_array(s, pos)
+    if ch == '"':
+        return parse_string(s, pos)
+    return parse_number(s, pos)
+
+doc: str = "["
+i: int = 0
+while i < 3000:
+    doc = doc + '{"id":' + str(i) + ',"name":"item' + str(i) + '"}'
+    if i + 1 < 3000:
+        doc = doc + ","
+    i += 1
+doc = doc + "]"
+
+data = parse_value(doc, [0])
+total: int = 0
+i = 0
+while i < len(data):
+    total += data[i]["id"]
+    i += 1
+print(total, len(data))

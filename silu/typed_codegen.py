@@ -327,8 +327,10 @@ class TypedCodegen(SiluToLLVMConverter):
         loop_done = self.pylist_to_rawlist.append_basic_block("p2r_done")
         builder = ir.IRBuilder(entry)
         (list_arg,) = self.pylist_to_rawlist.args
+        # the list struct lives behind the PyObject's data field
         struct_ptr = builder.bitcast(
-            list_arg, ir.PointerType(self.list_struct_type)
+            builder.load(builder.gep(list_arg, [zero32b, one32b])),
+            ir.PointerType(self.list_struct_type),
         )
         length = builder.load(field(builder, struct_ptr, 0))
         items = builder.load(field(builder, struct_ptr, 2))
@@ -1207,6 +1209,49 @@ class TypedCodegen(SiluToLLVMConverter):
         # equal prefixes: the shorter string sorts first
         length_diff = builder.sub(a_len, b_len)
         builder.ret(builder.select(is_equal, length_diff, memcmp_i64))
+
+        # i1 rawstr_eq_cstr(i8* s, i8* data, i64 len) - compare against
+        # a constant buffer without materializing a rawstr for it
+        self.rawstr_eq_cstr = ir.Function(
+            self.module, ir.FunctionType(ir.IntType(1), [i8p, i8p, i64]),
+            name="rawstr_eq_cstr",
+        )
+        builder = ir.IRBuilder(self.rawstr_eq_cstr.append_basic_block("entry"))
+        s_arg, cdata_arg, clen_arg = self.rawstr_eq_cstr.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = load_len(builder, s_struct)
+        len_eq = builder.icmp_signed("==", s_len, clen_arg)
+        bytes_eq = builder.icmp_signed(
+            "==",
+            builder.call(
+                self.memcmp,
+                [load_data(builder, s_struct), cdata_arg, s_len],
+            ),
+            ir.Constant(ir.IntType(32), 0),
+        )
+        builder.ret(builder.and_(len_eq, bytes_eq))
+
+        # i64 rawstr_cmp_cstr(i8* s, i8* data, i64 len) - ordering vs a
+        # constant buffer (memcmp prefix, length breaks ties)
+        self.rawstr_cmp_cstr = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p, i8p, i64]),
+            name="rawstr_cmp_cstr",
+        )
+        builder = ir.IRBuilder(self.rawstr_cmp_cstr.append_basic_block("entry"))
+        s_arg, cdata_arg, clen_arg = self.rawstr_cmp_cstr.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = load_len(builder, s_struct)
+        prefix = builder.select(
+            builder.icmp_signed("<", s_len, clen_arg), s_len, clen_arg
+        )
+        mem = builder.call(
+            self.memcmp, [load_data(builder, s_struct), cdata_arg, prefix]
+        )
+        mem64 = builder.sext(mem, i64)
+        is_eq = builder.icmp_signed("==", mem64, zero64)
+        builder.ret(
+            builder.select(is_eq, builder.sub(s_len, clen_arg), mem64)
+        )
 
         # i64 rawutf8_cp_offset(i8* data, i64 cp_index) - byte offset of
         # the cp_index-th code point (callers clamp cp_index, so the
@@ -2734,14 +2779,27 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
                 gv.initializer = ir.Constant(LLVM_KIND_TYPES[kind], 0)
             self.variables[name] = gv
-        elif kind == OBJ:
-            self.variables[name] = self.current_builder.alloca(
-                ir.PointerType(self.pyobj.pyobj_type), name=name
+        else:
+            # locals are always allocated in the entry block: an alloca
+            # inside a loop body would run once per iteration (stack
+            # growth) and fail dominance on the loop back-edge
+            alloca_type = (
+                ir.PointerType(self.pyobj.pyobj_type)
+                if kind == OBJ
+                else ir.PointerType(ir.IntType(8))
+                if kind in RAW_STORAGE_KINDS
+                else LLVM_KIND_TYPES[kind]
             )
-        elif kind in RAW_STORAGE_KINDS:
-            self.variables[name] = self.current_builder.alloca(
-                ir.PointerType(ir.IntType(8)), name=name
+            # one builder, save/restore: two builders over one block
+            # track insertion indices independently and corrupt order
+            saved_block = self.current_builder.block
+            self.current_builder.position_at_start(
+                self.current_function.entry_basic_block
             )
+            self.variables[name] = self.current_builder.alloca(
+                alloca_type, name=name
+            )
+            self.current_builder.position_at_end(saved_block)
             if kind == RAWSTR:
                 # null-init so the drop-on-overwrite helper can tell
                 # "never assigned" apart from a live buffer
@@ -2749,10 +2807,6 @@ class TypedCodegen(SiluToLLVMConverter):
                     ir.Constant(ir.PointerType(ir.IntType(8)), None),
                     self.variables[name],
                 )
-        else:
-            self.variables[name] = self.current_builder.alloca(
-                LLVM_KIND_TYPES[kind], name=name
-            )
         self.var_kinds[name] = kind
 
     def _load_var(self, name: str) -> Tuple[str, Any]:
@@ -3028,11 +3082,69 @@ class TypedCodegen(SiluToLLVMConverter):
         adjustment = builder.select(adjust, right, ir.Constant(i64, 0))
         return builder.add(remainder, adjustment)
 
-    def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any]):
+    def _rawstr_cstr_operands(self, left, right, left_node, right_node, op):
+        """(raw_ptr, cdata, clen, flipped) when one side is a rawstr and
+        the other a string constant - the constant compares straight
+        out of its global with no allocation. Ordering ops flip when
+        the constant is on the left."""
+        const_node = raw_tv = None
+        flipped = False
+        if (
+            isinstance(left_node, (list, tuple))
+            and len(left_node) >= 2
+            and left_node[0] == "const"
+            and isinstance(left_node[1], str)
+            and right[0] == RAWSTR
+        ):
+            const_node, raw_tv, flipped = left_node, right, True
+        elif (
+            isinstance(right_node, (list, tuple))
+            and len(right_node) >= 2
+            and right_node[0] == "const"
+            and isinstance(right_node[1], str)
+            and left[0] == RAWSTR
+        ):
+            const_node, raw_tv = right_node, left
+        if const_node is None:
+            return None
+        text = const_node[1]
+        data_ptr = self._create_global_string(text)
+        return (
+            raw_tv[1],
+            data_ptr,
+            ir.Constant(ir.IntType(64), len(text.encode("utf-8"))),
+            flipped,
+        )
+
+    def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any], left_node: Any = None, right_node: Any = None):
         if left[0] == RAWSTR or right[0] == RAWSTR:
             # raw string comparisons: memcmp semantics, which on UTF-8
             # bytes equals Python's code point ordering; coerced
-            # temporaries are dropped after the call
+            # temporaries are dropped after the call. A string constant
+            # compares straight out of its global - no allocation.
+            if op in ("==", "!="):
+                pair = self._rawstr_cstr_operands(left, right, left_node, right_node, op)
+                if pair is not None:
+                    raw_ptr, cdata, clen, _flipped = pair
+                    eq = self.current_builder.call(
+                        self.rawstr_eq_cstr, [raw_ptr, cdata, clen]
+                    )
+                    return (I1, eq if op == "==" else self.current_builder.not_(eq))
+            else:
+                pair = self._rawstr_cstr_operands(left, right, left_node, right_node, op)
+                if pair is not None:
+                    raw_ptr, cdata, clen, flipped = pair
+                    if flipped:
+                        op = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}[op]
+                    order = self.current_builder.call(
+                        self.rawstr_cmp_cstr, [raw_ptr, cdata, clen]
+                    )
+                    return (
+                        I1,
+                        self.current_builder.icmp_signed(
+                            op, order, ir.Constant(ir.IntType(64), 0)
+                        ),
+                    )
             a_ptr, a_temp = self._rawstr_operand(left)
             b_ptr, b_temp = self._rawstr_operand(right)
             if op in ("==", "!="):
@@ -4277,7 +4389,7 @@ class TypedCodegen(SiluToLLVMConverter):
         if op in ("==", "!=", "<", "<=", ">", ">="):
             left = self._convert_node(node[1])
             right = self._convert_node(node[2])
-            return self._typed_compare(op, left, right)
+            return self._typed_compare(op, left, right, node[1], node[2])
 
         if op in ("in", "not in") and len(node) >= 3:
             return self._typed_contains(op, node[1], node[2])

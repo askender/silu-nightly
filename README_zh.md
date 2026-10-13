@@ -13,7 +13,7 @@
 | string（4.8 万次拼接） | 0.049s | 0.0032s | 0.0031s |
 | mandelbrot（80x24） | 0.044s | 0.0034s | 0.0033s |
 
-在 11 个基准程序（含 5 个 Benchmarks Game 经典）上，编译产物平均达到
+在 14 个基准程序（含 5 个 Benchmarks Game 经典与 3 个真实风格负载）上，编译产物平均达到
 **手写 Rust 的约 1.0 倍、CPython 的约 16 倍、树遍历解释器的约 600 倍**——
 完整数据与方法见 [benchmarks/README.md](benchmarks/README.md)。
 
