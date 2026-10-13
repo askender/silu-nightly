@@ -925,6 +925,20 @@ class TestRawStrDict:
         )
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
+    def test_ascii_index_slice_fast_path(self):
+        """byte_len == cp_len (pure ASCII) skips the code point walk
+        entirely: s[i] and s[a:b] become O(1)/O(k) via a branch."""
+        source = (
+            's: str = "hello world"\n'
+            "print(s[1], s[7:9])\n"
+            't: str = "你好"\n'
+            "print(t[1], t[0:1])\n"
+        )
+        llvm_ir = _convert(source)
+        # the ascii/walk branch blocks exist in both functions
+        assert 'rawstr_char_at' in llvm_ir
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
     def test_str_key_boxing_boundary(self):
         """print(d) on a str-key raw dict boxes through the table walk
         (deleted keys stay deleted)."""
