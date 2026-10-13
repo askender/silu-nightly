@@ -1288,6 +1288,140 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(scan_done)
         builder.ret(builder.load(off_ptr))
 
+        # i1 rawstr_at_eq_cstr(i8* s, i64 index, i8* cdata, i64 clen) -
+        # s[index] == "<const>" without materializing the character:
+        # code point offset, sequence length, then one memcmp
+        self.rawstr_at_eq_cstr = ir.Function(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [i8p, i64, i8p, i64]),
+            name="rawstr_at_eq_cstr",
+        )
+        entry = self.rawstr_at_eq_cstr.append_basic_block("entry")
+        ok_block = self.rawstr_at_eq_cstr.append_basic_block("ok")
+        err_block = self.rawstr_at_eq_cstr.append_basic_block("index_error")
+        ascii_block = self.rawstr_at_eq_cstr.append_basic_block("ascii")
+        walk_block = self.rawstr_at_eq_cstr.append_basic_block("walk")
+        join_block = self.rawstr_at_eq_cstr.append_basic_block("join")
+        cmp_block = self.rawstr_at_eq_cstr.append_basic_block("cmp")
+        neq_block = self.rawstr_at_eq_cstr.append_basic_block("neq")
+        builder = ir.IRBuilder(entry)
+        s_arg, index_arg, cdata_arg, clen_arg = self.rawstr_at_eq_cstr.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_cp = load_cp(builder, s_struct)
+        is_neg = builder.icmp_signed("<", index_arg, zero64)
+        index_eff = builder.select(is_neg, builder.add(index_arg, s_cp), index_arg)
+        below = builder.icmp_signed(">=", index_eff, zero64)
+        above = builder.icmp_signed("<", index_eff, s_cp)
+        builder.cbranch(builder.and_(below, above), ok_block, err_block)
+
+        builder.position_at_end(err_block)
+        self._emit_panic(
+            builder, builder.gep(str_index_error_msg, [zero32, zero32])
+        )
+
+        builder.position_at_end(ok_block)
+        s_data = load_data(builder, s_struct)
+        s_len = load_len(builder, s_struct)
+        is_ascii = builder.icmp_signed("==", s_len, s_cp)
+        builder.cbranch(is_ascii, ascii_block, walk_block)
+
+        builder.position_at_end(ascii_block)
+        builder.branch(join_block)
+
+        builder.position_at_end(walk_block)
+        walked_off = builder.call(
+            self.rawutf8_cp_offset, [s_data, index_eff]
+        )
+        builder.branch(join_block)
+
+        builder.position_at_end(join_block)
+        char_off = builder.phi(i64)
+        char_off.add_incoming(index_eff, ascii_block)
+        char_off.add_incoming(walked_off, walk_block)
+        lead = builder.load(builder.gep(s_data, [char_off]))
+        seq = builder.select(is_ascii, one64, emit_seq_len(builder, lead))
+        same_len = builder.icmp_signed("==", seq, clen_arg)
+        builder.cbranch(same_len, cmp_block, neq_block)
+
+        builder.position_at_end(cmp_block)
+        bytes_eq = builder.icmp_signed(
+            "==",
+            builder.call(
+                self.memcmp,
+                [builder.gep(s_data, [char_off]), cdata_arg, clen_arg],
+            ),
+            ir.Constant(ir.IntType(32), 0),
+        )
+        builder.ret(bytes_eq)
+
+        builder.position_at_end(neq_block)
+        builder.ret(ir.Constant(ir.IntType(1), 0))
+
+        # i64 rawstr_at_cmp_cstr(i8* s, i64 index, i8* cdata, i64 clen)
+        # - ordering for s[i] <op> "<const>": -1/0/1 style memcmp sign
+        # clamped by the sequence-vs-constant length
+        self.rawstr_at_cmp_cstr = ir.Function(
+            self.module,
+            ir.FunctionType(i64, [i8p, i64, i8p, i64]),
+            name="rawstr_at_cmp_cstr",
+        )
+        entry = self.rawstr_at_cmp_cstr.append_basic_block("entry")
+        ok_block = self.rawstr_at_cmp_cstr.append_basic_block("ok")
+        err_block = self.rawstr_at_cmp_cstr.append_basic_block("index_error")
+        ascii_block = self.rawstr_at_cmp_cstr.append_basic_block("ascii")
+        walk_block = self.rawstr_at_cmp_cstr.append_basic_block("walk")
+        join_block = self.rawstr_at_cmp_cstr.append_basic_block("join")
+        builder = ir.IRBuilder(entry)
+        s_arg, index_arg, cdata_arg, clen_arg = self.rawstr_at_cmp_cstr.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_cp = load_cp(builder, s_struct)
+        is_neg = builder.icmp_signed("<", index_arg, zero64)
+        index_eff = builder.select(is_neg, builder.add(index_arg, s_cp), index_arg)
+        below = builder.icmp_signed(">=", index_eff, zero64)
+        above = builder.icmp_signed("<", index_eff, s_cp)
+        builder.cbranch(builder.and_(below, above), ok_block, err_block)
+
+        builder.position_at_end(err_block)
+        self._emit_panic(
+            builder, builder.gep(str_index_error_msg, [zero32, zero32])
+        )
+
+        builder.position_at_end(ok_block)
+        s_data = load_data(builder, s_struct)
+        s_len = load_len(builder, s_struct)
+        is_ascii = builder.icmp_signed("==", s_len, s_cp)
+        builder.cbranch(is_ascii, ascii_block, walk_block)
+
+        builder.position_at_end(ascii_block)
+        builder.branch(join_block)
+
+        builder.position_at_end(walk_block)
+        walked_off = builder.call(
+            self.rawutf8_cp_offset, [s_data, index_eff]
+        )
+        builder.branch(join_block)
+
+        builder.position_at_end(join_block)
+        char_off = builder.phi(i64)
+        char_off.add_incoming(index_eff, ascii_block)
+        char_off.add_incoming(walked_off, walk_block)
+        lead = builder.load(builder.gep(s_data, [char_off]))
+        seq = builder.select(is_ascii, one64, emit_seq_len(builder, lead))
+        # memcmp over the shared prefix, longer sequence sorts after
+        prefix = builder.select(
+            builder.icmp_signed("<", seq, clen_arg), seq, clen_arg
+        )
+        mem = builder.call(
+            self.memcmp,
+            [builder.gep(s_data, [char_off]), cdata_arg, prefix],
+        )
+        mem64 = builder.sext(mem, i64)
+        is_eq = builder.icmp_signed("==", mem64, zero64)
+        builder.ret(
+            builder.select(is_eq, builder.sub(seq, clen_arg), mem64)
+        )
+
+
         # i8* rawstr_char_at(i8* s, i64 index) - s[i] as a one-code-point
         # rawstr. Negative indices adjust by the code point count; the
         # code point walk makes indexing O(n) like Rust's chars().nth().
@@ -3250,12 +3384,93 @@ class TypedCodegen(SiluToLLVMConverter):
             flipped,
         )
 
+    def _rawstr_at_eq_fusion(
+        self, op, left, right, left_node, right_node
+    ):
+        """s[i] == "c" (any order, == or !=) fused to one runtime call:
+        code point offset + length check + memcmp, no char allocation.
+        Returns an (I1, value) TypedValue or None when not applicable."""
+        if op not in ("==", "!=", "<", "<=", ">", ">="):
+            return None
+
+        def const_side(node):
+            return (
+                isinstance(node, (list, tuple))
+                and len(node) >= 2
+                and node[0] == "const"
+                and isinstance(node[1], str)
+            )
+
+        def index_side_node(node):
+            return (
+                isinstance(node, (list, tuple))
+                and len(node) >= 3
+                and node[0] == "subscript"
+                and isinstance(node[1], (list, tuple))
+                and node[1][0] == "name"
+                and not (
+                    isinstance(node[2], list)
+                    and len(node[2]) >= 4
+                    and node[2][0] == "slice"
+                )
+            )
+
+        def index_side(tv, node):
+            return tv[0] == RAWSTR and index_side_node(node)
+
+        left_is_index = left is not None and index_side(left, left_node)
+        right_is_index = right is not None and index_side(right, right_node)
+        if left_node is None:
+            # lazy mode: decide from the nodes alone
+            left_is_index = index_side_node(left_node)
+            right_is_index = index_side_node(right_node)
+        if left_is_index and const_side(right_node):
+            sub_node, const_node = left_node, right_node
+            text, flip = right_node[1], False
+        elif right_is_index and const_side(left_node):
+            sub_node, const_node = right_node, left_node
+            text, flip = left_node[1], True
+        else:
+            return None
+
+        base_tv = self._convert_node(sub_node[1])
+        if base_tv[0] != RAWSTR:
+            return None
+        index = self._coerce(self._convert_node(sub_node[2]), I64)[1]
+        data_ptr = self._create_global_string(text)
+        clen = ir.Constant(ir.IntType(64), len(text.encode("utf-8")))
+        if op in ("==", "!="):
+            eq = self.current_builder.call(
+                self.rawstr_at_eq_cstr,
+                [base_tv[1], index, data_ptr, clen],
+            )
+            if op == "!=":
+                eq = self.current_builder.not_(eq)
+            return (I1, eq)
+        if flip:
+            op = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}[op]
+        order = self.current_builder.call(
+            self.rawstr_at_cmp_cstr, [base_tv[1], index, data_ptr, clen]
+        )
+        return (
+            I1,
+            self.current_builder.icmp_signed(
+                op, order, ir.Constant(ir.IntType(64), 0)
+            ),
+        )
+
     def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any], left_node: Any = None, right_node: Any = None):
         if left[0] == RAWSTR or right[0] == RAWSTR:
             # raw string comparisons: memcmp semantics, which on UTF-8
             # bytes equals Python's code point ordering; coerced
             # temporaries are dropped after the call. A string constant
             # compares straight out of its global - no allocation.
+            # s[i] <op> "<const>" never materializes the character.
+            fused = self._rawstr_at_eq_fusion(
+                op, left, right, left_node, right_node
+            )
+            if fused is not None:
+                return fused
             if op in ("==", "!="):
                 pair = self._rawstr_cstr_operands(left, right, left_node, right_node, op)
                 if pair is not None:
@@ -4667,6 +4882,13 @@ class TypedCodegen(SiluToLLVMConverter):
                     left = self._coerce(left, RAWSTR)
                     right = self._coerce(right, RAWSTR)
             return self._typed_binop(op, left, right)
+
+        if op in ("==", "!=", "<", "<=", ">", ">="):
+            # s[i] <op> "<const>" must fuse BEFORE evaluating the
+            # subscript, otherwise the char is materialized anyway
+            fused = self._rawstr_at_eq_fusion(op, None, None, node[1], node[2])
+            if fused is not None:
+                return fused
 
         if op in ("==", "!=", "<", "<=", ">", ">="):
             left = self._convert_node(node[1])

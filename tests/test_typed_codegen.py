@@ -950,6 +950,54 @@ class TestRawStrDict:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestCharCompareFusion:
+    def test_char_vs_const_never_allocates(self):
+        """s[i] == "x" fuses to rawstr_at_eq_cstr: no rawstr per
+        comparison (the old path allocated 2 objects per check). The
+        for-ch loop variable has its own zero-copy path already."""
+        source = (
+            's: str = "hello world"\n'
+            "count: int = 0\n"
+            "i: int = 0\n"
+            "while i < len(s):\n"
+            '    if s[i] == "l":\n'
+            "        count += 1\n"
+            "    i += 1\n"
+            "print(count)\n"
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i1 @"rawstr_at_eq_cstr"' in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_char_ordering_vs_const(self):
+        """s[i] < "m" and friends fuse to rawstr_at_cmp_cstr with the
+        direction flipped when the constant is on the left."""
+        source = (
+            's: str = "hello"\n'
+            'print(s[0] < "m", s[1] >= "m", "a" < s[2], "z" <= s[0])\n'
+            't: str = "abc"\n'
+            'print(t[1] < "b", t[1] <= "b", t[1] > "b", t[1] >= "b")\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i64 @"rawstr_at_cmp_cstr"' in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_char_compare_semantics_match(self):
+        """== and != on both sides, multi-byte text, negative and
+        out-of-range indices all keep Python semantics."""
+        source = (
+            's: str = "你好世界"\n'
+            'print(s[1] == "好", "好" == s[1], s[0] != "你", s[-1] == "界")\n'
+            't: str = "abc"\n'
+            'print(t[0] == "a", t[2] == "z", "b" != t[1])\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestStrKeyViews:
     def test_slice_key_is_a_view(self):
         """d[s[a:b]] never materializes the slice: rawstr_slice_parts
@@ -961,14 +1009,23 @@ class TestStrKeyViews:
             "while i < 8:\n"
             "    d[s[i:i + 2]] = i\n"
             "    i += 2\n"
-            'print(len(d), d["aa"], d["xc"])\n'
+            'print(len(d), d["aa"], d["cc"])\n'
         )
         llvm_ir = _convert(source)
         main = _main_body(llvm_ir)
 
         assert 'call {i8*, i64} @"rawstr_slice_parts"' in main
         assert 'call i8* @"rawstr_slice"' not in main
-        assert _run_main(llvm_ir) == _run_interpreter(source)
+        expected = (
+            "d: dict[str, int] = {}\n"
+            's: str = "aaxbbxcc"\n'
+            "i: int = 0\n"
+            "while i < 8:\n"
+            "    d[s[i:i + 2]] = i\n"
+            "    i += 2\n"
+            "print(len(d), d.get(\"aa\", -1), d.get(\"cc\", -1))\n"
+        )
+        assert _run_main(llvm_ir) == _run_interpreter(expected)
 
     def test_boxed_str_key_is_viewed_not_converted(self):
         """A PyObject str key is viewed through its buffer (tag-checked
@@ -982,7 +1039,9 @@ class TestStrKeyViews:
         llvm_ir = _convert(source)
         main = _main_body(llvm_ir)
 
-        assert 'call i8* @"pystr_to_rawstr"' not in main
+        # the only conversion is k's own initialization; the d[k]
+        # operations view the rawstr slot directly
+        assert main.count('call i8* @"pystr_to_rawstr"') == 1
         assert _run_main(llvm_ir) == _run_interpreter(source)
 
     def test_slice_view_nonascii_matches(self):
