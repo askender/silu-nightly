@@ -874,6 +874,68 @@ class TestCrossFunctionInference:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestRawStrDict:
+    def test_str_key_annotation_is_raw(self):
+        """dict[str, int] uses the str-key raw table, not PyObject."""
+        llvm_ir = _convert(
+            'd: dict[str, int] = {"a": 1}\nd["b"] = 2\n'
+            'x: int = d["a"]\nprint(x, len(d))\n'
+        )
+        main = _main_body(llvm_ir)
+
+        assert 'define void @"rawdict_str_set"' in llvm_ir
+        assert 'call void @"rawdict_str_set"' in main
+        assert 'call i64 @"rawdict_str_get"' in main
+        assert 'call void @"pyobj_subscript_set"' not in main
+        assert _run_main(llvm_ir) == "1 2\n"
+
+    def test_str_key_full_semantics(self):
+        """insert/overwrite/get/pop/setdefault/del/clear/in/len all
+        match the interpreter, with rehashes forced by churn."""
+        source = (
+            'd: dict[str, int] = {"apple": 1, "banana": 2}\n'
+            'd["cherry"] = 3\n'
+            'print(d["banana"], len(d), "apple" in d, "fig" in d)\n'
+            'print(d.get("fig", 99), d.get("apple"))\n'
+            'print(d.pop("cherry"), len(d))\n'
+            'd["apple"] = 100\n'
+            'print(d["apple"])\n'
+            'del d["banana"]\n'
+            'print(len(d), "banana" in d)\n'
+            'print(d.setdefault("fig", 7), d.setdefault("fig", 8))\n'
+            "i: int = 0\n"
+            "while i < 2000:\n"
+            '    d["k" + str(i % 300)] = i\n'
+            "    i += 1\n"
+            "print(len(d))\n"
+            'del d["k7"]\n'
+            'print(len(d), d.get("k7", -1))\n'
+            "d.clear()\n"
+            "print(len(d))\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_str_key_float_values(self):
+        """dict[str, float] bitcasts values like the int-key family."""
+        source = (
+            'f: dict[str, float] = {"a": 0.5}\n'
+            'f["b"] = 2.5\n'
+            'f["a"] += 1.0\n'
+            'print(f["a"], f["b"], len(f))\n'
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_str_key_boxing_boundary(self):
+        """print(d) on a str-key raw dict boxes through the table walk
+        (deleted keys stay deleted)."""
+        source = (
+            'd: dict[str, int] = {"a": 1, "b": 2}\n'
+            'del d["a"]\n'
+            "print(len(d), d.get(\"a\", -1), d[\"b\"])\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestBoxedDictFullTable:
     def test_get_missing_on_full_boxed_dict(self):
         """dict_set used to grow only at 100% load, so a read-side

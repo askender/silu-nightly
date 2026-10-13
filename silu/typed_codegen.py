@@ -45,7 +45,15 @@ RAWLIST_F = "rawlist_f64"  # list[float]
 RAWLIST_KINDS = {RAWLIST_I: I64, RAWLIST_F: F64}
 RAWDICT_II = "rawdict_ii"  # dict[int, int]: machine-word open addressing
 RAWDICT_IF = "rawdict_if"  # dict[int, float] (values as f64 bit patterns)
-RAWDICT_KINDS = {RAWDICT_II: I64, RAWDICT_IF: F64}  # kind -> value kind
+RAWDICT_SI = "rawdict_si"  # dict[str, int]: same table, rawstr keys
+RAWDICT_SF = "rawdict_sf"  # dict[str, float]
+RAWDICT_KINDS = {
+    RAWDICT_II: I64,
+    RAWDICT_IF: F64,
+    RAWDICT_SI: I64,
+    RAWDICT_SF: F64,
+}  # kind -> value kind
+RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF)  # kinds with rawstr keys
 RAWSTR = "rawstr"  # str: {len, cap, data} with exclusive slot ownership
 RAW_STORAGE_KINDS = {**RAWLIST_KINDS, **RAWDICT_KINDS, RAWSTR: RAWSTR}
 LLVM_KIND_TYPES = {
@@ -57,6 +65,8 @@ LLVM_KIND_TYPES = {
     RAWLIST_F: ir.PointerType(ir.IntType(8)),
     RAWDICT_II: ir.PointerType(ir.IntType(8)),
     RAWDICT_IF: ir.PointerType(ir.IntType(8)),
+    RAWDICT_SI: ir.PointerType(ir.IntType(8)),
+    RAWDICT_SF: ir.PointerType(ir.IntType(8)),
 }
 
 
@@ -816,11 +826,15 @@ class TypedCodegen(SiluToLLVMConverter):
         msg_ptr = builder.gep(key_error_msg, [zero32, zero32])
         self._emit_panic(builder, msg_ptr)
 
-        # PyObject* rawdict_to_pydict_ii/if(i8* d) - dynamic boundary
-        for tag, make_value in (
-            ("ii", lambda b, bits: b.call(self.create_int, [bits])),
+        # PyObject* rawdict_to_pydict_{ii,if,si,sf}(i8* d) - boundary
+        def box_int_key(b, bits):
+            return b.call(self.create_int, [bits])
+
+        for tag, make_key, make_value in (
+            ("ii", box_int_key, lambda b, bits: b.call(self.create_int, [bits])),
             (
                 "if",
+                box_int_key,
                 lambda b, bits: b.call(
                     self.create_float, [b.bitcast(bits, ir.DoubleType())]
                 ),
@@ -868,9 +882,8 @@ class TypedCodegen(SiluToLLVMConverter):
             entry_index = builder.sub(slot_entry, one64)
             keys_now = builder.load(dfield(builder, struct_ptr, 5))
             vals_now = builder.load(dfield(builder, struct_ptr, 6))
-            key_box = builder.call(
-                self.create_int,
-                [builder.load(builder.gep(keys_now, [entry_index]))],
+            key_box = make_key(
+                builder, builder.load(builder.gep(keys_now, [entry_index]))
             )
             val_box = make_value(
                 builder, builder.load(builder.gep(vals_now, [entry_index]))
@@ -1255,11 +1268,31 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(ok_block)
         s_data = load_data(builder, s_struct)
-        char_off = builder.call(
+        # ASCII fast path: when every byte is a code point, the index
+        # IS the byte offset - skip the code point walk entirely
+        is_ascii = builder.icmp_signed(
+            "==", load_len(builder, s_struct), s_cp
+        )
+        ascii_block = self.rawstr_char_at.append_basic_block("ascii")
+        walk_block = self.rawstr_char_at.append_basic_block("walk")
+        join_block = self.rawstr_char_at.append_basic_block("join")
+        builder.cbranch(is_ascii, ascii_block, walk_block)
+
+        builder.position_at_end(ascii_block)
+        builder.branch(join_block)
+
+        builder.position_at_end(walk_block)
+        walked_off = builder.call(
             self.rawutf8_cp_offset, [s_data, index_eff]
         )
+        builder.branch(join_block)
+
+        builder.position_at_end(join_block)
+        char_off = builder.phi(i64)
+        char_off.add_incoming(index_eff, ascii_block)
+        char_off.add_incoming(walked_off, walk_block)
         lead = builder.load(builder.gep(s_data, [char_off]))
-        seq = emit_seq_len(builder, lead)
+        seq = builder.select(is_ascii, one64, emit_seq_len(builder, lead))
         char_buf = builder.call(self.malloc, [seq])
         builder.call(
             self.memcpy,
@@ -1301,8 +1334,31 @@ class TypedCodegen(SiluToLLVMConverter):
         out_cp = builder.select(
             builder.icmp_signed(">", span_cp, zero64), span_cp, zero64
         )
-        off_lo = builder.call(self.rawutf8_cp_offset, [s_data, lo_eff])
-        off_hi = builder.call(self.rawutf8_cp_offset, [s_data, hi_eff])
+        # ASCII fast path: code point index == byte offset - skip the
+        # code point walks entirely
+        is_ascii = builder.icmp_signed(
+            "==", load_len(builder, s_struct), s_cp
+        )
+        ascii_block = self.rawstr_slice.append_basic_block("ascii")
+        walk_block = self.rawstr_slice.append_basic_block("walk")
+        join_block = self.rawstr_slice.append_basic_block("join")
+        builder.cbranch(is_ascii, ascii_block, walk_block)
+
+        builder.position_at_end(ascii_block)
+        builder.branch(join_block)
+
+        builder.position_at_end(walk_block)
+        walked_lo = builder.call(self.rawutf8_cp_offset, [s_data, lo_eff])
+        walked_hi = builder.call(self.rawutf8_cp_offset, [s_data, hi_eff])
+        builder.branch(join_block)
+
+        builder.position_at_end(join_block)
+        off_lo = builder.phi(i64)
+        off_lo.add_incoming(lo_eff, ascii_block)
+        off_lo.add_incoming(walked_lo, walk_block)
+        off_hi = builder.phi(i64)
+        off_hi.add_incoming(hi_eff, ascii_block)
+        off_hi.add_incoming(walked_hi, walk_block)
         # an inverted range is the empty string: off_lo may sit past
         # off_hi, so clamp the byte span by the code point span
         raw_span = builder.sub(off_hi, off_lo)
@@ -1689,6 +1745,600 @@ class TypedCodegen(SiluToLLVMConverter):
         msg_ptr = builder.gep(type_error_msg, [zero32, zero32])
         self._emit_panic(builder, msg_ptr)
 
+
+        # ---- str-key raw dicts: dict[str, int] / dict[str, float] ----
+        # Same open-addressing layout as the int-key family, but the
+        # keys array holds rawstr pointers (as i64). The dict owns a
+        # copy of every key (rawstr_copy on insert, rawstr_free on
+        # del/clear), so caller-side drops never dangle a key.
+
+        # i64 rawstr_fnv(i8* s) - FNV-1a over the byte buffer
+        self.rawstr_fnv = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p]), name="rawstr_fnv"
+        )
+        entry = self.rawstr_fnv.append_basic_block("entry")
+        fnv_cond = self.rawstr_fnv.append_basic_block("fnv_cond")
+        fnv_body = self.rawstr_fnv.append_basic_block("fnv_body")
+        fnv_done = self.rawstr_fnv.append_basic_block("fnv_done")
+        builder = ir.IRBuilder(entry)
+        (fnv_arg,) = self.rawstr_fnv.args
+        fnv_struct = builder.bitcast(
+            fnv_arg, ir.PointerType(self.rawstr_struct_type)
+        )
+        fnv_len = builder.load(sfield(builder, fnv_struct, 0))
+        fnv_data = builder.load(sfield(builder, fnv_struct, 2))
+        fnv_i = builder.alloca(i64, name="fnv_i")
+        fnv_h = builder.alloca(i64, name="fnv_h")
+        builder.store(zero64, fnv_i)
+        builder.store(ir.Constant(i64, 1469598103934665603), fnv_h)
+        builder.branch(fnv_cond)
+
+        builder.position_at_end(fnv_cond)
+        fnv_idx = builder.load(fnv_i)
+        builder.cbranch(
+            builder.icmp_signed("<", fnv_idx, fnv_len), fnv_body, fnv_done
+        )
+
+        builder.position_at_end(fnv_body)
+        fnv_byte = builder.load(builder.gep(fnv_data, [fnv_idx]))
+        fnv_byte64 = builder.zext(fnv_byte, i64)
+        fnv_hash = builder.load(fnv_h)
+        builder.store(
+            builder.mul(
+                builder.xor(fnv_hash, fnv_byte64),
+                ir.Constant(i64, 1099511628211),
+            ),
+            fnv_h,
+        )
+        builder.store(builder.add(fnv_idx, one64), fnv_i)
+        builder.branch(fnv_cond)
+
+        builder.position_at_end(fnv_done)
+        builder.ret(builder.load(fnv_h))
+
+        def emit_rawdict_str_probe(name, ret_type, arg_types, on_hit, on_miss):
+            """Tombstone-skipping probe over str keys (FNV-1a hash,
+            rawstr_eq match). on_hit(builder, func, entry_index,
+            slot_now, table_now) / on_miss(builder, func) must ret."""
+            func = ir.Function(
+                self.module,
+                ir.FunctionType(ret_type, arg_types),
+                name=name,
+            )
+            entry = func.append_basic_block("entry")
+            probe_test = func.append_basic_block("probe_test")
+            tomb_or_match = func.append_basic_block("probe_tomb")
+            match_check = func.append_basic_block("probe_match")
+            hit_block = func.append_basic_block("hit")
+            probe_step = func.append_basic_block("probe_step")
+            miss_block = func.append_basic_block("miss")
+            b = ir.IRBuilder(entry)
+            dict_arg, key_arg = func.args[0], func.args[1]
+            struct_ptr = b.bitcast(
+                dict_arg, ir.PointerType(self.raw_dict_struct_type)
+            )
+            mask = b.load(dfield(b, struct_ptr, 3))
+            probe_slot = b.alloca(i64, name="sprobe_slot")
+            b.store(
+                b.and_(b.call(self.rawstr_fnv, [key_arg]), mask),
+                probe_slot,
+            )
+            b.branch(probe_test)
+
+            b.position_at_end(probe_test)
+            table_now = b.load(dfield(b, struct_ptr, 4))
+            slot_now = b.load(probe_slot)
+            slot_entry = b.load(b.gep(table_now, [slot_now]))
+            is_empty = b.icmp_signed("==", slot_entry, zero64)
+            b.cbranch(is_empty, miss_block, tomb_or_match)
+
+            b.position_at_end(tomb_or_match)
+            is_tomb = b.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
+            b.cbranch(is_tomb, probe_step, match_check)
+
+            b.position_at_end(match_check)
+            entry_index = b.sub(slot_entry, one64)
+            keys_now = b.load(dfield(b, struct_ptr, 5))
+            stored_bits = b.load(b.gep(keys_now, [entry_index]))
+            stored_key = b.inttoptr(stored_bits, i8p)
+            is_match = b.call(self.rawstr_eq, [stored_key, key_arg])
+            b.cbranch(is_match, hit_block, probe_step)
+
+            b.position_at_end(hit_block)
+            on_hit(b, func, entry_index, slot_now, table_now)
+
+            b.position_at_end(probe_step)
+            mask_step = b.load(dfield(b, struct_ptr, 3))
+            b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
+            b.branch(probe_test)
+
+            b.position_at_end(miss_block)
+            on_miss(b, func)
+            return func
+
+        def str_probe_struct(b, func):
+            return b.bitcast(
+                func.args[0], ir.PointerType(self.raw_dict_struct_type)
+            )
+
+        def str_value_at(b, func, entry_index):
+            vals_now = b.load(dfield(b, str_probe_struct(b, func), 6))
+            return b.load(b.gep(vals_now, [entry_index]))
+
+        def str_key_error(b, func):
+            self._emit_panic(b, b.gep(key_error_msg, [zero32, zero32]))
+
+        # i64 rawdict_str_get(i8* d, i8* key) - KeyError when missing
+        self.rawdict_str_get = emit_rawdict_str_probe(
+            "rawdict_str_get",
+            i64,
+            [i8p, i8p],
+            lambda b, func, entry_index, _slot, _table: b.ret(
+                str_value_at(b, func, entry_index)
+            ),
+            str_key_error,
+        )
+
+        # i64 rawdict_str_del(i8* d, i8* key) - tombstones, frees the
+        # dict's key copy, returns the value bits
+        def str_del_hit(b, func, entry_index, slot_now, table_now):
+            keys_now = b.load(dfield(b, str_probe_struct(b, func), 5))
+            key_bits = b.load(b.gep(keys_now, [entry_index]))
+            b.call(self.rawstr_free, [b.inttoptr(key_bits, i8p)])
+            # null the entry so rawdict_str_clear skips it (the entries
+            # array still holds the dangling pointer otherwise)
+            b.store(zero64, b.gep(keys_now, [entry_index]))
+            b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
+            struct_ptr = str_probe_struct(b, func)
+            count = b.load(dfield(b, struct_ptr, 0))
+            b.store(b.sub(count, one64), dfield(b, struct_ptr, 0))
+            b.ret(str_value_at(b, func, entry_index))
+
+        self.rawdict_str_del = emit_rawdict_str_probe(
+            "rawdict_str_del", i64, [i8p, i8p], str_del_hit, str_key_error
+        )
+
+        # i1 rawdict_str_has(i8* d, i8* key)
+        self.rawdict_str_has = emit_rawdict_str_probe(
+            "rawdict_str_has",
+            ir.IntType(1),
+            [i8p, i8p],
+            lambda b, func, entry_index, _slot, _table: b.ret(
+                ir.Constant(ir.IntType(1), 1)
+            ),
+            lambda b, func: b.ret(ir.Constant(ir.IntType(1), 0)),
+        )
+
+        # i64 rawdict_str_get_or(i8* d, i8* key, i64 default_bits)
+        self.rawdict_str_get_or = emit_rawdict_str_probe(
+            "rawdict_str_get_or",
+            i64,
+            [i8p, i8p, i64],
+            lambda b, func, entry_index, _slot, _table: b.ret(
+                str_value_at(b, func, entry_index)
+            ),
+            lambda b, func: b.ret(func.args[2]),
+        )
+
+        # i64 rawdict_str_pop_or(i8* d, i8* key, i64 default_bits)
+        self.rawdict_str_pop_or = emit_rawdict_str_probe(
+            "rawdict_str_pop_or", i64, [i8p, i8p, i64], str_del_hit,
+            lambda b, func: b.ret(func.args[2]),
+        )
+
+        # void rawdict_str_reindex(i8* d, i64 new_size) - compacting
+        # rebuild; key pointers move to fresh arrays (ownership stays
+        # with the dict, no copies)
+        self.rawdict_str_reindex = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i64]),
+            name="rawdict_str_reindex",
+        )
+        entry = self.rawdict_str_reindex.append_basic_block("entry")
+        scan_cond = self.rawdict_str_reindex.append_basic_block("scan_cond")
+        scan_body = self.rawdict_str_reindex.append_basic_block("scan_body")
+        place_start = self.rawdict_str_reindex.append_basic_block("place_start")
+        place_probe = self.rawdict_str_reindex.append_basic_block("place_probe")
+        place_store = self.rawdict_str_reindex.append_basic_block("place_store")
+        place_step = self.rawdict_str_reindex.append_basic_block("place_step")
+        scan_step = self.rawdict_str_reindex.append_basic_block("scan_step")
+        scan_done = self.rawdict_str_reindex.append_basic_block("scan_done")
+        builder = ir.IRBuilder(entry)
+        dict_arg, new_size_arg = self.rawdict_str_reindex.args
+        struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
+        old_mask = builder.load(dfield(builder, struct_ptr, 3))
+        old_size = builder.add(old_mask, one64)
+        old_table = builder.load(dfield(builder, struct_ptr, 4))
+        old_keys = builder.load(dfield(builder, struct_ptr, 5))
+        old_vals = builder.load(dfield(builder, struct_ptr, 6))
+        entries_cap = builder.load(dfield(builder, struct_ptr, 2))
+        new_mask = builder.sub(new_size_arg, one64)
+        fresh_table = builder.bitcast(
+            builder.call(self.calloc, [new_size_arg, ir.Constant(i64, 8)]),
+            ir.PointerType(i64),
+        )
+        cap_bytes = builder.mul(entries_cap, ir.Constant(i64, 8))
+        fresh_keys = builder.bitcast(
+            builder.call(self.malloc, [cap_bytes]), ir.PointerType(i64)
+        )
+        fresh_vals = builder.bitcast(
+            builder.call(self.malloc, [cap_bytes]), ir.PointerType(i64)
+        )
+        builder.store(new_mask, dfield(builder, struct_ptr, 3))
+        builder.store(fresh_table, dfield(builder, struct_ptr, 4))
+        builder.store(fresh_keys, dfield(builder, struct_ptr, 5))
+        builder.store(fresh_vals, dfield(builder, struct_ptr, 6))
+        idx_ptr = builder.alloca(i64, name="sre_i")
+        live_ptr = builder.alloca(i64, name="sre_live")
+        slot_ptr = builder.alloca(i64, name="sre_slot")
+        builder.store(zero64, idx_ptr)
+        builder.store(zero64, live_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_cond)
+        idx = builder.load(idx_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, old_size), scan_body, scan_done
+        )
+
+        builder.position_at_end(scan_body)
+        slot_entry = builder.load(builder.gep(old_table, [idx]))
+        is_live = builder.icmp_signed(">", slot_entry, zero64)
+        builder.cbranch(is_live, place_start, scan_step)
+
+        builder.position_at_end(place_start)
+        entry_index = builder.sub(slot_entry, one64)
+        key_bits = builder.load(builder.gep(old_keys, [entry_index]))
+        val_val = builder.load(builder.gep(old_vals, [entry_index]))
+        live = builder.load(live_ptr)
+        builder.store(key_bits, builder.gep(fresh_keys, [live]))
+        builder.store(val_val, builder.gep(fresh_vals, [live]))
+        key_ptr = builder.inttoptr(key_bits, i8p)
+        key_hash = builder.call(self.rawstr_fnv, [key_ptr])
+        builder.store(builder.and_(key_hash, new_mask), slot_ptr)
+        builder.branch(place_probe)
+
+        builder.position_at_end(place_probe)
+        slot_now = builder.load(slot_ptr)
+        taken = builder.load(builder.gep(fresh_table, [slot_now]))
+        builder.cbranch(
+            builder.icmp_signed("!=", taken, zero64), place_step, place_store
+        )
+
+        builder.position_at_end(place_store)
+        builder.store(
+            builder.add(live, one64), builder.gep(fresh_table, [slot_now])
+        )
+        builder.store(builder.add(live, one64), live_ptr)
+        builder.branch(scan_step)
+
+        builder.position_at_end(place_step)
+        stepped = builder.and_(builder.add(slot_now, one64), new_mask)
+        builder.store(stepped, slot_ptr)
+        builder.branch(place_probe)
+
+        builder.position_at_end(scan_step)
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_done)
+        builder.store(builder.load(live_ptr), dfield(builder, struct_ptr, 1))
+        builder.call(self.free, [builder.bitcast(old_table, i8p)])
+        builder.call(self.free, [builder.bitcast(old_keys, i8p)])
+        builder.call(self.free, [builder.bitcast(old_vals, i8p)])
+        builder.ret_void()
+
+        # void rawdict_str_set(i8* d, i8* key, i64 value_bits)
+        # On insert the dict stores its own rawstr_copy of the key.
+        self.rawdict_str_set = ir.Function(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i8p, i64]),
+            name="rawdict_str_set",
+        )
+        entry = self.rawdict_str_set.append_basic_block("entry")
+        rehash_block = self.rawdict_str_set.append_basic_block("rehash")
+        size_check = self.rawdict_str_set.append_basic_block("size_check")
+        size_grow = self.rawdict_str_set.append_basic_block("size_grow")
+        size_done = self.rawdict_str_set.append_basic_block("size_done")
+        start_block = self.rawdict_str_set.append_basic_block("probe_start")
+        probe_test = self.rawdict_str_set.append_basic_block("probe_test")
+        tomb_or_match = self.rawdict_str_set.append_basic_block("probe_tomb")
+        tomb_note = self.rawdict_str_set.append_basic_block("tomb_note")
+        tomb_store = self.rawdict_str_set.append_basic_block("tomb_store")
+        match_check = self.rawdict_str_set.append_basic_block("probe_match")
+        overwrite = self.rawdict_str_set.append_basic_block("overwrite")
+        probe_step = self.rawdict_str_set.append_basic_block("probe_step")
+        insert = self.rawdict_str_set.append_basic_block("insert")
+        grow_block = self.rawdict_str_set.append_basic_block("grow")
+        do_insert = self.rawdict_str_set.append_basic_block("do_insert")
+        builder = ir.IRBuilder(entry)
+        dict_arg, key_arg, val_arg = self.rawdict_str_set.args
+        struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
+        filled = builder.load(dfield(builder, struct_ptr, 1))
+        mask = builder.load(dfield(builder, struct_ptr, 3))
+        index_size = builder.add(mask, one64)
+        load_would_exceed = builder.icmp_signed(
+            ">",
+            builder.mul(builder.add(filled, one64), ir.Constant(i64, 3)),
+            builder.mul(index_size, ir.Constant(i64, 2)),
+        )
+        slot_ptr = builder.alloca(i64, name="rds_slot")
+        tomb_ptr = builder.alloca(i64, name="rds_tomb")
+        size_ptr = builder.alloca(i64, name="rds_size")
+        builder.cbranch(load_would_exceed, rehash_block, start_block)
+
+        builder.position_at_end(rehash_block)
+        live_count = builder.load(dfield(builder, struct_ptr, 0))
+        builder.store(ir.Constant(i64, 8), size_ptr)
+        builder.branch(size_check)
+
+        builder.position_at_end(size_check)
+        size_now = builder.load(size_ptr)
+        need_more = builder.icmp_signed(
+            ">",
+            builder.mul(builder.add(live_count, one64), ir.Constant(i64, 3)),
+            builder.mul(size_now, ir.Constant(i64, 2)),
+        )
+        builder.cbranch(need_more, size_grow, size_done)
+
+        builder.position_at_end(size_grow)
+        builder.store(builder.mul(size_now, ir.Constant(i64, 2)), size_ptr)
+        builder.branch(size_check)
+
+        builder.position_at_end(size_done)
+        builder.call(
+            self.rawdict_str_reindex, [dict_arg, builder.load(size_ptr)]
+        )
+        builder.branch(start_block)
+
+        builder.position_at_end(start_block)
+        builder.store(ir.Constant(i64, -1), tomb_ptr)
+        mask_now = builder.load(dfield(builder, struct_ptr, 3))
+        key_hash = builder.call(self.rawstr_fnv, [key_arg])
+        builder.store(builder.and_(key_hash, mask_now), slot_ptr)
+        builder.branch(probe_test)
+
+        builder.position_at_end(probe_test)
+        table_now = builder.load(dfield(builder, struct_ptr, 4))
+        slot_now = builder.load(slot_ptr)
+        slot_entry = builder.load(builder.gep(table_now, [slot_now]))
+        is_empty = builder.icmp_signed("==", slot_entry, zero64)
+        builder.cbranch(is_empty, insert, tomb_or_match)
+
+        builder.position_at_end(tomb_or_match)
+        is_tomb = builder.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
+        builder.cbranch(is_tomb, tomb_note, match_check)
+
+        builder.position_at_end(tomb_note)
+        tomb_seen = builder.load(tomb_ptr)
+        none_yet = builder.icmp_signed("==", tomb_seen, ir.Constant(i64, -1))
+        builder.cbranch(none_yet, tomb_store, probe_step)
+
+        builder.position_at_end(tomb_store)
+        builder.store(slot_now, tomb_ptr)
+        builder.branch(probe_step)
+
+        builder.position_at_end(match_check)
+        entry_index = builder.sub(slot_entry, one64)
+        keys_now = builder.load(dfield(builder, struct_ptr, 5))
+        stored_key = builder.inttoptr(
+            builder.load(builder.gep(keys_now, [entry_index])), i8p
+        )
+        is_match = builder.call(self.rawstr_eq, [stored_key, key_arg])
+        builder.cbranch(is_match, overwrite, probe_step)
+
+        builder.position_at_end(overwrite)
+        vals_now = builder.load(dfield(builder, struct_ptr, 6))
+        builder.store(val_arg, builder.gep(vals_now, [entry_index]))
+        builder.ret_void()
+
+        builder.position_at_end(probe_step)
+        mask_step = builder.load(dfield(builder, struct_ptr, 3))
+        builder.store(
+            builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
+        )
+        builder.branch(probe_test)
+
+        builder.position_at_end(insert)
+        tomb_seen = builder.load(tomb_ptr)
+        has_tomb = builder.icmp_signed("!=", tomb_seen, ir.Constant(i64, -1))
+        target_slot = builder.select(has_tomb, tomb_seen, builder.load(slot_ptr))
+        builder.store(target_slot, slot_ptr)
+        filled_now = builder.load(dfield(builder, struct_ptr, 1))
+        entries_cap = builder.load(dfield(builder, struct_ptr, 2))
+        needs_room = builder.icmp_signed("==", filled_now, entries_cap)
+        builder.cbranch(needs_room, grow_block, do_insert)
+
+        builder.position_at_end(grow_block)
+        new_cap = builder.mul(entries_cap, ir.Constant(i64, 2))
+        byte_room = builder.mul(new_cap, ir.Constant(i64, 8))
+        old_keys = builder.load(dfield(builder, struct_ptr, 5))
+        old_vals = builder.load(dfield(builder, struct_ptr, 6))
+        fresh_keys = builder.bitcast(
+            builder.call(self.malloc, [byte_room]), ir.PointerType(i64)
+        )
+        fresh_vals = builder.bitcast(
+            builder.call(self.malloc, [byte_room]), ir.PointerType(i64)
+        )
+        copy_bytes = builder.mul(filled_now, ir.Constant(i64, 8))
+        builder.call(
+            self.memcpy,
+            [
+                builder.bitcast(fresh_keys, i8p),
+                builder.bitcast(old_keys, i8p),
+                copy_bytes,
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        builder.call(
+            self.memcpy,
+            [
+                builder.bitcast(fresh_vals, i8p),
+                builder.bitcast(old_vals, i8p),
+                copy_bytes,
+                ir.Constant(ir.IntType(1), 0),
+            ],
+        )
+        builder.store(new_cap, dfield(builder, struct_ptr, 2))
+        builder.store(fresh_keys, dfield(builder, struct_ptr, 5))
+        builder.store(fresh_vals, dfield(builder, struct_ptr, 6))
+        builder.call(self.free, [builder.bitcast(old_keys, i8p)])
+        builder.call(self.free, [builder.bitcast(old_vals, i8p)])
+        builder.branch(do_insert)
+
+        builder.position_at_end(do_insert)
+        slot_free = builder.load(slot_ptr)
+        keys_final = builder.load(dfield(builder, struct_ptr, 5))
+        vals_final = builder.load(dfield(builder, struct_ptr, 6))
+        key_copy = builder.call(self.rawstr_copy, [key_arg])
+        builder.store(
+            builder.ptrtoint(key_copy, i64),
+            builder.gep(keys_final, [filled_now]),
+        )
+        builder.store(val_arg, builder.gep(vals_final, [filled_now]))
+        table_final = builder.load(dfield(builder, struct_ptr, 4))
+        builder.store(
+            builder.add(filled_now, one64), builder.gep(table_final, [slot_free])
+        )
+        builder.store(builder.add(filled_now, one64), dfield(builder, struct_ptr, 1))
+        count = builder.load(dfield(builder, struct_ptr, 0))
+        builder.store(builder.add(count, one64), dfield(builder, struct_ptr, 0))
+        builder.ret_void()
+
+        # i64 rawdict_str_setdefault(i8* d, i8* key, i64 value_bits)
+        def str_setdefault_miss(b, func):
+            b.call(
+                self.rawdict_str_set,
+                [func.args[0], func.args[1], func.args[2]],
+            )
+            b.ret(func.args[2])
+
+        self.rawdict_str_setdefault = emit_rawdict_str_probe(
+            "rawdict_str_setdefault",
+            i64,
+            [i8p, i8p, i64],
+            lambda b, func, entry_index, _slot, _table: b.ret(
+                str_value_at(b, func, entry_index)
+            ),
+            str_setdefault_miss,
+        )
+
+        # void rawdict_str_clear(i8* d) - free every key copy, keep table
+        self.rawdict_str_clear = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p]),
+            name="rawdict_str_clear",
+        )
+        entry = self.rawdict_str_clear.append_basic_block("entry")
+        clear_cond = self.rawdict_str_clear.append_basic_block("clear_cond")
+        clear_body = self.rawdict_str_clear.append_basic_block("clear_body")
+        clear_done = self.rawdict_str_clear.append_basic_block("clear_done")
+        builder = ir.IRBuilder(entry)
+        (clear_arg,) = self.rawdict_str_clear.args
+        clear_ptr = builder.bitcast(
+            clear_arg, ir.PointerType(self.raw_dict_struct_type)
+        )
+        clear_filled = builder.load(dfield(builder, clear_ptr, 1))
+        clear_keys = builder.load(dfield(builder, clear_ptr, 5))
+        clear_i = builder.alloca(i64, name="rdc_i")
+        builder.store(zero64, clear_i)
+        builder.branch(clear_cond)
+
+        builder.position_at_end(clear_cond)
+        idx = builder.load(clear_i)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, clear_filled), clear_body, clear_done
+        )
+
+        builder.position_at_end(clear_body)
+        key_bits = builder.load(builder.gep(clear_keys, [idx]))
+        # deleted entries were freed by rawdict_str_del and nulled
+        is_dead = builder.icmp_signed("==", key_bits, zero64)
+        skip_block = self.rawdict_str_clear.append_basic_block("clear_skip")
+        free_block = self.rawdict_str_clear.append_basic_block("clear_free")
+        builder.cbranch(is_dead, skip_block, free_block)
+
+        builder.position_at_end(free_block)
+        builder.call(self.rawstr_free, [builder.inttoptr(key_bits, i8p)])
+        builder.branch(skip_block)
+
+        builder.position_at_end(skip_block)
+        builder.store(builder.add(idx, one64), clear_i)
+        builder.branch(clear_cond)
+
+        builder.position_at_end(clear_done)
+        builder.call(self.rawdict_clear, [clear_arg])
+        builder.ret_void()
+
+        # PyObject* rawdict_to_pydict_{si,sf}(i8* d) - str keys box
+        # through rawstr_to_pystr; built here because it needs the
+        # rawstr runtime (forward reference from the dict section)
+        for tag, make_value in (
+            ("si", lambda b, bits: b.call(self.create_int, [bits])),
+            (
+                "sf",
+                lambda b, bits: b.call(
+                    self.create_float, [b.bitcast(bits, ir.DoubleType())]
+                ),
+            ),
+        ):
+            func = ir.Function(
+                self.module,
+                ir.FunctionType(
+                    ir.PointerType(self.pyobj.pyobj_type), [i8p]
+                ),
+                name=f"rawdict_to_pydict_{tag}",
+            )
+            entry = func.append_basic_block("entry")
+            loop_check = func.append_basic_block("cvt_check")
+            loop_body = func.append_basic_block("cvt_body")
+            emit_block = func.append_basic_block("cvt_emit")
+            loop_step = func.append_basic_block("cvt_step")
+            loop_done = func.append_basic_block("cvt_done")
+            builder = ir.IRBuilder(entry)
+            (dict_arg,) = func.args
+            struct_ptr = builder.bitcast(
+                dict_arg, ir.PointerType(self.raw_dict_struct_type)
+            )
+            mask = builder.load(dfield(builder, struct_ptr, 3))
+            table_size = builder.add(mask, one64)
+            result = builder.call(self.create_dict, [])
+            idx_ptr = builder.alloca(i64, name="cvt_i")
+            builder.store(zero64, idx_ptr)
+            builder.branch(loop_check)
+
+            builder.position_at_end(loop_check)
+            idx = builder.load(idx_ptr)
+            more = builder.icmp_signed("<", idx, table_size)
+            builder.cbranch(more, loop_body, loop_done)
+
+            builder.position_at_end(loop_body)
+            table_now = builder.load(dfield(builder, struct_ptr, 4))
+            slot_entry = builder.load(builder.gep(table_now, [idx]))
+            is_live = builder.icmp_signed(">", slot_entry, zero64)
+            builder.cbranch(is_live, emit_block, loop_step)
+
+            builder.position_at_end(emit_block)
+            entry_index = builder.sub(slot_entry, one64)
+            keys_now = builder.load(dfield(builder, struct_ptr, 5))
+            vals_now = builder.load(dfield(builder, struct_ptr, 6))
+            key_bits = builder.load(builder.gep(keys_now, [entry_index]))
+            key_box = builder.call(
+                self.rawstr_to_pystr, [builder.inttoptr(key_bits, i8p)]
+            )
+            val_box = make_value(
+                builder, builder.load(builder.gep(vals_now, [entry_index]))
+            )
+            builder.call(self.dict_set, [result, key_box, val_box])
+            builder.branch(loop_step)
+
+            builder.position_at_end(loop_step)
+            builder.store(builder.add(idx, one64), idx_ptr)
+            builder.branch(loop_check)
+
+            builder.position_at_end(loop_done)
+            builder.ret(result)
+            setattr(self, f"rawdict_to_pydict_{tag}", func)
+
         # void rawlist_get(i8* list, i64 index, i8* out_ptr, i64 elem_size)
         # Bounds are checked; OOB aborts like list_get.
         self.rawlist_get = ir.Function(
@@ -1871,11 +2521,12 @@ class TypedCodegen(SiluToLLVMConverter):
                 [value, self.current_builder.call(self.rawlist_len, [value])],
             )
         if kind in RAWDICT_KINDS:
-            converter = (
-                self.rawdict_to_pydict_ii
-                if kind == RAWDICT_II
-                else self.rawdict_to_pydict_if
-            )
+            converter = {
+                RAWDICT_II: self.rawdict_to_pydict_ii,
+                RAWDICT_IF: self.rawdict_to_pydict_if,
+                RAWDICT_SI: self.rawdict_to_pydict_si,
+                RAWDICT_SF: self.rawdict_to_pydict_sf,
+            }[kind]
             return self.current_builder.call(converter, [value])
         if kind == RAWSTR:
             return self.current_builder.call(self.rawstr_to_pystr, [value])
@@ -2435,6 +3086,42 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_builder.position_at_end(cont_block)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
+    def _rawdict_key_from_tv(self, kind: str, key_tv: Tuple[str, Any]):
+        """Dict key materialization: rawstr pointer for str keys (the
+        set path copies it into the dict), machine word for int keys."""
+        if kind in RAWDICT_STR_KINDS:
+            return self._coerce(key_tv, RAWSTR)[1]
+        return self._coerce(key_tv, I64)[1]
+
+    @staticmethod
+    def _rawdict_call_fn(kind: str, int_fn: Any, str_fn: Any):
+        return str_fn if kind in RAWDICT_STR_KINDS else int_fn
+
+    def _rawdict_key_call(
+        self,
+        kind: str,
+        dict_ptr: Any,
+        key_tv: Tuple[str, Any],
+        int_fn: Any,
+        str_fn: Any,
+        tail_args: tuple = (),
+    ):
+        """Call a rawdict key operation; a key coerced from a non-rawstr
+        value is a temporary freed right after the call."""
+        key = self._rawdict_key_from_tv(kind, key_tv)
+        temp = (
+            key
+            if kind in RAWDICT_STR_KINDS and key_tv[0] != RAWSTR
+            else None
+        )
+        result = self.current_builder.call(
+            self._rawdict_call_fn(kind, int_fn, str_fn),
+            [dict_ptr, key, *tail_args],
+        )
+        if temp is not None:
+            self.current_builder.call(self.rawstr_free, [temp])
+        return result
+
     def _typed_contains(self, op: str, item_node: Any, container_node: Any):
         """item in container: native scans for raw containers, boxed
         pyobj_contains for everything else. Result is always i1."""
@@ -2449,9 +3136,10 @@ class TypedCodegen(SiluToLLVMConverter):
             if needle_temp is not None:
                 self.current_builder.call(self.rawstr_free, [needle_temp])
         elif container_tv[0] in RAWDICT_KINDS:
-            key = self._coerce(self._convert_node(item_node), I64)[1]
-            result = self.current_builder.call(
-                self.rawdict_has, [container_tv[1], key]
+            result = self._rawdict_key_call(
+                container_tv[0], container_tv[1],
+                self._convert_node(item_node),
+                self.rawdict_has, self.rawdict_str_has,
             )
         elif container_tv[0] in RAWLIST_KINDS:
             elem_kind = RAWLIST_KINDS[container_tv[0]]
@@ -2538,6 +3226,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 return RAWDICT_II
             if key_annotation == "int" and value_annotation == "float":
                 return RAWDICT_IF
+            if key_annotation == "str" and value_annotation == "int":
+                return RAWDICT_SI
+            if key_annotation == "str" and value_annotation == "float":
+                return RAWDICT_SF
         return None
 
     @staticmethod
@@ -3362,9 +4054,6 @@ class TypedCodegen(SiluToLLVMConverter):
                 raw_ptr = self.current_builder.call(self.rawdict_new, [])
                 value_kind = RAWDICT_KINDS[annotation_kind]
                 for pair_node in value_node[1]:
-                    key_tv = self._coerce(
-                        self._convert_node(pair_node[0]), I64
-                    )
                     val_tv = self._coerce(
                         self._convert_node(pair_node[1]), value_kind
                     )
@@ -3373,9 +4062,11 @@ class TypedCodegen(SiluToLLVMConverter):
                         val_bits = self.current_builder.bitcast(
                             val_tv[1], ir.IntType(64)
                         )
-                    self.current_builder.call(
-                        self.rawdict_set,
-                        [raw_ptr, key_tv[1], val_bits],
+                    self._rawdict_key_call(
+                        annotation_kind, raw_ptr,
+                        self._convert_node(pair_node[0]),
+                        self.rawdict_set, self.rawdict_str_set,
+                        (val_bits,),
                     )
                 self._declare_var(target, annotation_kind)
                 self.current_builder.store(raw_ptr, self.variables[target])
@@ -3461,9 +4152,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 if obj_tv[0] in RAWDICT_KINDS:
                     # d[k] <op>= v: lookup, combine, store back
                     value_kind = RAWDICT_KINDS[obj_tv[0]]
-                    key = self._coerce(key_tv, I64)[1]
-                    current_bits = self.current_builder.call(
-                        self.rawdict_get, [obj_tv[1], key]
+                    current_bits = self._rawdict_key_call(
+                        obj_tv[0], obj_tv[1], key_tv,
+                        self.rawdict_get, self.rawdict_str_get,
                     )
                     if value_kind == F64:
                         current_tv = (
@@ -3481,8 +4172,10 @@ class TypedCodegen(SiluToLLVMConverter):
                         stored_bits = self.current_builder.bitcast(
                             coerced[1], ir.IntType(64)
                         )
-                    self.current_builder.call(
-                        self.rawdict_set, [obj_tv[1], key, stored_bits]
+                    self._rawdict_key_call(
+                        obj_tv[0], obj_tv[1], key_tv,
+                        self.rawdict_set, self.rawdict_str_set,
+                        (stored_bits,),
                     )
                     return coerced
                 obj = self._box(obj_tv)
@@ -3840,9 +4533,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 if obj_tv[0] in RAWDICT_KINDS:
                     # machine-word lookup; rawdict_get panics KeyError
                     # on a missing key (Python raises, Rust panics)
-                    key = self._coerce(key_tv, I64)[1]
-                    val_bits = self.current_builder.call(
-                        self.rawdict_get, [obj_tv[1], key]
+                    val_bits = self._rawdict_key_call(
+                        obj_tv[0], obj_tv[1], key_tv,
+                        self.rawdict_get, self.rawdict_str_get,
                     )
                     value_kind = RAWDICT_KINDS[obj_tv[0]]
                     if value_kind == F64:
@@ -4024,7 +4717,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                     return (OBJ, null_obj)
                 if obj_tv[0] in RAWDICT_KINDS:
-                    key = self._coerce(self._convert_node(node[2]), I64)[1]
+                    key_tv = self._convert_node(node[2])
                     value_kind = RAWDICT_KINDS[obj_tv[0]]
                     value = self._coerce(self._convert_node(node[3]), value_kind)
                     val_bits = value[1]
@@ -4032,8 +4725,10 @@ class TypedCodegen(SiluToLLVMConverter):
                         val_bits = self.current_builder.bitcast(
                             value[1], ir.IntType(64)
                         )
-                    self.current_builder.call(
-                        self.rawdict_set, [obj_tv[1], key, val_bits]
+                    self._rawdict_key_call(
+                        obj_tv[0], obj_tv[1], key_tv,
+                        self.rawdict_set, self.rawdict_str_set,
+                        (val_bits,),
                     )
                     return (OBJ, null_obj)
                 obj = self._box(obj_tv)
@@ -4049,9 +4744,10 @@ class TypedCodegen(SiluToLLVMConverter):
             if len(node) >= 3:
                 obj_tv = self._convert_node(node[1])
                 if obj_tv[0] in RAWDICT_KINDS:
-                    key = self._coerce(self._convert_node(node[2]), I64)[1]
-                    self.current_builder.call(
-                        self.rawdict_del, [obj_tv[1], key]
+                    self._rawdict_key_call(
+                        obj_tv[0], obj_tv[1],
+                        self._convert_node(node[2]),
+                        self.rawdict_del, self.rawdict_str_del,
                     )
                     return (OBJ, null_obj)
                 obj = self._box(obj_tv)
@@ -4620,41 +5316,37 @@ class TypedCodegen(SiluToLLVMConverter):
                     return (I64, bits)
 
                 if method_name == "pop" and args_node:
-                    key = self._coerce(self._convert_node(args_node[0]), I64)[1]
+                    key_tv = self._convert_node(args_node[0])
                     if len(args_node) == 1:
                         # pop(k): rawdict_del panics KeyError when missing
-                        bits = self.current_builder.call(
-                            self.rawdict_del, [raw_obj_tv[1], key]
+                        bits = self._rawdict_key_call(
+                            raw_kind, raw_obj_tv[1], key_tv,
+                            self.rawdict_del, self.rawdict_str_del,
                         )
                     elif len(args_node) == 2:
-                        bits = self.current_builder.call(
-                            self.rawdict_pop_or,
-                            [
-                                raw_obj_tv[1],
-                                key,
-                                dict_value_bits(args_node[1]),
-                            ],
+                        bits = self._rawdict_key_call(
+                            raw_kind, raw_obj_tv[1], key_tv,
+                            self.rawdict_pop_or, self.rawdict_str_pop_or,
+                            (dict_value_bits(args_node[1]),),
                         )
                     else:
                         bits = None
                     if bits is not None:
                         return bits_to_value(bits)
                 if method_name == "get" and args_node:
-                    key = self._coerce(self._convert_node(args_node[0]), I64)[1]
+                    key_tv = self._convert_node(args_node[0])
                     if len(args_node) == 2:
-                        bits = self.current_builder.call(
-                            self.rawdict_get_or,
-                            [
-                                raw_obj_tv[1],
-                                key,
-                                dict_value_bits(args_node[1]),
-                            ],
+                        bits = self._rawdict_key_call(
+                            raw_kind, raw_obj_tv[1], key_tv,
+                            self.rawdict_get_or, self.rawdict_str_get_or,
+                            (dict_value_bits(args_node[1]),),
                         )
                         return bits_to_value(bits)
                     if len(args_node) == 1:
                         # get(k): value when present, None (null) otherwise
-                        present = self.current_builder.call(
-                            self.rawdict_has, [raw_obj_tv[1], key]
+                        present = self._rawdict_key_call(
+                            raw_kind, raw_obj_tv[1], key_tv,
+                            self.rawdict_has, self.rawdict_str_has,
                         )
                         func = self.current_builder.function
                         hit_block = func.append_basic_block("get_hit")
@@ -4664,8 +5356,9 @@ class TypedCodegen(SiluToLLVMConverter):
                             present, hit_block, miss_block
                         )
                         self.current_builder.position_at_end(hit_block)
-                        bits = self.current_builder.call(
-                            self.rawdict_get, [raw_obj_tv[1], key]
+                        bits = self._rawdict_key_call(
+                            raw_kind, raw_obj_tv[1], key_tv,
+                            self.rawdict_get, self.rawdict_str_get,
                         )
                         boxed_hit = self._box(bits_to_value(bits))
                         self.current_builder.branch(merge_block)
@@ -4684,15 +5377,20 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
                         return (OBJ, result)
                 if method_name == "setdefault" and len(args_node) == 2:
-                    key = self._coerce(self._convert_node(args_node[0]), I64)[1]
-                    bits = self.current_builder.call(
-                        self.rawdict_setdefault,
-                        [raw_obj_tv[1], key, dict_value_bits(args_node[1])],
+                    bits = self._rawdict_key_call(
+                        raw_kind, raw_obj_tv[1],
+                        self._convert_node(args_node[0]),
+                        self.rawdict_setdefault, self.rawdict_str_setdefault,
+                        (dict_value_bits(args_node[1]),),
                     )
                     return bits_to_value(bits)
                 if method_name == "clear" and not args_node:
                     self.current_builder.call(
-                        self.rawdict_clear, [raw_obj_tv[1]]
+                        self._rawdict_call_fn(
+                            raw_kind, self.rawdict_clear,
+                            self.rawdict_str_clear,
+                        ),
+                        [raw_obj_tv[1]],
                     )
                     return (OBJ, ir.Constant(
                         ir.PointerType(self.pyobj.pyobj_type), None
