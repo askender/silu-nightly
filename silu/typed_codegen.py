@@ -3626,12 +3626,15 @@ class TypedCodegen(SiluToLLVMConverter):
         clear the table - called on any statement that could invalidate
         the borrowed windows (writes to the parent string, any call,
         another char view creation shares nothing but stays simple)."""
-        for name, (_str_name, str_tv, index_node) in list(
+        for name, (str_name, _str_tv, index_node) in list(
             self._char_aliases.items()
         ):
-            index = self._coerce(
-                self._convert_node(index_node), I64
-            )[1]
+            # re-load the parent slot HERE (dominates: this block runs
+            # on every path; the cached creation-time load would sit in
+            # a loop body block and violate dominance when the loop
+            # runs zero times)
+            str_tv = self._load_var(str_name)
+            index = self.current_builder.load(index_node)
             view = self._emit_char_view(str_tv[1], index)
             coerced = self._coerce(view, RAWSTR)
             self._declare_var(name, RAWSTR)
@@ -5264,10 +5267,8 @@ class TypedCodegen(SiluToLLVMConverter):
             if node[1] in self._char_aliases:
                 # live char-view alias: replay the window (register
                 # arithmetic, no allocation)
-                _str_name, str_tv, index_node = self._char_aliases[node[1]]
-                index = self._coerce(
-                    self._convert_node(index_node), I64
-                )[1]
+                _str_name, str_tv, index_slot = self._char_aliases[node[1]]
+                index = self.current_builder.load(index_slot)
                 return self._emit_char_view(str_tv[1], index)
             return self._load_var(node[1])
 
@@ -5306,7 +5307,19 @@ class TypedCodegen(SiluToLLVMConverter):
                 # while the alias lives) so later fallback reads work.
                 str_name = value_node[1][1]
                 str_tv = self._load_var(str_name)
-                self._char_aliases[target] = (str_name, str_tv, value_node[2])
+                # freeze the index at creation: a replay at kill time
+                # must see the creation-time index, not the current
+                # value of any variable it mentions
+                index_frozen = self._coerce(
+                    self._convert_node(value_node[2]), I64
+                )[1]
+                index_slot = self._entry_alloca(
+                    ir.IntType(64), name=f"{target}_cvi"
+                )
+                self.current_builder.store(index_frozen, index_slot)
+                self._char_aliases[target] = (
+                    str_name, str_tv, index_slot)
+
                 self._declare_var(target, RAWSTR)
                 # slot stays unwritten while the alias lives; reads go
                 # through the alias replay. An invalidating statement

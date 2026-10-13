@@ -1057,6 +1057,40 @@ class TestCharViewAlias:
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
 
+class TestCharViewAliasLifetime:
+    def test_alias_dominance_zero_trip_loop(self):
+        """kill-all materialize after a zero-trip loop must not reference
+        the loop body's loads (dominance) - the parent is re-loaded at
+        the kill site."""
+        source = (
+            's: str = "abc"\n'
+            "i: int = 0\n"
+            "hits: int = 0\n"
+            "while i < 3:\n"
+            "    ch = s[i]\n"
+            '    if ch == "a":\n'
+            "        hits += 1\n"
+            '    elif ch == "b":\n'
+            "        hits += 2\n"
+            "    i += 1\n"
+            "print(hits)\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_alias_index_frozen_at_creation(self):
+        """A dynamic index is snapshotted when the alias is created;
+        materialization at kill time replays the creation-time index
+        even though the index variable has moved on."""
+        source = (
+            's: str = "abc"\n'
+            "i: int = 1\n"
+            "ch: str = s[i]\n"
+            "i = 99\n"
+            "print(ch)\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
 class TestScalarCursor:
     def test_single_function_cursor_promotes(self):
         """pos: list[int] used only as pos[0] inside one function gets
