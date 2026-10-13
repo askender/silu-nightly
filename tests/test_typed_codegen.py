@@ -573,7 +573,7 @@ class TestRawStr:
         llvm_ir = _convert(source)
         main = _main_body(llvm_ir)
 
-        assert 'call i8* @"rawstr_char_at"' in main
+        assert 'call i8* @"rawstr_char_at"' not in main  # view instead
         assert 'call {i32, i8*}* @"pyobj_subscript"' not in main
         assert _run_main(llvm_ir) == _run_interpreter(source)
 
@@ -948,6 +948,46 @@ class TestRawStrDict:
             "print(len(d), d.get(\"a\", -1), d[\"b\"])\n"
         )
         assert _run_main(_convert(source)) == _run_interpreter(source)
+
+
+class TestCharView:
+    def test_view_no_allocation_in_compare(self):
+        """s[i] == "x" in a plain compare allocates nothing (SSA view,
+        no rawstr_char_at, no malloc)."""
+        source = (
+            's: str = "hello world"\n'
+            'print(s[1] == "e", s[0] != "h", "l" == s[2])\n'
+        )
+        llvm_ir = _convert(source)
+        main = _main_body(llvm_ir)
+
+        assert 'call i8* @"rawstr_char_at"' not in main
+        assert 'call i8* @"malloc"' not in main
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+
+    def test_view_coerces_to_owned_on_assignment(self):
+        """ch = s[i] copies (the name owns it); later s mutations or
+        further indexing cannot corrupt the stored value."""
+        source = (
+            's: str = "hello"\n'
+            "ch: str = s[4]\n"
+            't: str = s[1]\n'
+            "print(ch, t, ch + t)\n"
+        )
+        assert _run_main(_convert(source)) == _run_interpreter(source)
+
+    def test_view_multibyte_and_oob(self):
+        """Views keep code point semantics and the IndexError panic."""
+        source = (
+            's: str = "你好世界"\n'
+            'print(s[1] == "好", s[3] == "界")\n'
+        )
+        llvm_ir = _convert(source)
+        assert _run_main(llvm_ir) == _run_interpreter(source)
+        # out of range still panics with the right message
+        bad = 's: str = "hi"\nprint(s[9] == "x")\n'
+        out = _run_main(_convert(bad))
+        assert "IndexError" in out
 
 
 class TestScalarCursor:

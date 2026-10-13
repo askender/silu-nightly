@@ -43,6 +43,11 @@ ANNOTATION_KINDS = {"int": I64, "float": F64, "bool": I1}
 RAWLIST_I = "rawlist_i64"  # list[int]: Vec<i64>-style raw element array
 RAWLIST_F = "rawlist_f64"  # list[float]
 RAWSTR = "rawstr"  # str: {len, cap, data} with exclusive slot ownership
+# transient: a borrowed {i8* data, i64 seq} window into a parent
+# rawstr (SSA struct value, no allocation). Lives inside one
+# expression; any consumer needing an owned string coerces to
+# RAWSTR (a copy).
+RAWCHAR_VIEW = "rawchar_view"
 RAWLIST_S = "rawlist_str"  # list[str]: slots own a copy of each element
 RAWLIST_KINDS = {RAWLIST_I: I64, RAWLIST_F: F64, RAWLIST_S: RAWSTR}
 RAWDICT_II = "rawdict_ii"  # dict[int, int]: machine-word open addressing
@@ -3247,6 +3252,8 @@ class TypedCodegen(SiluToLLVMConverter):
     def _box(self, tv: Tuple[str, Any]) -> Any:
         """TypedValue -> PyObject* (dynamic world boundary)."""
         kind, value = tv
+        if kind == RAWCHAR_VIEW:
+            return self._box(self._coerce(tv, RAWSTR))
         if kind == OBJ:
             return value
         if kind in RAWLIST_KINDS:
@@ -3313,6 +3320,21 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, boxed)
         if target == OBJ:
             return (OBJ, self._box(tv))
+        if kind == RAWCHAR_VIEW:
+            # a borrowed window coerces to an owned string (copy) or to
+            # its i64 sequence length; anything else is a type error
+            if target == RAWSTR:
+                data = self.current_builder.extract_value(value, 0)
+                seq = self.current_builder.extract_value(value, 1)
+                return (
+                    RAWSTR,
+                    self.current_builder.call(
+                        self.rawstr_new_copy, [data, seq]
+                    ),
+                )
+            if target == I64:
+                return (I64, self.current_builder.extract_value(value, 1))
+            raise ValueError(f"cannot coerce {kind} to {target}")
         if kind == OBJ:
             return (target, self._unbox(value, target))
         if kind == I1 and target == I64:
@@ -3935,6 +3957,31 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
     def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any], left_node: Any = None, right_node: Any = None):
+        if left[0] == RAWCHAR_VIEW or right[0] == RAWCHAR_VIEW:
+            # view <op> view / const / rawstr: wrap each side in a
+            # stack header (borrowed, no allocation) and memcmp.
+            # Non-string operands: coerce views to owned and fall
+            # through to the generic paths below.
+            def view_parts(tv):
+                if tv[0] == RAWCHAR_VIEW:
+                    return (
+                        self.current_builder.extract_value(tv[1], 0),
+                        self.current_builder.extract_value(tv[1], 1),
+                    )
+                return None, None
+
+            l_data, l_seq = view_parts(left)
+            r_data, r_seq = view_parts(right)
+            if l_data is not None:
+                left = (
+                    RAWSTR,
+                    self._rawstr_stack_view(l_data, l_seq),
+                )
+            if r_data is not None:
+                right = (
+                    RAWSTR,
+                    self._rawstr_stack_view(r_data, r_seq),
+                )
         if left[0] == RAWSTR or right[0] == RAWSTR:
             # raw string comparisons: memcmp semantics, which on UTF-8
             # bytes equals Python's code point ordering; coerced
@@ -5922,12 +5969,7 @@ class TypedCodegen(SiluToLLVMConverter):
                             ),
                         )
                     index = self._coerce(key_tv, I64)[1]
-                    return (
-                        RAWSTR,
-                        self.current_builder.call(
-                            self.rawstr_char_at, [obj_tv[1], index]
-                        ),
-                    )
+                    return self._emit_char_view(obj_tv[1], index)
                 obj = self._box(obj_tv)
                 key = self._box(key_tv)
                 return (
@@ -6519,6 +6561,100 @@ class TypedCodegen(SiluToLLVMConverter):
 
         self.current_builder.position_at_end(end_block)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _create_char_idxerr_global(self):
+        """The panic message global for char-view bounds errors (created
+        once; the per-site gep lives in each emitter's error block)."""
+        string_bytes = bytearray(
+            b"IndexError: string index out of range\0"
+        )
+        string_type = ir.ArrayType(ir.IntType(8), len(string_bytes))
+        gv = ir.GlobalVariable(
+            self.module,
+            string_type,
+            name=f"str_{len(self.module.globals)}",
+        )
+        gv.global_constant = True
+        gv.initializer = ir.Constant(string_type, string_bytes)
+        return gv
+
+    def _emit_char_view(self, str_ptr: Any, index: Any):
+        """s[index] as a borrowed {i8* data, i64 seq} SSA window into
+        the parent buffer - zero allocation. Code point semantics via
+        the ASCII fast path / code point walk; bounds still panic."""
+        zero32 = ir.Constant(ir.IntType(32), 0)
+        zero64 = ir.Constant(ir.IntType(64), 0)
+        one64 = ir.Constant(ir.IntType(64), 1)
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        b = self.current_builder
+        s_struct = b.bitcast(str_ptr, ir.PointerType(self.rawstr_struct_type))
+        s_cp = b.load(b.gep(s_struct, [zero32, ir.Constant(i32, 3)]))
+        s_len = b.load(b.gep(s_struct, [zero32, ir.Constant(i32, 0)]))
+        s_data = b.load(b.gep(s_struct, [zero32, ir.Constant(i32, 2)]))
+        is_neg = b.icmp_signed("<", index, zero64)
+        index_eff = b.select(is_neg, b.add(index, s_cp), index)
+        below = b.icmp_signed(">=", index_eff, zero64)
+        above = b.icmp_signed("<", index_eff, s_cp)
+        func = self.current_function
+        ok_block = func.append_basic_block("cv_ok")
+        err_block = func.append_basic_block("cv_err")
+        b.cbranch(b.and_(below, above), ok_block, err_block)
+
+        b.position_at_end(err_block)
+        if not hasattr(self, "_char_idxerr"):
+            self._char_idxerr = self._create_char_idxerr_global()
+        self._emit_panic(
+            b,
+            b.gep(self._char_idxerr, [zero32, zero32]),
+        )
+
+        b.position_at_end(ok_block)
+        is_ascii = b.icmp_signed("==", s_len, s_cp)
+        ascii_block = func.append_basic_block("cv_ascii")
+        walk_block = func.append_basic_block("cv_walk")
+        join_block = func.append_basic_block("cv_join")
+        b.cbranch(is_ascii, ascii_block, walk_block)
+
+        b.position_at_end(ascii_block)
+        b.branch(join_block)
+
+        b.position_at_end(walk_block)
+        walked = b.call(self.rawutf8_cp_offset, [s_data, index_eff])
+        b.branch(join_block)
+
+        b.position_at_end(join_block)
+        off = b.phi(i64)
+        off.add_incoming(index_eff, ascii_block)
+        off.add_incoming(walked, walk_block)
+        lead = b.load(b.gep(s_data, [off]))
+        seq = b.select(is_ascii, one64, self._emit_utf8_seq_len_with(b, lead))
+        view = ir.Constant(ir.LiteralStructType([i8p, i64]), ir.Undefined)
+        view = b.insert_value(view, b.gep(s_data, [off]), 0)
+        view = b.insert_value(view, seq, 1)
+        return (RAWCHAR_VIEW, view)
+
+    def _emit_utf8_seq_len_with(self, b, byte_value):
+        """UTF-8 sequence length through an explicit builder (shared by
+        the runtime builder and the char-view emitter)."""
+        b8 = ir.IntType(8)
+        two = b.icmp_signed(
+            "==", b.and_(byte_value, ir.Constant(b8, 0xE0)),
+            ir.Constant(b8, 0xC0),
+        )
+        three = b.icmp_signed(
+            "==", b.and_(byte_value, ir.Constant(b8, 0xF0)),
+            ir.Constant(b8, 0xE0),
+        )
+        four = b.icmp_signed(
+            "==", b.and_(byte_value, ir.Constant(b8, 0xF8)),
+            ir.Constant(b8, 0xF0),
+        )
+        len2 = b.select(four, ir.Constant(ir.IntType(64), 4),
+                        ir.Constant(ir.IntType(64), 1))
+        len3 = b.select(three, ir.Constant(ir.IntType(64), 3), len2)
+        return b.select(two, ir.Constant(ir.IntType(64), 2), len3)
 
     def _emit_utf8_seq_len(self, byte_value):
         """UTF-8 sequence length from a lead byte (invalid -> 1)."""
