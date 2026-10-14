@@ -497,7 +497,46 @@ class SiluInterpreter(BaseASTProcessor):
             name = kwargs["name"]
             bases = kwargs.get("bases", [])
             if bases:
-                raise TypeError(f"class '{name}': inheritance is not supported")
+                # the one sanctioned base is Enum (Rust bare-discriminant
+                # enum): members are plain ints
+                if (
+                    len(bases) == 1
+                    and isinstance(bases[0], ast.Name)
+                    and bases[0].id == "Enum"
+                ):
+                    namespace = {"__name__": name}
+                    next_value = 0
+                    for stmt in kwargs["body"]:
+                        if isinstance(stmt, ast.Assign) and isinstance(
+                            stmt.targets[0], ast.Name
+                        ):
+                            value = self.visit(stmt.value)
+                            if not isinstance(value, int) or isinstance(
+                                value, bool
+                            ):
+                                raise TypeError(
+                                    f"enum '{name}': member "
+                                    f"'{stmt.targets[0].id}' must be an int"
+                                )
+                            namespace[stmt.targets[0].id] = value
+                            next_value = value + 1
+                        elif isinstance(stmt, ast.Expr) and isinstance(
+                            stmt.value, ast.Name
+                        ):
+                            namespace[stmt.value.id] = next_value
+                            next_value += 1
+                        elif isinstance(stmt, ast.Pass):
+                            continue
+                        else:
+                            raise TypeError(
+                                f"enum '{name}': only 'NAME = value' or "
+                                "bare NAME members are allowed"
+                            )
+                    self.env.set(name, namespace)
+                    return namespace
+                raise TypeError(
+                    f"class '{name}': inheritance is not supported"
+                )
 
             fields = []  # [(field_name, annotation, has_default, default)]
             methods = {}

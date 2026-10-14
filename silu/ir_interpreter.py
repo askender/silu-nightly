@@ -708,6 +708,27 @@ class IRInterpreter:
         # Also store in global environment for function name resolution
         self.global_env[name] = name
 
+    def _execute_enum_def(self, name: str, members: Tuple) -> None:
+        """Execute an enum definition: class Color(Enum): RED = 1 / GREEN.
+
+        Members are plain ints (Rust discriminants), explicitly valued or
+        auto-incremented; Color.RED reads as the int. This deliberately
+        differs from Python's enum (members are not wrapped objects)."""
+        namespace = {"__name__": name, "__silu_enum__": True}
+        next_value = 0
+        for member_name, value_node in members:
+            if value_node is None:
+                value = next_value
+            else:
+                value = self.execute(value_node)
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise TypeError(
+                        f"enum '{name}': member '{member_name}' must be an int"
+                    )
+            namespace[member_name] = value
+            next_value = value + 1
+        self.global_env[name] = namespace
+
     def _execute_class_def(
         self,
         name: str,

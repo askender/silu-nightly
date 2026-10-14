@@ -130,6 +130,9 @@ class TypedCodegen(SiluToLLVMConverter):
         self._var_class: Dict[str, str] = {}
         # mangled method name -> owning class (self param binding)
         self._method_class: Dict[str, str] = {}
+        # enums (class Color(Enum): RED = 1): name -> {member: int}
+        # members fold to i64 constants at compile time
+        self._enums: Dict[str, Dict[str, int]] = {}
 
         # math intrinsics / libc used by ** (sqrt fast path, general pow)
         sqrt_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
@@ -5116,6 +5119,9 @@ class TypedCodegen(SiluToLLVMConverter):
             if node[1] in self._class_layouts:
                 # `st: JointState` - instance pointer, layout from the table
                 return INSTANCE
+            if node[1] in self._enums:
+                # `kind: Color` - enum-typed slots are i64 discriminants
+                return I64
             return None
         if (
             isinstance(node, list)
@@ -5460,6 +5466,14 @@ class TypedCodegen(SiluToLLVMConverter):
         and register class layouts + methods (dataclass semantics)."""
         if isinstance(node, list) and len(node) >= 2 and node[0] == "module":
             self._module_stmt_list = node[1]
+            # enums first: member values fold to constants everywhere
+            for stmt in node[1]:
+                if (
+                    isinstance(stmt, list)
+                    and len(stmt) >= 3
+                    and stmt[0] == "enum_def"
+                ):
+                    self._register_enum(stmt)
             # pass 1: skeletons, so field annotations resolve class names
             # regardless of definition order (forward/self references)
             for stmt in node[1]:
@@ -5485,6 +5499,50 @@ class TypedCodegen(SiluToLLVMConverter):
             # them as top-level functions
             return
         super()._collect_function_defs(node)
+
+    def _register_enum(self, node: list):
+        """class Color(Enum): RED = 1 / GREEN - members are i64 constants
+        (Rust bare discriminants), folded at compile time."""
+        name, members = node[1], node[2]
+        table: Dict[str, int] = {}
+        next_value = 0
+        for member_name, value_node in members:
+            if value_node is None:
+                value = next_value
+            else:
+                value = self._const_int_of(value_node)
+                if value is None:
+                    raise NotImplementedError(
+                        f"enum '{name}': member '{member_name}' must be an "
+                        "integer constant"
+                    )
+            table[member_name] = value
+            next_value = value + 1
+        self._enums[name] = table
+
+    @staticmethod
+    def _const_int_of(node: Any) -> Optional[int]:
+        """Compile-time int for ('const', n) and unary minus thereof."""
+        if (
+            isinstance(node, list)
+            and len(node) >= 2
+            and node[0] == "const"
+            and isinstance(node[1], int)
+            and not isinstance(node[1], bool)
+        ):
+            return node[1]
+        if (
+            isinstance(node, list)
+            and len(node) == 2
+            and node[0] == "-"
+            and isinstance(node[1], list)
+            and len(node[1]) >= 2
+            and node[1][0] == "const"
+            and isinstance(node[1][1], int)
+            and not isinstance(node[1][1], bool)
+        ):
+            return -node[1][1]
+        return None
 
     def _register_class(self, node: list):
         """Build the compile-time layout table for one class and register
@@ -6375,11 +6433,25 @@ class TypedCodegen(SiluToLLVMConverter):
                 return self._emit_char_view(str_tv[1], index)
             return self._load_var(node[1])
 
-        if op == "class_def":
-            # layouts and methods were registered in the collection pass
+        if op == "class_def" or op == "enum_def":
+            # layouts/enums and methods were registered in the
+            # collection pass; nothing to emit at statement position
             return (OBJ, null_obj)
 
         if op == "attribute" and len(node) >= 3:
+            # enum member: Color.RED folds to its i64 constant
+            if (
+                isinstance(node[1], list)
+                and len(node[1]) >= 2
+                and node[1][0] == "name"
+                and node[1][1] in self._enums
+            ):
+                table = self._enums[node[1][1]]
+                if node[2] in table:
+                    return (I64, ir.Constant(ir.IntType(64), table[node[2]]))
+                raise AttributeError(
+                    f"'{node[1][1]}' has no member '{node[2]}'"
+                )
             if self._class_of_node(node[1]) is not None:
                 return self._emit_field_read(node[1], node[2])
             # dynamic attribute access stays unsupported (null)

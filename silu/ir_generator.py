@@ -145,11 +145,43 @@ class SiluIRGenerator(BaseASTProcessor):
         elif node_type == "class_def":
             # Silu class = dataclass semantics (Rust struct + impl):
             # annotated fields + methods only, no inheritance.
-            if kwargs["bases"]:
-                raise NotImplementedError(
-                    "class inheritance is not supported "
-                    "(Silu class has dataclass/struct semantics)"
+            # The one sanctioned base is `Enum` (Rust enum with bare
+            # discriminants): class Color(Enum): RED = 1 / GREEN (auto).
+            bases = kwargs["bases"]
+            if bases:
+                is_enum = (
+                    len(bases) == 1
+                    and isinstance(bases[0], ast.Name)
+                    and bases[0].id == "Enum"
                 )
+                if not is_enum:
+                    raise NotImplementedError(
+                        "class inheritance is not supported "
+                        "(Silu class has dataclass/struct semantics)"
+                    )
+                members = []
+                for stmt in kwargs["body"]:
+                    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+                        target = stmt.targets[0]
+                        if not isinstance(target, ast.Name):
+                            raise TypeError(
+                                f"enum '{kwargs['name']}': members must be "
+                                "simple names"
+                            )
+                        members.append((target.id, self.visit(stmt.value)))
+                    elif isinstance(stmt, ast.Expr) and isinstance(
+                        stmt.value, ast.Name
+                    ):
+                        # bare name: auto value (previous + 1, from 0)
+                        members.append((stmt.value.id, None))
+                    elif isinstance(stmt, ast.Pass):
+                        continue
+                    else:
+                        raise TypeError(
+                            f"enum '{kwargs['name']}': only 'NAME = value' "
+                            "or bare NAME members are allowed"
+                        )
+                return ("enum_def", kwargs["name"], tuple(members))
             bases = ()
 
             # Process class body statements
