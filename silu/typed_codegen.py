@@ -336,9 +336,51 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.cbranch(more, loop_body, loop_done)
 
         builder.position_at_end(loop_body)
-        elem_ptr = builder.gep(items, [i_val])
-        elem_bits = builder.load(builder.bitcast(elem_ptr, ir.PointerType(i64)))
+        # elements are 8 bytes: gep over i64*, not the i8* byte pointer
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        elem_bits = builder.load(builder.gep(items_i64, [i_val]))
         boxed = builder.call(self.create_int, [elem_bits])
+        builder.call(self.list_append, [result, boxed])
+        builder.store(builder.add(i_val, one64), idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_done)
+        builder.ret(result)
+
+        # PyObject* rawlist_to_pylist_f64(i8* list, i64 length) - same
+        # walk, but elements are f64 bit patterns boxed as floats
+        self.rawlist_to_pylist_f64 = ir.Function(
+            self.module,
+            ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type), [i8p, i64]),
+            name="rawlist_to_pylist_f64",
+        )
+        entry = self.rawlist_to_pylist_f64.append_basic_block("entry")
+        loop_check = self.rawlist_to_pylist_f64.append_basic_block("cvt_check")
+        loop_body = self.rawlist_to_pylist_f64.append_basic_block("cvt_body")
+        loop_done = self.rawlist_to_pylist_f64.append_basic_block("cvt_done")
+        builder = ir.IRBuilder(entry)
+        list_arg, length_arg = self.rawlist_to_pylist_f64.args
+        src_struct = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        items = builder.load(field(builder, src_struct, 2))
+        result = builder.call(self.create_list, [])
+        idx_ptr = builder.alloca(i64, name="cvt_i")
+        builder.store(zero64, idx_ptr)
+        builder.branch(loop_check)
+
+        builder.position_at_end(loop_check)
+        i_val = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", i_val, length_arg)
+        builder.cbranch(more, loop_body, loop_done)
+
+        builder.position_at_end(loop_body)
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        elem_bits = builder.load(builder.gep(items_i64, [i_val]))
+        boxed = builder.call(
+            self.create_float,
+            [builder.bitcast(elem_bits, ir.DoubleType())],
+        )
         builder.call(self.list_append, [result, boxed])
         builder.store(builder.add(i_val, one64), idx_ptr)
         builder.branch(loop_check)
@@ -3279,6 +3321,8 @@ class TypedCodegen(SiluToLLVMConverter):
         if kind in RAWLIST_KINDS:
             if kind == RAWLIST_S:
                 converter = self.rawlist_str_to_pylist
+            elif kind == RAWLIST_F:
+                converter = self.rawlist_to_pylist_f64
             else:
                 converter = self.rawlist_to_pylist
             return self.current_builder.call(
@@ -4806,9 +4850,9 @@ class TypedCodegen(SiluToLLVMConverter):
                         f"class '{name}': unsupported field type for "
                         f"'{field_name}'"
                     )
-                if kind == INSTANCE or kind in RAWLIST_KINDS or kind in RAWDICT_KINDS:
+                if kind == INSTANCE:
                     raise NotImplementedError(
-                        f"class '{name}': container/instance field "
+                        f"class '{name}': nested instance field "
                         f"'{field_name}' is not supported yet"
                     )
                 has_default = default_node is not None
@@ -4891,7 +4935,10 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def _emit_field_read(self, obj_node: Any, attr: str) -> Tuple[str, Any]:
         """obj.attr where obj is a class instance: offset load. str fields
-        copy on read (the instance keeps owning its slot's buffer)."""
+        copy on read (the instance keeps owning its slot's buffer);
+        list/dict fields return the shared pointer - containers are
+        reference semantics everywhere in Silu (semantics.md §3), fields
+        included."""
         cls = self._class_of_node(obj_node)
         fields = self._class_layouts[cls]["fields"]
         for index, (field_name, kind, _default) in enumerate(fields):
@@ -4908,7 +4955,10 @@ class TypedCodegen(SiluToLLVMConverter):
     def _emit_field_write(self, obj_node: Any, attr: str, value_tv: Tuple[str, Any]):
         """obj.attr = value: coerce to the field kind and store. str
         fields drop the old buffer and copy the new one in (the
-        RAWSTR->RAWSTR coerce already copies)."""
+        RAWSTR->RAWSTR coerce already copies). Container fields store
+        the pointer (reference semantics) and never free: rawlist/rawdict
+        buffers are process-lifetime everywhere in Silu. A dynamic
+        (OBJ) value coerces through the boundary, which copies."""
         cls = self._class_of_node(obj_node)
         fields = self._class_layouts[cls]["fields"]
         for index, (field_name, kind, _default) in enumerate(fields):
@@ -4961,11 +5011,58 @@ class TypedCodegen(SiluToLLVMConverter):
                 raise TypeError(
                     f"{class_name}() missing required argument: '{field_name}'"
                 )
-            value_tv = self._coerce(self._convert_node(value_node), kind)
+            value_tv = self._convert_field_value(kind, value_node)
             self.current_builder.store(
                 value_tv[1], self._field_slot(inst_ptr, index, kind)
             )
         return (INSTANCE, inst_ptr)
+
+    def _field_kind_of(self, obj_node: Any, attr: str) -> str:
+        """The declared kind of a field (raises AttributeError if absent)."""
+        cls = self._class_of_node(obj_node)
+        for field_name, kind, _default in self._class_layouts[cls]["fields"]:
+            if field_name == attr:
+                return kind
+        raise AttributeError(f"'{cls}' object has no field '{attr}'")
+
+    def _convert_field_value(
+        self, kind: str, value_node: Any
+    ) -> Tuple[str, Any]:
+        """Convert a field value node to the field kind. Container
+        literals ([1, 2] / {"a": 1}) build raw storage directly - the
+        dynamic unbox boundary only covers scalars and str."""
+        if (
+            kind in RAWLIST_KINDS
+            and isinstance(value_node, list)
+            and len(value_node) >= 1
+            and value_node[0] == "list"
+        ):
+            return self._build_raw_list(value_node[1], kind)
+        if (
+            kind in RAWDICT_KINDS
+            and isinstance(value_node, list)
+            and len(value_node) >= 1
+            and value_node[0] == "dict"
+        ):
+            raw_ptr = self.current_builder.call(self.rawdict_new, [])
+            value_kind = RAWDICT_KINDS[kind]
+            for pair_node in value_node[1]:
+                val_tv = self._coerce(
+                    self._convert_node(pair_node[1]), value_kind
+                )
+                val_bits = val_tv[1]
+                if value_kind == F64:
+                    val_bits = self.current_builder.bitcast(
+                        val_tv[1], ir.IntType(64)
+                    )
+                self._rawdict_key_call(
+                    kind, raw_ptr,
+                    pair_node[0],
+                    self.rawdict_set, self.rawdict_str_set,
+                    (val_bits,),
+                )
+            return (kind, raw_ptr)
+        return self._coerce(self._convert_node(value_node), kind)
 
     def _emit_method_call(
         self, obj_node: Any, method_name: str, args_node: list
@@ -5625,8 +5722,11 @@ class TypedCodegen(SiluToLLVMConverter):
                         "attribute assignment is only supported on class "
                         "instances"
                     )
+                field_kind = self._field_kind_of(target[1], target[2])
                 self._emit_field_write(
-                    target[1], target[2], self._convert_node(value_node)
+                    target[1],
+                    target[2],
+                    self._convert_field_value(field_kind, value_node),
                 )
                 return (OBJ, null_obj)
             if isinstance(target, str):

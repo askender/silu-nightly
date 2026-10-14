@@ -174,6 +174,19 @@ class TestTypedCodegen:
         assert 'call void @"rawlist_set"' not in main  # set is inlined too
         assert 'call {i32, i8*}* @"list_append"' not in main
 
+    def test_rawlist_print_whole_list(self):
+        """print(lst) boxes every element at its 8-byte stride (regression:
+        the converter gep'd the i8* items pointer by element index)."""
+        assert _run_main(_convert("l: list[int] = [1, 2, 3]\nprint(l)\n")) == (
+            "[1, 2, 3]\n"
+        )
+
+    def test_rawlist_float_print_whole_list(self):
+        """list[float] prints elements as floats, not int bit patterns."""
+        assert _run_main(
+            _convert("f: list[float] = [1.5, 2.25]\nprint(f)\n")
+        ) == "[1.5, 2.25]\n"
+
     def test_rawlist_float_annotation(self):
         """list[float] stores raw doubles."""
         llvm_ir = _convert(

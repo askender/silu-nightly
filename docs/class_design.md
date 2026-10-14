@@ -1,8 +1,7 @@
 # Silu class 设计：dataclass 语义即 Rust struct + impl
 
-状态：**阶段 A（解释器）与阶段 B（编译器：int/float/bool/str 字段）已实施**
-（f41ccdf 起）。容器字段（list/dict）与装箱在编译路径明确报错，留待
-阶段 C。本文档是实施依据，按阶段可直接执行。
+状态：**阶段 A（解释器）、B（编译器标量/str 字段）、C（容器字段）已实施**
+（f41ccdf、a04822d 起）。本文档是实施依据，按阶段可直接执行。
 
 ## 1. 目标与非目标
 
@@ -174,13 +173,27 @@ rawstr 槽与 str 键字典的同一套纪律；第一版实例本身不 drop，
 ## 5. 阶段划分
 
 1. **阶段 A（解释器）**：实例化 + self 绑定 + 属性读写 + 默认值/
-   kwargs。验收 = JointState 例子 + dataclass 规则测试。
+   kwargs。验收 = JointState 例子 + dataclass 规则测试。✅ 已完成
 2. **阶段 B（编译器基本）**：布局 + 构造 + 字段读写 + 方法调用，
-   仅 int/float/bool/str 字段。验收 = 与解释器对拍。
-3. **阶段 C（容器字段）**：list/dict 字段的 copy-in/drop 纪律。
-   验收 = 含容器字段的实战改造（jsonparse 的解析结果改 `data[i].id`）。
-4. **阶段 D（可选后续）**：结构化 `==`、`repr`、实例 drop、
-   `JointState.new` 静态工厂。
+   int/float/bool/str 字段。验收 = 与解释器对拍。✅ 已完成
+3. **阶段 C（容器字段）**：list/dict 字段。✅ 已完成——采用
+   **引用语义**（与 Silu 容器全局一致，见 semantics.md §3）：字段槽
+   存裸指针，读出交出共享引用（`lst = b.items` 后 `lst.append` 影响
+   字段），写入动态值经边界拷贝；不 drop（rawlist/rawdict 缓冲区
+   本来就随进程生命周期）。容器默认值**每实例独立**（解释器与编译
+   器一致，Python 的共享可变默认值陷阱在 Silu 不存在）。
+4. **阶段 D（裁剪后）**：
+   - **实例 drop：砍掉**。Silu 允许 `b = a` 自由共享实例（Python
+     引用语义），没有借用检查器，对共享实例做 drop 就是
+     use-after-free；实例随进程生命周期是正式决定。Rust 的 drop
+     依赖所有权系统，没有对应物就不做。
+   - **结构化 `==`：缓议**。Rust 里也是 opt-in 的
+     `#[derive(PartialEq)]`，Python dataclass 默认开启恰是垂直于
+     Python 的部分。
+   - **`P.new(...)` 静态工厂**：可选后续（Rust `impl` 惯例的对应物），
+     优先级低——dataclass 构造已覆盖主要场景。
+   - `repr`：解释器已按 dataclass 风格输出；编译路径实例不可装箱，
+     `print(p)` 是编译期错误（打印字段即可）。
 
 ## 6. 测试清单（每阶段提交前全绿）
 

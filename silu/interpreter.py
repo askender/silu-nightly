@@ -149,6 +149,10 @@ class SiluClass:
                     raise TypeError(
                         f"{self.name}() missing required argument: '{fname}'"
                     )
+                # container defaults are fresh per instance (no shared-
+                # mutable-default gotcha; matches the compiled side)
+                if isinstance(default, (list, dict)):
+                    default = type(default)(default)
                 values[fname] = _coerce_field_value(ann, default)
         return SiluInstance(
             self, {f[0]: values[f[0]] for f in self.fields}

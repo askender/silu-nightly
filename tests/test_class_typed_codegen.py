@@ -341,13 +341,129 @@ print(moving_flag(st))
         )
 
 
-class TestClassCompileTimeErrors:
-    def test_container_field_rejected(self):
-        with pytest.raises(NotImplementedError, match="container/instance field"):
-            _convert(
-                """
+class TestContainerFields:
+    """list/dict fields: reference semantics, like everywhere in Silu."""
+
+    def test_list_int_field(self):
+        _assert_matches_interpreter(
+            """
 class Bag:
     items: list[int]
+    name: str
+
+    def add(self, x: int) -> int:
+        self.items.append(x)
+        return len(self.items)
+
+b = Bag([1, 2], "bag")
+print(b.add(3))
+print(b.items[0], b.items[2])
+b.items[1] = 99
+print(b.items)
+"""
+        )
+
+    def test_list_field_aliasing(self):
+        """Reading a container field hands out the shared reference -
+        mutating it mutates the field (Python container semantics)."""
+        _assert_matches_interpreter(
+            """
+class Bag:
+    items: list[int]
+
+b = Bag([1])
+lst: list[int] = b.items
+lst.append(2)
+print(len(b.items))
+print(b.items)
+"""
+        )
+
+    def test_dict_str_int_field_with_method(self):
+        _assert_matches_interpreter(
+            """
+class WordCount:
+    word: str
+    counts: dict[str, int]
+
+    def bump(self) -> int:
+        self.counts[self.word] = self.counts.get(self.word, 0) + 1
+        return self.counts[self.word]
+
+w = WordCount("hi", {})
+print(w.bump())
+print(w.bump())
+print(w.counts)
+"""
+        )
+
+    def test_list_str_field(self):
+        """list[str] fields keep their element copy discipline."""
+        _assert_matches_interpreter(
+            """
+class Names:
+    tags: list[str]
+
+n = Names(["a", "b"])
+n.tags.append("c")
+print(n.tags)
+s = n.tags[1]
+n.tags[1] = "z"
+print(s, n.tags[1])
+"""
+        )
+
+    def test_list_float_field(self):
+        _assert_matches_interpreter(
+            """
+class Acc:
+    xs: list[float]
+
+a = Acc([0.5])
+a.xs.append(1.5)
+print(a.xs)
+print(a.xs[0] + a.xs[1])
+"""
+        )
+
+    def test_container_default_fresh_per_instance(self):
+        """A container default is fresh per instance - no shared-mutable-
+        default gotcha (differs from plain Python on purpose)."""
+        _assert_matches_interpreter(
+            """
+class Fresh:
+    xs: list[int] = []
+
+f1 = Fresh()
+f2 = Fresh()
+f1.xs.append(1)
+print(len(f1.xs), len(f2.xs))
+"""
+        )
+
+    def test_field_reassigned_with_literal(self):
+        _assert_matches_interpreter(
+            """
+class Bag:
+    items: list[int]
+
+b = Bag([1, 2])
+b.items = [7, 8, 9]
+print(b.items)
+"""
+        )
+
+
+class TestClassCompileTimeErrors:
+    def test_nested_instance_field_rejected(self):
+        with pytest.raises(NotImplementedError, match="nested instance field"):
+            _convert(
+                """
+class Inner:
+    x: int
+
+class Outer:
+    inner: Inner
 """
             )
 

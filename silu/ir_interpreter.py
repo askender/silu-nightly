@@ -870,6 +870,11 @@ class IRInterpreter:
                     raise TypeError(
                         f"{class_name}() missing required argument: '{field_name}'"
                     )
+                # container defaults are fresh per instance (Python's
+                # shared-mutable-default gotcha does not exist in Silu;
+                # the compiled side re-evaluates the default per call)
+                if isinstance(default_value, (list, dict)):
+                    default_value = type(default_value)(default_value)
                 values[field_name] = self._coerce_for_annotation(
                     annotation, default_value
                 )
