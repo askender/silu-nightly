@@ -69,6 +69,8 @@ def main():
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--filter", default="")
     parser.add_argument("--no-rust-build", action="store_true")
+    parser.add_argument("--report", action="store_true",
+                        help="Write RESULTS.md / RESULTS.html")
     args = parser.parse_args()
 
     programs = sorted(
@@ -203,6 +205,7 @@ def main():
                     vs_interp,
                     vs_cpython,
                     vs_rust,
+                    match,
                 )
             )
             rust_str = f"{rust_time:>9.4f}s" if rust_time is not None else " " * 10
@@ -225,7 +228,68 @@ def main():
                 f"geometric mean: {geo_vs_int:.0f}x vs silu-int, "
                 f"{geo_vs_cpy:.1f}x vs cpython, {geo_vs_rust:.1f}x vs rust"
             )
+            if getattr(args, "report", False):
+                write_report(rows, geo_vs_int, geo_vs_cpy, geo_vs_rust)
     return 0
+
+
+def write_report(rows, geo_int, geo_cpy, geo_rust):
+    """Write RESULTS.md / RESULTS.html next to this script."""
+    import datetime
+    import html
+
+    today = datetime.date.today().isoformat()
+    header = ["程序", "silu 解释器", "CPython", "silu 二进制", "Rust",
+              "vs 解释器", "vs CPython", "vs Rust", "输出"]
+
+    md = [f"# Silu 性能评测结果（{today}）", "",
+          "由 `python benchmarks/run_benchmarks.py --report` 生成。",
+          "Apple Silicon，CPython / Rust release / clang -O2，"
+          "多轮中位数（含进程启动）。", "",
+          f"几何平均：**{geo_int:.0f}x vs silu-int，{geo_cpy:.1f}x vs CPython，"
+          f"{geo_rust:.1f}x vs Rust**", "",
+          "| " + " | ".join(header) + " |",
+          "|---" * len(header) + "|"]
+    for r in rows:
+        cells = [r[0], f"{r[1]:.3f}s", f"{r[2]:.3f}s", f"{r[3]:.4f}s",
+                 f"{r[4]:.4f}s", f"{r[5]:.0f}x", f"{r[6]:.1f}x",
+                 f"{r[7]:.1f}x", r[8]]
+        md.append("| " + " | ".join(cells) + " |")
+    md += ["", "方法学与归因实验见 [README.md](README.md)。"]
+    (Path(__file__).parent / "RESULTS.md").write_text(
+        chr(10).join(md) + chr(10), encoding="utf-8")
+
+    trs = ["<tr>" + "".join(f"<th>{html.escape(h)}</th>" for h in header)
+           + "</tr>"]
+    for r in rows:
+        cells = [r[0], f"{r[1]:.3f}s", f"{r[2]:.3f}s", f"{r[3]:.4f}s",
+                 f"{r[4]:.4f}s", f"{r[5]:.0f}x", f"{r[6]:.1f}x",
+                 f"{r[7]:.1f}x", r[8]]
+        trs.append("<tr>" + "".join(
+            f"<td>{html.escape(c)}</td>" for c in cells) + "</tr>")
+    style = ("body{font-family:-apple-system,sans-serif;margin:2rem auto;"
+             "max-width:60rem}table{border-collapse:collapse;width:100%;"
+             "font-size:.9rem}th,td{border:1px solid #ddd;padding:6px 10px;"
+             "text-align:right}th:first-child,td:first-child{text-align:left}"
+             "th{background:#f4f4f4}.geo{background:#eef6ff;padding:10px 14px;"
+             "border-radius:6px;display:inline-block}.meta{color:#666;"
+             "font-size:.85rem}")
+    html_doc = (
+        f'<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">'
+        f"<title>Silu 性能评测结果（{today}）</title>"
+        f"<style>{style}</style></head><body>"
+        f"<h1>Silu 性能评测结果</h1>"
+        f'<p class="meta">生成于 {today} · Apple Silicon · '
+        f"多轮中位数（含进程启动）</p>"
+        f'<p class="geo">{geo_int:.0f}x vs silu-int · '
+        f"{geo_cpy:.1f}x vs CPython · {geo_rust:.1f}x vs Rust</p>"
+        f"<table>{chr(10).join(trs)}</table>"
+        f'<p class="meta">方法学与归因实验见 '
+        f'<a href="README.md">README.md</a></p></body></html>'
+    )
+    (Path(__file__).parent / "RESULTS.html").write_text(
+        html_doc, encoding="utf-8")
+    print("report written: RESULTS.md / RESULTS.html")
 
 
 if __name__ == "__main__":

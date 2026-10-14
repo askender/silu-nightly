@@ -1,0 +1,15 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>Silu 性能评测结果（2026-10-14）</title><style>body{font-family:-apple-system,sans-serif;margin:2rem auto;max-width:60rem}table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{border:1px solid #ddd;padding:6px 10px;text-align:right}th:first-child,td:first-child{text-align:left}th{background:#f4f4f4}.geo{background:#eef6ff;padding:10px 14px;border-radius:6px;display:inline-block}.meta{color:#666;font-size:.85rem}</style></head><body><h1>Silu 性能评测结果</h1><p class="meta">生成于 2026-10-14 · Apple Silicon · 多轮中位数（含进程启动）</p><p class="geo">331x vs silu-int · 8.5x vs CPython · 0.7x vs Rust</p><table><tr><th>程序</th><th>silu 解释器</th><th>CPython</th><th>silu 二进制</th><th>Rust</th><th>vs 解释器</th><th>vs CPython</th><th>vs Rust</th><th>输出</th></tr>
+<tr><td>arith</td><td>5.178s</td><td>0.074s</td><td>0.0060s</td><td>0.0047s</td><td>868x</td><td>12.5x</td><td>0.8x</td><td>ok</td></tr>
+<tr><td>dict</td><td>0.365s</td><td>0.029s</td><td>0.0057s</td><td>0.0035s</td><td>64x</td><td>5.0x</td><td>0.6x</td><td>ok</td></tr>
+<tr><td>fannkuch</td><td>0.147s</td><td>0.027s</td><td>0.0088s</td><td>0.0051s</td><td>17x</td><td>3.1x</td><td>0.6x</td><td>ok</td></tr>
+<tr><td>fib</td><td>1.752s</td><td>0.032s</td><td>0.0029s</td><td>0.0029s</td><td>599x</td><td>11.1x</td><td>1.0x</td><td>ok</td></tr>
+<tr><td>float</td><td>3.409s</td><td>0.047s</td><td>0.0033s</td><td>0.0036s</td><td>1020x</td><td>14.1x</td><td>1.1x</td><td>ok</td></tr>
+<tr><td>jsonparse</td><td>1.674s</td><td>0.037s</td><td>0.0762s</td><td>0.0082s</td><td>22x</td><td>0.5x</td><td>0.1x</td><td>ok</td></tr>
+<tr><td>knucleotide</td><td>14.083s</td><td>0.790s</td><td>0.0159s</td><td>0.0183s</td><td>884x</td><td>49.6x</td><td>1.1x</td><td>ok</td></tr>
+<tr><td>list</td><td>0.522s</td><td>0.031s</td><td>0.0032s</td><td>0.0039s</td><td>164x</td><td>9.8x</td><td>1.2x</td><td>ok</td></tr>
+<tr><td>mandelbrot</td><td>1.173s</td><td>0.035s</td><td>0.0032s</td><td>0.0039s</td><td>368x</td><td>11.0x</td><td>1.2x</td><td>ok</td></tr>
+<tr><td>nbody</td><td>54.580s</td><td>0.207s</td><td>0.0067s</td><td>0.0075s</td><td>8172x</td><td>30.9x</td><td>1.1x</td><td>ok</td></tr>
+<tr><td>spectral</td><td>64.378s</td><td>0.289s</td><td>0.0085s</td><td>0.0093s</td><td>7553x</td><td>33.9x</td><td>1.1x</td><td>ok</td></tr>
+<tr><td>string</td><td>0.660s</td><td>0.048s</td><td>0.0058s</td><td>0.0033s</td><td>114x</td><td>8.4x</td><td>0.6x</td><td>ok</td></tr>
+<tr><td>trees</td><td>0.904s</td><td>0.029s</td><td>0.0053s</td><td>0.0035s</td><td>171x</td><td>5.5x</td><td>0.7x</td><td>ok</td></tr>
+<tr><td>wordcount</td><td>6.759s</td><td>0.083s</td><td>0.0290s</td><td>0.0158s</td><td>233x</td><td>2.9x</td><td>0.5x</td><td>ok</td></tr></table><p class="meta">方法学与归因实验见 <a href="README.md">README.md</a></p></body></html>
