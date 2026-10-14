@@ -55,7 +55,6 @@ class LambdaFunction:
 
 class Function:
     """Represents a user-defined function."""
-
     def __init__(
         self, name: str, args: List[str], body: List[ast.stmt], env: "Environment"
     ):
@@ -78,6 +77,96 @@ class Function:
         except ReturnException as ret:
             return ret.value
         return None
+
+
+def _coerce_field_value(annotation: Any, value: Any) -> Any:
+    """Coerce a value to a class field's annotated type (user contract).
+
+    Mirrors IRInterpreter._coerce_for_annotation: int rejects float (no
+    silent truncation), int coerces to float, str requires str; container
+    annotations (list[...], dict[...]) pass through unchecked."""
+    if not isinstance(annotation, str) or value is None:
+        return value
+    base = annotation.split("[", 1)[0].strip()
+    if base == "int":
+        if isinstance(value, float):
+            raise TypeError(
+                f"field annotated 'int' received float value {value!r}"
+            )
+        try:
+            return int(float(value)) if isinstance(value, str) else int(value)
+        except (ValueError, TypeError):
+            raise TypeError(f"field annotated 'int' received value {value!r}")
+    if base in ("float", "double"):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        raise TypeError(f"field annotated 'float' received value {value!r}")
+    if base == "bool":
+        return bool(value)
+    if base in ("str", "char*"):
+        if isinstance(value, str):
+            return value
+        raise TypeError(f"field annotated 'str' received value {value!r}")
+    return value
+
+
+class SiluClass:
+    """A Silu class: dataclass semantics (the Rust struct + impl analog).
+
+    Calling it constructs an instance: positional arguments bind fields in
+    declaration order, keywords bind by name, defaults fill the rest."""
+
+    def __init__(self, name: str, fields: list, methods: dict):
+        self.name = name
+        # [(field_name, annotation, has_default, default_value)]
+        self.fields = fields
+        self.methods = methods  # {method_name: Function}
+
+    def __call__(self, *args, **kwargs):
+        if len(args) > len(self.fields):
+            raise TypeError(
+                f"{self.name}() takes at most {len(self.fields)} arguments "
+                f"but {len(args)} given"
+            )
+        values = {}
+        for (fname, ann, _, _), arg in zip(self.fields, args):
+            values[fname] = _coerce_field_value(ann, arg)
+        field_names = {f[0] for f in self.fields}
+        for key, val in kwargs.items():
+            if key not in field_names:
+                raise TypeError(
+                    f"{self.name}() got an unexpected keyword argument '{key}'"
+                )
+            if key in values:
+                raise TypeError(
+                    f"{self.name}() got multiple values for argument '{key}'"
+                )
+            ann = next(f[1] for f in self.fields if f[0] == key)
+            values[key] = _coerce_field_value(ann, val)
+        for fname, ann, has_default, default in self.fields:
+            if fname not in values:
+                if not has_default:
+                    raise TypeError(
+                        f"{self.name}() missing required argument: '{fname}'"
+                    )
+                values[fname] = _coerce_field_value(ann, default)
+        return SiluInstance(
+            self, {f[0]: values[f[0]] for f in self.fields}
+        )
+
+
+class SiluInstance:
+    """A class instance: the class reference plus its field values."""
+
+    def __init__(self, cls: SiluClass, values: dict):
+        self.__silu_class__ = cls
+        self.__silu_fields__ = values
+
+    def __repr__(self):
+        fields = ", ".join(
+            f"{k}={v!r}" for k, v in self.__silu_fields__.items()
+        )
+        return f"{self.__silu_class__.name}({fields})"
 
 
 class Environment:
@@ -198,10 +287,33 @@ class SiluInterpreter(BaseASTProcessor):
             current_value = obj[key]
             new_value = self.process_operation(op, current_value, value)
             self.process_subscript_assign(obj, key, new_value)
+        elif (
+            isinstance(target, tuple)
+            and len(target) == 3
+            and target[0] == "attribute"
+        ):
+            # Attribute augmented assignment: obj.attr += value
+            _, obj, attr = target
+            current_value = self.process_attribute(obj, attr)
+            new_value = self.process_operation(op, current_value, value)
+            self.process_attribute_assign(obj, attr, new_value)
         else:
             raise NotImplementedError(
                 f"Unsupported augmented assignment target: {target}"
             )
+
+    def process_attribute_assign(self, obj: Any, attr: str, value: Any) -> None:
+        """Handle attribute assignment (obj.attr = value)."""
+        if isinstance(obj, SiluInstance):
+            cls = obj.__silu_class__
+            if attr not in obj.__silu_fields__:
+                raise AttributeError(
+                    f"'{cls.name}' object has no field '{attr}'"
+                )
+            ann = next(f[1] for f in cls.fields if f[0] == attr)
+            obj.__silu_fields__[attr] = _coerce_field_value(ann, value)
+            return
+        setattr(obj, attr, value)
 
     def process_subscript_assign(self, obj: Any, key: Any, value: Any) -> None:
         """Handle subscript assignment (e.g., dict[key] = value)."""
@@ -366,61 +478,67 @@ class SiluInterpreter(BaseASTProcessor):
             func = Function(kwargs["name"], kwargs["args"], kwargs["body"], self.env)
             self.env.set(kwargs["name"], func)
         elif node_type == "class_def":
-            # Create a class object using a dictionary
-            cls = {
-                "_fields": [],  # For compatibility with tests
-                "__name__": kwargs["name"],
-            }
+            # Silu class = dataclass semantics (Rust struct + impl):
+            # annotated fields + methods only, no inheritance.
+            name = kwargs["name"]
+            bases = kwargs.get("bases", [])
+            if bases:
+                raise TypeError(f"class '{name}': inheritance is not supported")
 
-            # Process base classes if any
-            for base in kwargs.get("bases", []):
-                # Handle when base is a Name node directly
-                if isinstance(base, ast.Name):
-                    base_name = base.id
-                    base_obj = self.env.get(base_name)
-                # Handle when base is already processed
-                else:
-                    base_obj = self.visit(base)
-
-                # Copy attributes from base classes
-                if isinstance(base_obj, dict):
-                    for key, value in base_obj.items():
-                        if key != "__name__":  # Don't copy name
-                            cls[key] = value
-                elif hasattr(base_obj, "__dict__"):
-                    for key, value in base_obj.__dict__.items():
-                        if key != "__name__":  # Don't copy name
-                            cls[key] = value
-
-            # Store class in environment before processing body
-            # to allow self-references within the class
-            self.env.set(kwargs["name"], cls)
-
-            # Process class body to set attributes
+            fields = []  # [(field_name, annotation, has_default, default)]
+            methods = {}
+            seen_default = False
             for stmt in kwargs["body"]:
-                # Execute statements in class body context
-                self.visit(stmt)
-
-                # If it's an assignment, capture it as class attribute
-                if isinstance(stmt, ast.Assign):
-                    for target in stmt.targets:
-                        if isinstance(target, ast.Name):
-                            # Get the attribute value from the environment
-                            attr_name = target.id
-                            attr_value = self.env.get(attr_name)
-                            # Set it as a class attribute
-                            cls[attr_name] = attr_value
-
-                # If it's an annotated assignment, capture it as class attribute
-                elif isinstance(stmt, ast.AnnAssign) and isinstance(
+                if isinstance(stmt, ast.AnnAssign) and isinstance(
                     stmt.target, ast.Name
                 ):
-                    attr_name = stmt.target.id
-                    if stmt.value:  # If there's a value
-                        attr_value = self.visit(stmt.value)
-                        cls[attr_name] = attr_value
+                    field_name = stmt.target.id
+                    if stmt.annotation is None:
+                        raise TypeError(
+                            f"class '{name}': field '{field_name}' must be "
+                            "annotated"
+                        )
+                    annotation = ast.unparse(stmt.annotation)
+                    has_default = stmt.value is not None
+                    default = self.visit(stmt.value) if has_default else None
+                    if seen_default and not has_default:
+                        raise TypeError(
+                            f"class '{name}': field '{field_name}' without "
+                            "default follows a field with a default"
+                        )
+                    seen_default = seen_default or has_default
+                    fields.append((field_name, annotation, has_default, default))
+                elif isinstance(stmt, ast.FunctionDef):
+                    method_name = stmt.name
+                    if method_name == "__init__":
+                        raise TypeError(
+                            f"class '{name}': __init__ is not supported; "
+                            "construction assigns fields in declaration order"
+                        )
+                    method_args = [arg.arg for arg in stmt.args.args]
+                    if not method_args:
+                        raise TypeError(
+                            f"class '{name}': method '{method_name}' must "
+                            "take 'self'"
+                        )
+                    methods[method_name] = Function(
+                        method_name, method_args, stmt.body, self.env
+                    )
+                elif isinstance(stmt, ast.Assign):
+                    raise TypeError(
+                        f"class '{name}': fields must be annotated "
+                        "(class variables are not supported)"
+                    )
+                elif isinstance(stmt, ast.Pass):
+                    pass
+                else:
+                    raise TypeError(
+                        f"class '{name}': unsupported statement "
+                        f"'{type(stmt).__name__}' in class body"
+                    )
 
-            # Return the class object
+            cls = SiluClass(name, fields, methods)
+            self.env.set(name, cls)
             return cls
         elif node_type == "return":
             raise ReturnException(kwargs["value"])
@@ -525,6 +643,18 @@ class SiluInterpreter(BaseASTProcessor):
         if isinstance(obj, str) and obj in self.env.variables:
             obj = self.env.get(obj)
 
+        # Class instance: field read or bound method (self prepended)
+        if isinstance(obj, SiluInstance):
+            cls = obj.__silu_class__
+            if attr in obj.__silu_fields__:
+                return obj.__silu_fields__[attr]
+            if attr in cls.methods:
+                func = cls.methods[attr]
+                return lambda *args, **kwargs: func(obj, *args, **kwargs)
+            raise AttributeError(
+                f"'{cls.name}' object has no attribute '{attr}'"
+            )
+
         # If object is a dictionary (our class representation)
         if isinstance(obj, dict) and attr in obj:
             return obj[attr]
@@ -590,6 +720,11 @@ class SiluInterpreter(BaseASTProcessor):
             obj = self.visit(node.func.value)
             method_name = node.func.attr
             args = [self.visit(arg) for arg in node.args]
+
+            if isinstance(obj, SiluInstance):
+                # class method: process_attribute returns a bound method
+                method = self.process_attribute(obj, method_name)
+                return method(*args)
 
             method = getattr(obj, method_name)
             return method(*args)

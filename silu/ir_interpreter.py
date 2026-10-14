@@ -309,6 +309,12 @@ class IRInterpreter:
                 f"Name '{name}' is not defined. Available globals: {globals_list}"
             )
 
+    def _execute_ann_assign(
+        self, target: Union[str, Tuple], value: Any, annotation: Any
+    ) -> None:
+        """Execute annotated assignment: target: type = value"""
+        self._execute_assign(target, value, annotation)
+
     def _execute_assign(
         self, target: Union[str, Tuple], value: Any, annotation: Any
     ) -> None:
@@ -433,9 +439,11 @@ class IRInterpreter:
                 return
             elif target[0] == "attribute":
                 # Handle attribute assignment: ["attribute", obj, attr]
+                # (pass the unevaluated node - the handler evaluates it;
+                # passing evaluated_value would double-evaluate strings)
                 obj = target[1]
                 attr = target[2]
-                self._execute_attribute_assign(obj, attr, evaluated_value)
+                self._execute_attribute_assign(obj, attr, value)
                 return
             else:
                 raise NotImplementedError(f"Unsupported assignment target: {target}")

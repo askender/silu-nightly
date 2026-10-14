@@ -160,6 +160,7 @@ This is currently used to analyze embedded/automotive-style state machines (see 
 - **Assignment**: simple, chained (`a = b = 1`), tuple unpacking (`for key, value in d.items()`), subscript delete (`del d[k]`)
 - **Operators**: arithmetic/comparison/bitwise, membership `in` / `not in` (strings, lists, dicts), string indexing and slicing with steps
 - **Functions**: user-defined functions, default arguments, and pure closures (read-only capture of the defining scope)
+- **Classes**: every `class` is a record type with dataclass semantics (the Rust `struct` + `impl` analog) — annotated fields, positional/keyword construction with defaults, methods with `self`; compiles to a flat 8-byte-slot heap block with direct field-offset access (no vtable, no boxing)
 - **Built-ins**: `print`, `type`, `isinstance`, type conversions, `len`, dict methods (`.keys()`, `.values()`, `.items()`, `.get()`, `.pop()`, `.setdefault()`, `.clear()`), list methods (`.append()`, `.pop()`, `.clear()`)
 - **Safety**: bounds/overflow/zero-division panics by default (Rust debug profile), optional release profile via `SILU_CHECKS=0`, plus memory protection against runaway sequence multiplication and oversized `range()`/`extend()` operations
 

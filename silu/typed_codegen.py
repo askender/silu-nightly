@@ -61,7 +61,11 @@ RAWDICT_KINDS = {
     RAWDICT_SF: F64,
 }  # kind -> value kind
 RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF)  # kinds with rawstr keys
-RAW_STORAGE_KINDS = {**RAWLIST_KINDS, **RAWDICT_KINDS, RAWSTR: RAWSTR}
+# class instance: an opaque heap block of 8-byte field slots (the
+# class name lives in the compile-time _var_class side table, never
+# in the object itself - Rust struct layout, no vtable, no header)
+INSTANCE = "instance"
+RAW_STORAGE_KINDS = {**RAWLIST_KINDS, **RAWDICT_KINDS, RAWSTR: RAWSTR, INSTANCE: INSTANCE}
 LLVM_KIND_TYPES = {
     I64: ir.IntType(64),
     F64: ir.DoubleType(),
@@ -74,6 +78,7 @@ LLVM_KIND_TYPES = {
     RAWDICT_IF: ir.PointerType(ir.IntType(8)),
     RAWDICT_SI: ir.PointerType(ir.IntType(8)),
     RAWDICT_SF: ir.PointerType(ir.IntType(8)),
+    INSTANCE: ir.PointerType(ir.IntType(8)),
 }
 
 
@@ -116,6 +121,15 @@ class TypedCodegen(SiluToLLVMConverter):
         # statement materializes the copy first. Failure mode is the
         # plain boxed path.
         self._char_aliases: Dict[str, Any] = {}
+
+        # class layouts (dataclass semantics): class name ->
+        # {"fields": [(fname, kind, default_node)], "methods": {m: mangled}};
+        # _var_class is the scope-local variable -> class name side table
+        # (INSTANCE kind says "some class", this says which one)
+        self._class_layouts: Dict[str, Dict[str, Any]] = {}
+        self._var_class: Dict[str, str] = {}
+        # mangled method name -> owning class (self param binding)
+        self._method_class: Dict[str, str] = {}
 
         # math intrinsics / libc used by ** (sqrt fast path, general pow)
         sqrt_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
@@ -3287,6 +3301,11 @@ class TypedCodegen(SiluToLLVMConverter):
             return self.current_builder.call(self.create_float, [value])
         if kind == I1:
             return self.current_builder.call(self.create_bool, [value])
+        if kind == INSTANCE:
+            raise NotImplementedError(
+                "class instances cannot be boxed yet "
+                "(print a field, not the instance)"
+            )
         raise ValueError(f"unknown kind {kind}")
 
     def _unbox(self, obj: Any, kind: str) -> Any:
@@ -4398,6 +4417,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 # ownership model - assignment copies, append grows in
                 # place, so Python's immutable-value semantics hold)
                 return RAWSTR
+            if node[1] in self._class_layouts:
+                # `st: JointState` - instance pointer, layout from the table
+                return INSTANCE
             return None
         if (
             isinstance(node, list)
@@ -4738,10 +4760,261 @@ class TypedCodegen(SiluToLLVMConverter):
         }
 
     def _collect_function_defs(self, node):
-        """Also stash the module statement list for signature inference."""
+        """Also stash the module statement list for signature inference,
+        and register class layouts + methods (dataclass semantics)."""
         if isinstance(node, list) and len(node) >= 2 and node[0] == "module":
             self._module_stmt_list = node[1]
+            for stmt in node[1]:
+                if (
+                    isinstance(stmt, list)
+                    and len(stmt) >= 4
+                    and stmt[0] == "class_def"
+                ):
+                    self._register_class(stmt)
+        if isinstance(node, list) and node and node[0] == "class_def":
+            # methods were registered under mangled names by
+            # _register_class; the generic walk must not also collect
+            # them as top-level functions
+            return
         super()._collect_function_defs(node)
+
+    def _register_class(self, node: list):
+        """Build the compile-time layout table for one class and register
+        its methods as ordinary functions under mangled names
+        (``JointState.is_moving`` -> ``JointState__is_moving``) with a
+        synthesized ``self`` annotation, so the existing signature
+        machinery types them like any other function."""
+        name, bases, body = node[1], node[2], node[3]
+        if bases:
+            raise NotImplementedError(
+                f"class '{name}': inheritance is not supported"
+            )
+        fields = []  # [(field_name, kind, default_node_or_None)]
+        methods = {}
+        seen_default = False
+        for stmt in body:
+            if not isinstance(stmt, list) or not stmt:
+                continue
+            op = stmt[0]
+            if op == "line":
+                continue
+            if op == "ann_assign" and len(stmt) >= 4:
+                field_name, default_node, annotation = stmt[1], stmt[2], stmt[3]
+                kind = self._annotation_kind(annotation)
+                if kind is None:
+                    raise NotImplementedError(
+                        f"class '{name}': unsupported field type for "
+                        f"'{field_name}'"
+                    )
+                if kind == INSTANCE or kind in RAWLIST_KINDS or kind in RAWDICT_KINDS:
+                    raise NotImplementedError(
+                        f"class '{name}': container/instance field "
+                        f"'{field_name}' is not supported yet"
+                    )
+                has_default = default_node is not None
+                if seen_default and not has_default:
+                    raise TypeError(
+                        f"class '{name}': field '{field_name}' without default "
+                        "follows a field with a default"
+                    )
+                seen_default = seen_default or has_default
+                fields.append((field_name, kind, default_node))
+            elif op == "func_def" and len(stmt) >= 6:
+                method_name = stmt[1]
+                params, mbody = stmt[2], stmt[3]
+                if method_name == "__init__":
+                    raise TypeError(
+                        f"class '{name}': __init__ is not supported; "
+                        "construction assigns fields in declaration order"
+                    )
+                if not params:
+                    raise TypeError(
+                        f"class '{name}': method '{method_name}' must take 'self'"
+                    )
+                mangled = f"{name}__{method_name}"
+                param_annotations = stmt[4] if len(stmt) > 4 else ()
+                # self carries the class name as its annotation, which
+                # _annotation_kind maps to the INSTANCE kind (replace
+                # self's own slot - params already include self)
+                new_annotations = tuple(
+                    [["name", name]] + list(param_annotations)[1:]
+                )
+                self.function_defs[mangled] = [
+                    "func_def", mangled, params, mbody,
+                    new_annotations, stmt[5] if len(stmt) > 5 else None,
+                ]
+                self._method_class[mangled] = name
+                methods[method_name] = mangled
+            elif op == "assign":
+                raise TypeError(
+                    f"class '{name}': fields must be annotated "
+                    "(class variables are not supported)"
+                )
+            else:
+                raise TypeError(
+                    f"class '{name}': unsupported statement '{op}' in class body"
+                )
+        self._class_layouts[name] = {"fields": fields, "methods": methods}
+
+    def _class_of_node(self, node: Any) -> Optional[str]:
+        """Class name of an instance-typed expression (name nodes only)."""
+        if (
+            isinstance(node, (list, tuple))
+            and len(node) >= 2
+            and node[0] == "name"
+        ):
+            return self._var_class.get(node[1])
+        return None
+
+    def _constructor_call_class(self, value_node: Any) -> Optional[str]:
+        """Class name when value_node is a `P(...)` construction call."""
+        if (
+            isinstance(value_node, list)
+            and len(value_node) >= 2
+            and value_node[0] == "call"
+            and isinstance(value_node[1], list)
+            and len(value_node[1]) >= 2
+            and value_node[1][0] == "name"
+            and value_node[1][1] in self._class_layouts
+        ):
+            return value_node[1][1]
+        return None
+
+    def _field_slot(self, inst_ptr: Any, index: int, kind: str):
+        """Address of field `index` in an instance block (8-byte slots)."""
+        raw = self.current_builder.gep(
+            inst_ptr, [ir.Constant(ir.IntType(64), index * 8)]
+        )
+        return self.current_builder.bitcast(
+            raw, ir.PointerType(LLVM_KIND_TYPES[kind])
+        )
+
+    def _emit_field_read(self, obj_node: Any, attr: str) -> Tuple[str, Any]:
+        """obj.attr where obj is a class instance: offset load. str fields
+        copy on read (the instance keeps owning its slot's buffer)."""
+        cls = self._class_of_node(obj_node)
+        fields = self._class_layouts[cls]["fields"]
+        for index, (field_name, kind, _default) in enumerate(fields):
+            if field_name == attr:
+                inst_tv = self._convert_node(obj_node)
+                slot = self._field_slot(inst_tv[1], index, kind)
+                value = self.current_builder.load(slot)
+                if kind == RAWSTR:
+                    # copy-on-read: the field slot stays the sole owner
+                    value = self.current_builder.call(self.rawstr_copy, [value])
+                return (kind, value)
+        raise AttributeError(f"'{cls}' object has no attribute '{attr}'")
+
+    def _emit_field_write(self, obj_node: Any, attr: str, value_tv: Tuple[str, Any]):
+        """obj.attr = value: coerce to the field kind and store. str
+        fields drop the old buffer and copy the new one in (the
+        RAWSTR->RAWSTR coerce already copies)."""
+        cls = self._class_of_node(obj_node)
+        fields = self._class_layouts[cls]["fields"]
+        for index, (field_name, kind, _default) in enumerate(fields):
+            if field_name == attr:
+                inst_tv = self._convert_node(obj_node)
+                value_tv = self._coerce(value_tv, kind)
+                slot = self._field_slot(inst_tv[1], index, kind)
+                if kind == RAWSTR:
+                    old = self.current_builder.load(slot)
+                    self.current_builder.call(self.rawstr_free, [old])
+                self.current_builder.store(value_tv[1], slot)
+                return
+        raise AttributeError(f"'{cls}' object has no field '{attr}'")
+
+    def _emit_construct(
+        self, class_name: str, args_node: list, kwargs_node: list
+    ) -> Tuple[str, Any]:
+        """P(a, b) / P(x=a): malloc the field block and store each
+        argument coerced to its field kind (dataclass construction:
+        positional in declaration order, keywords by name, defaults)."""
+        fields = self._class_layouts[class_name]["fields"]
+        if len(args_node) > len(fields):
+            raise TypeError(
+                f"{class_name}() takes at most {len(fields)} arguments "
+                f"but {len(args_node)} given"
+            )
+        bound: Dict[str, Any] = {}
+        for (field_name, _kind, _d), arg_node in zip(fields, args_node):
+            bound[field_name] = arg_node
+        for kw_name, kw_value_node in kwargs_node or ():
+            field_names = {f[0] for f in fields}
+            if kw_name not in field_names:
+                raise TypeError(
+                    f"{class_name}() got an unexpected keyword argument "
+                    f"'{kw_name}'"
+                )
+            if kw_name in bound:
+                raise TypeError(
+                    f"{class_name}() got multiple values for argument "
+                    f"'{kw_name}'"
+                )
+            bound[kw_name] = kw_value_node
+
+        inst_ptr = self.current_builder.call(
+            self.malloc, [ir.Constant(ir.IntType(64), 8 * len(fields))]
+        )
+        for index, (field_name, kind, default_node) in enumerate(fields):
+            value_node = bound.get(field_name, default_node)
+            if value_node is None:
+                raise TypeError(
+                    f"{class_name}() missing required argument: '{field_name}'"
+                )
+            value_tv = self._coerce(self._convert_node(value_node), kind)
+            self.current_builder.store(
+                value_tv[1], self._field_slot(inst_ptr, index, kind)
+            )
+        return (INSTANCE, inst_ptr)
+
+    def _emit_method_call(
+        self, obj_node: Any, method_name: str, args_node: list
+    ) -> Tuple[str, Any]:
+        """st.m(a) -> P__m(st, a): the instance pointer is the raw first
+        argument; the rest follows the callee's ABI (static or dynamic)."""
+        cls = self._class_of_node(obj_node)
+        mangled = self._class_layouts[cls]["methods"].get(method_name)
+        if mangled is None:
+            raise AttributeError(
+                f"'{cls}' object has no attribute '{method_name}'"
+            )
+        inst_tv = self._convert_node(obj_node)
+        if mangled in self.static_funcs:
+            param_kinds, ret_kind, func = self.static_funcs[mangled]
+            if len(args_node) != len(param_kinds) - 1:
+                raise TypeError(
+                    f"{cls}.{method_name}() takes "
+                    f"{len(param_kinds) - 1} arguments but "
+                    f"{len(args_node)} given"
+                )
+            raw_args = [inst_tv[1]]
+            for index, arg_node in enumerate(args_node):
+                raw_args.append(
+                    self._coerce(
+                        self._convert_node(arg_node), param_kinds[index + 1]
+                    )[1]
+                )
+            return (ret_kind, self.current_builder.call(func, raw_args))
+        func = self.functions[mangled]
+        callee_def = self.function_defs[mangled]
+        callee_kinds = (
+            self._dyn_func_kinds.get(mangled)
+            or self._dynamic_param_kinds(callee_def)
+        )
+        if len(args_node) != len(callee_kinds) - 1:
+            raise TypeError(
+                f"{cls}.{method_name}() takes {len(callee_kinds) - 1} "
+                f"arguments but {len(args_node)} given"
+            )
+        call_args = [inst_tv[1]]
+        for index, arg_node in enumerate(args_node):
+            expected = callee_kinds[index + 1]
+            arg_tv = self._convert_node(arg_node)
+            if expected == OBJ:
+                call_args.append(self._box(arg_tv))
+            else:
+                call_args.append(self._coerce(arg_tv, expected)[1])
+        return (OBJ, self.current_builder.call(func, call_args))
 
     def _infer_function_signatures(self):
         """Two-pass cross-function kind propagation.
@@ -5035,6 +5308,7 @@ class TypedCodegen(SiluToLLVMConverter):
         old_kinds = dict(self.var_kinds)
         old_ret = self.current_ret_kind
         old_inferred = self._inferred_kinds
+        old_var_class = self._var_class
 
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
@@ -5070,6 +5344,7 @@ class TypedCodegen(SiluToLLVMConverter):
             self._module_kinds = set(self.var_kinds.keys())
         self.variables = dict(self.variables)
         self.var_kinds = dict(self.var_kinds)
+        self._var_class = dict(self._var_class)
 
         for index, param_name in enumerate(func_def[2]):
             kind = param_kinds[index]
@@ -5079,6 +5354,23 @@ class TypedCodegen(SiluToLLVMConverter):
             self.var_kinds.pop(param_name, None)
             self._declare_var(param_name, kind)
             self.current_builder.store(func.args[index], self.variables[param_name])
+
+        # methods: bind the self parameter's class for attribute access
+        method_class = self._method_class.get(func.name)
+        if method_class is not None and func_def[2]:
+            self._var_class[func_def[2][0]] = method_class
+        # class-annotated parameters (st: JointState) bind their class too
+        for index, pname in enumerate(func_def[2]):
+            ann = (
+                param_annotations[index] if index < len(param_annotations) else None
+            )
+            if (
+                isinstance(ann, list)
+                and len(ann) >= 2
+                and ann[0] == "name"
+                and ann[1] in self._class_layouts
+            ):
+                self._var_class[pname] = ann[1]
 
         for stmt in func_def[3]:
             self._convert_statement(stmt)
@@ -5111,6 +5403,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
+        self._var_class = old_var_class
         self.cursor_kinds = old_cursor_kinds
         self._cursor_slots = old_cursor_slots
         self._scope_depth = getattr(self, "_scope_depth", 1) - 1
@@ -5124,6 +5417,7 @@ class TypedCodegen(SiluToLLVMConverter):
         old_kinds = dict(self.var_kinds)
         old_ret = self.current_ret_kind
         old_inferred = self._inferred_kinds
+        old_var_class = self._var_class
 
         self.current_function = func
         self.current_builder = ir.IRBuilder(entry_block)
@@ -5147,6 +5441,27 @@ class TypedCodegen(SiluToLLVMConverter):
             self._module_kinds = set(self.var_kinds.keys())
         self.variables = dict(self.variables)
         self.var_kinds = dict(self.var_kinds)
+        self._var_class = dict(self._var_class)
+
+        # methods: bind the self parameter's class for attribute access
+        method_class = self._method_class.get(func_def[1])
+        if method_class is not None and func_def[2]:
+            self._var_class[func_def[2][0]] = method_class
+        # class-annotated parameters (st: JointState) bind their class too
+        dyn_param_annotations = func_def[4] if len(func_def) > 4 else ()
+        for index, pname in enumerate(func_def[2]):
+            ann = (
+                dyn_param_annotations[index]
+                if index < len(dyn_param_annotations)
+                else None
+            )
+            if (
+                isinstance(ann, list)
+                and len(ann) >= 2
+                and ann[0] == "name"
+                and ann[1] in self._class_layouts
+            ):
+                self._var_class[pname] = ann[1]
 
         param_kinds_dyn = self._dyn_func_kinds.get(
             func_def[1], self._dynamic_param_kinds(func_def)
@@ -5193,6 +5508,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
+        self._var_class = old_var_class
         self.cursor_kinds = old_cursor_kinds
         self._cursor_slots = old_cursor_slots
         self._scope_depth = getattr(self, "_scope_depth", 1) - 1
@@ -5272,11 +5588,85 @@ class TypedCodegen(SiluToLLVMConverter):
                 return self._emit_char_view(str_tv[1], index)
             return self._load_var(node[1])
 
+        if op == "class_def":
+            # layouts and methods were registered in the collection pass
+            return (OBJ, null_obj)
+
+        if op == "attribute" and len(node) >= 3:
+            if self._class_of_node(node[1]) is not None:
+                return self._emit_field_read(node[1], node[2])
+            # dynamic attribute access stays unsupported (null)
+            return (OBJ, null_obj)
+
+        if op == "attribute_aug_assign" and len(node) >= 5:
+            if self._class_of_node(node[1]) is not None:
+                current = self._emit_field_read(node[1], node[2])
+                rhs = self._convert_node(node[4])
+                op_str = node[3]
+                if isinstance(op_str, str) and op_str.endswith("="):
+                    op_str = op_str[:-1]
+                result = self._typed_binop(op_str, current, rhs)
+                self._emit_field_write(node[1], node[2], result)
+            return (OBJ, null_obj)
+
         if op in ("assign", "ann_assign"):
             target = node[1]
             value_node = node[2]
             if op == "ann_assign" and value_node is None:
                 return (OBJ, null_obj)
+            if (
+                isinstance(target, (list, tuple))
+                and len(target) >= 3
+                and target[0] == "attribute"
+            ):
+                # obj.attr = value on a class instance
+                if self._class_of_node(target[1]) is None:
+                    raise NotImplementedError(
+                        "attribute assignment is only supported on class "
+                        "instances"
+                    )
+                self._emit_field_write(
+                    target[1], target[2], self._convert_node(value_node)
+                )
+                return (OBJ, null_obj)
+            if isinstance(target, str):
+                ctor_class = self._constructor_call_class(value_node)
+                if ctor_class is not None:
+                    # st = JointState(1.0, 2.0) - optionally annotated
+                    if op == "ann_assign":
+                        ann = node[3] if len(node) > 3 else None
+                        if (
+                            isinstance(ann, list)
+                            and len(ann) >= 2
+                            and ann[0] == "name"
+                            and ann[1] in self._class_layouts
+                            and ann[1] != ctor_class
+                        ):
+                            raise TypeError(
+                                f"cannot assign {ctor_class}() to "
+                                f"'{ann[1]}' variable '{target}'"
+                            )
+                    inst = self._emit_construct(
+                        ctor_class,
+                        value_node[2] if len(value_node) > 2 else [],
+                        value_node[3] if len(value_node) > 3 else [],
+                    )
+                    self._declare_var(target, INSTANCE)
+                    self._var_class[target] = ctor_class
+                    self.current_builder.store(inst[1], self.variables[target])
+                    return inst
+                if (
+                    isinstance(value_node, list)
+                    and len(value_node) >= 2
+                    and value_node[0] == "name"
+                    and self.var_kinds.get(value_node[1]) == INSTANCE
+                ):
+                    # a = b: instances alias (Python reference semantics)
+                    value = self._convert_node(value_node)
+                    self._declare_var(target, INSTANCE)
+                    self._var_class[target] = self._var_class[value_node[1]]
+                    self.current_builder.store(value[1], self.variables[target])
+                    return value
             if op == "ann_assign":
                 annotation_kind = self._annotation_kind(node[3]) or OBJ
             else:
@@ -6906,6 +7296,17 @@ class TypedCodegen(SiluToLLVMConverter):
         func_node = node[1]
         args_node = node[2] if len(node) > 2 else []
 
+        # class construction: JointState(1.0, 2.0) - dataclass semantics
+        if (
+            isinstance(func_node, list)
+            and len(func_node) >= 2
+            and func_node[0] == "name"
+            and func_node[1] in self._class_layouts
+        ):
+            return self._emit_construct(
+                func_node[1], args_node, node[3] if len(node) > 3 else []
+            )
+
         # method calls stay fully dynamic
         if (
             isinstance(func_node, list)
@@ -6915,6 +7316,10 @@ class TypedCodegen(SiluToLLVMConverter):
             method_name = func_node[2]
             raw_obj_tv = self._convert_node(func_node[1])
             raw_kind = raw_obj_tv[0]
+            if raw_kind == INSTANCE:
+                return self._emit_method_call(
+                    func_node[1], method_name, args_node
+                )
             if raw_kind in RAWLIST_KINDS:
                 elem_kind = RAWLIST_KINDS[raw_kind]
                 elem_size = self._rawlist_elem_size(raw_kind)

@@ -369,7 +369,6 @@ class Bad:
 
 class TestClassInFunctions:
     """Classes used inside functions and across calls."""
-
     def test_construct_inside_function(self):
         out = run_source(
             JOINT_STATE
@@ -399,3 +398,73 @@ print(t)
 """
         )
         assert out == "hello\nTagged(name='hello', value=7)\n"
+
+
+def run_ast_interpreter(src: str) -> str:
+    """Run Silu source through the tree-walking interpreter (interpret
+    mode), return stdout."""
+    from silu.interpreter import SiluInterpreter
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        SiluInterpreter().visit(ast.parse(src))
+    return buf.getvalue()
+
+
+class TestClassASTInterpreter:
+    """Same semantics through the tree-walking interpreter (interpret
+    mode) - the path `silu verify` uses as its reference."""
+
+    def test_joint_state_full(self):
+        out = run_ast_interpreter(
+            JOINT_STATE
+            + """
+st = JointState(1.0, 2.0)
+print(st.is_moving())
+print(st)
+"""
+        )
+        assert out == "True\nJointState(position=1.0, velocity=2.0)\n"
+
+    def test_methods_defaults_kwargs(self):
+        out = run_ast_interpreter(
+            """
+class Acc:
+    total: int
+    name: str = "acc"
+
+    def add(self, x: int) -> int:
+        self.total += x
+        return self.total
+
+a = Acc(10, name="counter")
+print(a.add(5))
+print(a.name)
+b = Acc(1)
+print(b)
+"""
+        )
+        assert out == "15\ncounter\nAcc(total=1, name='acc')\n"
+
+    def test_type_violation(self):
+        with pytest.raises(TypeError, match="annotated 'int'"):
+            run_ast_interpreter(
+                """
+class Rec:
+    n: int
+
+r = Rec(1.5)
+"""
+            )
+
+    def test_inheritance_rejected(self):
+        with pytest.raises(TypeError, match="inheritance"):
+            run_ast_interpreter(
+                """
+class Base:
+    x: int
+
+class Child(Base):
+    y: int
+"""
+            )
