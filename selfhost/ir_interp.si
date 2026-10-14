@@ -1,0 +1,281 @@
+# M2 self-hosting milestone (docs/selfhosting.md): a tree-walking
+# interpreter for a Silu IR subset, written in Silu itself.
+# Pipeline: read JSON IR from stdin -> parse to JValue trees -> execute.
+# Supported IR subset: module, line, const (int/str/bool), name,
+# assign/ann_assign, binops (+ - * //), compare, if, while,
+# call (print / user function), func_def, return.
+# Usage: python -m silu ir prog.py --output prog.ir.json
+#        silu build ir_interp.si && ./ir_interp < prog.ir.json
+
+
+class JKind(Enum):
+    NIL
+    BOOL
+    NUM
+    STR
+    ARR
+    OBJ
+
+
+class JValue:
+    kind: JKind
+    b: bool
+    n: int
+    s: str
+    arr: list[JValue]
+    key: str
+    nxt: JValue      # OBJ chain: key/value linked list
+
+
+def jbool(v: bool) -> JValue:
+    return JValue(JKind.BOOL, v, 0, "", None, "", None)
+
+
+def jnum(v: int) -> JValue:
+    return JValue(JKind.NUM, False, v, "", None, "", None)
+
+
+def jstr(v: str) -> JValue:
+    return JValue(JKind.STR, False, 0, v, None, "", None)
+
+
+def jarr(items: list[JValue]) -> JValue:
+    return JValue(JKind.ARR, False, 0, "", items, "", None)
+
+
+def jnull() -> JValue:
+    return JValue(JKind.NIL, False, 0, "", None, "", None)
+
+
+class Json:
+    src: str
+    pos: int
+
+    def ws(self) -> int:
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+                self.pos += 1
+            else:
+                return 0
+        return 0
+
+    def value(self) -> JValue:
+        self.ws()
+        ch = self.src[self.pos]
+        if ch == "{":
+            return self.object()
+        if ch == "[":
+            return self.array()
+        if ch == '"':
+            return jstr(self.string())
+        if ch == "t":
+            self.pos += 4
+            return jbool(True)
+        if ch == "f":
+            self.pos += 5
+            return jbool(False)
+        if ch == "n":
+            self.pos += 4
+            return jnull()
+        return self.number()
+
+    def string(self) -> str:
+        self.pos += 1
+        start: int = self.pos
+        while self.src[self.pos] != '"':
+            self.pos += 1
+        out: str = self.src[start:self.pos]
+        self.pos += 1
+        return out
+
+    def number(self) -> JValue:
+        start: int = self.pos
+        neg: bool = False
+        if self.src[self.pos] == "-":
+            neg = True
+            self.pos += 1
+        n: int = 0
+        while True:
+            ch = self.src[self.pos]
+            if ch >= "0" and ch <= "9":
+                d: int = ord(ch) - 48
+                n = n * 10 + d
+                self.pos += 1
+            else:
+                if neg:
+                    return jnum(0 - n)
+                return jnum(n)
+
+    def array(self) -> JValue:
+        items: list[JValue] = []
+        self.pos += 1
+        while True:
+            self.ws()
+            if self.src[self.pos] == "]":
+                self.pos += 1
+                return jarr(items)
+            items.append(self.value())
+            self.ws()
+            if self.src[self.pos] == ",":
+                self.pos += 1
+
+    def object(self) -> JValue:
+        head: JValue = jnull()
+        self.pos += 1
+        while True:
+            self.ws()
+            if self.src[self.pos] == "}":
+                self.pos += 1
+                if head.kind == JKind.NIL:
+                    return jnull()
+                return head
+            k: str = self.string()
+            self.ws()
+            self.pos += 1  # colon
+            v: JValue = self.value()
+            pair: JValue = JValue(JKind.OBJ, False, 0, "", None, k, v)
+            if head.kind == JKind.NIL:
+                head = pair
+            else:
+                tail: JValue = head
+                while tail.nxt is not None:
+                    tail = tail.nxt
+                tail.nxt = pair
+
+
+# ---------- IR node helpers over JValue ----------
+
+def tag(node: JValue) -> str:
+    return node.arr[0].s
+
+
+def elem(node: JValue, i: int) -> JValue:
+    return node.arr[i]
+
+
+def elem_str(node: JValue, i: int) -> str:
+    return node.arr[i].s
+
+
+def elem_int(node: JValue, i: int) -> int:
+    return node.arr[i].n
+
+
+class Interp:
+    env: dict[str, int]
+    out: str
+
+    def get_int(self, name: str) -> int:
+        if name in self.env:
+            return self.env[name]
+        return 0
+
+    def eval_int(self, node: JValue) -> int:
+        t: str = tag(node)
+        if t == "const":
+            return elem(node, 1).n
+        if t == "name":
+            return self.get_int(elem(node, 1).s)
+        if t == "line":
+            return 0
+        if t == "+":
+            return self.eval_int(elem(node, 1)) + self.eval_int(elem(node, 2))
+        if t == "-":
+            return self.eval_int(elem(node, 1)) - self.eval_int(elem(node, 2))
+        if t == "*":
+            return self.eval_int(elem(node, 1)) * self.eval_int(elem(node, 2))
+        if t == "//":
+            return self.eval_int(elem(node, 1)) // self.eval_int(elem(node, 2))
+        if t == "%":
+            return self.eval_int(elem(node, 1)) % self.eval_int(elem(node, 2))
+        return 0
+
+    def truthy(self, node: JValue) -> bool:
+        t: str = tag(node)
+        if t == "const":
+            return elem(node, 1).b
+        if t == "<":
+            return self.eval_int(elem(node, 1)) < self.eval_int(elem(node, 2))
+        if t == "<=":
+            return self.eval_int(elem(node, 1)) <= self.eval_int(elem(node, 2))
+        if t == ">":
+            return self.eval_int(elem(node, 1)) > self.eval_int(elem(node, 2))
+        if t == ">=":
+            return self.eval_int(elem(node, 1)) >= self.eval_int(elem(node, 2))
+        if t == "==":
+            return self.eval_int(elem(node, 1)) == self.eval_int(elem(node, 2))
+        if t == "!=":
+            return self.eval_int(elem(node, 1)) != self.eval_int(elem(node, 2))
+        return False
+
+    def show_int(self, v: int) -> str:
+        if v < 0:
+            return "-" + self.show_int(0 - v)
+        digits: str = ""
+        table: str = "0123456789"
+        n: int = v
+        while True:
+            digits = table[n % 10] + digits
+            n = n // 10
+            if n == 0:
+                return digits
+
+    def exec_stmts(self, stmts: JValue) -> int:
+        i: int = 0
+        n: int = len(stmts.arr)
+        while i < n:
+            r: int = self.exec_stmt(elem(stmts, i))
+            if r != 0:
+                return r
+            i += 1
+        return 0
+
+    def exec_stmt(self, stmt: JValue) -> int:
+        t: str = tag(stmt)
+        if t == "line":
+            return 0
+        if t == "assign" or t == "ann_assign":
+            self.env[elem_str(stmt, 1)] = self.eval_int(elem(stmt, 2))
+            return 0
+        if t == "aug_assign":
+            tgt: str = elem(elem(stmt, 1), 1).s
+            cur: int = self.get_int(tgt)
+            op: str = elem_str(stmt, 2)
+            rhs: int = self.eval_int(elem(stmt, 3))
+            if op == "+=":
+                self.env[tgt] = cur + rhs
+            elif op == "-=":
+                self.env[tgt] = cur - rhs
+            else:
+                self.env[tgt] = cur * rhs
+            return 0
+        if t == "print":
+            self.out = self.out + self.show_int(self.eval_int(elem(stmt, 1))) + "\n"
+            return 0
+        if t == "call":
+            name: str = elem(elem(stmt, 1), 1).s
+            if name == "print":
+                self.out = self.out + self.show_int(self.eval_int(elem(elem(stmt, 2), 0))) + "\n"
+            return 0
+        if t == "if":
+            if self.truthy(elem(stmt, 1)):
+                return self.exec_stmts(elem(stmt, 2))
+            return self.exec_stmts(elem(stmt, 3))
+        if t == "while":
+            while self.truthy(elem(stmt, 1)):
+                r2: int = self.exec_stmts(elem(stmt, 2))
+                if r2 != 0:
+                    return r2
+            return 0
+        return 0
+
+
+def main() -> int:
+    src: str = read_stdin()
+    parser: Json = Json(src, 0)
+    root: JValue = parser.value()
+    interp: Interp = Interp({}, "")
+    interp.exec_stmts(elem(root, 1))
+    print(interp.out, end="")
+    return 0

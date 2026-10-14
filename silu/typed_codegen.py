@@ -131,6 +131,12 @@ class TypedCodegen(SiluToLLVMConverter):
         # instance-element lists: variable -> element class
         # (toks: list[Token]); lets `for t in toks` bind t as INSTANCE
         self._list_elem_class: Dict[str, str] = {}
+        # container FIELDS' element classes: (class, field) -> elem class
+        # (class Node: children: list[Node])
+        self._field_elem_class: Dict[Tuple[str, str], str] = {}
+        # function name -> class when every return expression is a
+        # constructor of that one class (lets elem(node, i).s resolve)
+        self._call_ret_class: Dict[str, str] = {}
         # name of the list a for-loop is currently iterating (see
         # _convert_list_for_loop)
         self._current_for_iter_name: Optional[str] = None
@@ -1297,25 +1303,40 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.ret(builder.select(is_equal, length_diff, memcmp_i64))
 
         # i1 rawstr_eq_cstr(i8* s, i8* data, i64 len) - compare against
-        # a constant buffer without materializing a rawstr for it
+        # a constant buffer without materializing a rawstr for it.
+        # memcmp only over the SHARED prefix: comparing s_len bytes when
+        # the literal is shorter would read past the global (the length
+        # mismatch already decides the result)
         self.rawstr_eq_cstr = ir.Function(
             self.module, ir.FunctionType(ir.IntType(1), [i8p, i8p, i64]),
             name="rawstr_eq_cstr",
         )
-        builder = ir.IRBuilder(self.rawstr_eq_cstr.append_basic_block("entry"))
+        eq_entry = self.rawstr_eq_cstr.append_basic_block("entry")
+        eq_bytes = self.rawstr_eq_cstr.append_basic_block("eq_bytes")
+        eq_out = self.rawstr_eq_cstr.append_basic_block("eq_out")
+        builder = ir.IRBuilder(eq_entry)
         s_arg, cdata_arg, clen_arg = self.rawstr_eq_cstr.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
         s_len = load_len(builder, s_struct)
         len_eq = builder.icmp_signed("==", s_len, clen_arg)
+        builder.cbranch(len_eq, eq_bytes, eq_out)
+
+        builder = ir.IRBuilder(eq_bytes)
         bytes_eq = builder.icmp_signed(
             "==",
             builder.call(
                 self.memcmp,
-                [load_data(builder, s_struct), cdata_arg, s_len],
+                [load_data(builder, s_struct), cdata_arg, clen_arg],
             ),
             ir.Constant(ir.IntType(32), 0),
         )
-        builder.ret(builder.and_(len_eq, bytes_eq))
+        builder.branch(eq_out)
+
+        builder = ir.IRBuilder(eq_out)
+        result = builder.phi(ir.IntType(1))
+        result.add_incoming(ir.Constant(ir.IntType(1), 0), eq_entry)
+        result.add_incoming(bytes_eq, eq_bytes)
+        builder.ret(result)
 
         # i64 rawstr_cmp_cstr(i8* s, i8* data, i64 len) - ordering vs a
         # constant buffer (memcmp prefix, length breaks ties)
@@ -4223,14 +4244,16 @@ class TypedCodegen(SiluToLLVMConverter):
             self.variables[name] = self.current_builder.alloca(
                 alloca_type, name=name
             )
-            self.current_builder.position_at_end(saved_block)
             if kind == RAWSTR:
-                # null-init so the drop-on-overwrite helper can tell
-                # "never assigned" apart from a live buffer
+                # null-init IN THE ENTRY BLOCK, right after the alloca:
+                # a branch-local declaration never executes on other
+                # paths, but function-exit drops free every RAWSTR slot -
+                # an uninitialized alloca there would free garbage
                 self.current_builder.store(
                     ir.Constant(ir.PointerType(ir.IntType(8)), None),
                     self.variables[name],
                 )
+            self.current_builder.position_at_end(saved_block)
         self.var_kinds[name] = kind
 
     def _load_var(self, name: str) -> Tuple[str, Any]:
@@ -5645,6 +5668,20 @@ class TypedCodegen(SiluToLLVMConverter):
                             f"class '{name}': instance field '{field_name}' "
                             "cannot have a default (pass it explicitly)"
                         )
+                # container fields keep their element class so
+                # `holder.arr[0].s` (field -> subscript -> attribute)
+                # resolves through _class_of_node
+                if kind in RAWLIST_KINDS and (
+                    isinstance(annotation, list)
+                    and len(annotation) >= 3
+                    and annotation[0] == "subscript"
+                    and isinstance(annotation[2], list)
+                    and len(annotation[2]) >= 2
+                    and annotation[2][0] == "name"
+                ):
+                    elem_name = annotation[2][1]
+                    if elem_name in self._class_layouts:
+                        self._field_elem_class[(name, field_name)] = elem_name
                 has_default = default_node is not None
                 if seen_default and not has_default:
                     raise TypeError(
@@ -5692,7 +5729,8 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def _class_of_node(self, node: Any) -> Optional[str]:
         """Class name of an instance-typed expression: a name bound to an
-        instance, or a chain through instance fields (a.inner.x)."""
+        instance, or a chain through instance fields (a.inner.x) and
+        instance-list elements (toks[i] on a list[Token])."""
         if (
             isinstance(node, (list, tuple))
             and len(node) >= 2
@@ -5712,6 +5750,62 @@ class TypedCodegen(SiluToLLVMConverter):
             ):
                 if field_name == node[2]:
                     return field_class if kind == INSTANCE else None
+            return None
+        if (
+            isinstance(node, (list, tuple))
+            and len(node) >= 3
+            and node[0] == "subscript"
+        ):
+            # an instance-list element: toks[i] where the base is a
+            # list[Token] variable, or holder.arr[i] where arr is a
+            # container FIELD with an element class on record
+            base = node[1]
+            if (
+                isinstance(base, (list, tuple))
+                and len(base) >= 2
+                and base[0] == "name"
+            ):
+                return self._list_elem_class.get(base[1])
+            if (
+                isinstance(base, (list, tuple))
+                and len(base) >= 3
+                and base[0] == "attribute"
+            ):
+                parent_class = self._class_of_node(base[1])
+                if parent_class is not None:
+                    key = (parent_class, base[2])
+                    if key in self._field_elem_class:
+                        return self._field_elem_class[key]
+                    return None
+                return None
+            return self._class_of_node(base)
+        if (
+            isinstance(node, (list, tuple))
+            and len(node) >= 2
+            and node[0] == "call"
+        ):
+            # a constructor call yields its class; a plain function's
+            # INSTANCE return class is recorded at signature-inference
+            # time (return expressions that are constructors / bound
+            # names carry the class there)
+            callee = node[1]
+            if (
+                isinstance(callee, (list, tuple))
+                and len(callee) >= 2
+                and callee[0] == "name"
+            ):
+                if callee[1] in self._class_layouts:
+                    return callee[1]
+                return self._call_ret_class.get(callee[1])
+            if (
+                isinstance(callee, (list, tuple))
+                and len(callee) >= 3
+                and callee[0] == "attribute"
+            ):
+                # method call: st.other() chains keep the receiver's class
+                # only when the method returns the receiver's class - not
+                # knowable here; methods returning instances are rare
+                return None
             return None
         return None
 
@@ -5749,7 +5843,14 @@ class TypedCodegen(SiluToLLVMConverter):
         for index, (field_name, kind, _default, _fclass) in enumerate(fields):
             if field_name == attr:
                 inst_tv = self._convert_node(obj_node)
-                slot = self._field_slot(inst_tv[1], index, kind)
+                inst_ptr = inst_tv[1]
+                if inst_tv[0] == I64:
+                    # element read off an instance list (toks[i]): the
+                    # word is the pointer
+                    inst_ptr = self.current_builder.inttoptr(
+                        inst_ptr, LLVM_KIND_TYPES[INSTANCE]
+                    )
+                slot = self._field_slot(inst_ptr, index, kind)
                 value = self.current_builder.load(slot)
                 if kind == RAWSTR:
                     # copy-on-read: the field slot stays the sole owner
@@ -6157,6 +6258,123 @@ class TypedCodegen(SiluToLLVMConverter):
             return None, None
         return kinds, ret_kind
 
+    def _collect_ctor_returns(self):
+        """Record functions whose every return expression is a
+        constructor of one same class - their call results then resolve
+        class chains like elem(node, 1).s."""
+
+        def ctor_class_of(expr, depth=0, param_class=None):
+            param_class = param_class or {}
+            if not isinstance(expr, (list, tuple)) or depth > 8:
+                return None
+            if (
+                isinstance(expr, (list, tuple))
+                and len(expr) >= 2
+                and expr[0] == "name"
+                and isinstance(expr[1], str)
+                and expr[1] in param_class
+            ):
+                return param_class[expr[1]]
+            if (
+                len(expr) >= 2
+                and expr[0] == "call"
+                and isinstance(expr[1], (list, tuple))
+                and len(expr[1]) >= 2
+                and expr[1][0] == "name"
+                and expr[1][1] in self._class_layouts
+            ):
+                return expr[1][1]
+            if len(expr) >= 3 and expr[0] == "subscript":
+                base_cls = ctor_class_of(expr[1], depth + 1)
+                if base_cls is None:
+                    # a list[Token] variable base
+                    if (
+                        isinstance(expr[1], (list, tuple))
+                        and len(expr[1]) >= 2
+                        and expr[1][0] == "name"
+                    ):
+                        return self._list_elem_class.get(expr[1][1])
+                    return None
+                # any container field holding instances records its
+                # element class; try each container field name
+                for (cls_name, fname), elem in self._field_elem_class.items():
+                    if cls_name == base_cls:
+                        return elem
+                return None
+            if len(expr) >= 3 and expr[0] == "attribute":
+                base_cls = ctor_class_of(expr[1], depth + 1)
+                if base_cls is None:
+                    return None
+                for fname, fkind, _d, fclass in self._class_layouts[base_cls][
+                    "fields"
+                ]:
+                    if fname == expr[2]:
+                        return fclass if fkind == INSTANCE else None
+                return None
+            return None
+
+        def find_returns(stmts, sink):
+            for stmt in stmts if isinstance(stmts, (list, tuple)) else []:
+                if not isinstance(stmt, (list, tuple)) or not stmt:
+                    continue
+                if stmt[0] == "return":
+                    sink.append(stmt[1] if len(stmt) > 1 else None)
+                elif stmt[0] == "if" and len(stmt) >= 4:
+                    find_returns(stmt[2], sink)
+                    find_returns(stmt[3], sink)
+                elif stmt[0] == "while" and len(stmt) >= 3:
+                    find_returns(stmt[2], sink)
+                elif stmt[0] == "for" and len(stmt) >= 4:
+                    find_returns(stmt[3], sink)
+
+        for func_name, func_def in self.function_defs.items():
+            # a written return annotation naming a class wins outright
+            # (def elem(node: JValue, i: int) -> JValue)
+            ret_ann = func_def[5] if len(func_def) > 5 else None
+            if (
+                isinstance(ret_ann, (list, tuple))
+                and len(ret_ann) >= 2
+                and ret_ann[0] == "name"
+                and ret_ann[1] in self._class_layouts
+            ):
+                self._call_ret_class[func_name] = ret_ann[1]
+                continue
+            returns: list = []
+            find_returns(func_def[3] if len(func_def) > 3 else [], returns)
+            if not returns:
+                continue
+            # parameter classes from written annotations (node: JValue)
+            param_class = {}
+            params = func_def[2] if len(func_def) > 2 else []
+            param_annotations = func_def[4] if len(func_def) > 4 else ()
+            for index, pname in enumerate(params):
+                ann = (
+                    param_annotations[index]
+                    if index < len(param_annotations)
+                    else None
+                )
+                if (
+                    isinstance(ann, list)
+                    and len(ann) >= 2
+                    and ann[0] == "name"
+                    and ann[1] in self._class_layouts
+                ):
+                    param_class[pname] = ann[1]
+            ctor: Optional[str] = None
+            ok = True
+            for expr in returns:
+                cls = ctor_class_of(expr, 0, param_class)
+                if cls is None:
+                    ok = False
+                    break
+                if ctor is None:
+                    ctor = cls
+                elif ctor != cls:
+                    ok = False
+                    break
+            if ok and ctor is not None:
+                self._call_ret_class[func_name] = ctor
+
     def _create_function_declarations(self):
         """Create raw-ABI functions for annotated ones, PyObject otherwise.
 
@@ -6166,6 +6384,7 @@ class TypedCodegen(SiluToLLVMConverter):
         still gets raw-typed parameters when inference proves them.
         """
         self._inferred_sigs = self._infer_function_signatures()
+        self._collect_ctor_returns()
         for func_name, func_def in self.function_defs.items():
             # sigs merge written annotations with inference results
             param_kinds, ret_kind = self._inferred_sigs[func_name]
@@ -8837,6 +9056,16 @@ class TypedCodegen(SiluToLLVMConverter):
             func_name = func_node[1]
 
             if func_name == "print":
+                kwargs = node[3] if len(node) > 3 else []
+                end_str = "\n"
+                for kw_name, kw_value_node in kwargs or ():
+                    if kw_name == "end" and (
+                        isinstance(kw_value_node, list)
+                        and len(kw_value_node) >= 2
+                        and kw_value_node[0] == "const"
+                        and isinstance(kw_value_node[1], str)
+                    ):
+                        end_str = kw_value_node[1]
                 if args_node:
                     for index, arg_node in enumerate(args_node):
                         if index > 0:
@@ -8845,8 +9074,9 @@ class TypedCodegen(SiluToLLVMConverter):
                         boxed = self._box(self._convert_node(arg_node))
                         if boxed is not None:
                             self.current_builder.call(self.pyobj_print, [boxed])
-                newline_fmt = self._create_global_string("\n")
-                self.current_builder.call(self.printf, [newline_fmt])
+                if end_str:
+                    end_fmt = self._create_global_string(end_str)
+                    self.current_builder.call(self.printf, [end_fmt])
                 return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
             if func_name == "input":
