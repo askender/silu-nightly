@@ -17,8 +17,8 @@
 
 | # | 特性 | Rust 对应 | 状态 |
 |---|---|---|---|
-| 1 | 文件读取 / stdin 全读 | `fs::read_to_string` | 待实现（`read_file` / `read_stdin`） |
-| 2 | 字符串/字符内建：`ord`/`chr`/`split`/`strip`/`startswith`/`endswith`/`isdigit`/`isalpha`/`isspace` | `char::is_numeric`、`str::split` 等 | 待实现 |
+| 1 | 文件读取 / stdin 全读 | `fs::read_to_string` | ✅ `read_file` / `read_stdin` |
+| 2 | 字符串/字符内建：`ord`/`chr`/`split`/`strip`/`startswith`/`endswith`/`isdigit`/`isalpha`/`isspace` | `char::is_numeric`、`str::split` 等 | ✅ 已实现 |
 | 3 | 嵌套/递归实例字段 | struct 含 `Box<T>` | 待实现 |
 | 4 | enum / 标签联合 | `enum` | 未做——战略性大项，等 M1/M2 验证 AST 表示需求后再设计 |
 | 5 | 编译路径 match | `match` 解构 | 未做——enum 的配套 |

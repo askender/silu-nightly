@@ -34,6 +34,13 @@
   （拼接/比较/包含的操作数、被丢弃的表达式语句结果）在使用后立即释放；
   函数退出时释放其全部 rawstr 局部槽与参数槽。重赋值循环与高频调用
   均为常量内存。
+- **lexer 内建**（自举前置，docs/selfhosting.md）：`ord`/`chr` 按码点
+  编解码 UTF-8；`split()`（空白运行合并，空串抑制）与 `split(sep)`
+  （字面分隔，保留空字段，空分隔符 panic）；`strip()` 去两端 ASCII
+  空白；`startswith`/`endswith`；`isdigit`/`isalpha`/`isspace` 对
+  ASCII 精确，非 ASCII 码点归入 alpha（其余 False）；空串的
+  is* 全为 False。`read_file(path)` 整读文件（不存在则 panic
+  OSError）；`read_stdin()` 读 stdin 到 EOF（保留换行）。
 
 ## 3. 容器语义
 

@@ -123,7 +123,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._char_aliases: Dict[str, Any] = {}
 
         # class layouts (dataclass semantics): class name ->
-        # {"fields": [(fname, kind, default_node)], "methods": {m: mangled}};
+        # {"fields": [(fname, kind, default_node, field_class)], "methods": ...};
         # _var_class is the scope-local variable -> class name side table
         # (INSTANCE kind says "some class", this says which one)
         self._class_layouts: Dict[str, Dict[str, Any]] = {}
@@ -2100,6 +2100,585 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.store(last_index, field(builder, struct_ptr, 0))
         builder.ret(copy)
 
+        # ---------- lexer-oriented string builtins (self-hosting) ----------
+
+        b8 = ir.IntType(8)
+
+        def is_ws_byte(b, byte):
+            """ASCII whitespace: space, \\t \\n \\v \\f \\r. UTF-8
+            continuation/lead bytes (>= 0x80) are never whitespace."""
+            return b.or_(
+                b.icmp_signed("==", byte, ir.Constant(b8, 32)),
+                b.and_(
+                    b.icmp_signed(">=", byte, ir.Constant(b8, 9)),
+                    b.icmp_signed("<=", byte, ir.Constant(b8, 13)),
+                ),
+            )
+
+        # i64 rawstr_ord(i8* s) - code point of a one-character string
+        self.rawstr_ord = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p]), name="rawstr_ord"
+        )
+        f = self.rawstr_ord
+        entry = f.append_basic_block("entry")
+        ord_panic = f.append_basic_block("ord_panic")
+        ord_ok = f.append_basic_block("ord_ok")
+        ord_ascii = f.append_basic_block("ord_ascii")
+        ord_multi = f.append_basic_block("ord_multi")
+        ord_two = f.append_basic_block("ord_two")
+        ord_more = f.append_basic_block("ord_more")
+        ord_three = f.append_basic_block("ord_three")
+        ord_four = f.append_basic_block("ord_four")
+        ord_join = f.append_basic_block("ord_join")
+        builder = ir.IRBuilder(entry)
+        (ord_s,) = f.args
+        ord_struct = builder.bitcast(ord_s, ir.PointerType(self.rawstr_struct_type))
+        builder.cbranch(
+            builder.icmp_signed("==", load_cp(builder, ord_struct), one64),
+            ord_ok,
+            ord_panic,
+        )
+
+        builder.position_at_end(ord_panic)
+        ord_msg = self._create_global_string_with_builder(
+            "TypeError: ord() expected a character", builder
+        )
+        self._emit_panic(builder, ord_msg)
+
+        builder.position_at_end(ord_ok)
+        ord_data = load_data(builder, ord_struct)
+        b0_8 = builder.load(builder.gep(ord_data, [zero64]))
+        b0 = builder.zext(b0_8, i64)
+        builder.cbranch(
+            builder.icmp_signed("<", b0, ir.Constant(i64, 0x80)),
+            ord_ascii,
+            ord_multi,
+        )
+
+        builder.position_at_end(ord_ascii)
+        builder.ret(b0)
+
+        def load_byte(offset):
+            return builder.zext(
+                builder.load(builder.gep(ord_data, [ir.Constant(i64, offset)])),
+                i64,
+            )
+
+        builder.position_at_end(ord_multi)
+        seq = emit_seq_len(builder, b0_8)
+        builder.cbranch(
+            builder.icmp_signed("==", seq, ir.Constant(i64, 2)),
+            ord_two,
+            ord_more,
+        )
+
+        builder.position_at_end(ord_two)
+        cp2 = builder.or_(
+            builder.shl(builder.and_(b0, ir.Constant(i64, 0x1F)), ir.Constant(i64, 6)),
+            builder.and_(load_byte(1), ir.Constant(i64, 0x3F)),
+        )
+        builder.branch(ord_join)
+
+        builder.position_at_end(ord_more)
+        builder.cbranch(
+            builder.icmp_signed("==", seq, ir.Constant(i64, 3)),
+            ord_three,
+            ord_four,
+        )
+
+        builder.position_at_end(ord_three)
+        cp3 = builder.or_(
+            builder.or_(
+                builder.shl(
+                    builder.and_(b0, ir.Constant(i64, 0x0F)),
+                    ir.Constant(i64, 12),
+                ),
+                builder.shl(
+                    builder.and_(load_byte(1), ir.Constant(i64, 0x3F)),
+                    ir.Constant(i64, 6),
+                ),
+            ),
+            builder.and_(load_byte(2), ir.Constant(i64, 0x3F)),
+        )
+        builder.branch(ord_join)
+
+        builder.position_at_end(ord_four)
+        cp4 = builder.or_(
+            builder.or_(
+                builder.shl(
+                    builder.and_(b0, ir.Constant(i64, 0x07)),
+                    ir.Constant(i64, 18),
+                ),
+                builder.shl(
+                    builder.and_(load_byte(1), ir.Constant(i64, 0x3F)),
+                    ir.Constant(i64, 12),
+                ),
+            ),
+            builder.or_(
+                builder.shl(
+                    builder.and_(load_byte(2), ir.Constant(i64, 0x3F)),
+                    ir.Constant(i64, 6),
+                ),
+                builder.and_(load_byte(3), ir.Constant(i64, 0x3F)),
+            ),
+        )
+        builder.branch(ord_join)
+
+        builder.position_at_end(ord_join)
+        ord_result = builder.phi(i64)
+        ord_result.add_incoming(cp2, ord_two)
+        ord_result.add_incoming(cp3, ord_three)
+        ord_result.add_incoming(cp4, ord_four)
+        builder.ret(ord_result)
+
+        # i8* rawstr_chr(i64 cp) - one-character string from a code point
+        self.rawstr_chr = ir.Function(
+            self.module, ir.FunctionType(i8p, [i64]), name="rawstr_chr"
+        )
+        f = self.rawstr_chr
+        entry = f.append_basic_block("entry")
+        chr_panic = f.append_basic_block("chr_panic")
+        chr_ok = f.append_basic_block("chr_ok")
+        chr_one = f.append_basic_block("chr_one")
+        chr_more1 = f.append_basic_block("chr_more1")
+        chr_two = f.append_basic_block("chr_two")
+        chr_more2 = f.append_basic_block("chr_more2")
+        chr_three = f.append_basic_block("chr_three")
+        chr_four = f.append_basic_block("chr_four")
+        chr_make = f.append_basic_block("chr_make")
+        builder = ir.IRBuilder(entry)
+        (chr_cp,) = f.args
+        in_range = builder.and_(
+            builder.icmp_signed(">=", chr_cp, zero64),
+            builder.icmp_signed("<=", chr_cp, ir.Constant(i64, 0x10FFFF)),
+        )
+        builder.cbranch(in_range, chr_ok, chr_panic)
+
+        builder.position_at_end(chr_panic)
+        chr_msg = self._create_global_string_with_builder(
+            "ValueError: chr() arg out of range", builder
+        )
+        self._emit_panic(builder, chr_msg)
+
+        builder.position_at_end(chr_ok)
+        chr_buf = builder.alloca(b8, size=ir.Constant(i32, 4), name="chr_buf")
+        builder.cbranch(
+            builder.icmp_signed("<", chr_cp, ir.Constant(i64, 0x80)),
+            chr_one,
+            chr_more1,
+        )
+
+        def chr_store(offset, value):
+            builder.store(
+                builder.trunc(value, b8),
+                builder.gep(chr_buf, [ir.Constant(i32, offset)]),
+            )
+
+        builder.position_at_end(chr_one)
+        chr_store(0, chr_cp)
+        builder.branch(chr_make)
+
+        builder.position_at_end(chr_more1)
+        builder.cbranch(
+            builder.icmp_signed("<", chr_cp, ir.Constant(i64, 0x800)),
+            chr_two,
+            chr_more2,
+        )
+
+        builder.position_at_end(chr_two)
+        chr_store(0, builder.or_(ir.Constant(i64, 0xC0), builder.lshr(chr_cp, ir.Constant(i64, 6))))
+        chr_store(1, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
+        builder.branch(chr_make)
+
+        builder.position_at_end(chr_more2)
+        builder.cbranch(
+            builder.icmp_signed("<", chr_cp, ir.Constant(i64, 0x10000)),
+            chr_three,
+            chr_four,
+        )
+
+        builder.position_at_end(chr_three)
+        chr_store(0, builder.or_(ir.Constant(i64, 0xE0), builder.lshr(chr_cp, ir.Constant(i64, 12))))
+        chr_store(1, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 6)), ir.Constant(i64, 0x3F))))
+        chr_store(2, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
+        builder.branch(chr_make)
+
+        builder.position_at_end(chr_four)
+        chr_store(0, builder.or_(ir.Constant(i64, 0xF0), builder.lshr(chr_cp, ir.Constant(i64, 18))))
+        chr_store(1, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 12)), ir.Constant(i64, 0x3F))))
+        chr_store(2, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 6)), ir.Constant(i64, 0x3F))))
+        chr_store(3, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
+        builder.branch(chr_make)
+
+        builder.position_at_end(chr_make)
+        chr_n = builder.phi(i64)
+        chr_n.add_incoming(one64, chr_one)
+        chr_n.add_incoming(ir.Constant(i64, 2), chr_two)
+        chr_n.add_incoming(ir.Constant(i64, 3), chr_three)
+        chr_n.add_incoming(ir.Constant(i64, 4), chr_four)
+        builder.ret(builder.call(self.rawstr_new_copy, [chr_buf, chr_n]))
+
+        # i8* rawstr_strip(i8* s) - trim ASCII whitespace at both ends
+        self.rawstr_strip = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p]), name="rawstr_strip"
+        )
+        f = self.rawstr_strip
+        entry = f.append_basic_block("entry")
+        lo_cond = f.append_basic_block("strip_lo_cond")
+        lo_body = f.append_basic_block("strip_lo_body")
+        hi_cond = f.append_basic_block("strip_hi_cond")
+        hi_body = f.append_basic_block("strip_hi_body")
+        strip_done = f.append_basic_block("strip_done")
+        builder = ir.IRBuilder(entry)
+        (strip_s,) = f.args
+        strip_struct = builder.bitcast(strip_s, ir.PointerType(self.rawstr_struct_type))
+        strip_data = load_data(builder, strip_struct)
+        strip_len = load_len(builder, strip_struct)
+        lo_ptr = builder.alloca(i64, name="strip_lo")
+        hi_ptr = builder.alloca(i64, name="strip_hi")
+        builder.store(zero64, lo_ptr)
+        builder.store(strip_len, hi_ptr)
+        builder.branch(lo_cond)
+
+        builder.position_at_end(lo_cond)
+        lo = builder.load(lo_ptr)
+        hi = builder.load(hi_ptr)
+        lo_in = builder.icmp_signed("<", lo, hi)
+        lo_byte = builder.load(builder.gep(strip_data, [lo]))
+        lo_ws = is_ws_byte(builder, lo_byte)
+        builder.cbranch(builder.and_(lo_in, lo_ws), lo_body, hi_cond)
+
+        builder.position_at_end(lo_body)
+        builder.store(builder.add(lo, one64), lo_ptr)
+        builder.branch(lo_cond)
+
+        builder.position_at_end(hi_cond)
+        hi = builder.load(hi_ptr)
+        lo = builder.load(lo_ptr)
+        hi_in = builder.icmp_signed(">", hi, lo)
+        hi_byte = builder.load(
+            builder.gep(strip_data, [builder.sub(hi, one64)])
+        )
+        hi_ws = is_ws_byte(builder, hi_byte)
+        builder.cbranch(builder.and_(hi_in, hi_ws), hi_body, strip_done)
+
+        builder.position_at_end(hi_body)
+        builder.store(builder.sub(hi, one64), hi_ptr)
+        builder.branch(hi_cond)
+
+        builder.position_at_end(strip_done)
+        lo = builder.load(lo_ptr)
+        hi = builder.load(hi_ptr)
+        builder.ret(
+            builder.call(
+                self.rawstr_new_copy,
+                [builder.gep(strip_data, [lo]), builder.sub(hi, lo)],
+            )
+        )
+
+        # i1 rawstr_starts_with / rawstr_ends_with(i8* s, i8* p, i64 plen)
+        def emit_affix(fn_name, is_prefix):
+            func = ir.Function(
+                self.module,
+                ir.FunctionType(ir.IntType(1), [i8p, i8p, i64]),
+                name=fn_name,
+            )
+            entry = func.append_basic_block("entry")
+            cmp_blk = func.append_basic_block("affix_cmp")
+            false_blk = func.append_basic_block("affix_false")
+            join_blk = func.append_basic_block("affix_join")
+            b = ir.IRBuilder(entry)
+            s_arg, p_arg, plen_arg = func.args
+            s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+            s_len = load_len(b, s_struct)
+            fits = b.icmp_signed("<=", plen_arg, s_len)
+            b.cbranch(fits, cmp_blk, false_blk)
+
+            b.position_at_end(cmp_blk)
+            s_data = load_data(b, s_struct)
+            if not is_prefix:
+                s_data = b.gep(s_data, [b.sub(s_len, plen_arg)])
+            cmp_r = b.call(self.memcmp, [s_data, p_arg, plen_arg])
+            eq = b.icmp_signed("==", cmp_r, ir.Constant(i32, 0))
+            b.branch(join_blk)
+
+            b.position_at_end(false_blk)
+            b.branch(join_blk)
+
+            b.position_at_end(join_blk)
+            res = b.phi(ir.IntType(1))
+            res.add_incoming(eq, cmp_blk)
+            res.add_incoming(ir.Constant(ir.IntType(1), 0), false_blk)
+            b.ret(res)
+            return func
+
+        self.rawstr_starts_with = emit_affix("rawstr_starts_with", True)
+        self.rawstr_ends_with = emit_affix("rawstr_ends_with", False)
+
+        # i1 rawstr_isdigit / rawstr_isalpha / rawstr_isspace(i8* s):
+        # Python semantics = non-empty and every byte qualifies. ASCII is
+        # precise; bytes >= 0x80 (non-ASCII code points) count as alpha.
+        def emit_classify(fn_name, pred):
+            func = ir.Function(
+                self.module,
+                ir.FunctionType(ir.IntType(1), [i8p]),
+                name=fn_name,
+            )
+            entry = func.append_basic_block("entry")
+            cond = func.append_basic_block("cls_cond")
+            body = func.append_basic_block("cls_body")
+            fail_blk = func.append_basic_block("cls_fail")
+            done_blk = func.append_basic_block("cls_done")
+            b = ir.IRBuilder(entry)
+            (s_arg,) = func.args
+            s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+            s_len = load_len(b, s_struct)
+            s_data = load_data(b, s_struct)
+            idx_ptr = b.alloca(i64, name="cls_i")
+            b.store(zero64, idx_ptr)
+            b.cbranch(b.icmp_signed("==", s_len, zero64), fail_blk, cond)
+
+            b.position_at_end(cond)
+            idx = b.load(idx_ptr)
+            b.cbranch(b.icmp_signed("<", idx, s_len), body, done_blk)
+
+            b.position_at_end(body)
+            byte = b.load(b.gep(s_data, [idx]))
+            ok_blk = func.append_basic_block("cls_ok")
+            b.cbranch(pred(b, byte), ok_blk, fail_blk)
+
+            b.position_at_end(ok_blk)
+            b.store(b.add(idx, one64), idx_ptr)
+            b.branch(cond)
+
+            b.position_at_end(fail_blk)
+            b.ret(ir.Constant(ir.IntType(1), 0))
+
+            b.position_at_end(done_blk)
+            b.ret(ir.Constant(ir.IntType(1), 1))
+            return func
+
+        def pred_digit(b, byte):
+            return b.and_(
+                b.icmp_signed(">=", byte, ir.Constant(b8, 0x30)),
+                b.icmp_signed("<=", byte, ir.Constant(b8, 0x39)),
+            )
+
+        def pred_alpha(b, byte):
+            lowered = b.or_(byte, ir.Constant(b8, 0x20))
+            ascii_alpha = b.and_(
+                b.icmp_signed(">=", lowered, ir.Constant(b8, 0x61)),
+                b.icmp_signed("<=", lowered, ir.Constant(b8, 0x7A)),
+            )
+            # i8 is signed: test the high bit, not >= 0x80 (which is -128)
+            non_ascii = b.icmp_signed(
+                "!=", b.and_(byte, ir.Constant(b8, 0x80)), ir.Constant(b8, 0)
+            )
+            return b.or_(ascii_alpha, non_ascii)
+
+        self.rawstr_isdigit = emit_classify("rawstr_isdigit", pred_digit)
+        self.rawstr_isalpha = emit_classify("rawstr_isalpha", pred_alpha)
+        self.rawstr_isspace = emit_classify("rawstr_isspace", is_ws_byte)
+
+        # i8* rawstr_split_ws(i8* s) -> rawlist - whitespace-run split
+        # with empty-string suppression (Python s.split())
+        self.rawstr_split_ws = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p]), name="rawstr_split_ws"
+        )
+        f = self.rawstr_split_ws
+        entry = f.append_basic_block("entry")
+        sw_cond = f.append_basic_block("sw_cond")
+        sw_body = f.append_basic_block("sw_body")
+        sw_ws = f.append_basic_block("sw_ws")
+        sw_push = f.append_basic_block("sw_push")
+        sw_skip = f.append_basic_block("sw_skip")
+        sw_adv = f.append_basic_block("sw_adv")
+        sw_tail = f.append_basic_block("sw_tail")
+        sw_tail_push = f.append_basic_block("sw_tail_push")
+        sw_done = f.append_basic_block("sw_done")
+        builder = ir.IRBuilder(entry)
+        (sw_s,) = f.args
+        sw_struct = builder.bitcast(sw_s, ir.PointerType(self.rawstr_struct_type))
+        sw_data = load_data(builder, sw_struct)
+        sw_len = load_len(builder, sw_struct)
+        sw_result = builder.call(self.rawlist_new, [ir.Constant(i64, 8)])
+        i_ptr = builder.alloca(i64, name="sw_i")
+        start_ptr = builder.alloca(i64, name="sw_start")
+        builder.store(zero64, i_ptr)
+        builder.store(zero64, start_ptr)
+        builder.branch(sw_cond)
+
+        builder.position_at_end(sw_cond)
+        builder.cbranch(
+            builder.icmp_signed("<", builder.load(i_ptr), sw_len),
+            sw_body,
+            sw_tail,
+        )
+
+        builder.position_at_end(sw_body)
+        i_val = builder.load(i_ptr)
+        byte = builder.load(builder.gep(sw_data, [i_val]))
+        builder.cbranch(is_ws_byte(builder, byte), sw_ws, sw_adv)
+
+        builder.position_at_end(sw_ws)
+        # token ends here iff it is non-empty
+        builder.cbranch(
+            builder.icmp_signed("<", builder.load(start_ptr), i_val),
+            sw_push,
+            sw_skip,
+        )
+
+        builder.position_at_end(sw_push)
+        token = builder.call(
+            self.rawstr_new_copy,
+            [
+                builder.gep(sw_data, [builder.load(start_ptr)]),
+                builder.sub(i_val, builder.load(start_ptr)),
+            ],
+        )
+        builder.call(self.rawlist_str_push, [sw_result, token])
+        builder.call(self.rawstr_free, [token])
+        builder.branch(sw_skip)
+
+        builder.position_at_end(sw_skip)
+        builder.store(builder.add(i_val, one64), i_ptr)
+        builder.store(builder.add(i_val, one64), start_ptr)
+        builder.branch(sw_cond)
+
+        builder.position_at_end(sw_adv)
+        builder.store(builder.add(i_val, one64), i_ptr)
+        builder.branch(sw_cond)
+
+        builder.position_at_end(sw_tail)
+        tail_start = builder.load(start_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", tail_start, sw_len),
+            sw_tail_push,
+            sw_done,
+        )
+
+        builder.position_at_end(sw_tail_push)
+        tail_token = builder.call(
+            self.rawstr_new_copy,
+            [
+                builder.gep(sw_data, [tail_start]),
+                builder.sub(sw_len, tail_start),
+            ],
+        )
+        builder.call(self.rawlist_str_push, [sw_result, tail_token])
+        builder.call(self.rawstr_free, [tail_token])
+        builder.branch(sw_done)
+
+        builder.position_at_end(sw_done)
+        builder.ret(sw_result)
+
+        # i8* rawstr_split_sep(i8* s, i8* sep, i64 slen) -> rawlist -
+        # literal separator split (Python s.split(sep)); empty sep panics
+        self.rawstr_split_sep = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i8p, i64]),
+            name="rawstr_split_sep",
+        )
+        f = self.rawstr_split_sep
+        entry = f.append_basic_block("entry")
+        ss_panic = f.append_basic_block("ss_panic")
+        ss_cond = f.append_basic_block("ss_cond")
+        ss_try = f.append_basic_block("ss_try")
+        ss_mcond = f.append_basic_block("ss_mcond")
+        ss_mbody = f.append_basic_block("ss_mbody")
+        ss_mcmp = f.append_basic_block("ss_mcmp")
+        ss_mnext = f.append_basic_block("ss_mnext")
+        ss_match = f.append_basic_block("ss_match")
+        ss_adv = f.append_basic_block("ss_adv")
+        ss_tail = f.append_basic_block("ss_tail")
+        builder = ir.IRBuilder(entry)
+        ss_s, sep_data, sep_len = f.args
+        ss_struct = builder.bitcast(ss_s, ir.PointerType(self.rawstr_struct_type))
+        ss_data = load_data(builder, ss_struct)
+        ss_len = load_len(builder, ss_struct)
+        builder.cbranch(
+            builder.icmp_signed("==", sep_len, zero64), ss_panic, ss_cond
+        )
+
+        builder.position_at_end(ss_panic)
+        ss_msg = self._create_global_string_with_builder(
+            "ValueError: empty separator", builder
+        )
+        self._emit_panic(builder, ss_msg)
+
+        builder.position_at_end(ss_cond)
+        ss_result = builder.call(self.rawlist_new, [ir.Constant(i64, 8)])
+        i_ptr = builder.alloca(i64, name="ss_i")
+        start_ptr = builder.alloca(i64, name="ss_start")
+        j_ptr = builder.alloca(i64, name="ss_j")
+        builder.store(zero64, i_ptr)
+        builder.store(zero64, start_ptr)
+        builder.branch(ss_try)
+
+        # while i + slen <= len: try a match at i; else finish
+        builder.position_at_end(ss_try)
+        i_val = builder.load(i_ptr)
+        can_match = builder.icmp_signed(
+            "<=", builder.add(i_val, sep_len), ss_len
+        )
+        builder.cbranch(can_match, ss_mcond, ss_tail)
+
+        builder.position_at_end(ss_mcond)
+        builder.store(zero64, j_ptr)
+        builder.branch(ss_mbody)
+
+        builder.position_at_end(ss_mbody)
+        j_val = builder.load(j_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", j_val, sep_len), ss_mcmp, ss_match
+        )
+
+        builder.position_at_end(ss_mcmp)
+        my_byte = builder.load(
+            builder.gep(ss_data, [builder.add(builder.load(i_ptr), j_val)])
+        )
+        sep_byte = builder.load(builder.gep(sep_data, [j_val]))
+        builder.cbranch(
+            builder.icmp_signed("==", my_byte, sep_byte), ss_mnext, ss_adv
+        )
+
+        builder.position_at_end(ss_mnext)
+        builder.store(builder.add(j_val, one64), j_ptr)
+        builder.branch(ss_mbody)
+
+        builder.position_at_end(ss_match)
+        # token [start, i); resume after the separator
+        i_now = builder.load(i_ptr)
+        token = builder.call(
+            self.rawstr_new_copy,
+            [
+                builder.gep(ss_data, [builder.load(start_ptr)]),
+                builder.sub(i_now, builder.load(start_ptr)),
+            ],
+        )
+        builder.call(self.rawlist_str_push, [ss_result, token])
+        builder.call(self.rawstr_free, [token])
+        past = builder.add(i_now, sep_len)
+        builder.store(past, i_ptr)
+        builder.store(past, start_ptr)
+        builder.branch(ss_try)
+
+        builder.position_at_end(ss_adv)
+        builder.store(builder.add(builder.load(i_ptr), one64), i_ptr)
+        builder.branch(ss_try)
+
+        builder.position_at_end(ss_tail)
+        tail_token = builder.call(
+            self.rawstr_new_copy,
+            [
+                builder.gep(ss_data, [builder.load(start_ptr)]),
+                builder.sub(ss_len, builder.load(start_ptr)),
+            ],
+        )
+        builder.call(self.rawlist_str_push, [ss_result, tail_token])
+        builder.call(self.rawstr_free, [tail_token])
+        builder.ret(ss_result)
+
         # void rawlist_str_set(i8* list, i64 index, i8* s) - bounds
         # checked under SILU_CHECKS; frees the old element, stores a copy
         self.rawlist_str_set = ir.Function(
@@ -3645,7 +4224,13 @@ class TypedCodegen(SiluToLLVMConverter):
         call (conservative - the callee may write the parent), any
         write whose target names a parent string, any new char view
         creation (ch2 = s2[j]). Materializes affected aliases into
-        their slots first, so later reads still see the old value."""
+        their slots first, so later reads still see the old value.
+
+        A compound statement (if/while/for/...) containing a call
+        anywhere in its body also kills: a kill inside one branch would
+        materialize the slot only on that path, leaving the other arms
+        reading an unwritten slot. Killing before the branch dominates
+        every arm."""
         if not self._char_aliases:
             return
         op = stmt[0] if isinstance(stmt, (list, tuple)) and stmt else None
@@ -3653,6 +4238,13 @@ class TypedCodegen(SiluToLLVMConverter):
         parent_names = {
             entry[0] for entry in self._char_aliases.values()
         }
+
+        def contains_call(node):
+            if isinstance(node, (list, tuple)):
+                if len(node) >= 2 and node[0] == "call":
+                    return True
+                return any(contains_call(child) for child in node[1:])
+            return False
 
         def targets_parent(target_node):
             if isinstance(target_node, str):
@@ -3681,6 +4273,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 "subscript_aug_assign", "delete",
             )
             and targets_parent(stmt[1])
+        ) or (
+            op in ("if", "while", "for", "c_for", "try", "with", "match")
+            and contains_call(stmt)
         ):
             self._char_alias_kill_all()
 
@@ -4208,6 +4803,63 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(self.current_builder, msg)
         self.current_builder.position_at_end(cont_block)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _rawstr_method_call(
+        self, obj_tv: Tuple[str, Any], method_name: str, args_node: list
+    ) -> Optional[Tuple[str, Any]]:
+        """Native rawstr methods (lexer-oriented, see docs/selfhosting.md).
+        Returns None for methods that still go through the boxed fallback.
+        The receiver may be a slot borrow (RAWSTR), a char view, or a
+        boxed string - the latter two arrive as owned copies that this
+        call frees (Rust end-of-statement temporary drop)."""
+        s_ptr, temp = self._rawstr_operand(obj_tv)
+
+        def finish(result):
+            if temp is not None:
+                self.current_builder.call(self.rawstr_free, [temp])
+            return result
+
+        if method_name == "strip" and not args_node:
+            return finish(
+                (RAWSTR, self.current_builder.call(self.rawstr_strip, [s_ptr]))
+            )
+        if method_name == "split":
+            if not args_node:
+                # whitespace runs, empty strings suppressed (Python)
+                return finish(
+                    (
+                        RAWLIST_S,
+                        self.current_builder.call(self.rawstr_split_ws, [s_ptr]),
+                    )
+                )
+            if len(args_node) == 1:
+                data, length, sep_temp = self._rawstr_append_operand(args_node[0])
+                result = self.current_builder.call(
+                    self.rawstr_split_sep, [s_ptr, data, length]
+                )
+                if sep_temp is not None:
+                    self.current_builder.call(self.rawstr_free, [sep_temp])
+                return finish((RAWLIST_S, result))
+            return finish(None)
+        if method_name in ("startswith", "endswith") and len(args_node) == 1:
+            data, length, arg_temp = self._rawstr_append_operand(args_node[0])
+            fn = (
+                self.rawstr_starts_with
+                if method_name == "startswith"
+                else self.rawstr_ends_with
+            )
+            result = self.current_builder.call(fn, [s_ptr, data, length])
+            if arg_temp is not None:
+                self.current_builder.call(self.rawstr_free, [arg_temp])
+            return finish((I1, result))
+        if method_name in ("isdigit", "isalpha", "isspace") and not args_node:
+            fn = {
+                "isdigit": self.rawstr_isdigit,
+                "isalpha": self.rawstr_isalpha,
+                "isspace": self.rawstr_isspace,
+            }[method_name]
+            return finish((I1, self.current_builder.call(fn, [s_ptr])))
+        return finish(None)
 
     def _rawdict_key_from_tv(self, kind: str, key_tv: Tuple[str, Any]):
         """Dict key materialization: rawstr pointer for str keys (the
@@ -4808,6 +5460,18 @@ class TypedCodegen(SiluToLLVMConverter):
         and register class layouts + methods (dataclass semantics)."""
         if isinstance(node, list) and len(node) >= 2 and node[0] == "module":
             self._module_stmt_list = node[1]
+            # pass 1: skeletons, so field annotations resolve class names
+            # regardless of definition order (forward/self references)
+            for stmt in node[1]:
+                if (
+                    isinstance(stmt, list)
+                    and len(stmt) >= 4
+                    and stmt[0] == "class_def"
+                ):
+                    self._class_layouts.setdefault(
+                        stmt[1], {"fields": [], "methods": {}}
+                    )
+            # pass 2: fill layouts and register methods
             for stmt in node[1]:
                 if (
                     isinstance(stmt, list)
@@ -4850,11 +5514,22 @@ class TypedCodegen(SiluToLLVMConverter):
                         f"class '{name}': unsupported field type for "
                         f"'{field_name}'"
                     )
+                # instance fields (a class as the annotation) are pointer
+                # slots with reference semantics, like containers
+                field_class = None
                 if kind == INSTANCE:
-                    raise NotImplementedError(
-                        f"class '{name}': nested instance field "
-                        f"'{field_name}' is not supported yet"
+                    field_class = (
+                        annotation[1]
+                        if isinstance(annotation, list)
+                        and len(annotation) >= 2
+                        and annotation[0] == "name"
+                        else None
                     )
+                    if default_node is not None:
+                        raise NotImplementedError(
+                            f"class '{name}': instance field '{field_name}' "
+                            "cannot have a default (pass it explicitly)"
+                        )
                 has_default = default_node is not None
                 if seen_default and not has_default:
                     raise TypeError(
@@ -4862,7 +5537,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         "follows a field with a default"
                     )
                 seen_default = seen_default or has_default
-                fields.append((field_name, kind, default_node))
+                fields.append((field_name, kind, default_node, field_class))
             elif op == "func_def" and len(stmt) >= 6:
                 method_name = stmt[1]
                 params, mbody = stmt[2], stmt[3]
@@ -4901,13 +5576,28 @@ class TypedCodegen(SiluToLLVMConverter):
         self._class_layouts[name] = {"fields": fields, "methods": methods}
 
     def _class_of_node(self, node: Any) -> Optional[str]:
-        """Class name of an instance-typed expression (name nodes only)."""
+        """Class name of an instance-typed expression: a name bound to an
+        instance, or a chain through instance fields (a.inner.x)."""
         if (
             isinstance(node, (list, tuple))
             and len(node) >= 2
             and node[0] == "name"
         ):
             return self._var_class.get(node[1])
+        if (
+            isinstance(node, (list, tuple))
+            and len(node) >= 3
+            and node[0] == "attribute"
+        ):
+            parent_class = self._class_of_node(node[1])
+            if parent_class is None:
+                return None
+            for field_name, kind, _default, field_class in (
+                self._class_layouts[parent_class]["fields"]
+            ):
+                if field_name == node[2]:
+                    return field_class if kind == INSTANCE else None
+            return None
         return None
 
     def _constructor_call_class(self, value_node: Any) -> Optional[str]:
@@ -4941,7 +5631,7 @@ class TypedCodegen(SiluToLLVMConverter):
         included."""
         cls = self._class_of_node(obj_node)
         fields = self._class_layouts[cls]["fields"]
-        for index, (field_name, kind, _default) in enumerate(fields):
+        for index, (field_name, kind, _default, _fclass) in enumerate(fields):
             if field_name == attr:
                 inst_tv = self._convert_node(obj_node)
                 slot = self._field_slot(inst_tv[1], index, kind)
@@ -4961,7 +5651,7 @@ class TypedCodegen(SiluToLLVMConverter):
         (OBJ) value coerces through the boundary, which copies."""
         cls = self._class_of_node(obj_node)
         fields = self._class_layouts[cls]["fields"]
-        for index, (field_name, kind, _default) in enumerate(fields):
+        for index, (field_name, kind, _default, _fclass) in enumerate(fields):
             if field_name == attr:
                 inst_tv = self._convert_node(obj_node)
                 value_tv = self._coerce(value_tv, kind)
@@ -4986,7 +5676,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 f"but {len(args_node)} given"
             )
         bound: Dict[str, Any] = {}
-        for (field_name, _kind, _d), arg_node in zip(fields, args_node):
+        for (field_name, _kind, _d, _fc), arg_node in zip(fields, args_node):
             bound[field_name] = arg_node
         for kw_name, kw_value_node in kwargs_node or ():
             field_names = {f[0] for f in fields}
@@ -5005,7 +5695,7 @@ class TypedCodegen(SiluToLLVMConverter):
         inst_ptr = self.current_builder.call(
             self.malloc, [ir.Constant(ir.IntType(64), 8 * len(fields))]
         )
-        for index, (field_name, kind, default_node) in enumerate(fields):
+        for index, (field_name, kind, default_node, _fc) in enumerate(fields):
             value_node = bound.get(field_name, default_node)
             if value_node is None:
                 raise TypeError(
@@ -5020,7 +5710,7 @@ class TypedCodegen(SiluToLLVMConverter):
     def _field_kind_of(self, obj_node: Any, attr: str) -> str:
         """The declared kind of a field (raises AttributeError if absent)."""
         cls = self._class_of_node(obj_node)
-        for field_name, kind, _default in self._class_layouts[cls]["fields"]:
+        for field_name, kind, _default, _fc in self._class_layouts[cls]["fields"]:
             if field_name == attr:
                 return kind
         raise AttributeError(f"'{cls}' object has no field '{attr}'")
@@ -5765,6 +6455,18 @@ class TypedCodegen(SiluToLLVMConverter):
                     value = self._convert_node(value_node)
                     self._declare_var(target, INSTANCE)
                     self._var_class[target] = self._var_class[value_node[1]]
+                    self.current_builder.store(value[1], self.variables[target])
+                    return value
+                if (
+                    isinstance(value_node, list)
+                    and len(value_node) >= 3
+                    and value_node[0] == "attribute"
+                    and self._class_of_node(value_node) is not None
+                ):
+                    # a = b.inner: aliasing an instance field
+                    value = self._convert_node(value_node)
+                    self._declare_var(target, INSTANCE)
+                    self._var_class[target] = self._class_of_node(value_node)
                     self.current_builder.store(value[1], self.variables[target])
                     return value
             if op == "ann_assign":
@@ -7594,6 +8296,18 @@ class TypedCodegen(SiluToLLVMConverter):
                         ir.PointerType(self.pyobj.pyobj_type), None
                     ))
                 return self._unsupported_raw_method(raw_kind, method_name)
+            if raw_kind in (RAWSTR, RAWCHAR_VIEW) or (
+                # string literal receiver: "a,b".split(",")
+                isinstance(func_node[1], list)
+                and len(func_node[1]) >= 2
+                and func_node[1][0] == "const"
+                and isinstance(func_node[1][1], str)
+            ):
+                handled = self._rawstr_method_call(
+                    raw_obj_tv, method_name, args_node
+                )
+                if handled is not None:
+                    return handled
             obj = self._box(raw_obj_tv)
             method_map = {
                 "append": (self.list_append, 1, True),
@@ -7659,6 +8373,24 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (
                     OBJ,
                     self.current_builder.call(self.pyobj_read_stdin, []),
+                )
+
+            if func_name == "ord" and len(args_node) == 1:
+                # code point of a one-character string (panics otherwise)
+                raw_ptr, temp = self._rawstr_operand(
+                    self._convert_node(args_node[0])
+                )
+                result = self.current_builder.call(self.rawstr_ord, [raw_ptr])
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
+                return (I64, result)
+
+            if func_name == "chr" and len(args_node) == 1:
+                # one-character string from a code point (UTF-8 encode)
+                cp = self._coerce(self._convert_node(args_node[0]), I64)[1]
+                return (
+                    RAWSTR,
+                    self.current_builder.call(self.rawstr_chr, [cp]),
                 )
 
             if func_name == "read_file":

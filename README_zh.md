@@ -145,7 +145,7 @@ python run_symbolic_tool.py my_program.c.ir.json
 - **运算符**：算术/比较/位运算、成员判断 `in` / `not in`（字符串、列表、字典）、字符串索引与含步长切片
 - **函数**：用户自定义函数、默认参数、纯闭包（只读捕获定义作用域的变量）
 - **类**：每个 `class` 都是 dataclass 语义的记录类型（对应 Rust 的 `struct` + `impl`）——注解字段、按声明顺序的位置/关键字构造（支持默认值）、带 `self` 的方法；编译为扁平的 8 字节槽堆块，字段按偏移直接访问（无 vtable、无装箱）
-- **内建函数**：`print`、`type`、`isinstance`、类型转换、`len`、字典方法（`.keys()`、`.values()`、`.items()`、`.get()`、`.pop()`、`.setdefault()`、`.clear()`）、列表方法（`.append()`、`.pop()`、`.clear()`）
+- **内建函数**：`print`、`type`、`isinstance`、类型转换、`len`、`ord`/`chr`、`input`、`read_file`/`read_stdin`、字典方法（`.keys()`、`.values()`、`.items()`、`.get()`、`.pop()`、`.setdefault()`、`.clear()`）、列表方法（`.append()`、`.pop()`、`.clear()`）、字符串方法（`.split()`、`.strip()`、`.startswith()`、`.endswith()`、`.isdigit()`、`.isalpha()`、`.isspace()`）
 - **安全性**：默认开启边界/溢出/除零 panic（Rust debug 模式），可用 `SILU_CHECKS=0` 切换 release 模式；另内置内存保护，阻止失控的序列乘法与超大的 `range()`/`extend()` 操作
 
 完整语法参考见[语言特性指南](docs/language_features.md)。

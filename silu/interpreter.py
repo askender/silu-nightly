@@ -208,6 +208,8 @@ class Environment:
                 "input": input,
                 "read_file": self._read_file,
                 "read_stdin": lambda: sys.stdin.read(),
+                "ord": ord,
+                "chr": chr,
                 "MemoryError": MemoryError,
             }
         )

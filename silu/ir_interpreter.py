@@ -55,6 +55,8 @@ class IRInterpreter:
             "round": self._builtin_round,
             "strlen": self._builtin_strlen,
             "sqrt": self._builtin_sqrt,
+            "ord": ord,
+            "chr": chr,
             "read_file": self._builtin_read_file,
             "read_stdin": self._builtin_read_stdin,
         }
