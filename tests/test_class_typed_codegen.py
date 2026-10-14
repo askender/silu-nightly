@@ -454,16 +454,119 @@ print(b.items)
         )
 
 
-class TestClassCompileTimeErrors:
-    def test_nested_instance_field_rejected(self):
-        with pytest.raises(NotImplementedError, match="nested instance field"):
+class TestNestedInstanceFields:
+    """Instance fields: pointer slots with reference semantics, forward
+    and self references allowed (docs/selfhosting.md item 3)."""
+
+    def test_nested_construct_and_read(self):
+        _assert_matches_interpreter(
+            """
+class Inner:
+    x: int
+    label: str
+
+class Outer:
+    inner: Inner
+    name: str
+
+o = Outer(Inner(21, "core"), "outer")
+print(o.inner.x)
+print(o.inner.label)
+print(o.name)
+"""
+        )
+
+    def test_method_through_field_chain(self):
+        _assert_matches_interpreter(
+            """
+class Inner:
+    x: int
+
+    def double(self) -> int:
+        return self.x * 2
+
+class Outer:
+    inner: Inner
+
+    def total(self) -> int:
+        return self.inner.double() + 1
+
+o = Outer(Inner(21))
+print(o.total())
+"""
+        )
+
+    def test_write_through_chain(self):
+        _assert_matches_interpreter(
+            """
+class Inner:
+    x: int
+
+class Outer:
+    inner: Inner
+
+o = Outer(Inner(1))
+o.inner.x = 100
+o.inner.x += 5
+print(o.inner.x)
+"""
+        )
+
+    def test_instance_field_aliasing(self):
+        """i2 = o.inner shares the instance (reference semantics)."""
+        _assert_matches_interpreter(
+            """
+class Inner:
+    x: int
+
+class Outer:
+    inner: Inner
+
+o = Outer(Inner(1))
+i2 = o.inner
+i2.x = 7
+print(o.inner.x)
+"""
+        )
+
+    def test_forward_reference(self):
+        """A field may name a class defined later in the module."""
+        _assert_matches_interpreter(
+            """
+class Outer:
+    inner: Inner
+
+class Inner:
+    x: int
+
+o = Outer(Inner(5))
+print(o.inner.x)
+"""
+        )
+
+    def test_self_reference_registers(self):
+        """A class may name itself as a field type (layout is pointer-
+        sized, so recursion needs no cycle-breaking)."""
+        llvm_ir = _convert(
+            """
+class Node:
+    value: int
+    child: Node
+
+print("ok")
+"""
+        )
+        assert _run_main(llvm_ir) == "ok\n"
+
+    def test_instance_field_default_rejected(self):
+        with pytest.raises(NotImplementedError, match="cannot have a default"):
             _convert(
                 """
 class Inner:
     x: int
 
 class Outer:
-    inner: Inner
+    inner: Inner = None
 """
             )
 
