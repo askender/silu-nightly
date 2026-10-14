@@ -35,6 +35,10 @@ class SiluIRGenerator(BaseASTProcessor):
         """Generate subscript deletion IR node (del obj[key])."""
         return ("delete", obj, key)
 
+    def process_attribute_assign(self, obj: Any, attr: str, value: Any) -> Tuple:
+        """Generate attribute assignment IR node (obj.attr = value)."""
+        return ("assign", ("attribute", obj, attr), value, None)
+
     def process_aug_assign(self, target: Any, op: str, value: Any) -> Tuple:
         """Generate augmented assignment IR node."""
         if isinstance(target, tuple) and len(target) == 2 and target[0] == "name":
@@ -49,6 +53,13 @@ class SiluIRGenerator(BaseASTProcessor):
             # target is (obj_ir_node, key_ir_node)
             obj, key = target
             return ("subscript_aug_assign", obj, key, op, value)
+        elif (
+            isinstance(target, tuple)
+            and len(target) == 3
+            and target[0] == "attribute"
+        ):
+            # Attribute augmented assignment: obj.attr += value
+            return ("attribute_aug_assign", target[1], target[2], op, value)
         else:
             raise NotImplementedError(
                 f"Unsupported augmented assignment target: {target}"
@@ -132,9 +143,17 @@ class SiluIRGenerator(BaseASTProcessor):
                 returns,
             )
         elif node_type == "class_def":
+            # Silu class = dataclass semantics (Rust struct + impl):
+            # annotated fields + methods only, no inheritance.
+            if kwargs["bases"]:
+                raise NotImplementedError(
+                    "class inheritance is not supported "
+                    "(Silu class has dataclass/struct semantics)"
+                )
+            bases = ()
+
             # Process class body statements
             body = self._visit_stmts(kwargs["body"])
-            bases = tuple(base for base in kwargs["bases"])
 
             # Collect class attributes and methods
             class_attrs = {}
@@ -284,9 +303,15 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> Tuple:
         """Generate augmented assignment IR."""
-        target = self.visit(node.target)
         op = self.OPERATORS.get(type(node.op), "?")
         value = self.visit(node.value)
+        if isinstance(node.target, ast.Attribute):
+            # Attribute augmented assignment: obj.attr += value
+            obj = self.visit(node.target.value)
+            return self._make_node(
+                "attribute_aug_assign", obj, node.target.attr, f"{op}=", value
+            )
+        target = self.visit(node.target)
         return self._make_node("aug_assign", target, f"{op}=", value)
 
     def visit_Slice(self, node: ast.Slice) -> Tuple:

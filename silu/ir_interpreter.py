@@ -30,6 +30,9 @@ class IRInterpreter:
         self.struct_types = {}  # Store struct type definitions
         self.struct_instances = set()  # Track which objects are struct instances
         self.enum_types = {}  # Store enum type definitions
+        # class definitions: name -> {"fields": [(fname, annotation, has_default, default)],
+        #                             "field_names": set, "methods": {mname: mangled_name}}
+        self.classes = {}
 
         # Set up built-in variables
         self.global_env["__name__"] = "__main__"
@@ -102,6 +105,9 @@ class IRInterpreter:
                 # Provide more context about which opcode failed
                 # Pass the original exception through if it's a struct attribute error
                 if opcode == "attribute" and "struct object has no attribute" in str(e):
+                    raise e
+                # Pass through class-instance attribute errors (dataclass semantics)
+                if "has no attribute" in str(e) or "has no field" in str(e):
                     raise e
                 # Fix missing _fields attribute and retry
                 elif "_fields" in str(e):
@@ -525,7 +531,13 @@ class IRInterpreter:
         if func_name in self.functions:
             return self._call_user_function(func_name, evaluated_args, evaluated_kwargs)
 
-        # Check if func_name is actually a callable (lambda function)
+        # Class construction: JointState(1.0, 2.0) with dataclass semantics
+        if isinstance(func_name, str) and func_name in self.classes:
+            return self._instantiate_class(
+                func_name, evaluated_args, evaluated_kwargs
+            )
+
+        # Check if func_name is actually a callable (lambda / bound method)
         if callable(func_name):
             return func_name(*evaluated_args, **evaluated_kwargs)
 
@@ -689,58 +701,175 @@ class IRInterpreter:
         name: str,
         bases: Tuple,
         body: Tuple,
-    ) -> dict:
-        """Execute class definition."""
-        # Create a dictionary to store class attributes
-        class_dict = {}
+    ) -> None:
+        """Execute class definition with dataclass semantics.
 
-        # Add special attributes needed by the interpreter
-        class_dict["__name__"] = name
-        # _fields attribute for compatibility with tests
-        class_dict["_fields"] = []
-        # Add special method for attribute access
-        class_dict["__getattr__"] = lambda attr: [] if attr == "_fields" else None
+        A Silu class is a record type: annotated fields (declaration order)
+        plus methods (first parameter is `self`). No inheritance, no class
+        variables, no user __init__ — construction is positional-by-order
+        with keyword and default support, exactly like a @dataclass.
+        """
+        if bases:
+            raise TypeError(f"class '{name}': inheritance is not supported")
 
-        # Process base classes (simple inheritance)
-        for base in bases:
-            base_val = self.execute(base)
-            if isinstance(base_val, dict):
-                # Copy attributes from base class dictionary
-                for key, value in base_val.items():
-                    if key != "__name__":  # Don't copy the name
-                        class_dict[key] = value
-            elif hasattr(base_val, "__dict__"):
-                # Copy attributes from base class object
-                for key, value in base_val.__dict__.items():
-                    if key != "__name__":  # Don't copy the name
-                        class_dict[key] = value
+        fields = []  # [(field_name, annotation, has_default, default_value)]
+        field_names = set()
+        methods = {}  # method_name -> mangled function name
+        seen_default = False
 
-        # Create and register class in global environment BEFORE executing body
-        # This allows the class to reference itself in its own definition
-        self.global_env[name] = class_dict
-
-        # Execute class body to populate attributes
         for stmt in body:
-            # For annotated assignments (class attributes with type hints)
-            if isinstance(stmt, tuple) and stmt[0] == "ann_assign" and len(stmt) >= 3:
-                attr_name = stmt[1]
-                attr_value = self.execute(stmt[2]) if len(stmt) > 2 else None
-                class_dict[attr_name] = attr_value
-            # For regular assignments
-            elif isinstance(stmt, tuple) and stmt[0] == "assign" and len(stmt) >= 3:
-                attr_name = stmt[1]
-                attr_value = self.execute(stmt[2])
-                class_dict[attr_name] = attr_value
-            # For function definitions (methods)
-            elif isinstance(stmt, tuple) and stmt[0] == "func_def" and len(stmt) > 1:
+            if not isinstance(stmt, tuple) or not stmt:
+                continue
+            if stmt[0] == "line":
+                continue
+            if stmt[0] == "ann_assign" and len(stmt) >= 4:
+                # Field: position: float  /  velocity: float = 0.0
+                field_name = stmt[1]
+                value_ir = stmt[2]
+                annotation = stmt[3]
+                if annotation is None:
+                    raise TypeError(
+                        f"class '{name}': field '{field_name}' must be annotated"
+                    )
+                if field_name in field_names:
+                    raise TypeError(
+                        f"class '{name}': duplicate field '{field_name}'"
+                    )
+                has_default = value_ir is not None
+                default_value = self.execute(value_ir) if has_default else None
+                if seen_default and not has_default:
+                    raise TypeError(
+                        f"class '{name}': field '{field_name}' without default "
+                        "follows a field with a default"
+                    )
+                seen_default = seen_default or has_default
+                fields.append((field_name, annotation, has_default, default_value))
+                field_names.add(field_name)
+            elif stmt[0] == "func_def" and len(stmt) > 1:
+                # Method: def is_moving(self) -> bool: ...
                 method_name = stmt[1]
-                method_func = self.execute(stmt)
-                class_dict[method_name] = method_func
-            # For other statements
+                method_args = stmt[2]
+                if method_name == "__init__":
+                    raise TypeError(
+                        f"class '{name}': __init__ is not supported; "
+                        "construction assigns fields in declaration order"
+                    )
+                if not method_args:
+                    raise TypeError(
+                        f"class '{name}': method '{method_name}' must take 'self'"
+                    )
+                mangled = f"{name}__{method_name}"
+                self.functions[mangled] = {
+                    "args": method_args,
+                    "body": stmt[3],
+                    "closure_env": {},
+                }
+                methods[method_name] = mangled
+            elif stmt[0] == "assign":
+                raise TypeError(
+                    f"class '{name}': fields must be annotated "
+                    "(class variables are not supported)"
+                )
             else:
-                self.execute(stmt)
+                raise TypeError(
+                    f"class '{name}': unsupported statement '{stmt[0]}' in class body"
+                )
 
-        return class_dict
+        self.classes[name] = {
+            "fields": fields,
+            "field_names": field_names,
+            "methods": methods,
+        }
+        # The name resolves to itself; _execute_call intercepts construction
+        self.global_env[name] = name
+
+    @staticmethod
+    def _annotation_name(annotation: Any) -> Optional[str]:
+        """Extract the base type name from an annotation IR node."""
+        if isinstance(annotation, str):
+            return annotation
+        if isinstance(annotation, (tuple, list)) and annotation:
+            if annotation[0] == "name":
+                return annotation[1]
+            if annotation[0] == "subscript":
+                # list[int] / dict[str, int] -> base container type
+                return IRInterpreter._annotation_name(annotation[1])
+        return None
+
+    def _coerce_for_annotation(self, annotation: Any, value: Any) -> Any:
+        """Coerce a value to a field's annotated type (user contract)."""
+        name = self._annotation_name(annotation)
+        if name is None or value is None:
+            return value
+        if name == "int":
+            # Reject lossy float->int truncation; int is an exact contract
+            if isinstance(value, float):
+                raise TypeError(
+                    f"field annotated 'int' received float value {value!r}"
+                )
+            try:
+                return int(float(value)) if isinstance(value, str) else int(value)
+            except (ValueError, TypeError):
+                raise TypeError(
+                    f"field annotated 'int' received value {value!r}"
+                )
+        if name in ("float", "double"):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+            raise TypeError(f"field annotated 'float' received value {value!r}")
+        if name == "bool":
+            return bool(value)
+        if name in ("str", "char*"):
+            if isinstance(value, str):
+                return value
+            raise TypeError(f"field annotated 'str' received value {value!r}")
+        # Container annotations (list[...], dict[...]) pass through unchecked
+        return value
+
+    def _instantiate_class(
+        self, class_name: str, args: List[Any], kwargs: Dict[str, Any]
+    ) -> dict:
+        """Construct a class instance with dataclass semantics."""
+        cls = self.classes[class_name]
+        fields = cls["fields"]
+
+        if len(args) > len(fields):
+            raise TypeError(
+                f"{class_name}() takes at most {len(fields)} arguments "
+                f"but {len(args)} given"
+            )
+
+        values = {}
+        # Positional arguments bind in declaration order
+        for (field_name, annotation, _, _), arg in zip(fields, args):
+            values[field_name] = self._coerce_for_annotation(annotation, arg)
+        # Keyword arguments bind by field name
+        for key, val in kwargs.items():
+            if key not in cls["field_names"]:
+                raise TypeError(
+                    f"{class_name}() got an unexpected keyword argument '{key}'"
+                )
+            if key in values:
+                raise TypeError(
+                    f"{class_name}() got multiple values for argument '{key}'"
+                )
+            ann = next(f[1] for f in fields if f[0] == key)
+            values[key] = self._coerce_for_annotation(ann, val)
+        # Defaults and missing-argument check
+        for field_name, annotation, has_default, default_value in fields:
+            if field_name not in values:
+                if not has_default:
+                    raise TypeError(
+                        f"{class_name}() missing required argument: '{field_name}'"
+                    )
+                values[field_name] = self._coerce_for_annotation(
+                    annotation, default_value
+                )
+
+        instance = {"__silu_class__": class_name}
+        for field_name, _, _, _ in fields:
+            instance[field_name] = values[field_name]
+        return instance
 
     def _execute_return(self, value: Any) -> Any:
         """Execute return statement."""
@@ -1136,6 +1265,24 @@ class IRInterpreter:
         """Execute attribute access obj.attr."""
         obj_val = self.execute(obj)
 
+        # Class instance: field read or bound method
+        if isinstance(obj_val, dict) and "__silu_class__" in obj_val:
+            cls = self.classes[obj_val["__silu_class__"]]
+            if attr in cls["field_names"]:
+                return obj_val[attr]
+            if attr in cls["methods"]:
+                mangled = cls["methods"][attr]
+
+                def bound_method(*args, **kwargs):
+                    return self._call_user_function(
+                        mangled, [obj_val, *args], kwargs
+                    )
+
+                return bound_method
+            raise AttributeError(
+                f"'{obj_val['__silu_class__']}' object has no attribute '{attr}'"
+            )
+
         # If obj_val is a struct instance (tracked dictionary), get the attribute
         if isinstance(obj_val, dict) and id(obj_val) in self.struct_instances:
             if attr in obj_val:
@@ -1201,12 +1348,32 @@ class IRInterpreter:
         obj_val = self.execute(obj)
         value_val = self.execute(value)
 
+        # Class instance: coerce to the field's annotated type (user contract)
+        if isinstance(obj_val, dict) and "__silu_class__" in obj_val:
+            cls = self.classes[obj_val["__silu_class__"]]
+            if attr not in cls["field_names"]:
+                raise AttributeError(
+                    f"'{obj_val['__silu_class__']}' object has no field '{attr}'"
+                )
+            ann = next(f[1] for f in cls["fields"] if f[0] == attr)
+            obj_val[attr] = self._coerce_for_annotation(ann, value_val)
+            return
+
         # If obj_val is a struct instance (tracked dictionary), set the attribute
         if isinstance(obj_val, dict) and id(obj_val) in self.struct_instances:
             obj_val[attr] = value_val
         else:
             # For other objects (including regular dicts), use setattr
             setattr(obj_val, attr, value_val)
+
+    def _execute_attribute_aug_assign(
+        self, obj: Any, attr: str, op: str, value: Any
+    ) -> None:
+        """Execute augmented attribute assignment: obj.attr += value."""
+        current = self._execute_attribute(obj, attr)
+        new_value = self.execute(value)
+        result = self._apply_binary_operator(op[:-1], current, new_value)
+        self._execute_attribute_assign(obj, attr, result)
 
     # ================== Lambda and Advanced Features ==================
 
@@ -1460,12 +1627,21 @@ class IRInterpreter:
 
     # ================== Built-in Functions ==================
 
+    def _display_value(self, arg: Any) -> Any:
+        """Render class instances with dataclass-style repr for printing."""
+        if isinstance(arg, dict) and "__silu_class__" in arg:
+            fields = ", ".join(
+                f"{k}={v!r}" for k, v in arg.items() if k != "__silu_class__"
+            )
+            return f"{arg['__silu_class__']}({fields})"
+        return arg
+
     def _builtin_print(self, *args, sep=" ", end="\n", file=None) -> None:
         """Built-in print function."""
         if file is None:
             file = sys.stdout
 
-        output = sep.join(str(arg) for arg in args)
+        output = sep.join(str(self._display_value(arg)) for arg in args)
         print(output, end=end, file=file)
 
     def _builtin_printf(self, format_str: str, *args) -> None:

@@ -64,6 +64,10 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         """Process a subscript assignment operation (e.g., obj[key] = value)."""
         pass
 
+    def process_attribute_assign(self, obj: Any, attr: str, value: Any) -> Any:
+        """Process an attribute assignment (e.g., obj.attr = value)."""
+        raise NotImplementedError("Assignment to Attribute not supported")
+
     def process_delete_subscript(self, obj: Any, key: Any) -> Any:
         """Process a subscript deletion (e.g., del obj[key])."""
         pass
@@ -178,6 +182,11 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
                         )
                 result = self.process_tuple_assign(target_names, value)
                 results.append(result)
+            elif isinstance(target, ast.Attribute):
+                # Attribute assignment: obj.attr = value
+                obj = self.visit(target.value)
+                result = self.process_attribute_assign(obj, target.attr, value)
+                results.append(result)
             else:
                 raise NotImplementedError(
                     f"Assignment to {type(target).__name__} not supported"
@@ -215,6 +224,10 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             obj = self.visit(target.value)
             key = self.visit(target.slice)
             return self.process_aug_assign((obj, key), op, value)
+        elif isinstance(target, ast.Attribute):
+            # Attribute augmented assignment: obj.attr += value
+            obj = self.visit(target.value)
+            return self.process_aug_assign(("attribute", obj, target.attr), op, value)
         else:
             raise NotImplementedError(
                 f"Augmented assignment to {type(target).__name__} not supported"

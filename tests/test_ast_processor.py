@@ -405,10 +405,10 @@ class TestBaseASTProcessor:
         assert result == "aug_assign_('load_arr', 0)-3"
 
     def test_visit_aug_assign_unsupported_target(self):
-        """Test visiting an augmented assignment with unsupported target."""
+        """Attribute augmented assignment delegates with an attribute target."""
         processor = MockASTProcessor()
 
-        # Create an augmented assignment with unsupported target (attribute)
+        # obj.attr += 1 is supported since class support (dataclass semantics)
         aug_assign = ast.AugAssign(
             target=ast.Attribute(
                 value=ast.Name(id="obj", ctx=ast.Load()), attr="attr", ctx=ast.Store()
@@ -417,10 +417,8 @@ class TestBaseASTProcessor:
             value=ast.Constant(value=1),
         )
 
-        with pytest.raises(
-            NotImplementedError, match="Augmented assignment to Attribute not supported"
-        ):
-            processor.visit_AugAssign(aug_assign)
+        result = processor.visit_AugAssign(aug_assign)
+        assert result == "aug_assign_('attribute', 'load_obj', 'attr')+1"
 
     def test_visit_assign_tuple_unpacking(self):
         """Test visiting a tuple unpacking assignment."""
