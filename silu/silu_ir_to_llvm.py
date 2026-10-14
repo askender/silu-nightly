@@ -2551,6 +2551,134 @@ class SiluToLLVMConverter:
             builder.call(self.create_str, [buf_final, builder.trunc(len_final, i32)])
         )
 
+        # PyObject* pyobj_read_stdin() - read stdin to EOF (keeps
+        # newlines, unlike input(); Rust io::read_to_string)
+        self.pyobj_read_stdin = ir.Function(
+            self.module, ir.FunctionType(pyobj_ptr, []), name="pyobj_read_stdin"
+        )
+        entry = self.pyobj_read_stdin.append_basic_block("entry")
+        rs_cond = self.pyobj_read_stdin.append_basic_block("rs_cond")
+        rs_body = self.pyobj_read_stdin.append_basic_block("rs_body")
+        rs_grow = self.pyobj_read_stdin.append_basic_block("rs_grow")
+        rs_store = self.pyobj_read_stdin.append_basic_block("rs_store")
+        rs_done = self.pyobj_read_stdin.append_basic_block("rs_done")
+        builder = ir.IRBuilder(entry)
+        cap_ptr = builder.alloca(i64, name="rs_cap")
+        len_ptr = builder.alloca(i64, name="rs_len")
+        buf_ptr = builder.alloca(i8p, name="rs_buf")
+        builder.store(ir.Constant(i64, 4096), cap_ptr)
+        builder.store(zero64, len_ptr)
+        builder.store(builder.call(self.malloc, [ir.Constant(i64, 4096)]), buf_ptr)
+        builder.branch(rs_cond)
+
+        builder.position_at_end(rs_cond)
+        ch = builder.call(self.getchar, [])
+        builder.cbranch(
+            builder.icmp_signed("==", ch, ir.Constant(i32, -1)), rs_done, rs_body
+        )
+
+        builder.position_at_end(rs_body)
+        curlen = builder.load(len_ptr)
+        curcap = builder.load(cap_ptr)
+        builder.cbranch(
+            builder.icmp_signed("==", curlen, curcap), rs_grow, rs_store
+        )
+
+        builder.position_at_end(rs_grow)
+        newcap = builder.mul(curcap, ir.Constant(i64, 2))
+        grown = builder.call(self.realloc, [builder.load(buf_ptr), newcap])
+        builder.store(newcap, cap_ptr)
+        builder.store(grown, buf_ptr)
+        builder.branch(rs_store)
+
+        builder.position_at_end(rs_store)
+        builder.store(
+            builder.trunc(ch, ir.IntType(8)),
+            builder.gep(builder.load(buf_ptr), [builder.load(len_ptr)]),
+        )
+        builder.store(builder.add(builder.load(len_ptr), one64), len_ptr)
+        builder.branch(rs_cond)
+
+        builder.position_at_end(rs_done)
+        builder.ret(
+            builder.call(
+                self.create_str,
+                [builder.load(buf_ptr), builder.trunc(builder.load(len_ptr), i32)],
+            )
+        )
+
+        # PyObject* pyobj_read_file(i8* name, i64 name_len) - read the
+        # whole file (Rust fs::read_to_string); missing file panics
+        self.fopen = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i8p]),
+            name="fopen",
+        )
+        self.fread = ir.Function(
+            self.module,
+            ir.FunctionType(i64, [i8p, i64, i64, i8p]),
+            name="fread",
+        )
+        self.fseek = ir.Function(
+            self.module,
+            ir.FunctionType(i32, [i8p, i64, i32]),
+            name="fseek",
+        )
+        self.ftell = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p]), name="ftell"
+        )
+        self.fclose = ir.Function(
+            self.module, ir.FunctionType(i32, [i8p]), name="fclose"
+        )
+        self.pyobj_read_file = ir.Function(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [i8p, i64]),
+            name="pyobj_read_file",
+        )
+        entry = self.pyobj_read_file.append_basic_block("entry")
+        open_fail = self.pyobj_read_file.append_basic_block("rf_fail")
+        open_ok = self.pyobj_read_file.append_basic_block("rf_ok")
+        builder = ir.IRBuilder(entry)
+        name_arg, name_len = self.pyobj_read_file.args
+        # NUL-terminate the path for libc (rawstr data is unterminated)
+        cname = builder.call(self.malloc, [builder.add(name_len, one64)])
+        builder.call(self.memcpy, [cname, name_arg, name_len, ir.Constant(ir.IntType(1), 0)])
+        builder.store(
+            ir.Constant(ir.IntType(8), 0), builder.gep(cname, [name_len])
+        )
+        mode_r = self._create_global_string_with_builder("r", builder)
+        handle = builder.call(self.fopen, [cname, mode_r])
+        builder.cbranch(
+            builder.icmp_signed(
+                "==", handle, ir.Constant(i8p, None)
+            ),
+            open_fail,
+            open_ok,
+        )
+
+        builder.position_at_end(open_fail)
+        fail_msg = self._create_global_string_with_builder(
+            "OSError: cannot open file", builder
+        )
+        builder.call(self.silu_panic, [fail_msg])
+        builder.unreachable()
+
+        builder.position_at_end(open_ok)
+        # fseek END / ftell / rewind, then one fread into a sized buffer
+        builder.call(
+            self.fseek, [handle, zero64, ir.Constant(i32, 2)]
+        )
+        size = builder.call(self.ftell, [handle])
+        builder.call(
+            self.fseek, [handle, zero64, ir.Constant(i32, 0)]
+        )
+        fbuf = builder.call(self.malloc, [builder.add(size, one64)])
+        builder.call(self.fread, [fbuf, one64, size, handle])
+        builder.call(self.fclose, [handle])
+        builder.ret(
+            builder.call(self.create_str, [fbuf, builder.trunc(size, i32)])
+        )
+
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
             self.module,

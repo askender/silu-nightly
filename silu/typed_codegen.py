@@ -7654,6 +7654,29 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.current_builder.call(self.pyobj_input, []),
                 )
 
+            if func_name == "read_stdin":
+                # read stdin to EOF (Rust io::read_to_string)
+                return (
+                    OBJ,
+                    self.current_builder.call(self.pyobj_read_stdin, []),
+                )
+
+            if func_name == "read_file":
+                # read_file(path) -> str (Rust fs::read_to_string)
+                if not args_node:
+                    return (OBJ, ir.Constant(
+                        ir.PointerType(self.pyobj.pyobj_type), None
+                    ))
+                data_ptr, byte_len, temp = self._rawstr_append_operand(
+                    args_node[0]
+                )
+                result = self.current_builder.call(
+                    self.pyobj_read_file, [data_ptr, byte_len]
+                )
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
+                return (OBJ, result)
+
             if func_name == "str":
                 # scalar str() conversion; boxed path, the result coerces
                 # back to rawstr at the use site when annotated

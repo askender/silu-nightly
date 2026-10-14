@@ -55,6 +55,8 @@ class IRInterpreter:
             "round": self._builtin_round,
             "strlen": self._builtin_strlen,
             "sqrt": self._builtin_sqrt,
+            "read_file": self._builtin_read_file,
+            "read_stdin": self._builtin_read_stdin,
         }
 
     # ================== Main Execution Methods ==================
@@ -1748,6 +1750,15 @@ class IRInterpreter:
     def _builtin_sqrt(self, x: Any) -> float:
         """Built-in sqrt function."""
         return math.sqrt(x)
+
+    def _builtin_read_file(self, path: str) -> str:
+        """Built-in read_file: whole file as str (Rust fs::read_to_string)."""
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def _builtin_read_stdin(self) -> str:
+        """Built-in read_stdin: stdin to EOF (keeps newlines)."""
+        return sys.stdin.read()
 
     def _execute_post_increment(self, operand: Any) -> int:
         """Execute post-increment operation (var++). Returns old value, increments variable."""

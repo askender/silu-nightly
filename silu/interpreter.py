@@ -5,6 +5,7 @@ Simplified interpreter that extends BaseASTProcessor for direct execution of Sil
 """
 
 import ast
+import sys
 from typing import Any, Dict, List, Optional
 
 from .ast_processor import BaseASTProcessor
@@ -205,9 +206,16 @@ class Environment:
                 "str_type": str,
                 "bool_type": bool,
                 "input": input,
+                "read_file": self._read_file,
+                "read_stdin": lambda: sys.stdin.read(),
                 "MemoryError": MemoryError,
             }
         )
+
+    def _read_file(self, path: str) -> str:
+        """Built-in read_file: whole file as str (Rust fs::read_to_string)."""
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
 
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance with type name support."""
