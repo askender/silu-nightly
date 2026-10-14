@@ -79,11 +79,15 @@ json module versus our hand-written parser loop). It collects names
 into a raw `list[str]` and slices each string once instead of
 per-char concat. A cursor-idiom experiment (hoisting `pos[0]` into a
 plain `p: int` local with sync discipline at call boundaries) ran at
-the same 84ms as the boxed version - profiling places the gap to
-Rust in the per-character materialization (`ch = s[pos[0]]` allocates
-a one-char rawstr plus comparisons) and the recursive-descent call
-structure, not cursor boxing; the benchmark keeps the readable boxed
-form and the idiom remains available for hot single-function loops.
+the same 84ms as the boxed version. A later isolation experiment
+corrected the attribution: the same character-classification loop
+runs at 17ns/char with a promoted single-function cursor, 436ns/char
+with a shared boxed `pos: list[int]`, and 4ns/char for Rust's
+`&mut usize` - cursor boxing is the largest remaining component, and
+crossing function boundaries is what forces the boxed form. Closing
+it needs cross-function cursor promotion (deliberately deferred:
+interprocedural analysis). The benchmark keeps the readable boxed
+form; the idiom remains available for hot single-function loops.
 
 Overall geometric mean: **~490x vs silu-int, 13.9x vs CPython, 1.0x
 vs hand-written Rust** across 11 programs - every workload is within
