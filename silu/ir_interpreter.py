@@ -154,6 +154,8 @@ class IRInterpreter:
             ">=",
             "in",
             "not in",
+            "is",
+            "is not",
             "and",
             "or",
         }
@@ -1254,6 +1256,10 @@ class IRInterpreter:
             return left in right
         elif op == "not in":
             return left not in right
+        elif op == "is":
+            return left is right
+        elif op == "is not":
+            return left is not right
         elif op == "and":
             return left and right
         elif op == "or":

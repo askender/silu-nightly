@@ -1,0 +1,154 @@
+# M1 self-hosting milestone (docs/selfhosting.md): a recursive-descent
+# expression calculator. Reads an arithmetic expression from stdin,
+# tokenizes it with the str builtins, parses with precedence climbing
+# over instance nodes, and evaluates the AST.
+# Usage: silu build calc.si && ./calc   (then type e.g. "1 + 2 * (3 - 1)")
+
+class Tok(Enum):
+    NUM
+    PLUS
+    MINUS
+    STAR
+    SLASH
+    LPAREN
+    RPAREN
+    END
+
+
+class Token:
+    kind: Tok
+    text: str
+
+
+class Node:
+    kind: Tok          # NUM / operator kind
+    value: float       # NUM payload
+    left: Node
+    right: Node
+
+
+def tokenize(src: str) -> list[Token]:
+    toks: list[Token] = []
+    pos: int = 0
+    n: int = len(src)
+    while pos < n:
+        ch = src[pos]
+        if ch == " " or ch == "\t":
+            pos += 1
+        elif ch.isdigit():
+            start = pos
+            keep: bool = True
+            while keep:
+                pos += 1
+                keep = pos < n and src[pos].isdigit()
+            toks.append(Token(Tok.NUM, src[start:pos]))
+        elif ch == "+":
+            toks.append(Token(Tok.PLUS, "+"))
+            pos += 1
+        elif ch == "-":
+            toks.append(Token(Tok.MINUS, "-"))
+            pos += 1
+        elif ch == "*":
+            toks.append(Token(Tok.STAR, "*"))
+            pos += 1
+        elif ch == "/":
+            toks.append(Token(Tok.SLASH, "/"))
+            pos += 1
+        elif ch == "(":
+            toks.append(Token(Tok.LPAREN, "("))
+            pos += 1
+        elif ch == ")":
+            toks.append(Token(Tok.RPAREN, ")"))
+            pos += 1
+        else:
+            print("lex error at", pos, ": unexpected", ch)
+            raise SystemExit(1)
+    toks.append(Token(Tok.END, ""))
+    return toks
+
+
+class Parser:
+    toks: list[Token]
+    pos: int
+
+    def peek(self) -> Token:
+        return self.toks[self.pos]
+
+    def eat(self, kind: Tok) -> Token:
+        t: Token = self.toks[self.pos]
+        if t.kind != kind:
+            print("parse error: expected", kind, "got", t.kind)
+            raise SystemExit(1)
+        self.pos += 1
+        return t
+
+    def parse_primary(self) -> Node:
+        t: Token = self.peek()
+        if t.kind == Tok.NUM:
+            self.eat(Tok.NUM)
+            return Node(Tok.NUM, float(t.text), None, None)
+        if t.kind == Tok.LPAREN:
+            self.eat(Tok.LPAREN)
+            node: Node = self.parse_add()
+            self.eat(Tok.RPAREN)
+            return node
+        if t.kind == Tok.MINUS:
+            self.eat(Tok.MINUS)
+            operand: Node = self.parse_primary()
+            return Node(Tok.MINUS, 0.0, operand, None)
+        print("parse error: unexpected token", t.kind)
+        raise SystemExit(1)
+
+    def parse_mul(self) -> Node:
+        node: Node = self.parse_primary()
+        while True:
+            t: Token = self.peek()
+            if t.kind == Tok.STAR or t.kind == Tok.SLASH:
+                self.pos += 1
+                right: Node = self.parse_primary()
+                node = Node(t.kind, 0.0, node, right)
+            else:
+                return node
+
+    def parse_add(self) -> Node:
+        node: Node = self.parse_mul()
+        while True:
+            t: Token = self.peek()
+            if t.kind == Tok.PLUS or t.kind == Tok.MINUS:
+                self.pos += 1
+                right: Node = self.parse_mul()
+                node = Node(t.kind, 0.0, node, right)
+            else:
+                return node
+
+
+def evaluate(node: Node) -> float:
+    match node.kind:
+        case Tok.NUM:
+            return node.value
+        case Tok.PLUS:
+            return evaluate(node.left) + evaluate(node.right)
+        case Tok.MINUS:
+            if node.right is None:
+                return -evaluate(node.left)
+            return evaluate(node.left) - evaluate(node.right)
+        case Tok.STAR:
+            return evaluate(node.left) * evaluate(node.right)
+        case Tok.SLASH:
+            return evaluate(node.left) / evaluate(node.right)
+        case _:
+            print("eval error")
+            raise SystemExit(1)
+
+
+def main() -> int:
+    line: str = input()
+    parser: Parser = Parser(tokenize(line), 0)
+    tree: Node = parser.parse_add()
+    result: float = evaluate(tree)
+    truncated: int = int(result)
+    if result == truncated:
+        print(truncated)
+    else:
+        print(result)
+    return 0

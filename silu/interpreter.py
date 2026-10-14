@@ -408,6 +408,8 @@ class SiluInterpreter(BaseASTProcessor):
             ">=": lambda left, r: left >= r,
             "in": lambda left, r: left in r,
             "not in": lambda left, r: left not in r,
+            "is": lambda left, r: left is r,
+            "is not": lambda left, r: left is not r,
         }
 
         if len(operands) == 1:  # Unary
@@ -752,12 +754,12 @@ class SiluInterpreter(BaseASTProcessor):
 
     def process_ann_assign(self, target: str, value: Any, annotation: Any) -> Any:
         """Process annotated assignment."""
-        # For now, we ignore the annotation and just do the assignment
-        # In a future version, we could use annotations for type checking
-        if value is not None:
+        has_value = getattr(self, "_ann_assign_has_value", True)
+        if value is not None or (value is None and has_value):
+            # `x: T = <expr>` (incl. an explicit None) binds the name
             self.env.set(target, value)
-        # If no value is provided, we could initialize with a default based on annotation
-        # but for simplicity, we'll just skip for now
+        # bare `x: T`: a declaration only, no binding
+        self._ann_assign_has_value = True
         return None
 
     def process_lambda(self, params: List[str], body_node: ast.AST) -> Any:
@@ -784,6 +786,69 @@ class SiluInterpreter(BaseASTProcessor):
         else:
             # Regular function call
             return super().visit_Call(node)
+
+    def visit_Match(self, node: ast.Match) -> Any:
+        """Handle match/case statements (structural pattern matching).
+
+        Supports value, or, capture, wildcard, singleton and guard
+        patterns - the same subset the compiled backend implements."""
+        subject = self.visit(node.subject)
+        for case in node.cases:
+            bindings = {}
+            if not self._match_ast_pattern(case.pattern, subject, bindings):
+                continue
+            # bind captures before the guard (it may reference them)
+            for name, value in bindings.items():
+                self.env.set(name, value)
+            if case.guard is not None and not self.visit(case.guard):
+                continue
+            for stmt in case.body:
+                self.visit(stmt)
+            return None
+        return None
+
+    def _match_ast_pattern(self, pattern: ast.AST, value: Any, bindings: dict) -> bool:
+        """Match one pattern against a value, collecting captures.
+        Returns True on match."""
+        if isinstance(pattern, ast.MatchValue):
+            return self.visit(pattern.value) == value
+        if isinstance(pattern, ast.MatchOr):
+            return any(
+                self._match_ast_pattern(alt, value, bindings)
+                for alt in pattern.patterns
+            )
+        if isinstance(pattern, ast.MatchAs):
+            if pattern.pattern is not None:
+                if not self._match_ast_pattern(pattern.pattern, value, bindings):
+                    return False
+            if pattern.name is not None:
+                bindings[pattern.name] = value
+            return True
+        if isinstance(pattern, ast.MatchSingleton):
+            return pattern.value is value
+        if isinstance(pattern, ast.MatchSequence):
+            if not isinstance(value, (list, tuple)) or len(value) != len(
+                pattern.patterns
+            ):
+                return False
+            saved = dict(bindings)
+            for sub, item in zip(pattern.patterns, value):
+                if not self._match_ast_pattern(sub, item, bindings):
+                    bindings.clear()
+                    bindings.update(saved)
+                    return False
+            return True
+        if isinstance(pattern, ast.MatchStar):
+            if not isinstance(value, (list, tuple)):
+                return False
+            if pattern.name is not None:
+                raise NotImplementedError(
+                    "star patterns are not supported"
+                )
+            return True
+        raise NotImplementedError(
+            f"match pattern {type(pattern).__name__} is not supported"
+        )
 
     def visit_IfExp(self, node: ast.IfExp) -> Any:
         """Handle conditional expressions (ternary operator): value if test else other_value"""

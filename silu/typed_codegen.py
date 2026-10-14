@@ -128,6 +128,12 @@ class TypedCodegen(SiluToLLVMConverter):
         # (INSTANCE kind says "some class", this says which one)
         self._class_layouts: Dict[str, Dict[str, Any]] = {}
         self._var_class: Dict[str, str] = {}
+        # instance-element lists: variable -> element class
+        # (toks: list[Token]); lets `for t in toks` bind t as INSTANCE
+        self._list_elem_class: Dict[str, str] = {}
+        # name of the list a for-loop is currently iterating (see
+        # _convert_list_for_loop)
+        self._current_for_iter_name: Optional[str] = None
         # mangled method name -> owning class (self param binding)
         self._method_class: Dict[str, str] = {}
         # enums (class Color(Enum): RED = 1): name -> {member: int}
@@ -3028,6 +3034,32 @@ class TypedCodegen(SiluToLLVMConverter):
         # copy of every key (rawstr_copy on insert, rawstr_free on
         # del/clear), so caller-side drops never dangle a key.
 
+        # i8* rawstr_to_cstr(i8* s) - NUL-terminated copy for libc
+        # (strtod/strtol); the caller frees the result
+        self.rawstr_to_cstr = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p]), name="rawstr_to_cstr"
+        )
+        strtol_ty = ir.FunctionType(
+            i64, [i8p, ir.PointerType(i8p), i32]
+        )
+        self.strtol = ir.Function(self.module, strtol_ty, name="strtol")
+        builder = ir.IRBuilder(self.rawstr_to_cstr.append_basic_block("entry"))
+        (cstr_arg,) = self.rawstr_to_cstr.args
+        cstr_struct = builder.bitcast(
+            cstr_arg, ir.PointerType(self.rawstr_struct_type)
+        )
+        cstr_len = load_len(builder, cstr_struct)
+        cstr_data = load_data(builder, cstr_struct)
+        cstr_buf = builder.call(self.malloc, [builder.add(cstr_len, one64)])
+        builder.call(
+            self.memcpy,
+            [cstr_buf, cstr_data, cstr_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        builder.store(
+            ir.Constant(ir.IntType(8), 0), builder.gep(cstr_buf, [cstr_len])
+        )
+        builder.ret(cstr_buf)
+
         # i64 rawstr_fnv(i8* s) - FNV-1a over the byte buffer
         self.rawstr_fnv = ir.Function(
             self.module, ir.FunctionType(i64, [i8p]), name="rawstr_fnv"
@@ -3990,14 +4022,34 @@ class TypedCodegen(SiluToLLVMConverter):
             return (target, self._unbox(value, target))
         if kind == I1 and target == I64:
             return (I64, self.current_builder.zext(value, ir.IntType(64)))
+        if kind == I64 and target == INSTANCE:
+            # list[Token] element read: the stored word is the pointer
+            return (
+                INSTANCE,
+                self.current_builder.inttoptr(
+                    value, LLVM_KIND_TYPES[INSTANCE]
+                ),
+            )
+        if kind == INSTANCE and target == I64:
+            # list[Token] append path: the pointer rides as a word
+            return (
+                I64,
+                self.current_builder.ptrtoint(value, ir.IntType(64)),
+            )
         if kind == I64 and target == F64:
             return (F64, self.current_builder.sitofp(value, ir.DoubleType()))
         if kind == F64 and target == I64:
             checked = self.current_builder.fptosi(value, ir.IntType(64))
             if self.checks:
+                # lossy truncation panics (Python int(2.5) would silently
+                # truncate; Silu's int() on a non-integral float is an
+                # error, matching the annotation contract for x: int = f)
                 roundtrip = self.current_builder.sitofp(checked, ir.DoubleType())
                 exact = self.current_builder.fcmp_ordered("==", value, roundtrip)
-                self._panic_if(exact, "TypeError: float cannot be used as int")
+                self._panic_if(
+                    self.current_builder.not_(exact),
+                    "TypeError: float cannot be used as int",
+                )
             return (I64, checked)
         if kind == I64 and target == I1:
             return (
@@ -5142,6 +5194,11 @@ class TypedCodegen(SiluToLLVMConverter):
                 return RAWLIST_F
             if node[2][1] == "str":
                 return RAWLIST_S
+            if node[2][1] in self._class_layouts:
+                # list[Token]: raw pointer array; elements are instance
+                # pointers stored as 8-byte words (read back via a
+                # class-annotated name or an attribute chain)
+                return RAWLIST_I
         if (
             isinstance(node, list)
             and len(node) >= 3
@@ -5234,7 +5291,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 if op == "/":
                     return F64  # truediv always rebinds to float
                 return F64 if F64 in (left, right) else I64
-            if op in ("==", "!=", "<", "<=", ">", ">=", "not", "in", "not in"):
+            if op in ("==", "!=", "<", "<=", ">", ">=", "not", "in", "not in", "is", "is not"):
                 return I1  # comparisons produce a bool whatever the operands
             if op in ("and", "or") and len(node) >= 3:
                 left, right = resolve(node[1]), resolve(node[2])
@@ -5810,6 +5867,20 @@ class TypedCodegen(SiluToLLVMConverter):
                     (val_bits,),
                 )
             return (kind, raw_ptr)
+        # None into a pointer-kind slot (instance/str/container): the
+        # null pointer (`is None` checks it at use sites)
+        is_none_node = value_node is None or (
+            isinstance(value_node, list)
+            and len(value_node) >= 2
+            and value_node[:2] == ["const", None]
+        )
+        if is_none_node and (
+            kind == INSTANCE
+            or kind == RAWSTR
+            or kind in RAWLIST_KINDS
+            or kind in RAWDICT_KINDS
+        ):
+            return (kind, ir.Constant(LLVM_KIND_TYPES[kind], None))
         return self._coerce(self._convert_node(value_node), kind)
 
     def _emit_method_call(
@@ -6235,12 +6306,18 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                 )
             else:
-                zero = {
-                    I64: ir.Constant(ir.IntType(64), 0),
-                    F64: ir.Constant(ir.DoubleType(), 0.0),
-                    I1: ir.Constant(ir.IntType(1), 0),
-                }[ret_kind]
-                self.current_builder.ret(zero)
+                if ret_kind == INSTANCE:
+                    # missing return: a null instance pointer
+                    self.current_builder.ret(
+                        ir.Constant(LLVM_KIND_TYPES[INSTANCE], None)
+                    )
+                else:
+                    zero = {
+                        I64: ir.Constant(ir.IntType(64), 0),
+                        F64: ir.Constant(ir.DoubleType(), 0.0),
+                        I1: ir.Constant(ir.IntType(1), 0),
+                    }[ret_kind]
+                    self.current_builder.ret(zero)
 
         self.current_function = old_function
         self.current_builder = old_builder
@@ -6543,6 +6620,29 @@ class TypedCodegen(SiluToLLVMConverter):
                     return value
             if op == "ann_assign":
                 annotation_kind = self._annotation_kind(node[3]) or OBJ
+                # a class-annotated declaration binds the name to its
+                # class even before the value is looked at
+                ann = node[3] if len(node) > 3 else None
+                if (
+                    annotation_kind == INSTANCE
+                    and isinstance(target, str)
+                    and isinstance(ann, list)
+                    and len(ann) >= 2
+                    and ann[0] == "name"
+                ):
+                    self._var_class[target] = ann[1]
+                if (
+                    annotation_kind == RAWLIST_I
+                    and isinstance(target, str)
+                    and isinstance(ann, list)
+                    and len(ann) >= 3
+                    and ann[0] == "subscript"
+                    and isinstance(ann[2], list)
+                    and len(ann[2]) >= 2
+                    and ann[2][0] == "name"
+                    and ann[2][1] in self._class_layouts
+                ):
+                    self._list_elem_class[target] = ann[2][1]
             else:
                 annotation_kind = self.var_kinds.get(target)
             if annotation_kind is None and target not in self.var_kinds:
@@ -6564,32 +6664,21 @@ class TypedCodegen(SiluToLLVMConverter):
                     and value_node[2][0] == "slice"
                 )
             ):
-                # ch = s[i]: register a live char-view alias. Reads of
-                # ch replay the view (register arithmetic only); an
-                # invalidating statement materializes the copy first.
-                # The name itself stays a RAWSTR slot (never written
-                # while the alias lives) so later fallback reads work.
+                # ch = s[i]: a materialized copy. (A borrowed char-view
+                # alias optimization lived here and is disabled: its
+                # kill-site placement interacted badly with loop
+                # back-edges and expression coercions. Revisit with a
+                # proper lifetime model - a copy per char is correct.)
                 str_name = value_node[1][1]
                 str_tv = self._load_var(str_name)
-                # freeze the index at creation: a replay at kill time
-                # must see the creation-time index, not the current
-                # value of any variable it mentions
                 index_frozen = self._coerce(
                     self._convert_node(value_node[2]), I64
                 )[1]
-                index_slot = self._entry_alloca(
-                    ir.IntType(64), name=f"{target}_cvi"
+                coerced = self._coerce(
+                    self._emit_char_view(str_tv[1], index_frozen), RAWSTR
                 )
-                self.current_builder.store(index_frozen, index_slot)
-                self._char_aliases[target] = (
-                    str_name, str_tv, index_slot)
-
                 self._declare_var(target, RAWSTR)
-                # slot stays unwritten while the alias lives; reads go
-                # through the alias replay. An invalidating statement
-                # materializes the current view into the slot first.
-                # (The returned value is unused: assign is in the
-                # statement blacklist, its result is never freed.)
+                self._store_rawstr(target, coerced[1])
                 return (RAWSTR, None)
             if (
                 annotation_kind == RAWSTR
@@ -6741,6 +6830,25 @@ class TypedCodegen(SiluToLLVMConverter):
                     # value on overwrite (Rust drop), no leak per reassign
                     self._store_rawstr(target, coerced[1])
                     return coerced
+                is_none_value = value_node is None or (
+                    isinstance(value_node, list)
+                    and len(value_node) >= 2
+                    and value_node[:2] == ["const", None]
+                )
+                if is_none_value and annotation_kind in (
+                    INSTANCE, RAWSTR
+                ) or is_none_value and annotation_kind in RAWLIST_KINDS or (
+                    is_none_value and annotation_kind in RAWDICT_KINDS
+                ):
+                    value = (
+                        annotation_kind,
+                        ir.Constant(LLVM_KIND_TYPES[annotation_kind], None),
+                    )
+                    self._declare_var(target, annotation_kind)
+                    self.current_builder.store(
+                        value[1], self.variables[target]
+                    )
+                    return value
                 coerced = self._coerce(value, annotation_kind)
                 self._declare_var(target, annotation_kind)
                 if annotation_kind == RAWSTR:
@@ -6976,6 +7084,51 @@ class TypedCodegen(SiluToLLVMConverter):
             right = self._convert_node(node[2])
             return self._typed_compare(op, left, right, node[1], node[2])
 
+        if op in ("is", "is not") and len(node) >= 3:
+            # identity: x is None / x is not None is the sanctioned use
+            # (instances are pointers; null = None)
+            left = self._convert_node(node[1])
+            right = self._convert_node(node[2])
+
+            def as_i1(tv):
+                return self._to_i1_cond(tv)
+
+            def is_null(tv):
+                if tv[0] == INSTANCE:
+                    return self.current_builder.icmp_signed(
+                        "==",
+                        tv[1],
+                        ir.Constant(LLVM_KIND_TYPES[INSTANCE], None),
+                    )
+                boxed = self._box(tv)
+                return self.current_builder.icmp_signed(
+                    "==",
+                    boxed,
+                    ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None),
+                )
+
+            left_is_none = (
+                node[1] is None
+                or (isinstance(node[1], list) and node[1][:2] == ["const", None])
+            )
+            right_is_none = (
+                node[2] is None
+                or (isinstance(node[2], list) and node[2][:2] == ["const", None])
+            )
+            if left_is_none and not right_is_none:
+                result = is_null(right)
+            elif right_is_none and not left_is_none:
+                result = is_null(left)
+            elif left[0] == INSTANCE and right[0] == INSTANCE:
+                result = self.current_builder.icmp_signed("==", left[1], right[1])
+            else:
+                raise NotImplementedError(
+                    "'is' is supported for None checks and instance identity"
+                )
+            if op == "is not":
+                result = self.current_builder.not_(result)
+            return (I1, result)
+
         if op in ("in", "not in") and len(node) >= 3:
             return self._typed_contains(op, node[1], node[2])
 
@@ -6996,31 +7149,56 @@ class TypedCodegen(SiluToLLVMConverter):
 
             self.current_builder.position_at_end(then_block)
             then_val = self._convert_node(node[2])
-            if not self.current_builder.block.is_terminated:
-                self.current_builder.branch(merge_block)
+            then_terminated = self.current_builder.block.is_terminated
+            then_pred = self.current_builder.block
 
             self.current_builder.position_at_end(else_block)
             else_val = self._convert_node(node[3])
-            if not self.current_builder.block.is_terminated:
-                self.current_builder.branch(merge_block)
+            else_terminated = self.current_builder.block.is_terminated
+            else_pred = self.current_builder.block
 
             self.current_builder.position_at_end(merge_block)
+            if then_terminated and else_terminated:
+                # both arms diverge - the merge is dead code
+                return (OBJ, null_obj)
             common = (
                 then_val[0]
                 if then_val[0] == else_val[0]
                 else (F64 if F64 in (then_val[0], else_val[0]) else OBJ)
             )
-            then_v = self._coerce(then_val, common)[1]
-            else_v = self._coerce(else_val, common)[1]
             phi_type = (
                 LLVM_KIND_TYPES[common]
                 if common != OBJ
                 else ir.PointerType(self.pyobj.pyobj_type)
             )
-            phi = self.current_builder.phi(phi_type)
-            phi.add_incoming(then_v, then_block)
-            phi.add_incoming(else_v, else_block)
-            return (common, phi)
+            slot = self._entry_alloca(phi_type, name="iexpr_val")
+            # store each live arm's coerced value in a continuation block
+            # chained off the arm's real predecessor, then load in merge
+            if not then_terminated:
+                then_store = self.current_function.append_basic_block(
+                    "iexpr_then_s"
+                )
+                self.current_builder.position_at_end(then_pred)
+                self.current_builder.branch(then_store)
+                self.current_builder.position_at_end(then_store)
+                self.current_builder.store(
+                    self._coerce(then_val, common)[1], slot
+                )
+                self.current_builder.branch(merge_block)
+            if not else_terminated:
+                else_store = self.current_function.append_basic_block(
+                    "iexpr_else_s"
+                )
+                self.current_builder.position_at_end(else_pred)
+                self.current_builder.branch(else_store)
+                self.current_builder.position_at_end(else_store)
+                self.current_builder.store(
+                    self._coerce(else_val, common)[1], slot
+                )
+                self.current_builder.branch(merge_block)
+
+            self.current_builder.position_at_end(merge_block)
+            return (common, self.current_builder.load(slot))
 
         if op == "call":
             return self._convert_call(node)
@@ -7906,6 +8084,21 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_builder.position_at_end(loop_end)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
 
+    def _loop_target_class(
+        self, target_node: Any, list_tv: Tuple[str, Any]
+    ) -> Optional[str]:
+        """Class of a for-loop target iterating an instance-element list
+        (`for t in toks` with toks: list[Token]). The list's own name
+        carries the element class (recorded at its annotation)."""
+        if (
+            isinstance(target_node, (list, tuple))
+            and len(target_node) >= 2
+            and target_node[0] == "name"
+            and isinstance(self._current_for_iter_name, str)
+        ):
+            return self._list_elem_class.get(self._current_for_iter_name)
+        return None
+
     def _convert_rawlist_for_loop(
         self, target_node: Any, list_tv: Tuple[str, Any], body_stmts: list
     ) -> Tuple[str, Any]:
@@ -7915,6 +8108,12 @@ class TypedCodegen(SiluToLLVMConverter):
         i64 = ir.IntType(64)
         elem_kind = RAWLIST_KINDS[list_tv[0]]
         list_ptr = list_tv[1]
+        # list[Token]: elements are instance pointers riding as i64 words
+        # (annotation lowered to RAWLIST_I); the target binds as INSTANCE
+        if elem_kind == I64 and list_tv[0] == RAWLIST_I:
+            target_class = self._loop_target_class(target_node, list_tv)
+            if target_class is not None:
+                elem_kind = INSTANCE
 
         cond_block = self.current_function.append_basic_block("riter_cond")
         body_block = self.current_function.append_basic_block("riter_body")
@@ -7967,6 +8166,18 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
                 self._declare_var(var_name, RAWSTR)
                 self._store_rawstr(var_name, copy)
+            elif elem_kind == INSTANCE:
+                # list[Instance]: the word is the pointer - inttoptr
+                self._declare_var(var_name, INSTANCE)
+                self._var_class[var_name] = self._list_elem_class.get(
+                    self._current_for_iter_name or "", ""
+                ) or self._var_class.get(var_name)
+                self.current_builder.store(
+                    self.current_builder.inttoptr(
+                        element, LLVM_KIND_TYPES[INSTANCE]
+                    ),
+                    self.variables[var_name],
+                )
             else:
                 if elem_kind == F64:
                     element = self.current_builder.bitcast(element, ir.DoubleType())
@@ -8266,7 +8477,23 @@ class TypedCodegen(SiluToLLVMConverter):
         i64 = ir.IntType(64)
         iter_tv = self._convert_node(iter_node)
         if iter_tv[0] in RAWLIST_KINDS:
-            return self._convert_rawlist_for_loop(target_node, iter_tv, body_stmts)
+            # remember the iterated name so instance-element lists can
+            # bind the loop target as INSTANCE
+            self._current_for_iter_name = (
+                iter_node[1]
+                if (
+                    isinstance(iter_node, (list, tuple))
+                    and len(iter_node) >= 2
+                    and iter_node[0] == "name"
+                    and isinstance(iter_node[1], str)
+                )
+                else None
+            )
+            result = self._convert_rawlist_for_loop(
+                target_node, iter_tv, body_stmts
+            )
+            self._current_for_iter_name = None
+            return result
         if iter_tv[0] == RAWSTR:
             return self._convert_rawstr_for_loop(target_node, iter_tv, body_stmts)
         list_obj = self._box(iter_tv)
@@ -8365,7 +8592,20 @@ class TypedCodegen(SiluToLLVMConverter):
                 elem_size = self._rawlist_elem_size(raw_kind)
                 list_ptr = raw_obj_tv[1]
                 if method_name == "append" and args_node:
-                    elem = self._coerce(self._convert_node(args_node[0]), elem_kind)
+                    arg_tv = self._convert_node(args_node[0])
+                    if arg_tv[0] == INSTANCE:
+                        # instance elements ride the list as raw pointers
+                        self.current_builder.call(
+                            self.rawlist_push,
+                            [
+                                list_ptr,
+                                self.current_builder.ptrtoint(
+                                    arg_tv[1], ir.IntType(64)
+                                ),
+                            ],
+                        )
+                        return (raw_kind, list_ptr)
+                    elem = self._coerce(arg_tv, elem_kind)
                     if raw_kind == RAWLIST_S:
                         # the list stores its own copy of the string
                         self.current_builder.call(
@@ -8568,9 +8808,18 @@ class TypedCodegen(SiluToLLVMConverter):
             entry = method_map.get(method_name)
             if obj is not None and entry:
                 func, arg_count, has_result = entry
-                arg_vals = [
-                    self._box(self._convert_node(arg)) for arg in args_node[:arg_count]
-                ]
+                arg_vals = []
+                for arg in args_node[:arg_count]:
+                    arg_tv = self._convert_node(arg)
+                    if arg_tv[0] == INSTANCE:
+                        # boxed fallback path: instances still can't box,
+                        # but counts.get/copy-free methods never see them;
+                        # fail loudly rather than corrupting
+                        raise NotImplementedError(
+                            "class instances cannot be boxed yet "
+                            "(print a field, not the instance)"
+                        )
+                    arg_vals.append(self._box(arg_tv))
                 while len(arg_vals) < arg_count:
                     arg_vals.append(
                         ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
@@ -8659,6 +8908,85 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (OBJ, ir.Constant(
                     ir.PointerType(self.pyobj.pyobj_type), None
                 ))
+
+            if func_name == "float" and len(args_node) == 1:
+                # float(x): numbers coerce directly; strings parse
+                # through strtod (Python float())
+                arg_tv = self._convert_node(args_node[0])
+                if arg_tv[0] == F64:
+                    return (F64, arg_tv[1])
+                if arg_tv[0] in (I64, I1):
+                    return (F64, self._coerce(arg_tv, F64)[1])
+                if arg_tv[0] in (OBJ, RAWSTR, RAWCHAR_VIEW):
+                    raw_ptr, temp = self._rawstr_operand(arg_tv)
+                    cstr = self.current_builder.call(
+                        self.rawstr_to_cstr, [raw_ptr]
+                    )
+                    end_ptr = self.current_builder.alloca(
+                        ir.PointerType(ir.IntType(8)), name="fend"
+                    )
+                    parsed = self.current_builder.call(
+                        self.strtod, [cstr, end_ptr]
+                    )
+                    end_val = self.current_builder.load(end_ptr)
+                    moved = self.current_builder.icmp_signed(
+                        "!=", end_val, cstr
+                    )
+                    if self.checks:
+                        self._panic_if(
+                            self.current_builder.not_(moved),
+                            "ValueError: invalid literal for float()",
+                        )
+                    self.current_builder.call(self.free, [cstr])
+                    if temp is not None:
+                        self.current_builder.call(self.rawstr_free, [temp])
+                    return (F64, parsed)
+                return (F64, ir.Constant(ir.DoubleType(), 0.0))
+
+            if func_name == "int" and len(args_node) == 1:
+                # int(x): floats truncate like Python's int(); the
+                # annotation contract (x: int = f) keeps its panic via
+                # the implicit-coercion path, this builtin does not
+                arg_tv = self._convert_node(args_node[0])
+                if arg_tv[0] == I64:
+                    return (I64, arg_tv[1])
+                if arg_tv[0] == I1:
+                    return (I64, self._coerce(arg_tv, I64)[1])
+                if arg_tv[0] == F64:
+                    return (
+                        I64,
+                        self.current_builder.fptosi(arg_tv[1], ir.IntType(64)),
+                    )
+                if arg_tv[0] in (OBJ, RAWSTR, RAWCHAR_VIEW):
+                    raw_ptr, temp = self._rawstr_operand(arg_tv)
+                    cstr = self.current_builder.call(
+                        self.rawstr_to_cstr, [raw_ptr]
+                    )
+                    end_ptr = self.current_builder.alloca(
+                        ir.PointerType(ir.IntType(8)), name="iend"
+                    )
+                    parsed = self.current_builder.call(
+                        self.strtol,
+                        [
+                            cstr,
+                            end_ptr,
+                            ir.Constant(ir.IntType(32), 10),
+                        ],
+                    )
+                    end_val = self.current_builder.load(end_ptr)
+                    moved = self.current_builder.icmp_signed(
+                        "!=", end_val, cstr
+                    )
+                    if self.checks:
+                        self._panic_if(
+                            self.current_builder.not_(moved),
+                            "ValueError: invalid literal for int()",
+                        )
+                    self.current_builder.call(self.free, [cstr])
+                    if temp is not None:
+                        self.current_builder.call(self.rawstr_free, [temp])
+                    return (I64, parsed)
+                return (I64, ir.Constant(ir.IntType(64), 0))
 
             if func_name == "len":
                 if args_node:

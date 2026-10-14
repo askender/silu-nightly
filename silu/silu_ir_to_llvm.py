@@ -3730,13 +3730,23 @@ class SiluToLLVMConverter:
 
         ir_data = self._normalize_ir(ir_data)
 
-        # First pass: collect function definitions
+        # First pass: collect function definitions. A user-defined
+        # `main` is renamed to __silu_user_main up front and invoked
+        # from the generated entry point (C forbids calling main, and
+        # the module defines a `main` symbol of its own).
         self._collect_function_defs(ir_data)
+        if "main" in self.function_defs:
+            user_main = list(self.function_defs.pop("main"))
+            user_main[1] = "__silu_user_main"
+            self.function_defs["__silu_user_main"] = user_main
+            self._renamed_user_main = True
+            self._rename_main_callsites(ir_data)
+        else:
+            self._renamed_user_main = False
 
         # Second pass: create function declarations
         self._create_function_declarations()
 
-        # Create main function
         main_ty = ir.FunctionType(ir.IntType(32), [])
         main_func = ir.Function(self.module, main_ty, name="main")
         self.current_function = main_func
@@ -3747,13 +3757,48 @@ class SiluToLLVMConverter:
         # Convert IR (skip function definitions in main)
         self._convert_node(ir_data, skip_func_defs=True)
 
-        # Return 0 from main
-        self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
+        # A user main() becomes the program body
+        if self._renamed_user_main:
+            user_fn = self.functions.get("__silu_user_main") or (
+                self.static_funcs.get("__silu_user_main", (None, None, None))[2]
+            )
+            if user_fn is not None:
+                result = self.current_builder.call(user_fn, [])
+                if result.type == ir.IntType(32):
+                    self.current_builder.ret(result)
+                elif result.type == ir.IntType(64):
+                    self.current_builder.ret(
+                        self.current_builder.trunc(result, ir.IntType(32))
+                    )
+                else:
+                    self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
+            else:
+                self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
+        else:
+            self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
 
         # Generate function bodies
         self._generate_function_bodies()
 
         return str(self.module)
+
+    def _rename_main_callsites(self, node):
+        """Rewrite `main(...)` call targets to the renamed user main."""
+        if isinstance(node, list):
+            if (
+                len(node) >= 3
+                and node[0] == "call"
+                and isinstance(node[1], list)
+                and len(node[1]) >= 2
+                and node[1][0] == "name"
+                and node[1][1] == "main"
+            ):
+                node[1][1] = "__silu_user_main"
+            for child in node:
+                self._rename_main_callsites(child)
+        elif isinstance(node, tuple):
+            for child in node:
+                self._rename_main_callsites(child)
 
     def _collect_function_defs(self, node):
         """Collect function definitions from IR tree."""

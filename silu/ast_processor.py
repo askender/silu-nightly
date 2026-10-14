@@ -35,6 +35,8 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         # Comparison operators
         ast.Eq: "==",
         ast.NotEq: "!=",
+        ast.Is: "is",
+        ast.IsNot: "is not",
         ast.Lt: "<",
         ast.LtE: "<=",
         ast.Gt: ">",
@@ -145,8 +147,15 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     # ================== Generic Visit Methods ==================
 
     def visit_Module(self, node: ast.Module) -> Any:
-        """Visit a module node."""
+        """Visit a module node, then call main() if defined (the IR
+        interpreter and compiled binaries do the same - a program with
+        a main() runs it as its entry point)."""
         statements = [self.visit(stmt) for stmt in node.body]
+        main_fn = getattr(self, "env", None)
+        if main_fn is not None:
+            candidate = main_fn.vars.get("main")
+            if callable(candidate) and not isinstance(candidate, type):
+                candidate()
         return self.process_container("module", statements)
 
     def visit_Expr(self, node: ast.Expr) -> Any:
@@ -444,6 +453,7 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         target = node.target.id
         value = self.visit(node.value) if node.value else None
         annotation = self.visit(node.annotation) if node.annotation else None
+        self._ann_assign_has_value = node.value is not None
         return self.process_ann_assign(target, value, annotation)
 
     def visit_Lambda(self, node: ast.Lambda) -> Any:
