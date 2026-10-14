@@ -958,9 +958,12 @@ class IRInterpreter:
         if match_result is None:
             return False  # Pattern didn't match
 
-        # If we have captured variables, add them to local environment
-        if isinstance(match_result, dict):
-            # Push new local environment with captured variables
+        # If we have captured variables, add them to local environment.
+        # (An empty capture dict must NOT be pushed: the pushed frame is
+        # innermost, so `total += 1` in the body would write into it and
+        # the outer variable would never change.)
+        pushed = isinstance(match_result, dict) and bool(match_result)
+        if pushed:
             self.local_env_stack.append(match_result)
 
         try:
@@ -976,7 +979,7 @@ class IRInterpreter:
 
         finally:
             # Pop local environment if we pushed captured variables
-            if isinstance(match_result, dict):
+            if pushed:
                 self.local_env_stack.pop()
 
     def _match_pattern(self, pattern: Tuple, value: Any) -> Union[dict, bool, None]:

@@ -140,7 +140,7 @@ python run_symbolic_tool.py my_program.c.ir.json
 ## 语言特性
 
 - **数据类型**：int、float、str（完整码点语义）、bool、bytes、list、dict
-- **控制流**：if/elif/else、while、for（配合 `range()`）、match/case 完整结构化模式匹配（值、序列、映射、或模式、guard、捕获、星号模式）
+- **控制流**：if/elif/else、while、for（配合 `range()`）、match/case（解释器：完整结构化模式；编译路径：值/或/捕获/通配/guard）、枚举（`class Color(Enum): RED = 1`——裸 int 判别值，Rust 风格）
 - **赋值**：简单赋值、链式赋值（`a = b = 1`）、元组解包（`for key, value in d.items()`）、下标删除（`del d[k]`）
 - **运算符**：算术/比较/位运算、成员判断 `in` / `not in`（字符串、列表、字典）、字符串索引与含步长切片
 - **函数**：用户自定义函数、默认参数、纯闭包（只读捕获定义作用域的变量）

@@ -20,8 +20,8 @@
 | 1 | 文件读取 / stdin 全读 | `fs::read_to_string` | ✅ `read_file` / `read_stdin` |
 | 2 | 字符串/字符内建：`ord`/`chr`/`split`/`strip`/`startswith`/`endswith`/`isdigit`/`isalpha`/`isspace` | `char::is_numeric`、`str::split` 等 | ✅ 已实现 |
 | 3 | 嵌套/递归实例字段 | struct 含 `Box<T>` | ✅ 已实现 |
-| 4 | enum / 标签联合 | `enum` | 未做——战略性大项，等 M1/M2 验证 AST 表示需求后再设计 |
-| 5 | 编译路径 match | `match` 解构 | 未做——enum 的配套 |
+| 4 | enum（无负载判别值，`class Color(Enum): RED = 1`）| `enum`（无数据变体） | ✅ 已实现；带负载的标签联合（`X = A \| B` 式）留作后续设计 |
+| 5 | 编译路径 match | `match` | ✅ 已实现（值/or/捕获/通配/guard；序列/映射/类模式仅解释器） |
 
 已具备：递归函数、class（struct+impl）、容器家族、rawstr 码点语义、
 `int(s)`/`str(x)`、`input()`、panic 错误出口。

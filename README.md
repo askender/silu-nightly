@@ -156,7 +156,7 @@ This is currently used to analyze embedded/automotive-style state machines (see 
 ## Language Features
 
 - **Data types**: int, float, str (full code point semantics), bool, bytes, list, dict
-- **Control flow**: if/elif/else, while, for (with `range()`), match/case with full structural pattern matching (value, sequence, mapping, or, guard, capture, star patterns)
+- **Control flow**: if/elif/else, while, for (with `range()`), match/case (interpreters: full structural patterns; compiled: value/or/capture/wildcard/guard), enums (`class Color(Enum): RED = 1` - bare int discriminants, Rust-style)
 - **Assignment**: simple, chained (`a = b = 1`), tuple unpacking (`for key, value in d.items()`), subscript delete (`del d[k]`)
 - **Operators**: arithmetic/comparison/bitwise, membership `in` / `not in` (strings, lists, dicts), string indexing and slicing with steps
 - **Functions**: user-defined functions, default arguments, and pure closures (read-only capture of the defining scope)

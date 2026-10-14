@@ -7573,6 +7573,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.current_builder.position_at_end(ok_block)
             return (OBJ, null_obj)
 
+        if op == "match":
+            self._convert_match(node)
+            return (OBJ, null_obj)
+
         if op == "tuple_assign":
             if len(node) >= 3:
                 targets = node[1]
@@ -7600,6 +7604,168 @@ class TypedCodegen(SiluToLLVMConverter):
 
         # unknown op: degrade to dynamic null
         return (OBJ, null_obj)
+
+    def _convert_match(self, node: list):
+        """match statement over a statically-typed scalar/str subject.
+
+        Supported patterns: value literals (incl. enum members, they
+        fold to constants), or-patterns, capture (case n), wildcard
+        (case _), guards (case n if n > 0). Sequence/mapping/class
+        patterns stay interpreter-only. First match wins; no match is
+        a no-op (Python semantics)."""
+        subject_tv = self._convert_node(node[1])
+        subject_kind = subject_tv[0]
+        if subject_kind not in (I64, I1, F64, RAWSTR):
+            raise NotImplementedError(
+                "compiled match needs a statically typed subject "
+                "(annotate it: x: int / float / bool / str)"
+            )
+        i1 = ir.IntType(1)
+        func = self.current_function
+        end_block = func.append_basic_block("match_end")
+
+        def value_condition(value_node):
+            """i1 condition: subject == the pattern's value."""
+            if subject_kind == RAWSTR:
+                if (
+                    isinstance(value_node, list)
+                    and len(value_node) >= 2
+                    and value_node[0] == "const"
+                    and isinstance(value_node[1], str)
+                ):
+                    text = value_node[1]
+                    return self.current_builder.call(
+                        self.rawstr_eq_cstr,
+                        [
+                            subject_tv[1],
+                            self._create_global_string(text),
+                            ir.Constant(
+                                ir.IntType(64), len(text.encode("utf-8"))
+                            ),
+                        ],
+                    )
+                value_tv = self._coerce(self._convert_node(value_node), RAWSTR)
+                cond = self.current_builder.call(
+                    self.rawstr_eq, [subject_tv[1], value_tv[1]]
+                )
+                self.current_builder.call(self.rawstr_free, [value_tv[1]])
+                return cond
+            target_kind = I64 if subject_kind == I1 else subject_kind
+            value_tv = self._coerce(
+                self._convert_node(value_node), target_kind
+            )
+            if subject_kind == F64:
+                return self.current_builder.fcmp_ordered(
+                    "==", subject_tv[1], value_tv[1]
+                )
+            if subject_kind == I1:
+                subject_i64 = self.current_builder.zext(
+                    subject_tv[1], ir.IntType(64)
+                )
+                return self.current_builder.icmp_signed(
+                    "==", subject_i64, value_tv[1]
+                )
+            return self.current_builder.icmp_signed(
+                "==", subject_tv[1], value_tv[1]
+            )
+
+        def pattern_parts(pattern):
+            """(condition_or_None, capture_name_or_None). A None condition
+            means the pattern always matches (capture/wildcard)."""
+            if not isinstance(pattern, (list, tuple)) or not pattern:
+                raise NotImplementedError("unsupported match pattern")
+            kind_tag = pattern[0]
+            if kind_tag == "match_value":
+                return value_condition(pattern[1]), None
+            if kind_tag == "match_or":
+                cond = None
+                for alt in pattern[1]:
+                    alt_cond, capture = pattern_parts(alt)
+                    if capture is not None:
+                        raise NotImplementedError(
+                            "capture inside an or-pattern is not supported "
+                            "in compiled code"
+                        )
+                    cond = (
+                        alt_cond
+                        if cond is None
+                        else self.current_builder.or_(cond, alt_cond)
+                    )
+                return cond, None
+            if kind_tag == "match_singleton":
+                # True / False (None stays interpreter-only)
+                value = pattern[1]
+                if not isinstance(value, bool):
+                    raise NotImplementedError(
+                        "compiled match does not support None patterns"
+                    )
+                return value_condition(["const", int(value)]), None
+            if kind_tag == "match_as":
+                nested, capture = pattern[1], pattern[2]
+                if nested is not None:
+                    raise NotImplementedError(
+                        "compiled match does not support nested capture "
+                        "patterns"
+                    )
+                return None, capture  # capture may be None (wildcard)
+            raise NotImplementedError(
+                f"compiled match does not support '{kind_tag}' patterns "
+                "(value / or / capture / wildcard / guard only)"
+            )
+
+        for case in node[2]:
+            if (
+                not isinstance(case, (list, tuple))
+                or len(case) < 4
+                or case[0] != "match_case"
+            ):
+                continue
+            pattern, guard_node, body = case[1], case[2], case[3]
+            body_block = func.append_basic_block("case_body")
+            next_block = func.append_basic_block("case_next")
+
+            cond, capture = pattern_parts(pattern)
+            if capture is not None:
+                # bind before the guard (guard may reference it)
+                if subject_kind == RAWSTR:
+                    self._declare_var(capture, RAWSTR)
+                    self._store_rawstr(
+                        capture,
+                        self.current_builder.call(
+                            self.rawstr_copy, [subject_tv[1]]
+                        ),
+                    )
+                else:
+                    self._declare_var(capture, subject_kind)
+                    self.current_builder.store(
+                        subject_tv[1], self.variables[capture]
+                    )
+            if cond is not None:
+                guard_blk = (
+                    func.append_basic_block("case_guard")
+                    if guard_node is not None
+                    else body_block
+                )
+                self.current_builder.cbranch(cond, guard_blk, next_block)
+                self.current_builder.position_at_end(guard_blk)
+            if guard_node is not None:
+                guard_cond = self._to_i1_cond(self._convert_node(guard_node))
+                self.current_builder.cbranch(guard_cond, body_block, next_block)
+            if cond is None and guard_node is None:
+                self.current_builder.branch(body_block)
+
+            self.current_builder.position_at_end(body_block)
+            for stmt in body:
+                self._convert_statement(stmt)
+                if self.current_builder.block.is_terminated:
+                    break
+            if not self.current_builder.block.is_terminated:
+                self.current_builder.branch(end_block)
+
+            self.current_builder.position_at_end(next_block)
+
+        self.current_builder.branch(end_block)
+        self.current_builder.position_at_end(end_block)
 
     def _convert_bool_chain(self, op: str, operand_nodes: list) -> Tuple[str, Any]:
         """N-ary short-circuit and/or over TypedValues."""
