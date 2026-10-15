@@ -534,3 +534,41 @@ def test_m5_self_hosted_toolchain(fe_bin, ir2c_bin):
             )
             assert run.returncode == 0, (f, run.stderr[-200:])
             assert json.loads(run.stdout) == json.loads(ref), f
+
+
+# ---- M5 coverage: benchmarks through the Silu-written backend ----
+
+BENCHMARK_SKIP = {"jsonparse.si"}  # heterogeneous dynamic program, known gap
+
+
+def test_m5_benchmarks_match_cpython(ir2c_bin):
+    """Every benchmark (minus the known-gap file) compiles through the
+    pure-Silu ir2c and its output matches running the same file under
+    CPython."""
+    import glob as _glob
+    files = sorted(
+        f for f in _glob.glob(f"{REPO}/benchmarks/*.si")
+        if os.path.basename(f) not in BENCHMARK_SKIP
+    )
+    assert len(files) >= 13
+    for f in files:
+        ir = subprocess.run(
+            [sys.executable, "-m", "silu", "ir", f, "--format", "json"],
+            capture_output=True, text=True, cwd=REPO,
+        ).stdout
+        c = subprocess.run(
+            [ir2c_bin], input=ir, capture_output=True, text=True, timeout=120
+        )
+        assert c.returncode == 0, (f, c.stdout[:200])
+        with tempfile.TemporaryDirectory() as td:
+            cf = os.path.join(td, "x.c"); bf = os.path.join(td, "x")
+            with open(cf, "w") as h:
+                h.write(c.stdout)
+            b = subprocess.run(["clang", "-O2", cf, "-o", bf],
+                               capture_output=True, text=True)
+            assert b.returncode == 0, (f, b.stderr[:300])
+            run = subprocess.run([bf], capture_output=True, text=True, timeout=300)
+            exp = subprocess.run(
+                [sys.executable, f], capture_output=True, text=True, timeout=300
+            ).stdout
+            assert run.stdout == exp, (f, run.stdout[:80], exp[:80])
