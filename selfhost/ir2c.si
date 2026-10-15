@@ -2437,5 +2437,30 @@ def main() -> int:
         pos = pos + 1
     head: str = gen.out[: pos + 1]
     tail: str = gen.out[pos + 1:]
-    print(head + pool + tail, end="")
+    full: str = head + pool + tail
+    # strip the dynamic-value runtime when the program never uses it:
+    # scan the emitted code outside the prelude for any obj-family call
+    body_part: str = tail
+    obj_used: bool = False
+    probes: list[str] = ["pmake(", "pget(", "pconcat(", "plen(", "p_is(", "p_truthy(", "pstr_of(", "p_eq(", "p_eq_str(", "pset(", "pappend(", "plist_strs(", "DLIT"]
+    pi: int = 0
+    while pi < len(probes):
+        if body_part.find(probes[pi]) >= 0:
+            obj_used = True
+        pi += 1
+    if not obj_used:
+        # remove obj-only lines from the runtime prelude region
+        all_lines: list[str] = full.split("\n")
+        rt: int = 0
+        kept: list[str] = []
+        while rt < len(all_lines):
+            ln: str = all_lines[rt]
+            is_rt: bool = rt < len(RUNTIME)
+            if is_rt and (ln.find("PObj") >= 0 or ln.find("pmake(") >= 0 or ln.find("pint(") >= 0 or ln.find("pfloat(") >= 0 or ln.find("pbool(") >= 0 or ln.find("pstr(") >= 0 or ln.find("plist(") >= 0 or ln.find("pnil(") >= 0 or ln.find("p_is(") >= 0 or ln.find("p_truthy(") >= 0 or ln.find("plen(") >= 0 or ln.find("pget(") >= 0 or ln.find("pstr_of(") >= 0 or ln.find("p_eq(") >= 0 or ln.find("p_eq_str(") >= 0 or ln.find("pset(") >= 0 or ln.find("pappend(") >= 0 or ln.find("pconcat(") >= 0 or ln.find("plist_strs(") >= 0):
+                rt += 1
+                continue
+            kept.append(ln)
+            rt += 1
+        full = "\n".join(kept)
+    print(full, end="")
     return 0
