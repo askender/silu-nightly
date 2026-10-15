@@ -1,0 +1,288 @@
+# M3 self-hosting milestone (docs/selfhosting.md): an IR-to-C compiler
+# written in Silu itself. Reads JSON IR from stdin, emits C99 source on
+# stdout. The pipeline: silu ir -> [this program] -> clang -> binary.
+# Supported IR subset (same as M2): module, line, const, name,
+# assign/ann_assign, aug_assign, + - * // %, comparisons, if, while,
+# call (print).
+# Usage: python -m silu ir prog.py --output prog.ir.json --format json
+#        ./ir2c < prog.ir.json > prog.c && clang prog.c -o prog
+
+
+class JKind(Enum):
+    NIL
+    BOOL
+    NUM
+    STR
+    ARR
+    OBJ
+
+
+class JValue:
+    kind: JKind
+    n: int
+    s: str
+    arr: list[JValue]
+    key: str
+    nxt: JValue
+
+
+def jnum(v: int) -> JValue:
+    return JValue(JKind.NUM, v, "", None, "", None)
+
+
+def jstr(v: str) -> JValue:
+    return JValue(JKind.STR, 0, v, None, "", None)
+
+
+def jarr(items: list[JValue]) -> JValue:
+    return JValue(JKind.ARR, 0, "", items, "", None)
+
+
+def jnull() -> JValue:
+    return JValue(JKind.NIL, 0, "", None, "", None)
+
+
+class Json:
+    src: str
+    pos: int
+
+    def ws(self) -> int:
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+                self.pos += 1
+            else:
+                return 0
+        return 0
+
+    def value(self) -> JValue:
+        self.ws()
+        ch = self.src[self.pos]
+        if ch == "{":
+            return self.object()
+        if ch == "[":
+            return self.array()
+        if ch == '"':
+            return jstr(self.string())
+        if ch == "t":
+            self.pos += 4
+            return jnum(1)
+        if ch == "f":
+            self.pos += 5
+            return jnum(0)
+        if ch == "n":
+            self.pos += 4
+            return jnull()
+        return self.number()
+
+    def string(self) -> str:
+        self.pos += 1
+        start: int = self.pos
+        while self.src[self.pos] != '"':
+            self.pos += 1
+        out: str = self.src[start:self.pos]
+        self.pos += 1
+        return out
+
+    def number(self) -> JValue:
+        neg: bool = False
+        if self.src[self.pos] == "-":
+            neg = True
+            self.pos += 1
+        n: int = 0
+        while True:
+            ch = self.src[self.pos]
+            if ch >= "0" and ch <= "9":
+                d: int = ord(ch) - 48
+                n = n * 10 + d
+                self.pos += 1
+            else:
+                if neg:
+                    return jnum(0 - n)
+                return jnum(n)
+
+    def array(self) -> JValue:
+        items: list[JValue] = []
+        self.pos += 1
+        while True:
+            self.ws()
+            if self.src[self.pos] == "]":
+                self.pos += 1
+                return jarr(items)
+            items.append(self.value())
+            self.ws()
+            if self.src[self.pos] == ",":
+                self.pos += 1
+
+    def object(self) -> JValue:
+        head: JValue = jnull()
+        self.pos += 1
+        while True:
+            self.ws()
+            if self.src[self.pos] == "}":
+                self.pos += 1
+                if head.kind == JKind.NIL:
+                    return jnull()
+                return head
+            k: str = self.string()
+            self.ws()
+            self.pos += 1
+            v: JValue = self.value()
+            pair: JValue = JValue(JKind.OBJ, 0, "", None, k, v)
+            if head.kind == JKind.NIL:
+                head = pair
+            else:
+                tail: JValue = head
+                while tail.nxt is not None:
+                    tail = tail.nxt
+                tail.nxt = pair
+
+
+def tag(node: JValue) -> str:
+    return node.arr[0].s
+
+
+def elem(node: JValue, i: int) -> JValue:
+    return node.arr[i]
+
+
+def elem_str(node: JValue, i: int) -> str:
+    return node.arr[i].s
+
+
+def elem_int(node: JValue, i: int) -> int:
+    return node.arr[i].n
+
+
+class Gen:
+    out: str
+    indent: int
+    vars: list[str]
+
+    def emit(self, line: str) -> int:
+        pad: str = "    "
+        text: str = line
+        i: int = 0
+        while i < self.indent:
+            text = pad + text
+            i += 1
+        self.out = self.out + text + "\n"
+        return 0
+
+    def expr(self, node: JValue) -> str:
+        t: str = tag(node)
+        if t == "const":
+            return self.show_int(elem_int(node, 1)) + "LL"
+        if t == "name":
+            return "v_" + elem(node, 1).s
+        if t == "+":
+            return "(" + self.expr(elem(node, 1)) + " + " + self.expr(elem(node, 2)) + ")"
+        if t == "-":
+            return "(" + self.expr(elem(node, 1)) + " - " + self.expr(elem(node, 2)) + ")"
+        if t == "*":
+            return "(" + self.expr(elem(node, 1)) + " * " + self.expr(elem(node, 2)) + ")"
+        if t == "//":
+            return "(" + self.expr(elem(node, 1)) + " / " + self.expr(elem(node, 2)) + ")"
+        if t == "%":
+            return "(" + self.expr(elem(node, 1)) + " % " + self.expr(elem(node, 2)) + ")"
+        if t == "<":
+            return "(" + self.expr(elem(node, 1)) + " < " + self.expr(elem(node, 2)) + ")"
+        if t == "<=":
+            return "(" + self.expr(elem(node, 1)) + " <= " + self.expr(elem(node, 2)) + ")"
+        if t == ">":
+            return "(" + self.expr(elem(node, 1)) + " > " + self.expr(elem(node, 2)) + ")"
+        if t == ">=":
+            return "(" + self.expr(elem(node, 1)) + " >= " + self.expr(elem(node, 2)) + ")"
+        if t == "==":
+            return "(" + self.expr(elem(node, 1)) + " == " + self.expr(elem(node, 2)) + ")"
+        if t == "!=":
+            return "(" + self.expr(elem(node, 1)) + " != " + self.expr(elem(node, 2)) + ")"
+        return "0"
+
+    def show_int(self, v: int) -> str:
+        if v < 0:
+            return "-" + self.show_int(0 - v)
+        digits: str = ""
+        table: str = "0123456789"
+        n: int = v
+        while True:
+            digits = table[n % 10] + digits
+            n = n // 10
+            if n == 0:
+                return digits
+
+    def gen_stmts(self, stmts: JValue) -> int:
+        i: int = 0
+        n: int = len(stmts.arr)
+        while i < n:
+            self.gen_stmt(elem(stmts, i))
+            i += 1
+        return 0
+
+    def gen_stmt(self, stmt: JValue) -> int:
+        t: str = tag(stmt)
+        if t == "line":
+            return 0
+        if t == "assign" or t == "ann_assign":
+            nm: str = elem_str(stmt, 1)
+            if nm in self.vars:
+                self.emit("v_" + nm + " = " + self.expr(elem(stmt, 2)) + ";")
+            else:
+                self.vars.append(nm)
+                self.emit("long long v_" + nm + " = " + self.expr(elem(stmt, 2)) + ";")
+            return 0
+        if t == "aug_assign":
+            tgt: str = "v_" + elem(elem(stmt, 1), 1).s
+            op: str = elem_str(stmt, 2)
+            cop: str = "+"
+            if op == "-=":
+                cop = "-"
+            elif op == "*=":
+                cop = "*"
+            self.emit(tgt + " = " + tgt + " " + cop + " " + self.expr(elem(stmt, 3)) + ";")
+            return 0
+        if t == "call":
+            name: str = elem(elem(stmt, 1), 1).s
+            if name == "print":
+                val: JValue = elem(elem(stmt, 2), 0)
+                self.emit('printf("%lld\\n", ' + self.expr(val) + ");")
+            return 0
+        if t == "if":
+            self.emit("if " + self.expr(elem(stmt, 1)) + " {")
+            self.indent += 1
+            self.gen_stmts(elem(stmt, 2))
+            self.indent -= 1
+            self.emit("}")
+            if len(stmt.arr) > 3:
+                orelse: JValue = elem(stmt, 3)
+                if len(orelse.arr) > 0:
+                    self.emit("else {")
+                    self.indent += 1
+                    self.gen_stmts(orelse)
+                    self.indent -= 1
+                    self.emit("}")
+            return 0
+        if t == "while":
+            self.emit("while " + self.expr(elem(stmt, 1)) + " {")
+            self.indent += 1
+            self.gen_stmts(elem(stmt, 2))
+            self.indent -= 1
+            self.emit("}")
+            return 0
+        return 0
+
+
+def main() -> int:
+    src: str = read_stdin()
+    parser: Json = Json(src, 0)
+    root: JValue = parser.value()
+    gen: Gen = Gen("", 0, [])
+    gen.emit("#include <stdio.h>")
+    gen.emit("int main(void) {")
+    gen.indent = 1
+    gen.gen_stmts(elem(root, 1))
+    gen.emit("return 0;")
+    gen.indent = 0
+    gen.emit("}")
+    print(gen.out, end="")
+    return 0
