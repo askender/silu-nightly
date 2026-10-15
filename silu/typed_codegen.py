@@ -9688,6 +9688,26 @@ class TypedCodegen(SiluToLLVMConverter):
                     ir.PointerType(self.pyobj.pyobj_type), None
                 ))
 
+            if func_name == "fmt" and args_node:
+                # fmt(parts...): concatenate str() of every arg (the
+                # f-string desugar target - one buffer, no intermediate
+                # joins at the source level)
+                empty = self.current_builder.call(
+                    self.create_str,
+                    [
+                        self._create_global_string(""),
+                        ir.Constant(ir.IntType(32), 0),
+                    ],
+                )
+                acc = empty
+                for arg_node in args_node:
+                    boxed = self._box(self._convert_node(arg_node))
+                    as_str = self.current_builder.call(
+                        self.pyobj_str_conv, [boxed]
+                    )
+                    acc = self.current_builder.call(self.pyobj_add, [acc, as_str])
+                return (OBJ, acc)
+
             if func_name == "float" and len(args_node) == 1:
                 # float(x): numbers coerce directly; strings parse
                 # through strtod (Python float())

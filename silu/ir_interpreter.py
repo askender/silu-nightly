@@ -65,6 +65,7 @@ class IRInterpreter:
             "enumerate": enumerate,
             "SystemExit": SystemExit,
             "input": lambda prompt="": input(prompt),
+            "fmt": lambda *args: "".join(str(a) for a in args),
         }
 
     # ================== Main Execution Methods ==================

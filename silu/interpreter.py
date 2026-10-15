@@ -861,6 +861,20 @@ class SiluInterpreter(BaseASTProcessor):
             f"match pattern {type(pattern).__name__} is not supported"
         )
 
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> Any:
+        """f-string: concatenate parts, converting each expr with str()."""
+        out = ""
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                out += value.value
+            elif isinstance(value, ast.FormattedValue):
+                if value.format_spec is not None or value.conversion != -1:
+                    raise NotImplementedError(
+                        "f-string format specs/conversions are not supported"
+                    )
+                out += str(self.visit(value.value))
+        return out
+
     def visit_IfExp(self, node: ast.IfExp) -> Any:
         """Handle conditional expressions (ternary operator): value if test else other_value"""
         test_result = self.visit(node.test)

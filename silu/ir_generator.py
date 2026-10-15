@@ -272,6 +272,26 @@ class SiluIRGenerator(BaseASTProcessor):
 
     # ================== Assignment Overrides for IR Generation ==================
 
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> Any:
+        """f-string: one fmt(...) call - literals as const str parts,
+        {expr} as raw expressions (fmt converts). The same desugar is
+        implemented in selfhost/silu_fe.si."""
+        parts = []
+        for value in node.values:
+            if isinstance(value, ast.Constant):
+                if value.value == "":
+                    continue
+                parts.append(("const", value.value))
+            elif isinstance(value, ast.FormattedValue):
+                if value.format_spec is not None or value.conversion != -1:
+                    raise NotImplementedError(
+                        "f-string format specs/conversions are not supported"
+                    )
+                parts.append(self.visit(value.value))
+        if not parts:
+            return ("const", "")
+        return ("call", ("name", "fmt"), tuple(parts), ())
+
     def visit_Assign(self, node: ast.Assign) -> Any:
         """Override assignment to handle multiple targets for IR generation."""
         value = self.visit(node.value)

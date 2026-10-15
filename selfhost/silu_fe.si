@@ -15,6 +15,7 @@ class TokKind(Enum):
     KW = 4
     NL = 5
     END = 6
+    FSTR = 7
 
 
 class Token:
@@ -98,6 +99,19 @@ class Lexer:
             if self.depth > 0:
                 return self.next_token()
             return Token(TokKind.NL, "\n", line, col)
+        if (c == 102 or c == 70) and (self.peek2_cp() == 34 or self.peek2_cp() == 39):
+            # f-string: 'f' + quote ... quote, raw text (braces intact)
+            q0: int = self.peek2_cp()
+            self.advance()
+            self.advance()
+            startf: int = self.pos
+            while self.pos < len(self.src) and self.peek_cp() != q0:
+                if self.peek_cp() == 92:
+                    self.advance()
+                self.advance()
+            rawf: str = self.src[startf:self.pos]
+            self.advance()  # closing quote
+            return Token(TokKind.FSTR, rawf, line, col)
         if self.is_name_start_cp(c):
             start: int = self.pos
             while self.pos < len(self.src) and self.is_name_char_cp(self.peek_cp()):
@@ -578,6 +592,49 @@ class Parser:
             cases.append(["match_case", pattern, guard, body])
         return ["match", subject, cases]
 
+    def parse_fstring(self, raw: str) -> object:
+        # desugar f".." exactly like the reference front end: one
+        # fmt(...) call - literal parts ({{ }} unescaped) as const
+        # strings, {expr} parts re-lexed and parsed as expressions
+        parts = []
+        lit = ""
+        i: int = 0
+        n: int = len(raw)
+        while i < n:
+            ch = raw[i]
+            if ch == "{" and i + 1 < n and raw[i + 1] == "{":
+                lit = lit + "{"
+                i += 2
+            elif ch == "}" and i + 1 < n and raw[i + 1] == "}":
+                lit = lit + "}"
+                i += 2
+            elif ch == "{":
+                if lit != "":
+                    parts.append(["const", unescape(lit)])
+                    lit = ""
+                j: int = i + 1
+                while j < n and raw[j] != "}":
+                    j += 1
+                expr_src: str = raw[i + 1 : j]
+                sub_lexer: Lexer = Lexer(expr_src, 0, 1, 0, 0)
+                sub_toks: list[Token] = []
+                while True:
+                    st: Token = sub_lexer.next_token()
+                    sub_toks.append(st)
+                    if st.kind == TokKind.END:
+                        break
+                sub_parser: Parser = Parser(sub_toks, 0)
+                parts.append(sub_parser.parse_expr())
+                i = j + 1
+            else:
+                lit = lit + ch
+                i += 1
+        if lit != "":
+            parts.append(["const", unescape(lit)])
+        if len(parts) == 0:
+            return ["const", ""]
+        return ["call", ["name", "fmt"], parts, []]
+
     def parse_pattern(self) -> object:
         t = self.cur()
         # "_" lexes as a NAME, not a keyword
@@ -841,6 +898,9 @@ class Parser:
         if t.kind == TokKind.STR:
             self.nxt()
             return const_str(t)
+        if t.kind == TokKind.FSTR:
+            self.nxt()
+            return self.parse_fstring(t.text)
         if t.kind == TokKind.NAME:
             self.nxt()
             return ["name", t.text]
