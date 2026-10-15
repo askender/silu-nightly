@@ -10,6 +10,7 @@ written in Silu itself. Verified on three axes:
 3. End-to-end via M3: M4 IR -> selfhost/ir2c.si -> C -> clang -> parity.
 """
 
+import glob
 import json
 import os
 import shutil
@@ -347,7 +348,12 @@ def _round_trip(source_path):
     return out_file
 
 
-@pytest.mark.parametrize("source", SELFHOST_SOURCES)
+ROUNDTRIP_SOURCES = sorted(
+    glob.glob(f"{REPO}/benchmarks/*.si")
+) + SELFHOST_SOURCES
+
+
+@pytest.mark.parametrize("source", ROUNDTRIP_SOURCES)
 def test_round_trip_ir_fixed_point(source):
     """IR(source) == IR(to_source(IR(source))) - byte-identical, for
     every selfhost program including the front end itself."""

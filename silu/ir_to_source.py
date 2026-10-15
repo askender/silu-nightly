@@ -771,9 +771,9 @@ class IRToSourceConverter:
         right_str = self._convert_identifier_or_value(right)
 
         # Add parentheses if needed for nested operations
-        if self._needs_parentheses(left, op):
+        if self._needs_parentheses(left, op, side="left"):
             left_str = f"({left_str})"
-        if self._needs_parentheses(right, op):
+        if self._needs_parentheses(right, op, side="right"):
             right_str = f"({right_str})"
 
         return f"{left_str} {op} {right_str}"
@@ -803,9 +803,9 @@ class IRToSourceConverter:
         right_str = self.convert_to_source(right)
 
         # Add parentheses only if operands need them based on precedence
-        if self._needs_parentheses(left, op):
+        if self._needs_parentheses(left, op, side="left"):
             left_str = f"({left_str})"
-        if self._needs_parentheses(right, op):
+        if self._needs_parentheses(right, op, side="right"):
             right_str = f"({right_str})"
 
         return f"{left_str} {op} {right_str}"
@@ -863,36 +863,54 @@ class IRToSourceConverter:
         else:
             return str(value)
 
-    def _needs_parentheses(self, operand: Any, parent_op: str) -> bool:
-        """Determine if an operand needs parentheses based on operator precedence."""
+    # Operator precedence (higher number = tighter binding)
+    _PRECEDENCE = {
+        "or": 1,
+        "and": 2,
+        "not": 3,
+        "==": 4,
+        "!=": 4,
+        "<": 4,
+        ">": 4,
+        "<=": 4,
+        ">=": 4,
+        "is": 4,
+        "is not": 4,
+        "in": 4,
+        "not in": 4,
+        "+": 5,
+        "-": 5,
+        "*": 6,
+        "/": 6,
+        "//": 6,
+        "%": 6,
+        "**": 7,
+    }
+    _RIGHT_ASSOC = {"**"}
+
+    def _needs_parentheses(
+        self, operand: Any, parent_op: str, side: str = "right"
+    ) -> bool:
+        """Does the operand need parentheses under parent_op?
+
+        Left-associative operators: a same-precedence RIGHT operand
+        changes the tree (a - (b + c) vs a - b + c, a / (b * c) vs
+        a / b * c) so it is parenthesized; a same-precedence left
+        operand is not. ** is right-associative - the mirror image.
+        Unary (not/-) callers use the conservative right-side rule."""
         if not isinstance(operand, tuple) or len(operand) < 1:
             return False
-
         operand_op = operand[0]
-
-        # Operator precedence (higher number = higher precedence)
-        precedence = {
-            "or": 1,
-            "and": 2,
-            "not": 3,
-            "==": 4,
-            "!=": 4,
-            "<": 4,
-            ">": 4,
-            "<=": 4,
-            ">=": 4,
-            "+": 5,
-            "-": 5,
-            "*": 6,
-            "/": 6,
-            "//": 6,
-            "%": 6,
-            "**": 7,
-        }
-
-        parent_prec = precedence.get(parent_op, 10)
-        operand_prec = precedence.get(operand_op, 10)
-
+        if operand_op not in self._PRECEDENCE:
+            return False
+        parent_prec = self._PRECEDENCE.get(parent_op, 10)
+        operand_prec = self._PRECEDENCE[operand_op]
+        if parent_op in self._RIGHT_ASSOC:
+            if side == "left":
+                return operand_prec <= parent_prec
+            return operand_prec < parent_prec
+        if side == "right":
+            return operand_prec <= parent_prec
         return operand_prec < parent_prec
 
     def _get_indent(self, level: int) -> str:
