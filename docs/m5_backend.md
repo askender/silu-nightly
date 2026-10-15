@@ -114,8 +114,20 @@ get/len/has；`print` 家族（int/float/bool/str 的 Python 格式化——
   途中修的语义坑：**字符串的 < <= > >= 必须走字典序 str_cmp**
   （C 指针比较是错的——`ch >= "0"` 全部失真，Json.number 死循环
   的根因）；类解析链补 subscript（`node.arr[i].s` 型链）。
-- 待办：阶段 5（silu_fe.si 冲刺：容器迭代/推导式/int(s,base)/
-  join 等）。
+- **阶段 5 部分完成（2026-10-15）**：ir2c 获得动态值层（PObj
+  tagged union：nil/int/float/bool/str/list + pint/pstr/plist/pget/
+  plen/p_eq/p_truthy/pconcat/pappend）、`-> object` 函数（return
+  处装箱、isinstance/x[i]/x is None|True|False/转发参数推断两轮）、
+  for-in-range/str/obj/类实例迭代、enumerate(obj|str)、tuple 与
+  混合元素列表字面量（DLIT 静态构造）、`in`（dict/list/str 三种）、
+  容器真值、obj 参与的序比较、print(end=)、调用边界 obj↔静态
+  箱拆、call 边 str_mod（% 格式化）。
+  **状态**：`x`/`x=1`/`x: int=5`/顶层 class/enum/嵌套 def 等简单
+  程序经全链正确；**calc.si 级复杂输入在 json_emit 阶段有一个
+  未定位崩溃**；**typed 编译版 ir2c 与 pycompat 版存在字面量池
+  行为差异（278 vs 370 项）导致自举输出尚有 diff**。两项为 M5
+  收尾的最后缺口，记录待续。
+- 过程修复：silu_fe 不支持 `\` 续行（ir2c 源码 9 处合并单行）。
 
 ## 7. 实施顺序（每步可验证）
 

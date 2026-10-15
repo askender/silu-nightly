@@ -274,6 +274,8 @@ def anno_type(anno: JValue) -> str:
             return "bool"
         if nm == "str":
             return "str"
+        if nm == "object":
+            return "obj"
         if find_class(nm) is not None:
             return nm
         return "int"
@@ -299,6 +301,8 @@ def cty(ty: str) -> str:
         return "Str*"
     if ty == "none":
         return "void"
+    if ty == "obj":
+        return "PObj*"
     if ty == "list" or ty.startswith("list:"):
         return "List*"
     if ty == "dict" or ty.startswith("dict:"):
@@ -325,6 +329,11 @@ class Gen:
     types: list[str]
     lits: list[str]
     lit_index: list[int]
+    decls: list[str]
+    g_names: list[str]
+    g_types: list[str]
+    litlists: list[str]
+    cur_ret: str
 
     def emit(self, line: str) -> int:
         pad: str = "    "
@@ -386,6 +395,35 @@ class Gen:
             i += 1
         return '"' + out + '"'
 
+    def cond_text(self, a: TE) -> str:
+        # Python truthiness: empty containers are false even though the
+        # C pointer is non-null
+        if a.ty == "obj":
+            return "p_truthy(" + a.text + ")"
+        if a.ty == "str":
+            return "((" + a.text + ")->cp != 0)"
+        if a.ty.startswith("list:") or a.ty == "list" or a.ty.startswith("dict:") or a.ty == "dict":
+            return "((" + a.text + ")->len != 0)"
+        return a.text
+
+    def box_te(self, a: TE) -> str:
+        # wrap a typed expression text into a PObj* constructor
+        if a.ty == "obj":
+            return a.text
+        if a.ty == "int":
+            return "pint(" + a.text + ")"
+        if a.ty == "float":
+            return "pfloat(" + a.text + ")"
+        if a.ty == "bool":
+            return "pbool(" + a.text + ")"
+        if a.ty == "str":
+            return "pstr(" + a.text + ")"
+        if a.ty.startswith("list:") or a.ty == "list":
+            return "plist(" + a.text + ")"
+        if a.ty == "JValue" and find_class("JValue") is not None:
+            return "pjv(" + a.text + ")"
+        return "pnil()"
+
     # ---- variable table ----
 
     def var_type(self, name: str) -> str:
@@ -393,6 +431,11 @@ class Gen:
         while i < len(self.names):
             if self.names[i] == name:
                 return self.types[i]
+            i += 1
+        i = 0
+        while i < len(self.g_names):
+            if self.g_names[i] == name:
+                return self.g_types[i]
             i += 1
         return "int"
 
@@ -526,19 +569,39 @@ class Gen:
             base: TE = self.expr(node.arr[1])
             key: JValue = node.arr[2]
             if tag(key) == "slice":
-                lo: TE = self.expr(key.arr[1])
-                hi: TE = self.expr(key.arr[2])
-                return te("str_slice(" + base.text + ", " + lo.text + ", " + hi.text + ")", "str")
+                lo_s: str = "0"
+                if key.arr[1].kind != JKind.NIL:
+                    lo_s = self.expr(key.arr[1]).text
+                hi_s: str = "(" + base.text + ")->cp"
+                if key.arr[2].kind != JKind.NIL:
+                    hi_s = self.expr(key.arr[2]).text
+                return te("str_slice(" + base.text + ", " + lo_s + ", " + hi_s + ")", "str")
             idx: TE = self.expr(key)
             if base.ty == "str":
                 return te("str_at(" + base.text + ", " + idx.text + ")", "str")
+            if base.ty == "obj":
+                return te("pget(" + base.text + ", " + idx.text + ")", "obj")
+            if base.ty == "JValue" and find_class("JValue") is not None:
+                # indexing a JSON-node instance yields a dynamic value
+                return te("pjv(list_get((" + base.text + ")->arr, " + idx.text + "))", "obj")
+            if find_class(base.ty) is not None:
+                return te("(" + base.ty + "*)list_get((" + base.text + ")->arr, " + idx.text + ")", base.ty)
             if base.ty == "dict" or base.ty.startswith("dict:"):
                 return te("dict_get(" + base.text + ", " + idx.text + ")", "int")
             if base.ty.startswith("list:"):
                 elem_ty: str = base.ty[5:]
+                raw: str = "list_get(" + base.text + ", " + idx.text + ")"
+                if elem_ty == "str":
+                    return te("(Str*)" + raw, "str")
+                if elem_ty == "float":
+                    return te("(*(double*)" + raw + ")", "float")
                 if find_class(elem_ty) is not None:
-                    return te("(" + elem_ty + "*)list_get(" + base.text + ", " + idx.text + ")", elem_ty)
-                return te("list_get(" + base.text + ", " + idx.text + ")", elem_ty)
+                    return te("(" + elem_ty + "*)" + raw, elem_ty)
+                return te(raw, elem_ty)
+            if base.ty == "list":
+                # unannotated list: element accesses read as strings
+                # (the idiom is name/text lists)
+                return te("(Str*)" + "list_get(" + base.text + ", " + idx.text + ")", "str")
             return te("list_get(" + base.text + ", " + idx.text + ")", "int")
         if (t == "-" or t == "+") and len(node.arr) == 2:
             # unary sign
@@ -551,6 +614,12 @@ class Gen:
             b: TE = self.expr(node.arr[2])
             if t == "+" and a.ty == "str" and b.ty == "str":
                 return te("str_add(" + a.text + ", " + b.text + ")", "str")
+            if t == "%" and a.ty == "str":
+                return te("str_mod(" + a.text + ", " + b.text + ")", "str")
+            if t == "+" and (a.ty == "obj" or b.ty == "obj"):
+                ba: str = self.box_te(a)
+                bb: str = self.box_te(b)
+                return te("pconcat(" + ba + ", " + bb + ")", "obj")
             op: str = t
             if op == "//":
                 if a.ty == "int" and b.ty == "int":
@@ -566,6 +635,15 @@ class Gen:
         if t == "<" or t == "<=" or t == ">" or t == ">=":
             a2: TE = self.expr(node.arr[1])
             b2: TE = self.expr(node.arr[2])
+            if a2.ty == "obj" or b2.ty == "obj":
+                # numeric view of a dynamic operand
+                ta2: str = a2.text
+                tb2: str = b2.text
+                if a2.ty == "obj":
+                    ta2 = "((int64_t)((" + a2.text + ")->i))"
+                if b2.ty == "obj":
+                    tb2 = "((int64_t)((" + b2.text + ")->i))"
+                return te("(" + ta2 + " " + t + " " + tb2 + ")", "bool")
             if a2.ty == "str" and b2.ty == "str":
                 # string ordering is lexicographic, never pointer order
                 return te("(str_cmp(" + a2.text + ", " + b2.text + ") " + t + " 0)", "bool")
@@ -573,6 +651,15 @@ class Gen:
         if t == "==" or t == "!=":
             a3: TE = self.expr(node.arr[1])
             b3: TE = self.expr(node.arr[2])
+            if a3.ty == "obj" or b3.ty == "obj":
+                if b3.ty == "str":
+                    r6: str = "p_eq_str(" + self.box_te(a3) + ", " + b3.text + ")"
+                    if t == "!=":
+                        r6 = "(!" + r6 + ")"
+                    return te("(" + r6 + ")", "bool")
+                ba3: str = self.box_te(a3)
+                bb3: str = self.box_te(b3)
+                return te("(p_eq(" + ba3 + ", " + bb3 + "))", "bool") if t == "==" else te("(!p_eq(" + ba3 + ", " + bb3 + "))", "bool")
             if a3.ty == "str" and b3.ty == "str":
                 fn: str = "str_eq"
                 if t == "!=":
@@ -588,33 +675,119 @@ class Gen:
         if t == "is" or t == "is not":
             a4: TE = self.expr(node.arr[1])
             rhs: JValue = node.arr[2]
-            null_t: str = "0"
-            if rhs.kind == JKind.NIL:
-                null_t = "0"
             op2: str = "=="
             if t == "is not":
                 op2 = "!="
-            return te("(" + a4.text + " " + op2 + " " + null_t + ")", "bool")
-        if t == "list":
-            # empty/inline list literal -> fresh list (elements push later)
-            return te("list_new()", "list")
+            if a4.ty == "obj":
+                # identity on PObj tags; None rides as ("const", None)
+                rhs_none2: bool = rhs.kind == JKind.NIL
+                if not rhs_none2 and rhs.kind == JKind.ARR and len(rhs.arr) >= 2 and tag(rhs) == "const" and rhs.arr[1].kind == JKind.NIL:
+                    rhs_none2 = True
+                if rhs_none2:
+                    body_is: str = "p_is(" + a4.text + ", 0)"
+                elif rhs.kind == JKind.ARR and len(rhs.arr) >= 2 and tag(rhs) == "const" and rhs.arr[1].n == 1 and rhs.arr[1].kind == JKind.NUM:
+                    body_is = "(p_is(" + a4.text + ", 3) && (" + a4.text + ")->i)"
+                elif rhs.kind == JKind.ARR and len(rhs.arr) >= 2 and tag(rhs) == "const" and rhs.arr[1].kind == JKind.NUM:
+                    body_is = "(p_is(" + a4.text + ", 3) && !(" + a4.text + ")->i)"
+                else:
+                    body_is = "p_is(" + a4.text + ", 3)"
+                if t == "is not":
+                    body_is = "(!" + body_is + ")"
+                return te("(" + body_is + ")", "bool")
+            return te("(" + a4.text + " " + op2 + " 0)", "bool")
+        if t == "list" or t == "tuple":
+            # elements ride in a wrapping array: [op, [e1, e2, ...]]
+            wrap: JValue = elem(node, 1)
+            n_e: int = 0
+            if wrap.kind == JKind.ARR:
+                n_e = len(wrap.arr)
+            if n_e == 0:
+                return te("list_new()", "list")
+            k: int = 0
+            all_const: bool = True
+            all_str: bool = True
+            while k < n_e:
+                ev: JValue = elem(wrap, k)
+                if ev.kind == JKind.NIL:
+                    all_const = False
+                elif ev.kind != JKind.ARR or len(ev.arr) == 0:
+                    all_const = False
+                elif tag(ev) != "const":
+                    all_const = False
+                else:
+                    cvl: JValue = elem(ev, 1)
+                    if cvl.kind != JKind.STR:
+                        all_str = False
+                k += 1
+            if not all_const:
+                # mixed dynamic elements: build a PObj list constructor
+                dname: str = "DLIT" + self.show_int(len(self.litlists))
+                dbody: list[str] = []
+                psig: str = "static PObj* " + dname + "("
+                k2: int = 0
+                while k2 < n_e:
+                    if k2 > 0:
+                        psig = psig + ", "
+                    psig = psig + "PObj* a" + self.show_int(k2)
+                    k2 += 1
+                if n_e == 0:
+                    psig = psig + "void"
+                psig = psig + ")"
+                dbody.append(psig + " { List* l = list_new();")
+                k3: int = 0
+                while k3 < n_e:
+                    dbody.append("    list_push(l, (int64_t)a" + self.show_int(k3) + ");")
+                    k3 += 1
+                dbody.append("    return plist(l); }")
+                self.litlists.append("\n".join(dbody))
+                args_s: str = ""
+                k4: int = 0
+                while k4 < n_e:
+                    ev4: TE = self.expr(elem(wrap, k4))
+                    one: str = self.box_te(ev4)
+                    if args_s == "":
+                        args_s = one
+                    else:
+                        args_s = args_s + ", " + one
+                    k4 += 1
+                return te(dname + "(" + args_s + ")", "obj")
+            fname: str = "LITL" + self.show_int(len(self.litlists))
+            body: list[str] = []
+            body.append("static List* " + fname + "(void) { List* l = list_new();")
+            k = 0
+            while k < n_e:
+                item: TE = self.expr(elem(wrap, k))
+                body.append("    list_push(l, (int64_t)(" + item.text + "));")
+                k += 1
+            body.append("    return l; }")
+            self.litlists.append("\n".join(body))
+            if all_str:
+                return te(fname + "()", "list:str")
+            return te(fname + "()", "list")
         if t == "dict":
             return te("dict_new()", "dict")
         if t == "in" or t == "not in":
             a_in: TE = self.expr(node.arr[1])
             b_in: TE = self.expr(node.arr[2])
-            call: str = "dict_has(" + b_in.text + ", " + a_in.text + ")"
+            call: str
+            if b_in.ty == "dict" or b_in.ty.startswith("dict:"):
+                call = "dict_has(" + b_in.text + ", " + a_in.text + ")"
+            elif b_in.ty == "str":
+                call = "str_in_str(" + a_in.text + ", " + b_in.text + ")"
+            else:
+                # tuple/list membership: linear string scan
+                call = "str_in_list(" + a_in.text + ", " + b_in.text + ")"
             if t == "not in":
                 call = "(!" + call + ")"
             return te("(" + call + ")", "bool")
         if t == "call":
             return self.call_expr(node)
         if t == "if_expr":
-            cond: TE = self.expr(node.arr[1])
+            cond0: TE = self.expr(node.arr[1])
             tv: TE = self.expr(node.arr[2])
             fv: TE = self.expr(node.arr[3])
             ty2: str = tv.ty
-            return te("(" + cond.text + " ? " + tv.text + " : " + fv.text + ")", ty2)
+            return te("(" + self.cond_text(cond0) + " ? " + tv.text + " : " + fv.text + ")", ty2)
         return te("0", "int")
 
     def and_rest(self, node: JValue) -> str:
@@ -646,18 +819,45 @@ class Gen:
         args: JValue = node.arr[2]
         if tag(callee) == "name":
             nm: str = callee.arr[1].s
+            if nm == "isinstance" and len(args.arr) > 0:
+                a0c: TE = self.expr(elem(args, 0))
+                cls_n: JValue = elem(args, 1)
+                cls_name: str = ""
+                if cls_n.kind == JKind.ARR and len(cls_n.arr) > 1 and tag(cls_n) == "name":
+                    cls_name = cls_n.arr[1].s
+                elif cls_n.kind == JKind.ARR and len(cls_n.arr) > 1 and tag(cls_n) == "tuple":
+                    cls_name = cls_n.arr[1].arr[1].arr[1].s
+                tag_n: int = 1
+                if cls_name == "float":
+                    tag_n = 2
+                elif cls_name == "bool":
+                    tag_n = 3
+                elif cls_name == "str":
+                    tag_n = 4
+                elif cls_name == "list" or cls_name == "tuple":
+                    tag_n = 5
+                abox: str = a0c.text
+                if a0c.ty == "JValue" and find_class("JValue") is not None:
+                    abox = "pjv(" + a0c.text + ")"
+                return te("p_is(" + abox + ", " + self.show_int(tag_n) + ")", "bool")
             if nm == "len":
                 a: TE = self.expr(elem(args, 0))
+                if a.ty == "obj":
+                    return te("plen(" + a.text + ")", "int")
                 if a.ty == "str":
                     return te("(" + a.text + ")->cp", "int")
                 return te("(" + a.text + ")->len", "int")
             if nm == "float":
                 a2: TE = self.expr(elem(args, 0))
+                if a2.ty == "obj":
+                    return te("((double)((" + a2.text + ")->f))", "float")
                 if a2.ty == "str":
                     return te("str_to_f64(" + a2.text + ")", "float")
                 return te("((double)(" + a2.text + "))", "float")
             if nm == "int":
                 a3: TE = self.expr(elem(args, 0))
+                if a3.ty == "obj":
+                    return te("((int64_t)((" + a3.text + ")->i))", "int")
                 if a3.ty == "str":
                     return te("str_to_i64(" + a3.text + ")", "int")
                 if a3.ty == "float":
@@ -665,6 +865,8 @@ class Gen:
                 return te(a3.text, "int")
             if nm == "str":
                 a4: TE = self.expr(elem(args, 0))
+                if a4.ty == "obj":
+                    return te("(pstr_of(" + a4.text + ")->s)", "str")
                 if a4.ty == "int":
                     return te("str_from_i64(" + a4.text + ")", "str")
                 if a4.ty == "float":
@@ -684,7 +886,7 @@ class Gen:
                 return te(nm + "__new(" + self.args_text(args) + ")", nm)
             fn: FnInfo = find_func(nm)
             if fn is not None:
-                return te("fn_" + nm + "(" + self.args_text(args) + ")", fn.ret)
+                return te("fn_" + nm + "(" + self.args_text_typed(args, fn.param_types, 0) + ")", fn.ret)
             return te("0", "int")
         if tag(callee) == "attribute":
             # method call: x.m(args) -> X__m(x, args)
@@ -698,7 +900,8 @@ class Gen:
                     ret: str = "none"
                     if fn2 is not None:
                         ret = fn2.ret
-                    extra: str = self.args_text(args)
+                    mfn2: FnInfo = find_func(m)
+                    extra = self.args_text_typed(args, mfn2.param_types, 1)
                     if extra == "":
                         return te(m + "(" + recv.text + ")", ret)
                     return te(m + "(" + recv.text + ", " + extra + ")", ret)
@@ -706,25 +909,51 @@ class Gen:
             recv2: TE = self.expr(callee.arr[1])
             mname: str = callee.arr[2].s
             arg0: TE = self.expr(elem(args, 0)) if len(args.arr) > 0 else te("", "none")
+            if mname == "startswith" or mname == "endswith":
+                fn_s: str = "str_starts_with"
+                if mname == "endswith":
+                    fn_s = "str_ends_with"
+                return te(fn_s + "(" + recv2.text + ", " + arg0.text + ")", "bool")
+            if mname == "join":
+                return te("str_join(" + arg0.text + ", " + recv2.text + ")", "str")
             if mname == "isdigit":
                 return te("str_isdigit(" + recv2.text + ")", "bool")
             if mname == "isalpha":
                 return te("str_isalpha(" + recv2.text + ")", "bool")
             if mname == "append":
+                if recv2.ty == "obj":
+                    return te("pappend(" + recv2.text + ", " + self.box_te(arg0) + ")", "none")
                 if recv2.ty.startswith("list:"):
                     return te("list_push(" + recv2.text + ", (int64_t)(" + arg0.text + "))", "none")
                 return te("list_push(" + recv2.text + ", (int64_t)(" + arg0.text + "))", "none")
         return te("0", "int")
 
     def args_text(self, args: JValue) -> str:
+        return self.args_text_typed(args, None, 0)
+
+    def args_text_typed(self, args: JValue, ptypes, skip: int) -> str:
         out: str = ""
         i: int = 0
         while i < len(args.arr):
             a: TE = self.expr(elem(args, i))
+            text: str = a.text
+            pi: int = i + skip
+            if ptypes is not None and pi < len(ptypes) and pi >= 0:
+                pt: str = ptypes[pi]
+                if pt == "str" and a.ty == "obj":
+                    text = "(pstr_of(" + a.text + ")->s)"
+                elif pt == "int" and a.ty == "obj":
+                    text = "((int64_t)((" + a.text + ")->i))"
+                elif pt == "float" and a.ty == "obj":
+                    text = "((double)((" + a.text + ")->f))"
+                elif pt == "bool" and a.ty == "obj":
+                    text = "((int64_t)((" + a.text + ")->i))"
+                elif pt == "obj" and a.ty != "obj":
+                    text = self.box_te(a)
             if out == "":
-                out = a.text
+                out = text
             else:
-                out = out + ", " + a.text
+                out = out + ", " + text
             i += 1
         return out
 
@@ -740,11 +969,24 @@ class Gen:
 
     def declare_or_assign(self, nm: str, val: TE) -> int:
         if self.var_declared(nm):
+            if self.var_type(nm) == "obj" and val.ty != "obj":
+                self.emit("v_" + nm + " = " + self.box_te(val) + ";")
+                return 0
             self.emit("v_" + nm + " = " + val.text + ";")
             return 0
         self.names.append(nm)
-        self.types.append(val.ty)
-        self.emit(cty(val.ty) + " v_" + nm + " = " + val.text + ";")
+        vty: str = val.ty
+        vinit: str = val.text
+        if vty == "none":
+            # a None-valued local is a dynamic slot
+            vty = "obj"
+            vinit = "pnil()"
+        self.types.append(vty)
+        # C blocks scope locals; Silu scopes them to the function, so
+        # the declaration is hoisted to the function head and only the
+        # assignment happens here
+        self.decls.append(cty(vty) + " v_" + nm + ";")
+        self.emit("v_" + nm + " = " + vinit + ";")
         return 0
 
     def gen_stmt(self, stmt: JValue) -> int:
@@ -764,7 +1006,8 @@ class Gen:
                     return 0
                 self.names.append(elem_str(stmt, 1))
                 self.types.append(aty)
-                self.emit(cty(aty) + " v_" + elem_str(stmt, 1) + " = " + val_a.text + ";")
+                self.decls.append(cty(aty) + " v_" + elem_str(stmt, 1) + ";")
+                self.emit("v_" + elem_str(stmt, 1) + " = " + val_a.text + ";")
                 return 0
             if stmt.arr[1].kind == JKind.STR:
                 # plain assign target is a bare string, not a node
@@ -787,7 +1030,8 @@ class Gen:
             if base_sa.ty == "dict" or base_sa.ty.startswith("dict:"):
                 self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
             else:
-                self.emit("list_set(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
+                # 8-byte slots: str/instance values ride as pointers
+                self.emit("list_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(" + val_sa.text + "));")
             return 0
         if t == "aug_assign":
             tgt: JValue = stmt.arr[1]
@@ -831,13 +1075,19 @@ class Gen:
         if t == "return":
             if len(stmt.arr) > 1 and stmt.arr[1].kind != JKind.NIL:
                 rv: TE = self.expr(elem(stmt, 1))
+                if self.cur_ret == "obj":
+                    self.emit("return " + self.box_te(rv) + ";")
+                    return 0
                 self.emit("return " + rv.text + ";")
+                return 0
+            if self.cur_ret == "obj":
+                self.emit("return pnil();")
                 return 0
             self.emit("return;")
             return 0
         if t == "if":
             cond: TE = self.expr(elem(stmt, 1))
-            self.emit("if (" + cond.text + ") {")
+            self.emit("if (" + self.cond_text(cond) + ") {")
             self.indent += 1
             self.gen_stmts(elem(stmt, 2))
             self.indent -= 1
@@ -850,9 +1100,11 @@ class Gen:
                     self.indent -= 1
             self.emit("}")
             return 0
+        if t == "for":
+            return self.gen_for(stmt)
         if t == "while":
             cond2: TE = self.expr(elem(stmt, 1))
-            self.emit("while (" + cond2.text + ") {")
+            self.emit("while (" + self.cond_text(cond2) + ") {")
             self.indent += 1
             self.gen_stmts(elem(stmt, 2))
             self.indent -= 1
@@ -916,6 +1168,113 @@ class Gen:
             self.emit(end_line)
         return 0
 
+    def gen_for(self, stmt: JValue) -> int:
+        target: JValue = stmt.arr[1]
+        iter_node: JValue = stmt.arr[2]
+        body: JValue = stmt.arr[3]
+        # for i in range(n) / range(a, b): plain counting loop
+        if tag(iter_node) == "call" and tag(iter_node.arr[1]) == "name" and iter_node.arr[1].arr[1].s == "range":
+            rargs: JValue = iter_node.arr[2]
+            rstart: str = "0"
+            rstop: TE = self.expr(elem(rargs, 0))
+            if len(rargs.arr) >= 2:
+                rstart = rstop.text
+                rstop = self.expr(elem(rargs, 1))
+            rv: str = "v_" + target.arr[1].s
+            self.decls.append("int64_t " + rv + ";")
+            self.emit("for (" + rv + " = " + rstart + "; " + rv + " < " + rstop.text + "; " + rv + "++) {")
+            self.indent += 1
+            self.names.append(target.arr[1].s)
+            self.types.append("int")
+            self.gen_stmts(body)
+            self.indent -= 1
+            self.emit("}")
+            return 0
+        # enumerate(obj) with a tuple target: counter + pget
+        if tag(iter_node) == "call" and tag(iter_node.arr[1]) == "name" and iter_node.arr[1].arr[1].s == "enumerate":
+            src_te: TE = self.expr(elem(iter_node.arr[2], 0))
+            if src_te.ty == "str":
+                sn0: str = target.arr[1].arr[0].s
+                sn1: str = target.arr[1].arr[1].s
+                ivs: str = "v_" + sn0
+                self.decls.append("int64_t " + ivs + ";")
+                self.emit("for (" + ivs + " = 0; " + ivs + " < (" + src_te.text + ")->cp; " + ivs + "++) {")
+                self.indent += 1
+                cvs: str = "v_" + sn1
+                self.decls.append("Str* " + cvs + ";")
+                self.emit(cvs + " = str_at(" + src_te.text + ", " + ivs + ");")
+                self.gen_stmts(body)
+                self.indent -= 1
+                self.emit("}")
+                self.names.append(sn0)
+                self.types.append("int")
+                self.names.append(sn1)
+                self.types.append("str")
+                return 0
+            tgt_arr: JValue = target.arr[1]
+            n0: str = tgt_arr.arr[0].s
+            n1: str = tgt_arr.arr[1].s
+            iv: str = "v_" + n0
+            self.decls.append("int64_t " + iv + ";")
+            self.emit("for (" + iv + " = 0; " + iv + " < plen(" + src_te.text + "); " + iv + "++) {")
+            self.indent += 1
+            xv: str = "v_" + n1
+            self.decls.append("PObj* " + xv + ";")
+            self.names.append(n0)
+            self.types.append("int")
+            self.names.append(n1)
+            self.types.append("obj")
+            self.emit(xv + " = pget(" + src_te.text + ", " + iv + ");")
+            self.gen_stmts(body)
+            self.indent -= 1
+            self.emit("}")
+            return 0
+        it: TE = self.expr(iter_node)
+        if it.ty == "str" and tag(target) == "name":
+            cvs2: str = "v_" + target.arr[1].s
+            ivs2: str = "v___i" + self.show_int(len(self.names))
+            self.decls.append("Str* " + cvs2 + ";")
+            self.decls.append("int64_t " + ivs2 + ";")
+            self.emit("for (" + ivs2 + " = 0; " + ivs2 + " < (" + it.text + ")->cp; " + ivs2 + "++) {")
+            self.indent += 1
+            self.names.append(target.arr[1].s)
+            self.types.append("str")
+            self.emit(cvs2 + " = str_at(" + it.text + ", " + ivs2 + ");")
+            self.gen_stmts(body)
+            self.indent -= 1
+            self.emit("}")
+            return 0
+        if it.ty != "obj" and find_class(it.ty) is not None:
+            # instance iteration walks the arr field (JValue trees)
+            tv_c: str = "v_" + target.arr[1].s
+            iv_c: str = "v___i" + self.show_int(len(self.names))
+            self.decls.append(it.ty + "* " + tv_c + ";")
+            self.decls.append("int64_t " + iv_c + ";")
+            self.emit("for (" + iv_c + " = 0; " + iv_c + " < ((" + it.text + ")->arr)->len; " + iv_c + "++) {")
+            self.indent += 1
+            self.emit(tv_c + " = (" + it.ty + "*)list_get((" + it.text + ")->arr, " + iv_c + ");")
+            self.gen_stmts(body)
+            self.indent -= 1
+            self.emit("}")
+            self.names.append(target.arr[1].s)
+            self.types.append(it.ty)
+            return 0
+        if tag(target) == "name":
+            tv: str = "v_" + target.arr[1].s
+            self.decls.append("PObj* " + tv + ";")
+            iv2: str = "v___i" + self.show_int(len(self.names))
+            self.decls.append("int64_t " + iv2 + ";")
+            self.emit("for (" + iv2 + " = 0; " + iv2 + " < plen(" + it.text + "); " + iv2 + "++) {")
+            self.indent += 1
+            self.names.append(target.arr[1].s)
+            self.types.append("obj")
+            self.emit(tv + " = pget(" + it.text + ", " + iv2 + ");")
+            self.gen_stmts(body)
+            self.indent -= 1
+            self.emit("}")
+            return 0
+        return 0
+
     def gen_match(self, stmt: JValue) -> int:
         subj: TE = self.expr(elem(stmt, 1))
         self.emit("{ int64_t m_subj = (int64_t)(" + subj.text + ");")
@@ -957,6 +1316,8 @@ class Gen:
     def gen_func(self, fn: FnInfo) -> int:
         self.names = []
         self.types = []
+        self.decls = []
+        self.cur_ret = fn.ret
         params: list[str] = fn.params
         ptypes: list[str] = fn.param_types
         sig: str = cty(fn.ret) + " " + "fn_" + fn.name + "("
@@ -974,17 +1335,38 @@ class Gen:
         if len(params) == 0:
             sig = sig + "void"
         sig = sig + ")"
+        start: int = len(self.out)
         self.emit(sig + " {")
         self.indent += 1
         self.gen_stmts(fn.body)
         self.indent -= 1
         self.emit("}")
+        self.splice_decls(start)
         self.emit("")
+        return 0
+
+    def splice_decls(self, start: int) -> int:
+        # insert the hoisted declarations right after the function's
+        # opening line (found by scanning for the first newline at/after
+        # start)
+        if len(self.decls) == 0:
+            return 0
+        k: int = start
+        while ord(self.out[k]) != 10:
+            k += 1
+        block: str = ""
+        i: int = 0
+        while i < len(self.decls):
+            block = block + "    " + self.decls[i] + "\n"
+            i += 1
+        self.out = self.out[: k + 1] + block + self.out[k + 1 :]
         return 0
 
     def gen_method(self, fn: FnInfo, cls: ClassInfo) -> int:
         self.names = []
         self.types = []
+        self.decls = []
+        self.cur_ret = fn.ret
         sig: str = cty(fn.ret) + " " + fn.name + "(" + cls.name + "* v_self"
         self.names.append("self")
         self.types.append(cls.name)
@@ -1000,11 +1382,13 @@ class Gen:
             sig = sig + ", " + cty(pt) + " v_" + params[i]
             i += 1
         sig = sig + ")"
+        start2: int = len(self.out)
         self.emit(sig + " {")
         self.indent += 1
         self.gen_stmts(fn.body)
         self.indent -= 1
         self.emit("}")
+        self.splice_decls(start2)
         self.emit("")
         return 0
 
@@ -1030,7 +1414,10 @@ def collect(mod: JValue) -> int:
                 mname0: str = member0.arr[0].s
                 mval0: int = auto0
                 if member0.arr[1].kind != JKind.NIL:
-                    mval0 = member0.arr[1].n
+                    mv0: JValue = member0.arr[1]
+                    if mv0.kind == JKind.ARR and len(mv0.arr) >= 2 and tag(mv0) == "const":
+                        # explicit value rides as a ("const", n) node
+                        mval0 = mv0.arr[1].n
                 e0.member_names.append(mname0)
                 e0.member_vals.append(mval0)
                 auto0 += 1
@@ -1100,20 +1487,91 @@ def collect(mod: JValue) -> int:
 
 
 def infer_params() -> int:
-    # unannotated params: default str if the body subscripts/len's them
+    # unannotated params: isinstance use marks obj, indexing marks str;
+    # a second round catches plain forwarding into an obj-typed
+    # parameter (json_dumps(node) -> json_emit(node, ...))
     i: int = 0
     while i < len(FUNCS):
         fn: FnInfo = FUNCS[i]
         j: int = 0
         while j < len(fn.param_types):
             if fn.param_types[j] == "":
-                if body_uses_as_str(fn.body, fn.params[j]):
+                if body_uses_as_obj(fn.body, fn.params[j]):
+                    fn.param_types[j] = "obj"
+                elif body_uses_as_str(fn.body, fn.params[j]):
                     fn.param_types[j] = "str"
                 else:
                     fn.param_types[j] = "int"
             j += 1
         i += 1
+    i = 0
+    while i < len(FUNCS):
+        fn2: FnInfo = FUNCS[i]
+        j2: int = 0
+        while j2 < len(fn2.param_types):
+            if fn2.param_types[j2] == "int":
+                if body_forwards_to_obj(fn2.body, fn2.params[j2]):
+                    fn2.param_types[j2] = "obj"
+            j2 += 1
+        i += 1
     return 0
+
+
+def body_forwards_to_obj(node: JValue, name: str) -> bool:
+    if node.kind == JKind.NIL:
+        return False
+    if node.kind == JKind.ARR:
+        n: int = len(node.arr)
+        if n >= 3 and tag(node) == "call" and tag(node.arr[1]) == "name":
+            callee_n: str = node.arr[1].arr[1].s
+            callee: FnInfo = find_func(callee_n)
+            if callee is not None:
+                args_n: JValue = node.arr[2]
+                if args_n.kind == JKind.ARR:
+                    k: int = 0
+                    while k < len(args_n.arr):
+                        av: JValue = elem(args_n, k)
+                        if av.kind == JKind.ARR and tag(av) == "name" and av.arr[1].s == name:
+                            if k < len(callee.param_types) and callee.param_types[k] == "obj":
+                                return True
+                        k += 1
+        i: int = 0
+        while i < n:
+            if body_forwards_to_obj(elem(node, i), name):
+                return True
+            i += 1
+        return False
+    return False
+
+
+def body_uses_as_obj(node: JValue, name: str) -> bool:
+    if node.kind == JKind.NIL:
+        return False
+    if node.kind == JKind.ARR:
+        n: int = len(node.arr)
+        # `x is None` / `x is not None` marks a dynamic parameter
+        if n >= 3 and (tag(node) == "is" or tag(node) == "is not"):
+            lhs_n: JValue = node.arr[1]
+            rhs_n: JValue = node.arr[2]
+            rhs_none: bool = rhs_n.kind == JKind.NIL
+            if not rhs_none and rhs_n.kind == JKind.ARR and len(rhs_n.arr) >= 2 and tag(rhs_n) == "const" and rhs_n.arr[1].kind == JKind.NIL:
+                rhs_none = True
+            if rhs_none and lhs_n.kind == JKind.ARR and tag(lhs_n) == "name" and lhs_n.arr[1].s == name:
+                return True
+        # isinstance(x, ...) marks a dynamic parameter
+        if n >= 3 and tag(node) == "call" and tag(node.arr[1]) == "name" and node.arr[1].arr[1].s == "isinstance":
+            a0: JValue = node.arr[2]
+            if a0.kind == JKind.ARR and len(a0.arr) > 0:
+                first: JValue = a0.arr[0]
+                if first.kind == JKind.ARR and tag(first) == "name" and first.arr[1].s == name:
+                    return True
+        i: int = 0
+        while i < n:
+            if body_uses_as_obj(elem(node, i), name):
+                return True
+            i += 1
+        return False
+    return False
 
 
 def body_uses_as_str(node: JValue, name: str) -> bool:
@@ -1124,6 +1582,16 @@ def body_uses_as_str(node: JValue, name: str) -> bool:
         n: int = len(node.arr)
         if n >= 3 and tag(node) == "subscript" and tag(node.arr[1]) == "name" and node.arr[1].arr[1].s == name:
             return True
+        # for x in name / enumerate(name): string iteration
+        if n >= 3 and tag(node) == "for":
+            iv_node: JValue = node.arr[2]
+            if iv_node.kind == JKind.ARR:
+                inner: JValue = iv_node
+                if tag(inner) == "call" and inner.arr[2].kind == JKind.ARR and len(inner.arr[2].arr) > 0:
+                    first_a: JValue = inner.arr[2].arr[0]
+                    inner = first_a
+                if tag(inner) == "name" and inner.arr[1].s == name:
+                    return True
         i: int = 0
         while i < n:
             if body_uses_as_str(elem(node, i), name):
@@ -1153,6 +1621,7 @@ RUNTIME: list[str] = [
     "}",
     "static Str* str_of(const char* s) { return str_new(s, (int64_t)strlen(s)); }",
     "static int64_t str_cp_off(Str* s, int64_t idx) {",
+    "    if (s->len == s->cp) return idx; /* ASCII fast path */",
     "    int64_t o = 0, i = 0;",
     "    while (i < idx && o < s->len) { unsigned char b = (unsigned char)s->data[o]; o += b < 0x80 ? 1 : (b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4)); i++; }",
     "    return o;",
@@ -1196,6 +1665,30 @@ RUNTIME: list[str] = [
     "static void dict_set(Dict* d, Str* k, int64_t v) { if (d->cnt * 2 >= d->cap) dict_grow(d); int64_t j = str_hash(k) % d->cap; while (d->ents[j].used && !str_eq(d->ents[j].key, k)) j = (j + 1) % d->cap; if (!d->ents[j].used) { d->ents[j].used = 1; d->ents[j].key = k; d->cnt++; } d->ents[j].val = v; }",
     "static int64_t dict_has(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return 1; j = (j + 1) % d->cap; } return 0; }",
     "static int64_t dict_get(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return d->ents[j].val; j = (j + 1) % d->cap; } return 0; }",
+    "static int str_starts_with(Str* s, Str* p) { return s->len >= p->len && memcmp(s->data, p->data, p->len) == 0; }",
+    "static int str_ends_with(Str* s, Str* p) { return s->len >= p->len && memcmp(s->data + s->len - p->len, p->data, p->len) == 0; }",
+    "static Str* str_join(List* l, Str* sep) { int64_t total = 0; for (int64_t i = 0; i < l->len; i++) { if (i) total += sep->len; total += ((Str*)l->items[i])->len; } char* buf = silu_malloc(total); int64_t o = 0; for (int64_t i = 0; i < l->len; i++) { Str* s = (Str*)l->items[i]; if (i) { memcpy(buf + o, sep->data, sep->len); o += sep->len; } memcpy(buf + o, s->data, s->len); o += s->len; } return str_new(buf, total); }",
+    "typedef struct { int tag; int64_t i; double f; Str* s; List* items; } PObj; /* 0 nil 1 int 2 float 3 bool 4 str 5 list */",
+    "static PObj* pmake(int tag) { PObj* o = silu_malloc(sizeof(PObj)); o->tag = tag; o->i = 0; o->f = 0; o->s = 0; o->items = 0; return o; }",
+    "static PObj* pint(int64_t v) { PObj* o = pmake(1); o->i = v; return o; }",
+    "static PObj* pfloat(double v) { PObj* o = pmake(2); o->f = v; return o; }",
+    "static PObj* pbool(int64_t v) { PObj* o = pmake(3); o->i = !!v; return o; }",
+    "static PObj* pstr(Str* v) { PObj* o = pmake(4); o->s = v; return o; }",
+    "static PObj* plist(List* v) { PObj* o = pmake(5); o->items = v; return o; }",
+    "static PObj* pnil(void) { return pmake(0); }",
+    "static int p_is(PObj* o, int tag) { return o->tag == tag; }",
+    "static int64_t plen(PObj* o) { return o->tag == 4 ? o->s->cp : (o->tag == 5 ? o->items->len : 0); }",
+    "static PObj* pget(PObj* o, int64_t i) { if (o->tag == 5) { PObj* e = (PObj*)list_get(o->items, i); return e ? e : pnil(); } if (o->tag == 4) return pstr(str_at(o->s, i)); return pnil(); }",
+    "static PObj* pstr_of(PObj* o) { switch (o->tag) { case 0: return pstr(str_of(\"None\")); case 1: return pstr(str_from_i64(o->i)); case 2: return pstr(str_from_f64(o->f)); case 3: return pstr(str_of(o->i ? \"True\" : \"False\")); default: return pstr(o->s); } }",
+    "static PObj* pjv(void* jv);",
+    "static int p_eq(PObj* a, PObj* b) { if (a->tag != b->tag) return 0; switch (a->tag) { case 1: return a->i == b->i; case 2: return a->f == b->f; case 3: return a->i == b->i; case 4: return str_eq(a->s, b->s); case 5: { if (a->items->len != b->items->len) return 0; for (int64_t i = 0; i < a->items->len; i++) if (!p_eq((PObj*)list_get(a->items, i), (PObj*)list_get(b->items, i))) return 0; return 1; } default: return 1; } }",
+    "static int p_eq_str(PObj* o, Str* s) { return o->tag == 4 && str_eq(o->s, s); }",
+    "static Str* str_mod(Str* fmt, int64_t v) { char buf[64]; const char* f = fmt->data; char* o = buf; while (*f) { if (*f == '%' && f[1]) { f++; if (*f == 'd') { o += sprintf(o, \"%lld\", (long long)v); } else if (*f == 'x') { o += sprintf(o, \"%llx\", (unsigned long long)v); } else if (*f == 's') { o += sprintf(o, \"%lld\", (long long)v); } else { int w = 0; while (*f >= '0' && *f <= '9') { w = w * 10 + (*f - '0'); f++; } if (*f == 'x') { o += sprintf(o, \"%0*llx\", w, (unsigned long long)v); } else { o += sprintf(o, \"%lld\", (long long)v); } } f++; } else { *o++ = *f++; } } *o = 0; return str_of(buf); }",
+    "static int str_in_str(Str* needle, Str* hay) { if (needle->len == 0) return 1; for (int64_t i = 0; i + needle->len <= hay->len; i++) if (memcmp(hay->data + i, needle->data, needle->len) == 0) return 1; return 0; }",
+    "static int str_in_list(Str* s, List* l) { for (int64_t i = 0; i < l->len; i++) if (str_eq(s, (Str*)list_get(l, i))) return 1; return 0; }",
+    "static int p_truthy(PObj* o) { switch (o->tag) { case 0: return 0; case 1: case 3: return o->i != 0; case 2: return o->f != 0; case 4: return o->s->cp != 0; case 5: return o->items->len != 0; default: return 0; } }",
+    "static void pappend(PObj* l, PObj* v) { if (l->tag != 5) return; list_push(l->items, (int64_t)v); }",
+    "static PObj* pconcat(PObj* a, PObj* b) { List* l = list_new(); if (a->tag == 5) for (int64_t i = 0; i < a->items->len; i++) list_push(l, list_get(a->items, i)); if (b->tag == 5) for (int64_t i = 0; i < b->items->len; i++) list_push(l, list_get(b->items, i)); PObj* o = pmake(5); o->items = l; return o; }",
     "static int64_t silu_fdiv(int64_t a, int64_t b) { int64_t q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }",
     "static Str* read_line(void) { char buf[4096]; if (!fgets(buf, 4096, stdin)) return str_of(\"\"); int64_t n = (int64_t)strlen(buf); if (n && buf[n-1] == '\\n') n--; return str_new(buf, n); }",
     "static Str* read_stdin_all(void) { int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, stdin)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } return str_new(buf, len); }",
@@ -1222,7 +1715,16 @@ def main() -> int:
     root: JValue = parser.value()
     collect(root)
     infer_params()
-    gen: Gen = Gen("", 0, [], [], [], [])
+    # module-level variable types (functions reference them)
+    gen0: Gen = Gen("", 0, [], [], [], [], [], [], [], [], "none")
+    mv: int = 0
+    while mv < len(elem(root, 1).arr):
+        mst: JValue = elem(elem(root, 1), mv)
+        if tag(mst) == "ann_assign" and mst.arr[2].kind != JKind.NIL:
+            gen0.g_names.append(elem_str(mst, 1))
+            gen0.g_types.append(anno_type(mst.arr[3]))
+        mv += 1
+    gen: Gen = Gen("", 0, [], [], [], [], [], gen0.g_names, gen0.g_types, [], "none")
     i: int = 0
     while i < len(RUNTIME):
         gen.emit(RUNTIME[i])
@@ -1273,6 +1775,17 @@ def main() -> int:
         gen.emit("};")
         gen.emit("")
         j += 1
+    mod_mark: int = len(gen.out)
+    if find_class("JValue") is not None:
+        # JValue (the JSON-node class) bridges into the dynamic layer;
+        # programs without it never index class instances dynamically
+        gen.emit("PObj* pjv(void* jv) { JValue* j = (JValue*)jv;")
+        gen.emit("    if (j->kind == JKind_BOOL) return pint(j->n);")
+        gen.emit("    if (j->kind == JKind_NUM) return pint(j->n);")
+        gen.emit("    if (j->kind == JKind_STR) return pstr(j->s);")
+        gen.emit("    if (j->kind == JKind_ARR) { PObj* o = pmake(5); o->items = j->arr; return o; }")
+        gen.emit("    if (j->kind == JKind_OBJ) return pstr(j->key);")
+        gen.emit("    return pnil(); }")
     # prototypes for methods and constructors (used before defined)
     j = 0
     while j < len(FUNCS):
@@ -1344,9 +1857,11 @@ def main() -> int:
         if fn3.cls == "":
             gen.gen_func(fn3)
         j += 1
-    # entry
+    # entry; module-level variables become file-scope statics (spliced
+    # at mod_mark, right after the struct definitions)
     gen.names = []
     gen.types = []
+    gen.decls = []
     gen.emit("int main(void) {")
     gen.indent = 1
     top: JValue = elem(root, 1)
@@ -1363,6 +1878,14 @@ def main() -> int:
         gen.emit("return 0;")
     gen.indent = 0
     gen.emit("}")
+    # splice the module-level declarations BEFORE main as statics
+    if len(gen.decls) > 0:
+        block2: str = ""
+        di: int = 0
+        while di < len(gen.decls):
+            block2 = block2 + "static " + gen.decls[di] + "\n"
+            di += 1
+        gen.out = gen.out[:mod_mark] + block2 + gen.out[mod_mark:]
     # string literal pool (needs to be at file scope: emit at end)
     lit_lines: list[str] = []
     if len(gen.lits) > 0:
@@ -1383,6 +1906,11 @@ def main() -> int:
     while i4 < len(lit_lines):
         pool = pool + lit_lines[i4] + "\n"
         i4 += 1
+    # literal-list constructors join the pool splice
+    i5: int = 0
+    while i5 < len(gen.litlists):
+        pool = pool + gen.litlists[i5] + "\n"
+        i5 += 1
     # the pool references Str/str_of: splice it after the runtime
     # prelude (whose line count we know) instead of before everything
     nl: int = 0
