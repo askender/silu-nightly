@@ -5802,10 +5802,17 @@ class TypedCodegen(SiluToLLVMConverter):
                 and len(callee) >= 3
                 and callee[0] == "attribute"
             ):
-                # method call: st.other() chains keep the receiver's class
-                # only when the method returns the receiver's class - not
-                # knowable here; methods returning instances are rare
-                return None
+                # method call: the mangled method's return class, same
+                # bookkeeping as plain functions (self.cur() -> Token)
+                recv_class = self._class_of_node(callee[1])
+                if recv_class is None:
+                    return None
+                mangled = self._class_layouts[recv_class]["methods"].get(
+                    callee[2]
+                )
+                if mangled is None:
+                    return None
+                return self._call_ret_class.get(mangled)
             return None
         return None
 
@@ -6530,6 +6537,11 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.current_builder.ret(
                         ir.Constant(LLVM_KIND_TYPES[INSTANCE], None)
                     )
+                elif ret_kind in RAWLIST_KINDS or ret_kind in RAWDICT_KINDS:
+                    # missing return: an empty raw container
+                    self.current_builder.ret(
+                        ir.Constant(LLVM_KIND_TYPES[ret_kind], None)
+                    )
                 else:
                     zero = {
                         I64: ir.Constant(ir.IntType(64), 0),
@@ -7032,6 +7044,31 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (annotation_kind, raw_ptr)
             value = self._convert_node(value_node)
             if isinstance(target, str) and value[1] is not None:
+                if value[0] == INSTANCE and annotation_kind in (None, OBJ):
+                    # an unannotated name bound to an instance: declare it
+                    # INSTANCE and record the class (t = self.cur())
+                    ctor = self._constructor_call_class(value_node)
+                    cls = (
+                        ctor
+                        or self._call_ret_class.get(
+                            value_node[1][1]
+                            if (
+                                isinstance(value_node, list)
+                                and len(value_node) >= 2
+                                and value_node[0] == "call"
+                                and isinstance(value_node[1], list)
+                                and len(value_node[1]) >= 2
+                                and value_node[1][0] == "name"
+                            )
+                            else ""
+                        )
+                        or self._class_of_node(value_node)
+                    )
+                    self._declare_var(target, INSTANCE)
+                    if cls is not None:
+                        self._var_class[target] = cls
+                    self.current_builder.store(value[1], self.variables[target])
+                    return value
                 if annotation_kind == RAWSTR and value[0] == RAWSTR:
                     # a name aliases another slot's buffer, so assigning
                     # it must copy (exclusive ownership); an expression
@@ -7334,11 +7371,33 @@ class TypedCodegen(SiluToLLVMConverter):
                 node[2] is None
                 or (isinstance(node[2], list) and node[2][:2] == ["const", None])
             )
-            if left_is_none and not right_is_none:
-                result = is_null(right)
-            elif right_is_none and not left_is_none:
-                result = is_null(left)
+            # x is None / x is not None: the NON-None side carries the
+            # nullness test (comparing the None literal against itself
+            # would be a constant true)
+            if right_is_none or left_is_none:
+                result = is_null(left) if right_is_none else is_null(right)
+            elif (
+                isinstance(node[2], list)
+                and len(node[2]) >= 2
+                and node[2][0] == "const"
+                and isinstance(node[2][1], bool)
+            ):
+                cond = self._to_i1_cond(left)
+                result = cond if node[2][1] else self.current_builder.not_(cond)
+            elif (
+                isinstance(node[1], list)
+                and len(node[1]) >= 2
+                and node[1][0] == "const"
+                and isinstance(node[1][1], bool)
+            ):
+                cond = self._to_i1_cond(right)
+                result = cond if node[1][1] else self.current_builder.not_(cond)
             elif left[0] == INSTANCE and right[0] == INSTANCE:
+                result = self.current_builder.icmp_signed("==", left[1], right[1])
+            elif left[0] == I64 and right[0] == I64:
+                # Python `is` on ints is identity-implementational; Silu
+                # treats it as value equality for machine ints (the only
+                # stable meaning on an unboxed representation)
                 result = self.current_builder.icmp_signed("==", left[1], right[1])
             else:
                 raise NotImplementedError(
@@ -7532,8 +7591,15 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, null_obj)
 
         if op == "list":
+            element_nodes = node[1] if len(node) > 1 else []
+            # a list literal of instances ([Token(1), ...]) becomes a raw
+            # pointer array: elements ride as words, same as list[Token]
+            if element_nodes and all(
+                self._instance_expr_kind(elem_node) for elem_node in element_nodes
+            ):
+                return self._build_raw_list(element_nodes, RAWLIST_I)
             list_obj = self.current_builder.call(self.create_list, [])
-            for elem_node in node[1] if len(node) > 1 else []:
+            for elem_node in element_nodes:
                 elem = self._convert_node(elem_node)
                 self.current_builder.call(self.list_append, [list_obj, self._box(elem)])
             return (OBJ, list_obj)
@@ -8212,6 +8278,13 @@ class TypedCodegen(SiluToLLVMConverter):
         if node[0] == "name" and node[1] in self.var_kinds:
             return self.var_kinds[node[1]]
         return OBJ
+
+    def _instance_expr_kind(self, node: Any) -> bool:
+        """True when node statically evaluates to a class instance
+        (constructor call, or a name already bound to an instance)."""
+        if self._constructor_call_class(node) is not None:
+            return True
+        return self._class_of_node(node) is not None
 
     def _convert_for(self, node: list) -> Tuple[str, Any]:
         target_node, iter_node, body_stmts = node[1], node[2], node[3]

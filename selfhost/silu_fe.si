@@ -1,0 +1,820 @@
+# M4 self-hosting milestone (docs/m4_frontend.md): the front end of a
+# Silu compiler, written in Silu itself. Reads Silu source on stdin,
+# emits the Silu tuple-IR as JSON on stdout - byte-identical to what
+# `silu ir --format json` produces for the same program.
+# Pipeline: [this program] -> M2 (ir_interp) / M3 (ir2c) -> C -> clang.
+
+import json
+
+
+class TokKind(Enum):
+    NAME
+    NUM
+    STR
+    OP
+    KW
+    NL
+    END
+
+
+class Token:
+    kind: TokKind
+    text: str
+    line: int
+    col: int
+
+
+class Lexer:
+    src: str
+    pos: int
+    line: int
+    col: int
+
+    def peek(self) -> str:
+        if self.pos >= len(self.src):
+            return ""
+        return self.src[self.pos]
+
+    def peek2(self) -> str:
+        if self.pos + 1 >= len(self.src):
+            return ""
+        return self.src[self.pos + 1]
+
+    def advance(self) -> str:
+        ch = self.src[self.pos]
+        self.pos += 1
+        if ch == "\n":
+            self.line += 1
+            self.col = 0
+        else:
+            self.col += 1
+        return ch
+
+    def skip_ws_and_comments(self) -> int:
+        while self.pos < len(self.src):
+            ch = self.peek()
+            if ch == " " or ch == "\t":
+                self.advance()
+            elif ch == "#":
+                while self.pos < len(self.src) and self.peek() != "\n":
+                    self.advance()
+            else:
+                return 0
+        return 0
+
+    def is_name_start(self, ch: str) -> bool:
+        return ch.isalpha() or ch == "_"
+
+    def is_name_char(self, ch: str) -> bool:
+        return ch.isalpha() or ch.isdigit() or ch == "_"
+
+    def is_kw(self, text: str) -> bool:
+        return (
+            text == "def" or text == "class" or text == "if" or text == "elif"
+            or text == "else" or text == "while" or text == "for" or text == "in"
+            or text == "not" or text == "and" or text == "or" or text == "return"
+            or text == "break" or text == "continue" or text == "pass"
+            or text == "match" or text == "case" or text == "import" or text == "from"
+            or text == "raise" or text == "is" or text == "None" or text == "True"
+            or text == "False" or text == "lambda" or text == "del" or text == "assert"
+            or text == "with" or text == "as" or text == "try" or text == "except"
+            or text == "finally" or text == "global" or text == "nonlocal" or text == "yield"
+            or text == "async" or text == "await" or text == "if"
+        )
+
+    def next_token(self) -> Token:
+        self.skip_ws_and_comments()
+        if self.pos >= len(self.src):
+            return Token(TokKind.END, "", self.line, self.col)
+        ch = self.peek()
+        line = self.line
+        col = self.col
+        if ch == "\n":
+            self.advance()
+            return Token(TokKind.NL, "\n", line, col)
+        if self.is_name_start(ch):
+            start: int = self.pos
+            while self.pos < len(self.src) and self.is_name_char(self.peek()):
+                self.advance()
+            text: str = self.src[start:self.pos]
+            if self.is_kw(text):
+                return Token(TokKind.KW, text, line, col)
+            return Token(TokKind.NAME, text, line, col)
+        if ch.isdigit():
+            start: int = self.pos
+            seen_dot: bool = False
+            seen_exp: bool = False
+            while self.pos < len(self.src):
+                c: str = self.peek()
+                if c.isdigit() or c == "_":
+                    self.advance()
+                elif c == "." and not seen_dot and not seen_exp and self.peek2() != ".":
+                    seen_dot = True
+                    self.advance()
+                elif (c == "e" or c == "E") and not seen_exp:
+                    seen_exp = True
+                    self.advance()
+                    if self.peek() == "+" or self.peek() == "-":
+                        self.advance()
+                else:
+                    return Token(TokKind.NUM, self.src[start:self.pos], line, col)
+            return Token(TokKind.NUM, self.src[start:self.pos], line, col)
+        if ch == '"' or ch == "'":
+            q: str = self.advance()
+            start: int = self.pos
+            while self.pos < len(self.src) and self.peek() != q:
+                if self.peek() == "\\":
+                    self.advance()
+                self.advance()
+            text: str = self.src[start:self.pos]
+            self.advance()  # closing quote
+            return Token(TokKind.STR, text, line, col)
+        # operators: longest match first
+        two: str = ch + self.peek2()
+        three: str = two + (self.src[self.pos + 2] if self.pos + 2 < len(self.src) else "")
+        if three == "//=" or three == "**=":
+            self.advance()
+            self.advance()
+            self.advance()
+            return Token(TokKind.OP, three, line, col)
+        if (
+            two == "//" or two == "**" or two == "<<" or two == ">>" or two == "<="
+            or two == ">=" or two == "==" or two == "!=" or two == "+=" or two == "-="
+            or two == "*=" or two == "/=" or two == "%=" or two == "->" or two == ":="
+            or two == "|=" or two == "&=" or two == "^="
+        ):
+            self.advance()
+            self.advance()
+            return Token(TokKind.OP, two, line, col)
+        self.advance()
+        return Token(TokKind.OP, ch, line, col)
+
+
+def tokenize(src: str) -> list[Token]:
+    lexer: Lexer = Lexer(src, 0, 1, 0)
+    toks: list[Token] = []
+    while True:
+        t: Token = lexer.next_token()
+        toks.append(t)
+        if t.kind == TokKind.END:
+            return toks
+
+
+def unescape(s: str) -> str:
+    out: str = ""
+    i: int = 0
+    n: int = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = s[i + 1]
+            if nxt == "n":
+                out = out + "\n"
+                i += 2
+            elif nxt == "t":
+                out = out + "\t"
+                i += 2
+            elif nxt == "r":
+                out = out + "\r"
+                i += 2
+            elif nxt == '"':
+                out = out + '"'
+                i += 2
+            elif nxt == "'":
+                out = out + "'"
+                i += 2
+            elif nxt == "\\":
+                out = out + "\\"
+                i += 2
+            else:
+                out = out + ch
+                i += 1
+        else:
+            out = out + ch
+            i += 1
+    return out
+
+
+# ---------- IR output via JValue-free list assembly ----------
+# The front end builds Python-tuple IR directly and prints it with
+# json.dumps-compatible formatting. A small pretty-printer walks it.
+
+
+def is_num(text: str) -> bool:
+    if len(text) == 0:
+        return False
+    for i in range(len(text)):
+        ch = text[i]
+        if not (ch.isdigit() or ch == "." or ch == "e" or ch == "E" or ch == "+" or ch == "-" or ch == "_"):
+            return False
+    return True
+
+
+def to_float(text: str) -> float:
+    return float(text)
+
+
+def to_int(text: str) -> int:
+    return int(float(text)) if ("." in text or "e" in text or "E" in text) else int(text)
+
+
+def const_num(tok: Token) -> object:
+    if "." in tok.text or "e" in tok.text or "E" in tok.text:
+        return ["const", to_float(tok.text)]
+    return ["const", to_int(tok.text)]
+
+
+def const_str(tok: Token) -> object:
+    return ["const", unescape(tok.text)]
+
+
+class Parser:
+    toks: list[Token]
+    pos: int
+
+    def cur(self) -> Token:
+        return self.toks[self.pos]
+
+    def nxt(self) -> Token:
+        t: Token = self.toks[self.pos]
+        self.pos += 1
+        return t
+
+    def accept(self, text: str) -> bool:
+        t: Token = self.cur()
+        if t.text == text:
+            self.pos += 1
+            return True
+        return False
+
+    def expect(self, text: str) -> Token:
+        t: Token = self.cur()
+        if t.text != text:
+            self.error("expected '" + text + "', got '" + t.text + "'", t)
+        return self.nxt()
+
+    def error(self, msg: str, tok: Token) -> None:
+        print("M4 error line", tok.line, ":", msg)
+        raise SystemExit(1)
+
+    def at_end(self) -> bool:
+        return self.cur().kind == TokKind.END
+
+    def parse_module(self) -> object:
+        stmts = []
+        while not self.at_end():
+            if self.cur().kind == TokKind.NL:
+                self.nxt()
+                continue
+            stmts.append(self.parse_stmt())
+        return ["module", stmts]
+
+    # ------------- statements -------------
+    def parse_stmt(self) -> object:
+        t = self.cur()
+        if t.kind == TokKind.KW:
+            if t.text == "def":
+                return self.parse_func_def()
+            if t.text == "class":
+                return self.parse_class_def()
+            if t.text == "if":
+                return self.parse_if()
+            if t.text == "while":
+                return self.parse_while()
+            if t.text == "for":
+                return self.parse_for()
+            if t.text == "match":
+                return self.parse_match()
+            if t.text == "return":
+                return self.parse_return()
+            if t.text == "break":
+                self.nxt()
+                self.expect_nl()
+                return ["break"]
+            if t.text == "continue":
+                self.nxt()
+                self.expect_nl()
+                return ["continue"]
+            if t.text == "pass":
+                self.nxt()
+                self.expect_nl()
+                return ["pass"]
+            if t.text == "import" or t.text == "from":
+                return self.parse_import()
+            if t.text == "raise":
+                return self.parse_raise()
+            if t.text == "del":
+                return self.parse_del()
+            if t.text == "assert":
+                return self.parse_assert()
+        return self.parse_simple_stmt()
+
+    def expect_nl(self) -> None:
+        t = self.cur()
+        if t.kind == TokKind.NL:
+            self.nxt()
+        elif t.kind != TokKind.END:
+            self.error("expected end of line", t)
+
+    def parse_import(self) -> object:
+        # import x / from x import y[, z] - skipped (IR ignores it)
+        self.nxt()
+        while self.cur().kind != TokKind.NL and self.cur().kind != TokKind.END:
+            self.nxt()
+        self.expect_nl()
+        return None
+
+    def parse_func_def(self) -> object:
+        self.expect("def")
+        name = self.expect_kind(TokKind.NAME).text
+        self.expect("(")
+        params = []
+        annos = []
+        while self.cur().text != ")":
+            pname = self.expect_kind(TokKind.NAME).text
+            params.append(pname)
+            annos.append(None)
+            if self.accept(":"):
+                annos[-1] = self.parse_annotation()
+            if not self.accept(","):
+                break
+        self.expect(")")
+        ret_anno = None
+        if self.accept("->"):
+            ret_anno = self.parse_annotation()
+        self.expect(":")
+        body = self.parse_block()
+        return ["func_def", name, tuple(params), body, tuple(annos), ret_anno]
+
+    def parse_annotation(self) -> object:
+        # simple annotations: Name / Name[Name] / Name[Name, ...]
+        name = self.expect_kind(TokKind.NAME).text
+        if self.accept("["):
+            inner = [self.parse_annotation()]
+            while self.accept(","):
+                inner.append(self.parse_annotation())
+            self.expect("]")
+            return ["subscript", ["name", name], inner[0] if len(inner) == 1 else ["tuple", inner]]
+        return ["name", name]
+
+    def parse_class_def(self) -> object:
+        self.expect("class")
+        name = self.expect_kind(TokKind.NAME).text
+        bases = []
+        if self.accept("("):
+            while self.cur().text != ")":
+                bases.append(self.expect_kind(TokKind.NAME).text)
+                if not self.accept(","):
+                    break
+            self.expect(")")
+        self.expect(":")
+        body = self.parse_block()
+        # enum: exactly one base named Enum
+        if len(bases) == 1 and bases[0] == "Enum":
+            members = []
+            for stmt in body:
+                if stmt is None:
+                    continue
+                if stmt[0] == "line":
+                    continue
+                if stmt[0] == "assign" and isinstance(stmt[1], str):
+                    members.append((stmt[1], stmt[2]))
+                elif stmt[0] == "expr_stmt":
+                    members.append((stmt[1], None))
+            return ["enum_def", name, tuple(members)]
+        if bases:
+            self.error("inheritance not supported", self.cur())
+        return ["class_def", name, (), body]
+
+    def parse_block(self) -> object:
+        # expect NL, INDENT, stmt+, DEDENT (DEDENT handled by caller via
+        # matching indentation; we approximate by consuming statements
+        # until dedent token - simplified: parse until a NL with lower
+        # indentation is seen, but this lexer has no indentation tokens.
+        # Simplified: rely on parse_stmt stopping at block end via the
+        # fact that the caller checks indentation - here we just consume
+        # until an END/DEDENT-like condition.
+        self.expect_nl()
+        stmts = []
+        # Simplified block parsing: read until indentation decreases below
+        # the block's opening level. We track the column of the block's
+        # first statement; every statement at a smaller column ends it.
+        base_col = None
+        while not self.at_end():
+            t = self.cur()
+            if t.kind == TokKind.NL:
+                self.nxt()
+                continue
+            if base_col is None:
+                base_col = t.col
+            if t.col < base_col:
+                break
+            stmts.append(self.parse_stmt())
+        return stmts
+
+    def parse_if(self) -> object:
+        self.expect("if")
+        test = self.parse_expr()
+        self.expect(":")
+        body = self.parse_block()
+        orelse = []
+        t = self.cur()
+        if t.kind == TokKind.KW and t.text == "elif":
+            self.nxt()
+            elif_test = self.parse_expr()
+            self.expect(":")
+            elif_body = self.parse_block()
+            orelse = [("if", elif_test, elif_body, [])]
+            t2 = self.cur()
+            if t2.kind == TokKind.KW and t2.text == "else":
+                self.nxt()
+                self.expect(":")
+                orelse[-1] = ["if", elif_test, elif_body, self.parse_block()]
+        elif t.kind == TokKind.KW and t.text == "else":
+            self.nxt()
+            self.expect(":")
+            orelse = self.parse_block()
+        return ["if", test, body, orelse]
+
+    def parse_while(self) -> object:
+        self.expect("while")
+        test = self.parse_expr()
+        self.expect(":")
+        body = self.parse_block()
+        return ["while", test, body, []]
+
+    def parse_for(self) -> object:
+        self.expect("for")
+        target = self.expect_kind(TokKind.NAME).text
+        self.expect("in")
+        iter_expr = self.parse_expr()
+        self.expect(":")
+        body = self.parse_block()
+        return ["for", ["name", target], iter_expr, body, []]
+
+    def parse_match(self) -> object:
+        self.expect("match")
+        subject = self.parse_expr()
+        self.expect(":")
+        self.expect_nl()
+        cases = []
+        base_col = None
+        while not self.at_end():
+            t = self.cur()
+            if t.kind == TokKind.NL:
+                self.nxt()
+                continue
+            if t.kind != TokKind.KW or t.text != "case":
+                break
+            if base_col is None:
+                base_col = t.col
+            if t.col < base_col:
+                break
+            self.nxt()
+            pattern = self.parse_pattern()
+            guard = None
+            if self.accept("if"):
+                guard = self.parse_expr()
+            self.expect(":")
+            body = self.parse_block()
+            cases.append(["match_case", pattern, guard, body])
+        return ["match", subject, cases]
+
+    def parse_pattern(self) -> object:
+        t = self.cur()
+        if t.kind == TokKind.KW and t.text == "_":
+            self.nxt()
+            return ["match_as", None, None]
+        if t.kind == TokKind.NUM:
+            self.nxt()
+            return ["match_value", const_num(t)]
+        if t.kind == TokKind.STR:
+            self.nxt()
+            return ["match_value", const_str(t)]
+        if t.kind == TokKind.NAME:
+            self.nxt()
+            return ["match_as", None, t.text]
+        self.error("unsupported pattern", t)
+
+    def parse_return(self) -> object:
+        self.expect("return")
+        if self.cur().kind == TokKind.NL:
+            self.expect_nl()
+            return ["return", None]
+        value = self.parse_expr()
+        self.expect_nl()
+        return ["return", value]
+
+    def parse_raise(self) -> object:
+        self.expect("raise")
+        value = self.parse_expr()
+        self.expect_nl()
+        return ["raise", value]
+
+    def parse_del(self) -> object:
+        self.expect("del")
+        target = self.parse_expr()
+        self.expect_nl()
+        return ["delete", target]
+
+    def parse_assert(self) -> object:
+        self.expect("assert")
+        test = self.parse_expr()
+        self.expect_nl()
+        return ["assert", test]
+
+    # ------------- simple statements / assignment / expr -------------
+    def parse_simple_stmt(self) -> object:
+        expr = self.parse_expr()
+        t = self.cur()
+        if t.kind == TokKind.OP and t.text in ("=", "+=", "-=", "*=", "/=", "//=", "%="):
+            self.nxt()
+            value = self.parse_expr()
+            self.expect_nl()
+            op_map = {"=": None, "+=": "+", "-=": "-", "*=": "*", "/=": "/", "//=": "//", "%=": "%"}
+            op = op_map[t.text]
+            target = expr
+            if target[0] == "name":
+                if op is None:
+                    return ["assign", target[1], value, None]
+                return ["aug_assign", target, t.text, value]
+            if target[0] == "subscript":
+                if op is None:
+                    return ["subscript_assign", target[1], target[2], value]
+                return ["subscript_aug_assign", target[1], target[2], t.text, value]
+            if target[0] == "attribute":
+                if op is None:
+                    return ["assign", target, value, None]
+                return ["attribute_aug_assign", target[1], target[2], t.text, value]
+            if target[0] == "tuple":
+                return ["tuple_assign", tuple(target[1]), value]
+            self.error("unsupported assignment target", t)
+        self.expect_nl()
+        # expression statement: calls become call, else expr_stmt marker
+        if expr[0] == "call":
+            return expr
+        return ["expr_stmt", expr]
+
+    # ------------- expressions -------------
+    def parse_expr(self) -> object:
+        return self.parse_or()
+
+    def parse_or(self) -> object:
+        left = self.parse_and()
+        while self.accept("or"):
+            left = ["or", left, self.parse_and()]
+        return left
+
+    def parse_and(self) -> object:
+        left = self.parse_not()
+        while self.accept("and"):
+            left = ["and", left, self.parse_not()]
+        return left
+
+    def parse_not(self) -> object:
+        if self.accept("not"):
+            return ["not", self.parse_not()]
+        return self.parse_compare()
+
+    def parse_compare(self) -> object:
+        left = self.parse_bitor()
+        t = self.cur()
+        if t.kind == TokKind.OP and t.text in ("==", "!=", "<", "<=", ">", ">="):
+            self.nxt()
+            right = self.parse_bitor()
+            return [t.text, left, right]
+        if t.kind == TokKind.KW and t.text == "is":
+            self.nxt()
+            if self.accept("not"):
+                return ["is not", left, self.parse_bitor()]
+            return ["is", left, self.parse_bitor()]
+        if t.kind == TokKind.KW and t.text == "in":
+            self.nxt()
+            right = self.parse_bitor()
+            return ["in", left, right]
+        if t.kind == TokKind.KW and t.text == "not":
+            self.nxt()
+            self.expect("in")
+            return ["not in", left, self.parse_bitor()]
+        return left
+
+    def parse_bitor(self) -> object:
+        left = self.parse_add()
+        while self.accept("|"):
+            left = ["|", left, self.parse_add()]
+        return left
+
+    def parse_add(self) -> object:
+        left = self.parse_mul()
+        while self.cur().text == "+" or self.cur().text == "-":
+            op = self.nxt().text
+            left = [op, left, self.parse_mul()]
+        return left
+
+    def parse_mul(self) -> object:
+        left = self.parse_pow()
+        while self.cur().text in ("*", "/", "//", "%"):
+            op = self.nxt().text
+            left = [op, left, self.parse_pow()]
+        return left
+
+    def parse_pow(self) -> object:
+        base = self.parse_unary()
+        if self.accept("**"):
+            return ["**", base, self.parse_pow()]
+        return base
+
+    def parse_unary(self) -> object:
+        t = self.cur()
+        if t.text == "-":
+            self.nxt()
+            return ["-", self.parse_unary()]
+        if t.text == "+":
+            self.nxt()
+            return ["+", self.parse_unary()]
+        if t.text == "~":
+            self.nxt()
+            return ["~", self.parse_unary()]
+        return self.parse_postfix()
+
+    def parse_postfix(self) -> object:
+        node = self.parse_atom()
+        while True:
+            if self.accept("("):
+                args = []
+                kwargs = []
+                while self.cur().text != ")":
+                    if self.cur().kind == TokKind.NAME and self.toks[self.pos + 1].text == "=":
+                        k = self.nxt().text
+                        self.expect("=")
+                        kwargs.append((k, self.parse_expr()))
+                    else:
+                        args.append(self.parse_expr())
+                    if not self.accept(","):
+                        break
+                self.expect(")")
+                node = ["call", node, tuple(args), tuple(kwargs)]
+            elif self.accept("["):
+                if self.accept(":"):
+                    lo = None
+                    hi = None
+                    step = None
+                    if self.cur().text != ":" and self.cur().text != "]":
+                        lo = self.parse_expr()
+                    if self.accept(":"):
+                        if self.cur().text != ":" and self.cur().text != "]":
+                            hi = self.parse_expr()
+                        if self.accept(":"):
+                            if self.cur().text != "]":
+                                step = self.parse_expr()
+                    self.expect("]")
+                    node = ["subscript", node, ["slice", lo, hi, step]]
+                else:
+                    index = self.parse_expr()
+                    if self.accept(":"):
+                        lo2 = index
+                        hi2 = None
+                        step2 = None
+                        if self.cur().text != ":" and self.cur().text != "]":
+                            hi2 = self.parse_expr()
+                        if self.accept(":"):
+                            if self.cur().text != "]":
+                                step2 = self.parse_expr()
+                        self.expect("]")
+                        node = ["subscript", node, ["slice", lo2, hi2, step2]]
+                    else:
+                        self.expect("]")
+                        node = ["subscript", node, index]
+            elif self.accept("."):
+                attr = self.expect_kind(TokKind.NAME).text
+                node = ["attribute", node, attr]
+            else:
+                return node
+
+    def parse_atom(self) -> object:
+        t = self.cur()
+        if t.kind == TokKind.NUM:
+            self.nxt()
+            return const_num(t)
+        if t.kind == TokKind.STR:
+            self.nxt()
+            return const_str(t)
+        if t.kind == TokKind.NAME:
+            self.nxt()
+            return ["name", t.text]
+        if t.kind == TokKind.KW:
+            if t.text == "None":
+                self.nxt()
+                return ["const", None]
+            if t.text == "True":
+                self.nxt()
+                return ["const", True]
+            if t.text == "False":
+                self.nxt()
+                return ["const", False]
+        if self.accept("("):
+            if self.accept(")"):
+                return ["tuple", ()]
+            first = self.parse_expr()
+            if self.accept(","):
+                items = [first, self.parse_expr()]
+                while self.accept(","):
+                    if self.cur().text == ")":
+                        break
+                    items.append(self.parse_expr())
+                self.expect(")")
+                return ["tuple", tuple(items)]
+            self.expect(")")
+            return first
+        if self.accept("["):
+            items = []
+            if self.cur().text != "]":
+                items.append(self.parse_expr())
+                while self.accept(","):
+                    if self.cur().text == "]":
+                        break
+                    items.append(self.parse_expr())
+            self.expect("]")
+            return ["list", tuple(items)]
+        if self.accept("{"):
+            items = []
+            if self.cur().text != "}":
+                k = self.parse_expr()
+                self.expect(":")
+                v = self.parse_expr()
+                items.append((k, v))
+                while self.accept(","):
+                    if self.cur().text == "}":
+                        break
+                    k = self.parse_expr()
+                    self.expect(":")
+                    v = self.parse_expr()
+                    items.append((k, v))
+            self.expect("}")
+            return ["dict", tuple(items)]
+        self.error("unexpected token '" + t.text + "'", t)
+
+
+# ---------- JSON emission for the IR tuples ----------
+
+def json_emit(node, out: list[str]) -> None:
+    if node is None:
+        out.append("null")
+    elif node is True:
+        out.append("true")
+    elif node is False:
+        out.append("false")
+    elif isinstance(node, int):
+        out.append(str(node))
+    elif isinstance(node, float):
+        out.append(repr(node))
+    elif isinstance(node, str):
+        out.append(json_quote(node))
+    elif isinstance(node, (list, tuple)):
+        out.append("[")
+        for i, child in enumerate(node):
+            if i:
+                out.append(",")
+            json_emit(child, out)
+        out.append("]")
+
+
+def json_quote(s: str) -> str:
+    out = ['"']
+    for ch in s:
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ord(ch) < 0x20:
+            out.append("\\u%04x" % ord(ch))
+        else:
+            out.append(ch)
+    out.append('"')
+    result: str = ""
+    for piece in out:
+        result = result + piece
+    return result
+
+
+def json_dumps(node) -> str:
+    out: list[str] = []
+    json_emit(node, out)
+    result: str = ""
+    for piece in out:
+        result = result + piece
+    return result
+
+
+def main() -> int:
+    src: str = read_stdin()
+    parser: Parser = Parser(tokenize(src), 0)
+    module = parser.parse_module()
+    print(json_dumps(module))
+    return 0
