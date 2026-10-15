@@ -1,20 +1,21 @@
-# M3 self-hosting milestone (docs/selfhosting.md): an IR-to-C compiler
-# written in Silu itself. Reads JSON IR from stdin, emits C99 source on
-# stdout. The pipeline: silu ir -> [this program] -> clang -> binary.
-# Supported IR subset (same as M2): module, line, const, name,
-# assign/ann_assign, aug_assign, + - * // %, comparisons, if, while,
-# call (print).
-# Usage: python -m silu ir prog.py --output prog.ir.json --format json
-#        ./ir2c < prog.ir.json > prog.c && clang prog.c -o prog
+# M5 backend (docs/m5_backend.md): an IR-to-C compiler written in Silu
+# itself. Reads JSON IR from stdin (silu ir --format json), emits C99.
+# M5 stage 1: full calc.si coverage - enums, classes (struct + prefixed
+# methods), match, strings (at/slice/eq/isdigit), float printing that
+# matches the typed backend, raise SystemExit, input().
+# Pipeline: ./silu_fe < prog.si | ./ir2c > prog.c && clang prog.c -o prog
 
+
+from __future__ import annotations
 
 class JKind(Enum):
-    NIL
-    BOOL
-    NUM
-    STR
-    ARR
-    OBJ
+    NIL = 0
+    BOOL = 1
+    NUM = 2
+    FLOAT = 3
+    STR = 4
+    ARR = 5
+    OBJ = 6
 
 
 class JValue:
@@ -24,22 +25,27 @@ class JValue:
     arr: list[JValue]
     key: str
     nxt: JValue
+    f: float
 
 
 def jnum(v: int) -> JValue:
-    return JValue(JKind.NUM, v, "", None, "", None)
+    return JValue(JKind.NUM, v, "", None, "", None, 0.0)
+
+
+def jfloat(v: float) -> JValue:
+    return JValue(JKind.FLOAT, 0, "", None, "", None, v)
 
 
 def jstr(v: str) -> JValue:
-    return JValue(JKind.STR, 0, v, None, "", None)
+    return JValue(JKind.STR, 0, v, None, "", None, 0.0)
 
 
 def jarr(items: list[JValue]) -> JValue:
-    return JValue(JKind.ARR, 0, "", items, "", None)
+    return JValue(JKind.ARR, 0, "", items, "", None, 0.0)
 
 
 def jnull() -> JValue:
-    return JValue(JKind.NIL, 0, "", None, "", None)
+    return JValue(JKind.NIL, 0, "", None, "", None, 0.0)
 
 
 class Json:
@@ -48,8 +54,8 @@ class Json:
 
     def ws(self) -> int:
         while self.pos < len(self.src):
-            ch = self.src[self.pos]
-            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+            c: int = ord(self.src[self.pos])
+            if c == 32 or c == 10 or c == 9 or c == 13:
                 self.pos += 1
             else:
                 return 0
@@ -57,32 +63,51 @@ class Json:
 
     def value(self) -> JValue:
         self.ws()
-        ch = self.src[self.pos]
-        if ch == "{":
+        c: int = ord(self.src[self.pos])
+        if c == 123:
             return self.object()
-        if ch == "[":
+        if c == 91:
             return self.array()
-        if ch == '"':
+        if c == 34:
             return jstr(self.string())
-        if ch == "t":
+        if c == 116:
             self.pos += 4
             return jnum(1)
-        if ch == "f":
+        if c == 102:
             self.pos += 5
             return jnum(0)
-        if ch == "n":
+        if c == 110:
             self.pos += 4
             return jnull()
         return self.number()
 
     def string(self) -> str:
         self.pos += 1
-        start: int = self.pos
-        while self.src[self.pos] != '"':
-            self.pos += 1
-        out: str = self.src[start:self.pos]
-        self.pos += 1
-        return out
+        out: str = ""
+        while True:
+            ch: str = self.src[self.pos]
+            if ch == '"':
+                self.pos += 1
+                return out
+            if ch == "\\":
+                nxt: str = self.src[self.pos + 1]
+                if nxt == "n":
+                    out = out + "\n"
+                elif nxt == "t":
+                    out = out + "\t"
+                elif nxt == "r":
+                    out = out + "\r"
+                elif nxt == "u":
+                    hexs: str = self.src[self.pos + 2 : self.pos + 6]
+                    cp: int = int(hexs, 16)
+                    out = out + chr(cp)
+                    self.pos += 4
+                else:
+                    out = out + nxt
+                self.pos += 2
+            else:
+                out = out + ch
+                self.pos += 1
 
     def number(self) -> JValue:
         neg: bool = False
@@ -90,13 +115,27 @@ class Json:
             neg = True
             self.pos += 1
         n: int = 0
+        frac: str = ""
+        isf: bool = False
         while True:
-            ch = self.src[self.pos]
+            ch: str = self.src[self.pos]
             if ch >= "0" and ch <= "9":
                 d: int = ord(ch) - 48
                 n = n * 10 + d
+                frac = frac + ch
                 self.pos += 1
+            elif ch == "." or ch == "e" or ch == "E":
+                isf = True
+                frac = frac + ch
+                self.pos += 1
+                if self.src[self.pos] == "+" or self.src[self.pos] == "-":
+                    frac = frac + self.src[self.pos]
+                    self.pos += 1
             else:
+                if isf:
+                    if neg:
+                        frac = "-" + frac
+                    return jfloat(to_float(frac))
                 if neg:
                     return jnum(0 - n)
                 return jnum(n)
@@ -128,7 +167,7 @@ class Json:
             self.ws()
             self.pos += 1
             v: JValue = self.value()
-            pair: JValue = JValue(JKind.OBJ, 0, "", None, k, v)
+            pair: JValue = JValue(JKind.OBJ, 0, "", None, k, v, 0.0)
             if head.kind == JKind.NIL:
                 head = pair
             else:
@@ -154,10 +193,134 @@ def elem_int(node: JValue, i: int) -> int:
     return node.arr[i].n
 
 
+def elem_float(node: JValue, i: int) -> float:
+    return node.arr[i].f
+
+
+def to_float(text: str) -> float:
+    return float(text)
+
+
+# ---------- type registry ----------
+# type strings: int / float / bool / str / none / <ClassName> /
+# list:<elem> / dict:<k>:<v>; cty() maps them to C declarations.
+
+class EnumInfo:
+    name: str
+    member_names: list[str]
+    member_vals: list[int]
+
+
+class ClassInfo:
+    name: str
+    field_names: list[str]
+    field_types: list[str]
+    method_names: list[str]
+    method_rets: list[str]
+
+
+class FnInfo:
+    name: str
+    params: list[str]
+    param_types: list[str]
+    ret: str
+    body: JValue
+    cls: str
+
+
+def find_enum(name: str) -> EnumInfo:
+    i: int = 0
+    while i < len(ENUMS):
+        if ENUMS[i].name == name:
+            return ENUMS[i]
+        i += 1
+    return None
+
+
+def find_class(name: str) -> ClassInfo:
+    i: int = 0
+    while i < len(CLASSES):
+        if CLASSES[i].name == name:
+            return CLASSES[i]
+        i += 1
+    return None
+
+
+def find_func(name: str) -> FnInfo:
+    i: int = 0
+    while i < len(FUNCS):
+        if FUNCS[i].name == name:
+            return FUNCS[i]
+        i += 1
+    return None
+
+
+ENUMS: list[EnumInfo] = []
+CLASSES: list[ClassInfo] = []
+FUNCS: list[FnInfo] = []
+
+
+def anno_type(anno: JValue) -> str:
+    if anno is None:
+        return "none"
+    t: str = tag(anno)
+    if t == "name":
+        nm: str = anno.arr[1].s
+        if nm == "int":
+            return "int"
+        if nm == "float":
+            return "float"
+        if nm == "bool":
+            return "bool"
+        if nm == "str":
+            return "str"
+        if find_class(nm) is not None:
+            return nm
+        return "int"
+    if t == "const":
+        return "none"
+    if t == "subscript":
+        base: str = anno.arr[1].arr[1].s
+        inner: str = anno_type(anno.arr[2])
+        if base == "list":
+            return "list:" + inner
+        return "int"
+    return "int"
+
+
+def cty(ty: str) -> str:
+    if ty == "int" or ty == "bool":
+        return "int64_t"
+    if ty == "float":
+        return "double"
+    if ty == "str":
+        return "Str*"
+    if ty == "none":
+        return "void"
+    if ty == "list" or ty.startswith("list:"):
+        return "List*"
+    return ty + "*"
+
+
+# ---------- C emission ----------
+
+class TE:
+    text: str
+    ty: str
+
+
+def te(text: str, ty: str) -> TE:
+    r: TE = TE(text, ty)
+    return r
+
+
 class Gen:
     out: str
     indent: int
-    vars: list[str]
+    names: list[str]
+    types: list[str]
+    lits: list[str]
+    lit_index: list[int]
 
     def emit(self, line: str) -> int:
         pad: str = "    "
@@ -168,36 +331,6 @@ class Gen:
             i += 1
         self.out = self.out + text + "\n"
         return 0
-
-    def expr(self, node: JValue) -> str:
-        t: str = tag(node)
-        if t == "const":
-            return self.show_int(elem_int(node, 1)) + "LL"
-        if t == "name":
-            return "v_" + elem(node, 1).s
-        if t == "+":
-            return "(" + self.expr(elem(node, 1)) + " + " + self.expr(elem(node, 2)) + ")"
-        if t == "-":
-            return "(" + self.expr(elem(node, 1)) + " - " + self.expr(elem(node, 2)) + ")"
-        if t == "*":
-            return "(" + self.expr(elem(node, 1)) + " * " + self.expr(elem(node, 2)) + ")"
-        if t == "//":
-            return "(" + self.expr(elem(node, 1)) + " / " + self.expr(elem(node, 2)) + ")"
-        if t == "%":
-            return "(" + self.expr(elem(node, 1)) + " % " + self.expr(elem(node, 2)) + ")"
-        if t == "<":
-            return "(" + self.expr(elem(node, 1)) + " < " + self.expr(elem(node, 2)) + ")"
-        if t == "<=":
-            return "(" + self.expr(elem(node, 1)) + " <= " + self.expr(elem(node, 2)) + ")"
-        if t == ">":
-            return "(" + self.expr(elem(node, 1)) + " > " + self.expr(elem(node, 2)) + ")"
-        if t == ">=":
-            return "(" + self.expr(elem(node, 1)) + " >= " + self.expr(elem(node, 2)) + ")"
-        if t == "==":
-            return "(" + self.expr(elem(node, 1)) + " == " + self.expr(elem(node, 2)) + ")"
-        if t == "!=":
-            return "(" + self.expr(elem(node, 1)) + " != " + self.expr(elem(node, 2)) + ")"
-        return "0"
 
     def show_int(self, v: int) -> str:
         if v < 0:
@@ -211,6 +344,354 @@ class Gen:
             if n == 0:
                 return digits
 
+    def show_float(self, v: float) -> str:
+        s: str = str(v)
+        if s == "inf":
+            return "INFINITY"
+        if s == "-inf":
+            return "-INFINITY"
+        return s
+
+    def lit(self, text: str) -> str:
+        i: int = 0
+        while i < len(self.lits):
+            if self.lits[i] == text:
+                return "LIT(" + self.show_int(i) + ")"
+            i += 1
+        self.lits.append(text)
+        return "LIT(" + self.show_int(len(self.lits) - 1) + ")"
+
+    def c_string(self, s: str) -> str:
+        out: str = ""
+        i: int = 0
+        n: int = len(s)
+        while i < n:
+            ch: str = s[i]
+            if ch == '"':
+                out = out + '\\"'
+            elif ch == "\\":
+                out = out + "\\\\"
+            elif ch == "\n":
+                out = out + "\\n"
+            elif ch == "\t":
+                out = out + "\\t"
+            elif ch == "\r":
+                out = out + "\\r"
+            else:
+                out = out + ch
+            i += 1
+        return '"' + out + '"'
+
+    # ---- variable table ----
+
+    def var_type(self, name: str) -> str:
+        i: int = 0
+        while i < len(self.names):
+            if self.names[i] == name:
+                return self.types[i]
+            i += 1
+        return "int"
+
+    def var_declared(self, name: str) -> bool:
+        i: int = 0
+        while i < len(self.names):
+            if self.names[i] == name:
+                return True
+            i += 1
+        return False
+
+    # ---- field lookup on a class ----
+
+    def field_type(self, cls: ClassInfo, fname: str) -> str:
+        i: int = 0
+        while i < len(cls.field_names):
+            if cls.field_names[i] == fname:
+                return cls.field_types[i]
+            i += 1
+        return "int"
+
+    def method_of(self, cls: ClassInfo, mname: str) -> str:
+        # returns the C suffix (mangled) or ""
+        i: int = 0
+        while i < len(cls.method_names):
+            if cls.method_names[i] == mname:
+                return cls.name + "__" + mname
+            i += 1
+        return ""
+
+    def class_of_expr(self, node: JValue) -> str:
+        # name with class type / attribute chain / call of class ctor
+        t: str = tag(node)
+        if t == "name":
+            vt: str = self.var_type(node.arr[1].s)
+            if find_class(vt) is not None:
+                return vt
+            return ""
+        if t == "attribute":
+            base: str = self.class_of_expr(node.arr[1])
+            if base == "":
+                return ""
+            bc: ClassInfo = find_class(base)
+            if bc is None:
+                return ""
+            ft: str = self.field_type(bc, node.arr[2].s)
+            if find_class(ft) is not None:
+                return ft
+            return ""
+        if t == "call":
+            callee: JValue = node.arr[1]
+            if tag(callee) == "name":
+                nm: str = callee.arr[1].s
+                if find_class(nm) is not None:
+                    return nm
+                fn: FnInfo = find_func(nm)
+                if fn is not None and fn.ret != "none":
+                    if find_class(fn.ret) is not None:
+                        return fn.ret
+            if tag(callee) == "attribute":
+                base2: str = self.class_of_expr(callee.arr[1])
+                if base2 != "":
+                    bc2: ClassInfo = find_class(base2)
+                    if bc2 is not None:
+                        m: str = self.method_of(bc2, callee.arr[2].s)
+                        if m != "":
+                            fn2: FnInfo = find_func(m)
+                            if fn2 is not None and fn2.ret != "none":
+                                if find_class(fn2.ret) is not None:
+                                    return fn2.ret
+        return ""
+
+    # ---- expressions ----
+
+    def expr(self, node: JValue) -> TE:
+        t: str = tag(node)
+        if t == "const":
+            cv: JValue = elem(node, 1)
+            if cv.kind == JKind.NUM:
+                return te(self.show_int(cv.n), "int")
+            if cv.kind == JKind.FLOAT:
+                return te(self.show_float(cv.f), "float")
+            if cv.kind == JKind.STR:
+                return te(self.lit(cv.s), "str")
+            if cv.kind == JKind.NIL:
+                return te("0", "none")
+            return te("0", "int")
+        if t == "name":
+            nm: str = node.arr[1].s
+            return te("v_" + nm, self.var_type(nm))
+        if t == "attribute":
+            # enum member?
+            if tag(node.arr[1]) == "name":
+                base_nm: str = node.arr[1].arr[1].s
+                if find_enum(base_nm) is not None:
+                    return te(base_nm + "_" + node.arr[2].s, "int")
+                vt2: str = self.var_type(base_nm)
+                if find_class(vt2) is not None:
+                    fc: ClassInfo = find_class(vt2)
+                    ft2: str = self.field_type(fc, node.arr[2].s)
+                    return te("v_" + base_nm + "->" + node.arr[2].s, ft2)
+            cls: str = self.class_of_expr(node.arr[1])
+            if cls != "":
+                bc: ClassInfo = find_class(cls)
+                if bc is not None:
+                    ft3: str = self.field_type(bc, node.arr[2].s)
+                    base_s: TE = self.expr(node.arr[1])
+                    return te("(" + base_s.text + ")->" + node.arr[2].s, ft3)
+            return te("0", "int")
+        if t == "subscript":
+            base: TE = self.expr(node.arr[1])
+            key: JValue = node.arr[2]
+            if tag(key) == "slice":
+                lo: TE = self.expr(key.arr[1])
+                hi: TE = self.expr(key.arr[2])
+                return te("str_slice(" + base.text + ", " + lo.text + ", " + hi.text + ")", "str")
+            idx: TE = self.expr(key)
+            if base.ty == "str":
+                return te("str_at(" + base.text + ", " + idx.text + ")", "str")
+            if base.ty.startswith("list:"):
+                elem_ty: str = base.ty[5:]
+                if find_class(elem_ty) is not None:
+                    return te("(" + elem_ty + "*)list_get(" + base.text + ", " + idx.text + ")", elem_ty)
+                return te("list_get(" + base.text + ", " + idx.text + ")", elem_ty)
+            return te("list_get(" + base.text + ", " + idx.text + ")", "int")
+        if (t == "-" or t == "+") and len(node.arr) == 2:
+            # unary sign
+            a0: TE = self.expr(node.arr[1])
+            if t == "-":
+                return te("(-" + a0.text + ")", a0.ty)
+            return te("(" + a0.text + ")", a0.ty)
+        if t == "+" or t == "-" or t == "*" or t == "%" or t == "//" or t == "/":
+            a: TE = self.expr(node.arr[1])
+            b: TE = self.expr(node.arr[2])
+            if t == "+" and a.ty == "str" and b.ty == "str":
+                return te("str_add(" + a.text + ", " + b.text + ")", "str")
+            op: str = t
+            if op == "//":
+                if a.ty == "int" and b.ty == "int":
+                    return te("silu_fdiv(" + a.text + ", " + b.text + ")", "int")
+                return te("((int64_t)((" + a.text + ") / (" + b.text + ")))", "int")
+            if op == "/":
+                # Python truediv always goes through double
+                return te("(((double)(" + a.text + ")) / ((double)(" + b.text + ")))", "float")
+            ty: str = "int"
+            if a.ty == "float" or b.ty == "float":
+                ty = "float"
+            return te("(" + a.text + " " + op + " " + b.text + ")", ty)
+        if t == "<" or t == "<=" or t == ">" or t == ">=":
+            a2: TE = self.expr(node.arr[1])
+            b2: TE = self.expr(node.arr[2])
+            return te("(" + a2.text + " " + t + " " + b2.text + ")", "bool")
+        if t == "==" or t == "!=":
+            a3: TE = self.expr(node.arr[1])
+            b3: TE = self.expr(node.arr[2])
+            if a3.ty == "str" and b3.ty == "str":
+                fn: str = "str_eq"
+                if t == "!=":
+                    fn = "str_ne"
+                return te(fn + "(" + a3.text + ", " + b3.text + ")", "bool")
+            return te("(" + a3.text + " " + t + " " + b3.text + ")", "bool")
+        if t == "and":
+            return te("(" + self.expr(node.arr[1]).text + " && " + self.and_rest(node) + ")", "bool")
+        if t == "or":
+            return te("(" + self.expr(node.arr[1]).text + " || " + self.or_rest(node) + ")", "bool")
+        if t == "not":
+            return te("(!" + self.expr(node.arr[1]).text + ")", "bool")
+        if t == "is" or t == "is not":
+            a4: TE = self.expr(node.arr[1])
+            rhs: JValue = node.arr[2]
+            null_t: str = "0"
+            if rhs.kind == JKind.NIL:
+                null_t = "0"
+            op2: str = "=="
+            if t == "is not":
+                op2 = "!="
+            return te("(" + a4.text + " " + op2 + " " + null_t + ")", "bool")
+        if t == "list":
+            # empty/inline list literal -> fresh list (elements push later)
+            return te("list_new()", "list")
+        if t == "call":
+            return self.call_expr(node)
+        if t == "if_expr":
+            cond: TE = self.expr(node.arr[1])
+            tv: TE = self.expr(node.arr[2])
+            fv: TE = self.expr(node.arr[3])
+            ty2: str = tv.ty
+            return te("(" + cond.text + " ? " + tv.text + " : " + fv.text + ")", ty2)
+        return te("0", "int")
+
+    def and_rest(self, node: JValue) -> str:
+        out: str = ""
+        i: int = 2
+        while i < len(node.arr):
+            p: TE = self.expr(node.arr[i])
+            if out == "":
+                out = p.text
+            else:
+                out = out + " && " + p.text
+            i += 1
+        return out
+
+    def or_rest(self, node: JValue) -> str:
+        out: str = ""
+        i: int = 2
+        while i < len(node.arr):
+            p: TE = self.expr(node.arr[i])
+            if out == "":
+                out = p.text
+            else:
+                out = out + " || " + p.text
+            i += 1
+        return out
+
+    def call_expr(self, node: JValue) -> TE:
+        callee: JValue = node.arr[1]
+        args: JValue = node.arr[2]
+        if tag(callee) == "name":
+            nm: str = callee.arr[1].s
+            if nm == "len":
+                a: TE = self.expr(elem(args, 0))
+                if a.ty == "str":
+                    return te("(" + a.text + ")->cp", "int")
+                return te("(" + a.text + ")->len", "int")
+            if nm == "float":
+                a2: TE = self.expr(elem(args, 0))
+                if a2.ty == "str":
+                    return te("str_to_f64(" + a2.text + ")", "float")
+                return te("((double)(" + a2.text + "))", "float")
+            if nm == "int":
+                a3: TE = self.expr(elem(args, 0))
+                if a3.ty == "str":
+                    return te("str_to_i64(" + a3.text + ")", "int")
+                if a3.ty == "float":
+                    return te("((int64_t)(" + a3.text + "))", "int")
+                return te(a3.text, "int")
+            if nm == "str":
+                a4: TE = self.expr(elem(args, 0))
+                if a4.ty == "int":
+                    return te("str_from_i64(" + a4.text + ")", "str")
+                if a4.ty == "float":
+                    return te("str_from_f64(" + a4.text + ")", "str")
+                return te(a4.text, "str")
+            if nm == "input":
+                return te("read_line()", "str")
+            if nm == "read_stdin":
+                return te("read_stdin_all()", "str")
+            if nm == "ord":
+                a5: TE = self.expr(elem(args, 0))
+                return te("str_ord0(" + a5.text + ")", "int")
+            if nm == "chr":
+                a6: TE = self.expr(elem(args, 0))
+                return te("str_chr1(" + a6.text + ")", "str")
+            if find_class(nm) is not None:
+                return te(nm + "__new(" + self.args_text(args) + ")", nm)
+            fn: FnInfo = find_func(nm)
+            if fn is not None:
+                return te("fn_" + nm + "(" + self.args_text(args) + ")", fn.ret)
+            return te("0", "int")
+        if tag(callee) == "attribute":
+            # method call: x.m(args) -> X__m(x, args)
+            cls: str = self.class_of_expr(callee.arr[1])
+            if cls != "":
+                bc: ClassInfo = find_class(cls)
+                m: str = self.method_of(bc, callee.arr[2].s)
+                if m != "":
+                    recv: TE = self.expr(callee.arr[1])
+                    fn2: FnInfo = find_func(m)
+                    ret: str = "none"
+                    if fn2 is not None:
+                        ret = fn2.ret
+                    extra: str = self.args_text(args)
+                    if extra == "":
+                        return te(m + "(" + recv.text + ")", ret)
+                    return te(m + "(" + recv.text + ", " + extra + ")", ret)
+            # string method?
+            recv2: TE = self.expr(callee.arr[1])
+            mname: str = callee.arr[2].s
+            arg0: TE = self.expr(elem(args, 0)) if len(args.arr) > 0 else te("", "none")
+            if mname == "isdigit":
+                return te("str_isdigit(" + recv2.text + ")", "bool")
+            if mname == "isalpha":
+                return te("str_isalpha(" + recv2.text + ")", "bool")
+            if mname == "append":
+                if recv2.ty.startswith("list:"):
+                    return te("list_push(" + recv2.text + ", (int64_t)(" + arg0.text + "))", "none")
+                return te("list_push(" + recv2.text + ", (int64_t)(" + arg0.text + "))", "none")
+        return te("0", "int")
+
+    def args_text(self, args: JValue) -> str:
+        out: str = ""
+        i: int = 0
+        while i < len(args.arr):
+            a: TE = self.expr(elem(args, i))
+            if out == "":
+                out = a.text
+            else:
+                out = out + ", " + a.text
+            i += 1
+        return out
+
+    # ---- statements ----
+
     def gen_stmts(self, stmts: JValue) -> int:
         i: int = 0
         n: int = len(stmts.arr)
@@ -219,70 +700,627 @@ class Gen:
             i += 1
         return 0
 
+    def declare_or_assign(self, nm: str, val: TE) -> int:
+        if self.var_declared(nm):
+            self.emit("v_" + nm + " = " + val.text + ";")
+            return 0
+        self.names.append(nm)
+        self.types.append(val.ty)
+        self.emit(cty(val.ty) + " v_" + nm + " = " + val.text + ";")
+        return 0
+
     def gen_stmt(self, stmt: JValue) -> int:
         t: str = tag(stmt)
-        if t == "line":
+        if t == "line" or t == "pass" or t == "func_def" or t == "class_def" or t == "enum_def":
             return 0
         if t == "assign" or t == "ann_assign":
-            nm: str = elem_str(stmt, 1)
-            if nm in self.vars:
-                self.emit("v_" + nm + " = " + self.expr(elem(stmt, 2)) + ";")
-            else:
-                self.vars.append(nm)
-                self.emit("long long v_" + nm + " = " + self.expr(elem(stmt, 2)) + ";")
+            if stmt.arr[2].kind == JKind.NIL:
+                # bare field declaration (x: int) - already collected
+                return 0
+            if t == "ann_assign" and stmt.arr[3].kind != JKind.NIL:
+                # annotated: x: T = expr
+                aty: str = anno_type(stmt.arr[3])
+                val_a: TE = self.expr(elem(stmt, 2))
+                if self.var_declared(elem_str(stmt, 1)):
+                    self.emit("v_" + elem_str(stmt, 1) + " = " + val_a.text + ";")
+                    return 0
+                self.names.append(elem_str(stmt, 1))
+                self.types.append(aty)
+                self.emit(cty(aty) + " v_" + elem_str(stmt, 1) + " = " + val_a.text + ";")
+                return 0
+            if stmt.arr[1].kind == JKind.STR:
+                # plain assign target is a bare string, not a node
+                val: TE = self.expr(elem(stmt, 2))
+                self.declare_or_assign(elem_str(stmt, 1), val)
+                return 0
+            if stmt.arr[1].kind == JKind.ARR and tag(stmt.arr[1]) == "attribute":
+                # obj.f = v (instance field write)
+                tgt: JValue = stmt.arr[1]
+                cls: str = self.class_of_expr(tgt.arr[1])
+                base: TE = self.expr(tgt.arr[1])
+                val2: TE = self.expr(elem(stmt, 2))
+                self.emit("(" + base.text + ")->" + tgt.arr[2].s + " = " + val2.text + ";")
+                return 0
             return 0
         if t == "aug_assign":
-            tgt: str = "v_" + elem(elem(stmt, 1), 1).s
+            tgt: JValue = stmt.arr[1]
             op: str = elem_str(stmt, 2)
             cop: str = "+"
             if op == "-=":
                 cop = "-"
             elif op == "*=":
                 cop = "*"
-            self.emit(tgt + " = " + tgt + " " + cop + " " + self.expr(elem(stmt, 3)) + ";")
+            elif op == "//=":
+                cop = "/"
+            elif op == "%=":
+                cop = "%"
+            if tag(tgt) == "name":
+                nm2: str = tgt.arr[1].s
+                val3: TE = self.expr(elem(stmt, 3))
+                self.emit("v_" + nm2 + " = v_" + nm2 + " " + cop + " " + val3.text + ";")
+                return 0
+            return 0
+        if t == "attribute_aug_assign":
+            # ("attribute_aug_assign", recv_node, attr_name, op, value)
+            base2: TE = self.expr(stmt.arr[1])
+            op2: str = elem_str(stmt, 3)
+            cop2: str = "+"
+            if op2 == "-=":
+                cop2 = "-"
+            elif op2 == "*=":
+                cop2 = "*"
+            val4: TE = self.expr(elem(stmt, 4))
+            field: str = "(" + base2.text + ")->" + elem_str(stmt, 2)
+            self.emit(field + " = " + field + " " + cop2 + " " + val4.text + ";")
             return 0
         if t == "call":
-            name: str = elem(elem(stmt, 1), 1).s
-            if name == "print":
-                val: JValue = elem(elem(stmt, 2), 0)
-                self.emit('printf("%lld\\n", ' + self.expr(val) + ");")
+            callee: JValue = stmt.arr[1]
+            if tag(callee) == "name" and callee.arr[1].s == "print":
+                self.gen_print(stmt.arr[2])
+                return 0
+            r: TE = self.call_expr(stmt)
+            self.emit(r.text + ";")
+            return 0
+        if t == "return":
+            if len(stmt.arr) > 1 and stmt.arr[1].kind != JKind.NIL:
+                rv: TE = self.expr(elem(stmt, 1))
+                self.emit("return " + rv.text + ";")
+                return 0
+            self.emit("return;")
             return 0
         if t == "if":
-            self.emit("if " + self.expr(elem(stmt, 1)) + " {")
+            cond: TE = self.expr(elem(stmt, 1))
+            self.emit("if (" + cond.text + ") {")
             self.indent += 1
             self.gen_stmts(elem(stmt, 2))
             self.indent -= 1
-            self.emit("}")
             if len(stmt.arr) > 3:
                 orelse: JValue = elem(stmt, 3)
                 if len(orelse.arr) > 0:
-                    self.emit("else {")
+                    self.emit("} else {")
                     self.indent += 1
                     self.gen_stmts(orelse)
                     self.indent -= 1
-                    self.emit("}")
+            self.emit("}")
             return 0
         if t == "while":
-            self.emit("while " + self.expr(elem(stmt, 1)) + " {")
+            cond2: TE = self.expr(elem(stmt, 1))
+            self.emit("while (" + cond2.text + ") {")
             self.indent += 1
             self.gen_stmts(elem(stmt, 2))
             self.indent -= 1
             self.emit("}")
             return 0
+        if t == "break":
+            self.emit("break;")
+            return 0
+        if t == "continue":
+            self.emit("continue;")
+            return 0
+        if t == "raise":
+            # raise SystemExit(n) -> exit(n)
+            ex: JValue = stmt.arr[1]
+            if ex.kind == JKind.NIL:
+                self.emit("exit(1);")
+                return 0
+            if tag(ex) == "call":
+                code: TE = self.expr(elem(ex.arr[2], 0))
+                self.emit("exit((int)(" + code.text + "));")
+                return 0
+            self.emit("exit(1);")
+            return 0
+        if t == "match":
+            self.gen_match(stmt)
+            return 0
         return 0
+
+    def gen_print(self, args: JValue) -> int:
+        i: int = 0
+        while i < len(args.arr):
+            a: TE = self.expr(elem(args, i))
+            if i > 0:
+                self.emit("silu_sep();")
+            if a.ty == "str":
+                self.emit("silu_print_str(" + a.text + ");")
+            elif a.ty == "float":
+                self.emit("silu_print_f64(" + a.text + ");")
+            elif a.ty == "bool":
+                self.emit("silu_print_bool(" + a.text + ");")
+            else:
+                self.emit("silu_print_int(" + a.text + ");")
+            i += 1
+        self.emit("silu_nl();")
+        return 0
+
+    def gen_match(self, stmt: JValue) -> int:
+        subj: TE = self.expr(elem(stmt, 1))
+        self.emit("{ int64_t m_subj = (int64_t)(" + subj.text + ");")
+        self.indent += 1
+        cases: JValue = elem(stmt, 2)
+        n: int = len(cases.arr)
+        i: int = 0
+        first: bool = True
+        while i < n:
+            arm: JValue = elem(cases, i)
+            pat: JValue = arm.arr[1]
+            body: JValue = arm.arr[3]
+            head: str = ""
+            if first:
+                head = "if "
+                first = False
+            else:
+                head = "else if "
+            if tag(pat) == "match_value":
+                pv: TE = self.expr(pat.arr[1])
+                self.emit(head + "(m_subj == (int64_t)(" + pv.text + ")) {")
+            else:
+                # wildcard / capture
+                if i == n - 1:
+                    self.emit("else {")
+                else:
+                    self.emit(head + "(1) {")
+            self.indent += 1
+            self.gen_stmts(body)
+            self.indent -= 1
+            self.emit("}")
+            i += 1
+        self.indent -= 1
+        self.emit("}")
+        return 0
+
+    # ---- functions ----
+
+    def gen_func(self, fn: FnInfo) -> int:
+        self.names = []
+        self.types = []
+        params: list[str] = fn.params
+        ptypes: list[str] = fn.param_types
+        sig: str = cty(fn.ret) + " " + "fn_" + fn.name + "("
+        i: int = 0
+        while i < len(params):
+            pt: str = ptypes[i]
+            if pt == "":
+                pt = "int"
+            self.names.append(params[i])
+            self.types.append(pt)
+            if i > 0:
+                sig = sig + ", "
+            sig = sig + cty(pt) + " v_" + params[i]
+            i += 1
+        if len(params) == 0:
+            sig = sig + "void"
+        sig = sig + ")"
+        self.emit(sig + " {")
+        self.indent += 1
+        self.gen_stmts(fn.body)
+        self.indent -= 1
+        self.emit("}")
+        self.emit("")
+        return 0
+
+    def gen_method(self, fn: FnInfo, cls: ClassInfo) -> int:
+        self.names = []
+        self.types = []
+        sig: str = cty(fn.ret) + " " + fn.name + "(" + cls.name + "* v_self"
+        self.names.append("self")
+        self.types.append(cls.name)
+        params: list[str] = fn.params
+        ptypes: list[str] = fn.param_types
+        i: int = 1
+        while i < len(params):
+            pt: str = ptypes[i]
+            if pt == "":
+                pt = "int"
+            self.names.append(params[i])
+            self.types.append(pt)
+            sig = sig + ", " + cty(pt) + " v_" + params[i]
+            i += 1
+        sig = sig + ")"
+        self.emit(sig + " {")
+        self.indent += 1
+        self.gen_stmts(fn.body)
+        self.indent -= 1
+        self.emit("}")
+        self.emit("")
+        return 0
+
+
+# ---------- collection pass ----------
+
+def collect(mod: JValue) -> int:
+    stmts: JValue = elem(mod, 1)
+    # pass 1: class skeletons + enums, so self/mutual field annotations
+    # resolve (Node.left: Node sees Node already registered)
+    i0: int = 0
+    while i0 < len(stmts.arr):
+        st0: JValue = elem(stmts, i0)
+        t0: str = tag(st0)
+        if t0 == "class_def":
+            CLASSES.append(ClassInfo(st0.arr[1].s, [], [], [], []))
+        elif t0 == "enum_def":
+            e0: EnumInfo = EnumInfo(st0.arr[1].s, [], [])
+            j0: int = 0
+            auto0: int = 0
+            while j0 < len(st0.arr[2].arr):
+                member0: JValue = elem(st0.arr[2], j0)
+                mname0: str = member0.arr[0].s
+                mval0: int = auto0
+                if member0.arr[1].kind != JKind.NIL:
+                    mval0 = member0.arr[1].n
+                e0.member_names.append(mname0)
+                e0.member_vals.append(mval0)
+                auto0 += 1
+                j0 += 1
+            ENUMS.append(e0)
+        i0 += 1
+    # pass 2: fill fields, methods, register functions
+    i: int = 0
+    while i < len(stmts.arr):
+        st: JValue = elem(stmts, i)
+        t: str = tag(st)
+        if t == "enum_def":
+            pass
+        elif t == "class_def":
+            c: ClassInfo = find_class(st.arr[1].s)
+            body: JValue = st.arr[3]
+            j2: int = 0
+            while j2 < len(body.arr):
+                bs: JValue = elem(body, j2)
+                bt: str = tag(bs)
+                if bt == "ann_assign":
+                    c.field_names.append(elem_str(bs, 1))
+                    c.field_types.append(anno_type(bs.arr[3]))
+                elif bt == "func_def":
+                    mangled: str = c.name + "__" + elem_str(bs, 1)
+                    c.method_names.append(elem_str(bs, 1))
+                    fn: FnInfo = FnInfo(mangled, [], [], "none", None, c.name)
+                    pi: int = 0
+                    while pi < len(bs.arr[2].arr):
+                        fn.params.append(elem_str(bs.arr[2], pi))
+                        pi += 1
+                    fn.body = bs.arr[3]
+                    fn.ret = anno_type(bs.arr[5]) if bs.arr[5].kind != JKind.NIL else "none"
+                    k: int = 0
+                    while k < len(bs.arr[4].arr):
+                        an: JValue = elem(bs.arr[4], k)
+                        if an.kind == JKind.NIL:
+                            fn.param_types.append("")
+                        else:
+                            fn.param_types.append(anno_type(an))
+                        k += 1
+                    if len(fn.param_types) > 0 and fn.param_types[0] == "":
+                        fn.param_types[0] = c.name
+                    FUNCS.append(fn)
+                    c.method_rets.append(fn.ret)
+                j2 += 1
+        elif t == "func_def":
+            fn2: FnInfo = FnInfo(elem_str(st, 1), [], [], "none", None, "")
+            pi2: int = 0
+            while pi2 < len(st.arr[2].arr):
+                fn2.params.append(elem_str(st.arr[2], pi2))
+                pi2 += 1
+            fn2.body = st.arr[3]
+            if st.arr[5].kind != JKind.NIL:
+                fn2.ret = anno_type(st.arr[5])
+            k2: int = 0
+            while k2 < len(st.arr[4].arr):
+                an2: JValue = elem(st.arr[4], k2)
+                if an2.kind == JKind.NIL:
+                    fn2.param_types.append("")
+                else:
+                    fn2.param_types.append(anno_type(an2))
+                k2 += 1
+            FUNCS.append(fn2)
+        i += 1
+    return 0
+
+
+def infer_params() -> int:
+    # unannotated params: default str if the body subscripts/len's them
+    i: int = 0
+    while i < len(FUNCS):
+        fn: FnInfo = FUNCS[i]
+        j: int = 0
+        while j < len(fn.param_types):
+            if fn.param_types[j] == "":
+                if body_uses_as_str(fn.body, fn.params[j]):
+                    fn.param_types[j] = "str"
+                else:
+                    fn.param_types[j] = "int"
+            j += 1
+        i += 1
+    return 0
+
+
+def body_uses_as_str(node: JValue, name: str) -> bool:
+    if node.kind == JKind.NIL:
+        return False
+    if node.kind == JKind.ARR:
+        # name[subscript] or len(name) implies str-ish
+        n: int = len(node.arr)
+        if n >= 3 and tag(node) == "subscript" and tag(node.arr[1]) == "name" and node.arr[1].arr[1].s == name:
+            return True
+        i: int = 0
+        while i < n:
+            if body_uses_as_str(elem(node, i), name):
+                return True
+            i += 1
+        return False
+    return False
+
+
+# ---------- C runtime prelude ----------
+
+RUNTIME: list[str] = [
+    "#include <stdio.h>",
+    "#include <stdlib.h>",
+    "#include <string.h>",
+    "#include <stdint.h>",
+    "typedef struct { int64_t len, cap, cp; char* data; } Str;",
+    "typedef struct { int64_t len, cap; int64_t* items; } List;",
+    "static void* silu_malloc(size_t n) { void* p = malloc(n ? n : 1); if (!p) { fprintf(stderr, \"oom\\n\"); exit(1); } return p; }",
+    "static Str* str_new(const char* s, int64_t n) {",
+    "    Str* r = silu_malloc(sizeof(Str));",
+    "    r->len = n; r->cap = n; r->data = silu_malloc(n);",
+    "    memcpy(r->data, s, n);",
+    "    int64_t cp = 0, i = 0;",
+    "    while (i < n) { unsigned char b = (unsigned char)r->data[i]; cp++; i += b < 0x80 ? 1 : (b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4)); }",
+    "    r->cp = cp; return r;",
+    "}",
+    "static Str* str_of(const char* s) { return str_new(s, (int64_t)strlen(s)); }",
+    "static int64_t str_cp_off(Str* s, int64_t idx) {",
+    "    int64_t o = 0, i = 0;",
+    "    while (i < idx && o < s->len) { unsigned char b = (unsigned char)s->data[o]; o += b < 0x80 ? 1 : (b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4)); i++; }",
+    "    return o;",
+    "}",
+    "static Str* str_at(Str* s, int64_t i) {",
+    "    if (i < 0) i += s->cp;",
+    "    int64_t o = str_cp_off(s, i);",
+    "    unsigned char b = (unsigned char)s->data[o];",
+    "    int64_t k = b < 0x80 ? 1 : (b < 0xE0 ? 2 : (b < 0xF0 ? 3 : 4));",
+    "    return str_new(s->data + o, k);",
+    "}",
+    "static Str* str_slice(Str* s, int64_t lo, int64_t hi) {",
+    "    if (lo < 0) lo += s->cp;",
+    "    if (hi < 0) hi += s->cp;",
+    "    if (lo < 0) lo = 0; if (hi > s->cp) hi = s->cp;",
+    "    if (hi < lo) hi = lo;",
+    "    int64_t a = str_cp_off(s, lo); int64_t b = str_cp_off(s, hi);",
+    "    return str_new(s->data + a, b - a);",
+    "}",
+    "static Str* str_add(Str* a, Str* b) { Str* r = str_new(\"\", 0); r->data = silu_malloc(a->len + b->len); memcpy(r->data, a->data, a->len); memcpy(r->data + a->len, b->data, b->len); r->len = r->cap = a->len + b->len; int64_t cp = 0, i = 0; while (i < r->len) { unsigned char c = (unsigned char)r->data[i]; cp++; i += c < 0x80 ? 1 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : 4)); } r->cp = cp; return r; }",
+    "static int str_eq(Str* a, Str* b) { return a->len == b->len && memcmp(a->data, b->data, a->len) == 0; }",
+    "static int str_ne(Str* a, Str* b) { return !str_eq(a, b); }",
+    "static int str_isdigit(Str* s) { if (s->len == 0) return 0; for (int64_t i = 0; i < s->len; i++) { unsigned char c = (unsigned char)s->data[i]; if (c < '0' || c > '9') return 0; } return 1; }",
+    "static int str_isalpha(Str* s) { if (s->len == 0) return 0; for (int64_t i = 0; i < s->len; i++) { unsigned char c = (unsigned char)s->data[i]; if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return 0; } return 1; }",
+    "static double str_to_f64(Str* s) { char buf[64]; int64_t n = s->len < 63 ? s->len : 63; memcpy(buf, s->data, n); buf[n] = 0; return strtod(buf, 0); }",
+    "static int64_t str_to_i64(Str* s) { char buf[64]; int64_t n = s->len < 63 ? s->len : 63; memcpy(buf, s->data, n); buf[n] = 0; return strtoll(buf, 0, 10); }",
+    "static int64_t str_ord0(Str* s) { unsigned char b = (unsigned char)s->data[0]; if (b < 0x80) return b; if (b < 0xE0) return ((b & 0x1F) << 6) | ((unsigned char)s->data[1] & 0x3F); if (b < 0xF0) return ((b & 0x0F) << 12) | (((unsigned char)s->data[1] & 0x3F) << 6) | ((unsigned char)s->data[2] & 0x3F); return ((b & 0x07) << 18) | (((unsigned char)s->data[1] & 0x3F) << 12) | (((unsigned char)s->data[2] & 0x3F) << 6) | ((unsigned char)s->data[3] & 0x3F); }",
+    "static Str* str_chr1(int64_t cp) { char buf[4]; int64_t n; if (cp < 0x80) { buf[0] = (char)cp; n = 1; } else if (cp < 0x800) { buf[0] = (char)(0xC0 | (cp >> 6)); buf[1] = (char)(0x80 | (cp & 0x3F)); n = 2; } else { buf[0] = (char)(0xE0 | (cp >> 12)); buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[2] = (char)(0x80 | (cp & 0x3F)); n = 3; } return str_new(buf, n); }",
+    "static Str* str_from_i64(int64_t v) { char buf[32]; snprintf(buf, 32, \"%lld\", (long long)v); return str_of(buf); }",
+    "static Str* str_from_f64(double v) { char buf[40]; snprintf(buf, 40, \"%.15g\", v); char* dot = strchr(buf, '.'); char* e = strchr(buf, 'e'); if (!dot && !e) strcat(buf, \".0\"); return str_of(buf); }",
+    "static List* list_new(void) { List* l = silu_malloc(sizeof(List)); l->len = 0; l->cap = 0; l->items = 0; return l; }",
+    "static void list_push(List* l, int64_t v) { if (l->len == l->cap) { int64_t nc = l->cap ? l->cap * 2 : 8; int64_t* ni = silu_malloc(nc * 8); if (l->len) memcpy(ni, l->items, l->len * 8); l->items = ni; l->cap = nc; } l->items[l->len++] = v; }",
+    "static int64_t list_get(List* l, int64_t i) { if (i < 0) i += l->len; return l->items[i]; }",
+    "static int64_t silu_fdiv(int64_t a, int64_t b) { int64_t q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }",
+    "static Str* read_line(void) { char buf[4096]; if (!fgets(buf, 4096, stdin)) return str_of(\"\"); int64_t n = (int64_t)strlen(buf); if (n && buf[n-1] == '\\n') n--; return str_new(buf, n); }",
+    "static Str* read_stdin_all(void) { int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, stdin)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } return str_new(buf, len); }",
+    "static void silu_sep(void) { putchar(' '); }",
+    "static void silu_nl(void) { putchar('\\n'); }",
+    "static void silu_print_int(int64_t v) { printf(\"%lld\", (long long)v); }",
+    "static void silu_print_str(Str* s) { fwrite(s->data, 1, s->len, stdout); }",
+    "static void silu_print_bool(int64_t v) { fputs(v ? \"True\" : \"False\", stdout); }",
+    "static void silu_print_f64(double v) {",
+    "    char buf[40];",
+    "    for (int prec = 15; prec <= 17; prec++) {",
+    "        snprintf(buf, 40, \"%.*g\", prec, v);",
+    "        if (strtod(buf, 0) == v) break;",
+    "    }",
+    "    if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'n') && !strchr(buf, 'i')) strcat(buf, \".0\");",
+    "    fputs(buf, stdout);",
+    "}",
+]
 
 
 def main() -> int:
     src: str = read_stdin()
     parser: Json = Json(src, 0)
     root: JValue = parser.value()
-    gen: Gen = Gen("", 0, [])
-    gen.emit("#include <stdio.h>")
+    collect(root)
+    infer_params()
+    gen: Gen = Gen("", 0, [], [], [], [])
+    i: int = 0
+    while i < len(RUNTIME):
+        gen.emit(RUNTIME[i])
+        i += 1
+    gen.emit("")
+    # enums as C constants
+    e: int = 0
+    while e < len(ENUMS):
+        ei: EnumInfo = ENUMS[e]
+        parts: list[str] = []
+        m: int = 0
+        while m < len(ei.member_names):
+            parts.append(ei.name + "_" + ei.member_names[m] + " = " + gen.show_int(ei.member_vals[m]))
+            m += 1
+        gen.emit("enum { " + ", ".join(parts) + " };")
+        e += 1
+    # forward declarations
+    j: int = 0
+    while j < len(CLASSES):
+        gen.emit("typedef struct " + CLASSES[j].name + " " + CLASSES[j].name + ";")
+        j += 1
+    j = 0
+    while j < len(FUNCS):
+        fn: FnInfo = FUNCS[j]
+        if fn.cls == "":
+            sig: str = cty(fn.ret) + " fn_" + fn.name + "("
+            k: int = 0
+            while k < len(fn.params):
+                if k > 0:
+                    sig = sig + ", "
+                sig = sig + cty(fn.param_types[k]) + " v_" + fn.params[k]
+                k += 1
+            if len(fn.params) == 0:
+                sig = sig + "void"
+            sig = sig + ");"
+            gen.emit(sig)
+        j += 1
+    gen.emit("")
+    # struct definitions
+    j = 0
+    while j < len(CLASSES):
+        c: ClassInfo = CLASSES[j]
+        gen.emit("struct " + c.name + " {")
+        k2: int = 0
+        while k2 < len(c.field_names):
+            gen.emit("    " + cty(c.field_types[k2]) + " " + c.field_names[k2] + ";")
+            k2 += 1
+        gen.emit("};")
+        gen.emit("")
+        j += 1
+    # prototypes for methods and constructors (used before defined)
+    j = 0
+    while j < len(FUNCS):
+        fn4: FnInfo = FUNCS[j]
+        if fn4.cls != "":
+            cl: ClassInfo = find_class(fn4.cls)
+            psig: str = cty(fn4.ret) + " " + fn4.name + "(" + cl.name + "* v_self"
+            pi3: int = 1
+            while pi3 < len(fn4.params):
+                pt3: str = fn4.param_types[pi3]
+                if pt3 == "":
+                    pt3 = "int"
+                psig = psig + ", " + cty(pt3) + " v_" + fn4.params[pi3]
+                pi3 += 1
+            gen.emit(psig + ");")
+        j += 1
+    j = 0
+    while j < len(CLASSES):
+        c3: ClassInfo = CLASSES[j]
+        csig: str = c3.name + "* " + c3.name + "__new("
+        pi4: int = 0
+        while pi4 < len(c3.field_names):
+            if pi4 > 0:
+                csig = csig + ", "
+            csig = csig + cty(c3.field_types[pi4]) + " a" + gen.show_int(pi4)
+            pi4 += 1
+        if len(c3.field_names) == 0:
+            csig = csig + "void"
+        gen.emit(csig + ");")
+        j += 1
+    gen.emit("")
+    # methods
+    j = 0
+    while j < len(FUNCS):
+        fn2: FnInfo = FUNCS[j]
+        if fn2.cls != "":
+            cls: ClassInfo = find_class(fn2.cls)
+            gen.indent = 0
+            gen.gen_method(fn2, cls)
+        j += 1
+    # constructors
+    j = 0
+    while j < len(CLASSES):
+        c2: ClassInfo = CLASSES[j]
+        sig2: str = c2.name + "* " + c2.name + "__new("
+        k3: int = 0
+        while k3 < len(c2.field_names):
+            if k3 > 0:
+                sig2 = sig2 + ", "
+            sig2 = sig2 + cty(c2.field_types[k3]) + " a" + gen.show_int(k3)
+            k3 += 1
+        if len(c2.field_names) == 0:
+            sig2 = sig2 + "void"
+        sig2 = sig2 + ")"
+        gen.emit(sig2 + " {")
+        gen.emit("    " + c2.name + "* o = silu_malloc(sizeof(" + c2.name + "));")
+        k4: int = 0
+        while k4 < len(c2.field_names):
+            gen.emit("    o->" + c2.field_names[k4] + " = a" + gen.show_int(k4) + ";")
+            k4 += 1
+        gen.emit("    return o;")
+        gen.emit("}")
+        gen.emit("")
+        j += 1
+    # plain functions
+    j = 0
+    while j < len(FUNCS):
+        fn3: FnInfo = FUNCS[j]
+        if fn3.cls == "":
+            gen.gen_func(fn3)
+        j += 1
+    # entry
+    gen.names = []
+    gen.types = []
     gen.emit("int main(void) {")
     gen.indent = 1
-    gen.gen_stmts(elem(root, 1))
-    gen.emit("return 0;")
+    top: JValue = elem(root, 1)
+    i2: int = 0
+    while i2 < len(top.arr):
+        st2: JValue = elem(top, i2)
+        t2: str = tag(st2)
+        if t2 != "func_def" and t2 != "class_def" and t2 != "enum_def" and t2 != "line" and t2 != "import" and t2 != "from_import":
+            gen.gen_stmt(st2)
+        i2 += 1
+    if find_func("main") is not None:
+        gen.emit("return (int)fn_main();")
+    else:
+        gen.emit("return 0;")
     gen.indent = 0
     gen.emit("}")
-    print(gen.out, end="")
+    # string literal pool (needs to be at file scope: emit at end)
+    lit_lines: list[str] = []
+    if len(gen.lits) > 0:
+        lit_lines.append("static const char* LIT_DATA[] = {")
+        i3: int = 0
+        while i3 < len(gen.lits):
+            comma: str = ","
+            if i3 == len(gen.lits) - 1:
+                comma = ""
+            lit_lines.append("    " + gen.c_string(gen.lits[i3]) + comma)
+            i3 += 1
+        lit_lines.append("};")
+        lit_lines.append("static Str* LIT_CACHE[" + gen.show_int(len(gen.lits)) + "];")
+        lit_lines.append("static Str* LIT(int i) { if (!LIT_CACHE[i]) LIT_CACHE[i] = str_of(LIT_DATA[i]); return LIT_CACHE[i]; }")
+        lit_lines.append("")
+    pool: str = ""
+    i4: int = 0
+    while i4 < len(lit_lines):
+        pool = pool + lit_lines[i4] + "\n"
+        i4 += 1
+    # the pool references Str/str_of: splice it after the runtime
+    # prelude (whose line count we know) instead of before everything
+    nl: int = 0
+    pos: int = 0
+    target: int = len(RUNTIME) + 1
+    while pos < len(gen.out):
+        if gen.out[pos] == "\n":
+            nl = nl + 1
+            if nl == target:
+                break
+        pos = pos + 1
+    head: str = gen.out[: pos + 1]
+    tail: str = gen.out[pos + 1:]
+    print(head + pool + tail, end="")
     return 0

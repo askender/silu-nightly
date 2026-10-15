@@ -93,6 +93,22 @@ get/len/has；`print` 家族（int/float/bool/str 的 Python 格式化——
    `cat x.si | ./silu_fe | ./ir2c > x.c && clang x.c` 全程无 Python
 5. 每步 pytest 全绿 + 新增对拍测试固化
 
+## 0. 进度
+
+- **阶段 2+3 完成（2026-10-15）**：ir2c.si 重写为类型化生成器
+  （~880 行）——两遍类收集（自引用/互引用）、enum→C 常量、
+  class→struct + `X__new` 构造器 + `X__m` 前缀方法（含原型）、
+  match→if 链、str（at/slice/eq/isdigit/add + `%.15g→%.17g` 最短
+  往返浮点打印，与 typed 对拍一致）、list 槽模型、truediv 走
+  double、`raise SystemExit`→exit、`[]`→list_new。
+  **calc.si 全链达标**（silu_fe → ir2c → C → clang，16 表达式 +
+  错误路径与 CPython 对拍），M2/M3 核心程序集回归 4/4，
+  `tests/test_selfhost_m4.py::test_m5_ir2c_compiles_calc` 固化。
+  沿途修复：typed 的 `return None`→实例字段 coerce（null 指针）、
+  silu_fe 的 `s[:hi]` 缺 lo 切片错位。
+- 待办：阶段 1（dict 运行时）、4（ir_interp.si：dict/容器迭代/
+  嵌套函数）、5（silu_fe.si 冲刺）。
+
 ## 7. 实施顺序（每步可验证）
 
 1. C runtime 前导 + str 字面量/拼接/比较（calc 不需要，先给

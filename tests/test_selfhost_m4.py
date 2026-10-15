@@ -439,3 +439,59 @@ def test_strict_compile_errors(tmp_path, source, fragment):
     )
     assert build.returncode != 0
     assert fragment in build.stderr
+
+
+# ---- M5 stage 1: the Silu-written back end compiles calc.si ----
+
+@pytest.fixture(scope="module")
+def ir2c_bin(tmp_path_factory):
+    return _build(
+        M3_IR2C, str(tmp_path_factory.mktemp("m5") / "ir2c")
+    )
+
+
+def test_m5_ir2c_compiles_calc(fe_bin, ir2c_bin):
+    """calc.si (classes/enums/match/strings/floats) through the pure
+    Silu pipeline: silu_fe -> ir2c -> C -> clang, verified against
+    CPython on the M1 expression set."""
+    ir = subprocess.run(
+        [fe_bin], stdin=open(f"{REPO}/selfhost/calc.si"),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert ir.returncode == 0, ir.stderr
+    c_src = subprocess.run(
+        [ir2c_bin], input=ir.stdout, capture_output=True, text=True, timeout=120,
+    )
+    assert c_src.returncode == 0, c_src.stderr
+    assert "fn_tokenize" in c_src.stdout
+    with tempfile.TemporaryDirectory() as tmpdir:
+        c_file = os.path.join(tmpdir, "calc.c")
+        binary = os.path.join(tmpdir, "calc")
+        with open(c_file, "w") as handle:
+            handle.write(c_src.stdout)
+        build = subprocess.run(
+            ["clang", "-O2", c_file, "-o", binary],
+            capture_output=True, text=True,
+        )
+        assert build.returncode == 0, build.stderr
+        for expr in [
+            "1+2", "7/2", "(1+2)*3", "-(3+4)*2", "2*3+4",
+            "10/4", "3-8", "2*(3+4)", "8/2/2",
+            "1+2*3", "100/7", "9*9", "6-2-1", "(1+2)*(3+4)", "7-2*3",
+        ]:
+            run = subprocess.run(
+                [binary], input=expr + "\n", capture_output=True, text=True,
+                timeout=30,
+            )
+            expected = subprocess.run(
+                [sys.executable, "-c",
+                 f"v=({expr}); print(int(v) if v==int(v) else v)"],
+                capture_output=True, text=True,
+            ).stdout
+            assert run.stdout == expected, (expr, run.stdout, expected)
+        # error path: lexer failure exits 1 with the message
+        bad = subprocess.run(
+            [binary], input="1 $ 2\n", capture_output=True, text=True, timeout=30
+        )
+        assert bad.returncode == 1
+        assert "lex error" in bad.stdout

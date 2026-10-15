@@ -800,17 +800,15 @@ class Parser:
                 node = ["call", node, args, kwargs]
             elif self.accept("["):
                 if self.accept(":"):
+                    # no leading expression: [:hi], [:hi:step], [:]
                     lo = None
                     hi = None
                     step = None
                     if self.cur().text != ":" and self.cur().text != "]":
-                        lo = self.parse_expr()
+                        hi = self.parse_expr()
                     if self.accept(":"):
-                        if self.cur().text != ":" and self.cur().text != "]":
-                            hi = self.parse_expr()
-                        if self.accept(":"):
-                            if self.cur().text != "]":
-                                step = self.parse_expr()
+                        if self.cur().text != "]":
+                            step = self.parse_expr()
                     self.expect("]")
                     node = ["subscript", node, ["slice", lo, hi, step]]
                 else:

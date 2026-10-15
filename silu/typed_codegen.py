@@ -4165,6 +4165,12 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def _unbox(self, obj: Any, kind: str) -> Any:
         """PyObject* -> raw value of `kind` (panics on type mismatch)."""
+        if kind == INSTANCE:
+            # the None literal coercing to an instance is the null
+            # pointer - same model `x is None` already uses
+            return self.current_builder.bitcast(
+                obj, LLVM_KIND_TYPES[INSTANCE]
+            )
         if kind == RAWLIST_S:
             return self.current_builder.call(
                 self.pylist_to_rawlist_str, [obj]
