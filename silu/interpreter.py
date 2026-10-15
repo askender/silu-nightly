@@ -197,6 +197,7 @@ class Environment:
                 "bool": bool,
                 "list": list,
                 "dict": dict,
+                "tuple": tuple,
                 "len": len,
                 "range": range,
                 "min": min,
@@ -210,6 +211,8 @@ class Environment:
                 "read_stdin": lambda: sys.stdin.read(),
                 "ord": ord,
                 "chr": chr,
+                "enumerate": enumerate,
+                "SystemExit": SystemExit,
                 "MemoryError": MemoryError,
             }
         )
@@ -221,7 +224,15 @@ class Environment:
 
     def _isinstance(self, obj, cls) -> bool:
         """Built-in isinstance with type name support."""
-        type_map = {"int": int, "float": float, "str": str, "bool": bool}
+        type_map = {
+            "int": int,
+            "float": float,
+            "str": str,
+            "bool": bool,
+            "list": list,
+            "tuple": tuple,
+            "dict": dict,
+        }
 
         # If cls is already a type object, use it directly
         if cls in type_map.values():

@@ -59,6 +59,12 @@ class IRInterpreter:
             "chr": chr,
             "read_file": self._builtin_read_file,
             "read_stdin": self._builtin_read_stdin,
+            "list": list,
+            "tuple": tuple,
+            "dict": dict,
+            "enumerate": enumerate,
+            "SystemExit": SystemExit,
+            "input": lambda prompt="": input(prompt),
         }
 
     # ================== Main Execution Methods ==================
@@ -924,6 +930,10 @@ class IRInterpreter:
         """Execute break statement."""
         self.should_break = True
 
+    def _execute_raise(self, value: Any) -> None:
+        """Execute raise statement (SystemExit propagates to the top)."""
+        raise self.execute(value)
+
     def _execute_continue(self) -> None:
         """Execute continue statement."""
         self.should_continue = True
@@ -1598,6 +1608,11 @@ class IRInterpreter:
 
         # Check built-ins
         if name in self.builtins:
+            builtin = self.builtins[name]
+            # type objects (list/tuple/dict) resolve here and now;
+            # callable builtins keep their name for call-site resolution
+            if isinstance(builtin, type):
+                return builtin
             return name  # Return function name for later resolution
 
         raise NameError(f"Name '{name}' is not defined")

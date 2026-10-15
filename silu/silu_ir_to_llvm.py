@@ -1834,6 +1834,82 @@ class SiluToLLVMConverter:
             to_upper=False,
         )
 
+        def emit_str_pred(name: str, lo_hi_pairs, extra_bytes=()):
+            """str.isdigit/isalpha/isspace for boxed strings (ASCII
+            approximation of Python's Unicode classes; empty -> False)."""
+            func = ir.Function(
+                self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name=name
+            )
+            builder = ir.IRBuilder(func.append_basic_block("entry"))
+            data = builder.load(builder.gep(func.args[0], [zero32, one32]))
+            str_struct = builder.bitcast(
+                data, ir.PointerType(self.pyobj.string_type)
+            )
+            length = builder.sext(
+                builder.load(builder.gep(str_struct, [zero32, zero32])), i64
+            )
+            chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+            empty = builder.icmp_signed("==", length, zero64)
+            ret_bool = func.append_basic_block("pred_ret")
+            loop = func.append_basic_block("pred_loop")
+            builder.cbranch(empty, ret_bool, loop)
+
+            builder.position_at_end(loop)
+            idx_ptr = builder.alloca(i64, name="pred_i")
+            builder.store(zero64, idx_ptr)
+            cond = func.append_basic_block("pred_cond")
+            body = func.append_basic_block("pred_body")
+            false_block = func.append_basic_block("pred_false")
+            step = func.append_basic_block("pred_step")
+            builder.branch(cond)
+
+            builder.position_at_end(cond)
+            builder.cbranch(
+                builder.icmp_signed("<", builder.load(idx_ptr), length),
+                body,
+                ret_bool,
+            )
+
+            builder.position_at_end(body)
+            byte = builder.load(builder.gep(chars, [builder.load(idx_ptr)]))
+            matched = ir.Constant(ir.IntType(1), 0)
+            for lo, hi in lo_hi_pairs:
+                in_range = builder.or_(
+                    builder.and_(
+                        builder.icmp_signed(">=", byte, ir.Constant(ir.IntType(8), lo)),
+                        builder.icmp_signed("<=", byte, ir.Constant(ir.IntType(8), hi)),
+                    ),
+                    ir.Constant(ir.IntType(1), 0),
+                )
+                matched = builder.or_(matched, in_range)
+            for extra in extra_bytes:
+                is_eq = builder.icmp_signed(
+                    "==", byte, ir.Constant(ir.IntType(8), extra)
+                )
+                matched = builder.or_(matched, is_eq)
+            builder.cbranch(matched, step, false_block)
+
+            builder.position_at_end(false_block)
+            builder.ret(builder.call(self.create_bool, [ir.Constant(ir.IntType(1), 0)]))
+
+            builder.position_at_end(step)
+            builder.store(
+                builder.add(builder.load(idx_ptr), one64), idx_ptr
+            )
+            builder.branch(cond)
+
+            builder.position_at_end(ret_bool)
+            builder.ret(builder.call(self.create_bool, [ir.Constant(ir.IntType(1), 1)]))
+            return func
+
+        self.str_isdigit = emit_str_pred("str_isdigit", [(ord("0"), ord("9"))])
+        self.str_isalpha = emit_str_pred(
+            "str_isalpha", [(ord("A"), ord("Z")), (ord("a"), ord("z"))]
+        )
+        self.str_isspace = emit_str_pred(
+            "str_isspace", [], extra_bytes=(0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D)
+        )
+
         def emit_sub_search(builder, func, from_right):
             def string_parts(obj):
                 data = builder.load(builder.gep(obj, [zero32, one32]))

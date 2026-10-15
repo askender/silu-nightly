@@ -444,6 +444,15 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         msg = self.visit(node.msg) if node.msg else None
         return self.process_assert(test, msg)
 
+    def visit_Raise(self, node: ast.Raise) -> Any:
+        """Visit a raise statement: evaluate and raise the exception."""
+        if node.cause is not None:
+            raise NotImplementedError("raise ... from ... is not supported")
+        exc = self.visit(node.exc) if node.exc else None
+        if exc is None:
+            raise NotImplementedError("bare raise is not supported")
+        raise exc
+
     def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
         """Visit an annotated assignment node."""
         if not isinstance(node.target, ast.Name):

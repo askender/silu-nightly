@@ -4176,6 +4176,115 @@ class TypedCodegen(SiluToLLVMConverter):
             )
         return self._emit_truthiness(value)
 
+    def _is_bool_singleton(self, tv: Tuple[str, Any], want: bool) -> Any:
+        """`x is True` / `x is False`: identity with the bool singleton.
+
+        Truthiness is wrong here - `"s" is True` is False in Python. A
+        boxed object matches only when its tag is bool (3) and the payload
+        equals the wanted constant; an unboxed I1 compares directly; any
+        other representation is never the singleton."""
+        builder = self.current_builder
+        if tv[0] == I1:
+            return builder.icmp_signed(
+                "==", tv[1], ir.Constant(ir.IntType(1), int(want))
+            )
+        if tv[0] == OBJ:
+            boxed = tv[1]
+            non_null = builder.icmp_signed(
+                "!=", boxed, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
+            )
+            tag_ptr = builder.gep(
+                boxed, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+            )
+            tag = builder.load(tag_ptr)
+            is_bool = builder.icmp_signed(
+                "==", tag, ir.Constant(ir.IntType(32), 3)
+            )
+            data_ptr_field = builder.gep(
+                boxed, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]
+            )
+            data_ptr = builder.bitcast(
+                builder.load(data_ptr_field), ir.PointerType(ir.IntType(64))
+            )
+            payload = builder.load(data_ptr)
+            value_eq = builder.icmp_signed(
+                "==", payload, ir.Constant(ir.IntType(64), int(want))
+            )
+            return builder.and_(non_null, builder.and_(is_bool, value_eq))
+        return ir.Constant(ir.IntType(1), 0)
+
+    # pyobj type tags: 0=int 1=float 2=str 3=bool 4=list 5=dict;
+    # bool is an int subclass, and Silu tuples ARE lists
+    _ISINSTANCE_TAGS = {
+        "int": (0, 3),
+        "float": (1,),
+        "str": (2,),
+        "bool": (3,),
+        "list": (4,),
+        "tuple": (4,),
+        "dict": (5,),
+    }
+
+    def _emit_isinstance(self, value_node, type_node) -> Any:
+        """isinstance(x, T) / isinstance(x, (T1, T2)) -> i1.
+
+        Statically-known kinds answer at compile time; boxed values
+        compare the runtime tag against every accepted tag."""
+        names = []
+        if (
+            isinstance(type_node, (list, tuple))
+            and len(type_node) >= 2
+            and type_node[0] == "name"
+        ):
+            names.append(type_node[1])
+        elif (
+            isinstance(type_node, (list, tuple))
+            and len(type_node) >= 2
+            and type_node[0] == "tuple"
+        ):
+            for element in type_node[1]:
+                if (
+                    isinstance(element, (list, tuple))
+                    and len(element) >= 2
+                    and element[0] == "name"
+                ):
+                    names.append(element[1])
+        tags: set = set()
+        for name in names:
+            tags.update(self._ISINSTANCE_TAGS.get(name, ()))
+        if not tags:
+            raise NotImplementedError(
+                f"isinstance type must be builtin names, got {names!r}"
+            )
+
+        kind = self._convert_node(value_node)
+        static_yes = {
+            I64: tags <= {0, 3} and 0 in tags,
+            I1: 3 in tags or (0 in tags and tags <= {0, 3}),
+            F64: tags == {1},
+            RAWSTR: tags == {2},
+        }.get(kind[0])
+        if static_yes is not None:
+            return ir.Constant(ir.IntType(1), int(static_yes))
+        if kind[0] in RAWLIST_KINDS:
+            return ir.Constant(ir.IntType(1), int(tags == {4}))
+        if kind[0] in RAWDICT_KINDS:
+            return ir.Constant(ir.IntType(1), int(tags == {5}))
+
+        boxed = self._box(kind)
+        builder = self.current_builder
+        result = ir.Constant(ir.IntType(1), 0)
+        for tag in sorted(tags):
+            tag_ptr = builder.gep(
+                boxed, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+            )
+            tag_val = builder.load(tag_ptr)
+            matches = builder.icmp_signed(
+                "==", tag_val, ir.Constant(ir.IntType(32), tag)
+            )
+            result = builder.or_(result, matches)
+        return result
+
     # ================== variables ==================
 
     def _declare_var(self, name: str, kind: str):
@@ -7382,16 +7491,14 @@ class TypedCodegen(SiluToLLVMConverter):
                 and node[2][0] == "const"
                 and isinstance(node[2][1], bool)
             ):
-                cond = self._to_i1_cond(left)
-                result = cond if node[2][1] else self.current_builder.not_(cond)
+                result = self._is_bool_singleton(left, node[2][1])
             elif (
                 isinstance(node[1], list)
                 and len(node[1]) >= 2
                 and node[1][0] == "const"
                 and isinstance(node[1][1], bool)
             ):
-                cond = self._to_i1_cond(right)
-                result = cond if node[1][1] else self.current_builder.not_(cond)
+                result = self._is_bool_singleton(right, node[1][1])
             elif left[0] == INSTANCE and right[0] == INSTANCE:
                 result = self.current_builder.icmp_signed("==", left[1], right[1])
             elif left[0] == I64 and right[0] == I64:
@@ -7543,6 +7650,34 @@ class TypedCodegen(SiluToLLVMConverter):
             if self.loop_continue_blocks:
                 self.current_builder.branch(self.loop_continue_blocks[-1])
             return (OBJ, null_obj)
+
+        if op == "raise":
+            # the only sanctioned raise: SystemExit(code) terminates the
+            # process with that status
+            value_node = node[1] if len(node) > 1 else None
+            if (
+                isinstance(value_node, (list, tuple))
+                and len(value_node) >= 3
+                and value_node[0] == "call"
+                and isinstance(value_node[1], (list, tuple))
+                and len(value_node[1]) >= 2
+                and value_node[1][0] == "name"
+                and value_node[1][1] == "SystemExit"
+            ):
+                code = self._coerce(
+                    self._convert_node(value_node[2][0])
+                    if value_node[2]
+                    else (I64, ir.Constant(ir.IntType(64), 1)),
+                    I64,
+                )[1]
+                self._emit_local_rawstr_drops()
+                code_i32 = self.current_builder.trunc(code, ir.IntType(32))
+                self.current_builder.call(self.exit_func, [code_i32])
+                self.current_builder.unreachable()
+                return (OBJ, null_obj)
+            raise NotImplementedError(
+                "only 'raise SystemExit(code)' is supported"
+            )
 
         if op == "for":
             if len(node) >= 4:
@@ -8289,6 +8424,43 @@ class TypedCodegen(SiluToLLVMConverter):
     def _convert_for(self, node: list) -> Tuple[str, Any]:
         target_node, iter_node, body_stmts = node[1], node[2], node[3]
 
+        # `for i, x in enumerate(seq)` desugars to a plain `for x in seq`
+        # with a hidden counter: counter=0; loop { i = counter; body;
+        # counter += 1 }. Static scalars stay scalars; dynamic seqs keep
+        # the generic boxed iterator.
+        if (
+            isinstance(iter_node, (list, tuple))
+            and len(iter_node) >= 3
+            and iter_node[0] == "call"
+            and isinstance(iter_node[1], (list, tuple))
+            and len(iter_node[1]) >= 2
+            and iter_node[1][0] == "name"
+            and iter_node[1][1] == "enumerate"
+            and len(iter_node[2]) == 1
+            and isinstance(target_node, (list, tuple))
+            and len(target_node) >= 2
+            and target_node[0] == "tuple_unpack"
+            and len(target_node[1]) == 2
+            and all(
+                isinstance(name, str) for name in target_node[1]
+            )
+        ):
+            idx_name, val_name = target_node[1]
+            counter_name = f"__enum_ctr_{id(node) & 0xFFFFFF:x}"
+            seq_node = iter_node[2][0]
+            self._convert_statement(
+                ["assign", counter_name, ["const", 0], None]
+            )
+            desugared_body = [
+                ["assign", idx_name, ["name", counter_name], None]
+            ] + list(body_stmts) + [
+                ["aug_assign", ["name", counter_name], "+=", ["const", 1]]
+            ]
+            return self._convert_for(
+                ["for", ["name", val_name], seq_node, desugared_body,
+                 node[4] if len(node) > 4 else []]
+            )
+
         is_range_iter = (
             isinstance(iter_node, list)
             and len(iter_node) >= 3
@@ -8788,6 +8960,21 @@ class TypedCodegen(SiluToLLVMConverter):
             return result
         if iter_tv[0] == RAWSTR:
             return self._convert_rawstr_for_loop(target_node, iter_tv, body_stmts)
+        if (
+            iter_tv[0] == OBJ
+            and isinstance(iter_node, (list, tuple))
+            and len(iter_node) >= 2
+            and iter_node[0] == "const"
+            and isinstance(iter_node[1], str)
+        ):
+            # a string literal boxes lazily; iterating one is the rawstr
+            # code-point walk (the generic path below assumes a list)
+            raw = self.current_builder.call(
+                self.pystr_to_rawstr, [iter_tv[1]]
+            )
+            return self._convert_rawstr_for_loop(
+                target_node, (RAWSTR, raw), body_stmts
+            )
         list_obj = self._box(iter_tv)
         if list_obj is None:
             return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
@@ -9088,6 +9275,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 "clear": (self.pyobj_clear, 0, False),
                 "upper": (self.str_upper, 0, True),
                 "lower": (self.str_lower, 0, True),
+                "isdigit": (self.str_isdigit, 0, True),
+                "isalpha": (self.str_isalpha, 0, True),
+                "isspace": (self.str_isspace, 0, True),
                 "find": (self.str_find, 1, True),
                 "rfind": (self.str_rfind, 1, True),
                 "get": (self.dict_get_or, 2, True),
@@ -9119,7 +9309,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 if len(arg_vals) == arg_count and all(arg_vals):
                     result = self.current_builder.call(func, [obj] + arg_vals)
                     return (OBJ, result) if has_result else (OBJ, result)
-            return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+            raise NotImplementedError(
+                f"method '{method_name}' is not supported on dynamic values"
+            )
 
         if (
             isinstance(func_node, list)
@@ -9164,6 +9356,9 @@ class TypedCodegen(SiluToLLVMConverter):
                     OBJ,
                     self.current_builder.call(self.pyobj_read_stdin, []),
                 )
+
+            if func_name == "isinstance" and len(args_node) == 2:
+                return (I1, self._emit_isinstance(args_node[0], args_node[1]))
 
             if func_name == "ord" and len(args_node) == 1:
                 # code point of a one-character string (panics otherwise)
@@ -9290,6 +9485,31 @@ class TypedCodegen(SiluToLLVMConverter):
                         self.current_builder.call(self.rawstr_free, [temp])
                     return (I64, parsed)
                 return (I64, ir.Constant(ir.IntType(64), 0))
+
+            if func_name == "int" and len(args_node) == 2:
+                # int(text, base): strtol with an explicit radix
+                arg_tv = self._convert_node(args_node[0])
+                base_tv = self._coerce(self._convert_node(args_node[1]), I64)
+                raw_ptr, temp = self._rawstr_operand(arg_tv)
+                cstr = self.current_builder.call(self.rawstr_to_cstr, [raw_ptr])
+                end_ptr = self.current_builder.alloca(
+                    ir.PointerType(ir.IntType(8)), name="iend2"
+                )
+                base_i32 = self.current_builder.trunc(base_tv[1], ir.IntType(32))
+                parsed = self.current_builder.call(
+                    self.strtol, [cstr, end_ptr, base_i32]
+                )
+                end_val = self.current_builder.load(end_ptr)
+                moved = self.current_builder.icmp_signed("!=", end_val, cstr)
+                if self.checks:
+                    self._panic_if(
+                        self.current_builder.not_(moved),
+                        "ValueError: invalid literal for int()",
+                    )
+                self.current_builder.call(self.free, [cstr])
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
+                return (I64, parsed)
 
             if func_name == "len":
                 if args_node:
@@ -9450,6 +9670,18 @@ class TypedCodegen(SiluToLLVMConverter):
                 if len(boxed_args) == len(func.args):
                     result = self.current_builder.call(func, boxed_args)
                     return (OBJ, result)
-                return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+                raise NotImplementedError(
+                    f"call to '{func_name}' with {len(args_node)} args "
+                    f"(expected {len(func.args)})"
+                )
 
-        return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+        # unknown callee: fail at compile time. A silent null leaks into
+        # containers and crashes far from its origin at runtime.
+        callee_desc = (
+            func_node[1]
+            if isinstance(func_node, (list, tuple))
+            and len(func_node) >= 2
+            and func_node[0] == "name"
+            else str(func_node)
+        )
+        raise NotImplementedError(f"call to unknown function '{callee_desc}'")

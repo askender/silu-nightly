@@ -35,6 +35,10 @@
 - **M3：Silu 写 IR→C 文本生成器**。输出 C 源码经管道交 clang——
   绕开"调用外部命令"的需求。
 - **M4：前端自举**（Silu 源码 → IR）。需要 4+5（enum + match）。
+  **已完成**：`selfhost/silu_fe.si` 把全部 selfhost 程序（含自身）
+  解析为与 `silu ir --format json` 一致的 IR；M4→M2、M4→M3→C→clang
+  端到端与 CPython 对拍通过（`tests/test_selfhost_m4.py`，
+  详见 `docs/m4_status.md`）。
 
 ## 4. 明确不做
 
