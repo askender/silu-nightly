@@ -137,3 +137,19 @@ get/len/has；`print` 家族（int/float/bool/str 的 Python 格式化——
 3. class struct/构造/方法/字段 + 类解析链（ir_interp.si 达标 → 提交）
 4. 容器运行时 + 容器字段（ir2c.si 自身达标 → 提交）
 5. silu_fe.si 冲刺（借用路径等 typed 特有优化的 C 直译）
+
+## 8. M5 完成（2026-10-15 深夜）
+
+两个收尾缺口解决，**全自举闭环达成**：
+
+1. "池差异"实为陈旧构建产物——typed 与 pycompat 生成的 C 完全一致（278 项池两边相同）。
+2. json_emit 崩溃是六个连环根因（每修一个暴露下一个）：
+   - **混合常量列表**（`["const", None]`）走静态 LITL 路径——裸 Str*/int 槽混入 PObj 世界，"const" 的 ASCII（0x74736e6f63）被当 PObj 解引用。修：非纯 str 常量列表一律 DLIT 装箱。
+   - **空列表 `[]` 进 obj 语境**（`orelse = []` 后接 parse_block 的 PObj）——静态 `List*` 变量收到 PObj，`plist()` 双重包装。修：空列表字面量归入 obj（`plist(list_new())`）；注解 `x: list[T] = []` 保留静态表示。
+   - **JSON true/false 曾解析成 jnum(1/0)**——bool 身份丢失，`is True/is False` 全部退化成同一个 `p_is(x,3)`。修：jbool + BOOL kind 贯通到 const 生成与 is-branches。
+   - **int(s, base)**（to_int 的 16 进制）曾静默返回 0——0x20 字面量全变 0。修：str_to_i64_base。
+   - **plist_strs**：静态 list[str] 进动态世界时逐元素装箱（`["or"] + parts` 的裸 Str* 混入）。
+   - **dict 字面量**（op_map）值需要装箱（dict:obj）。
+   - **自举 miscompile 根因**：args_text_typed 的 ptypes 参数无注解 → 动态化 → pget 返回 PObj 却按 Str* 比较（内存布局巧合在 typed 版"能跑"，自举版损坏）。修：`ptypes: list[str]` 注解 + 空表替代 None。
+
+**最终验证**：silu_fe（前端）→ 解析自己 → **自举版 ir2c**（ir2c 编译自己产出的 C 编译的 ir2c）→ C → clang → 新前端，对全部 selfhost 程序输出与 `silu ir --format json` 逐字节一致。`test_m5_self_hosted_toolchain` 固化，869 passed。

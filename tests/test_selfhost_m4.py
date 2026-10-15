@@ -495,3 +495,42 @@ def test_m5_ir2c_compiles_calc(fe_bin, ir2c_bin):
         )
         assert bad.returncode == 1
         assert "lex error" in bad.stdout
+
+
+# ---- M5 complete: the whole toolchain compiles itself ----
+
+def test_m5_self_hosted_toolchain(fe_bin, ir2c_bin):
+    """The front end binary (compiled from silu_fe.si by ir2c) parses
+    silu_fe.si; the IR goes back through ir2c to C; the resulting binary
+    matches `silu ir --format json` on every selfhost program. The
+    toolchain can rebuild itself without the Python back end."""
+    fe_ir = subprocess.run(
+        [fe_bin], stdin=open(FRONTEND),
+        capture_output=True, text=True, timeout=300,
+    )
+    assert fe_ir.returncode == 0, fe_ir.stderr
+    c_src = subprocess.run(
+        [ir2c_bin], input=fe_ir.stdout, capture_output=True, text=True, timeout=300,
+    )
+    assert c_src.returncode == 0, c_src.stderr
+    with tempfile.TemporaryDirectory() as tmpdir:
+        c_file = os.path.join(tmpdir, "fe.c")
+        binary = os.path.join(tmpdir, "fe")
+        with open(c_file, "w") as handle:
+            handle.write(c_src.stdout)
+        build = subprocess.run(
+            ["clang", "-O2", c_file, "-o", binary],
+            capture_output=True, text=True,
+        )
+        assert build.returncode == 0, build.stderr
+        for f in SELFHOST_SOURCES:
+            ref = subprocess.run(
+                [sys.executable, "-m", "silu", "ir", f, "--format", "json"],
+                capture_output=True, text=True, cwd=REPO,
+            ).stdout
+            run = subprocess.run(
+                [binary], stdin=open(f), capture_output=True, text=True,
+                timeout=600,
+            )
+            assert run.returncode == 0, (f, run.stderr[-200:])
+            assert json.loads(run.stdout) == json.loads(ref), f

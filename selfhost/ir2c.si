@@ -32,6 +32,10 @@ def jnum(v: int) -> JValue:
     return JValue(JKind.NUM, v, "", None, "", None, 0.0)
 
 
+def jbool(v: bool) -> JValue:
+    return JValue(JKind.BOOL, 1 if v else 0, "", None, "", None, 0.0)
+
+
 def jfloat(v: float) -> JValue:
     return JValue(JKind.FLOAT, 0, "", None, "", None, v)
 
@@ -72,10 +76,10 @@ class Json:
             return jstr(self.string())
         if c == 116:
             self.pos += 4
-            return jnum(1)
+            return jbool(True)
         if c == 102:
             self.pos += 5
-            return jnum(0)
+            return jbool(False)
         if c == 110:
             self.pos += 4
             return jnull()
@@ -418,6 +422,9 @@ class Gen:
             return "pbool(" + a.text + ")"
         if a.ty == "str":
             return "pstr(" + a.text + ")"
+        if a.ty == "list:str":
+            # static str lists carry raw Str* elements; box each one
+            return "plist_strs(" + a.text + ")"
         if a.ty.startswith("list:") or a.ty == "list":
             return "plist(" + a.text + ")"
         if a.ty == "JValue" and find_class("JValue") is not None:
@@ -534,6 +541,10 @@ class Gen:
         t: str = tag(node)
         if t == "const":
             cv: JValue = elem(node, 1)
+            if cv.kind == JKind.BOOL:
+                if cv.n == 0:
+                    return te("0", "bool")
+                return te("1", "bool")
             if cv.kind == JKind.NUM:
                 return te(self.show_int(cv.n), "int")
             if cv.kind == JKind.FLOAT:
@@ -586,6 +597,8 @@ class Gen:
                 return te("pjv(list_get((" + base.text + ")->arr, " + idx.text + "))", "obj")
             if find_class(base.ty) is not None:
                 return te("(" + base.ty + "*)list_get((" + base.text + ")->arr, " + idx.text + ")", base.ty)
+            if base.ty == "dict:obj":
+                return te("((PObj*)dict_get(" + base.text + ", " + idx.text + "))", "obj")
             if base.ty == "dict" or base.ty.startswith("dict:"):
                 return te("dict_get(" + base.text + ", " + idx.text + ")", "int")
             if base.ty.startswith("list:"):
@@ -685,9 +698,9 @@ class Gen:
                     rhs_none2 = True
                 if rhs_none2:
                     body_is: str = "p_is(" + a4.text + ", 0)"
-                elif rhs.kind == JKind.ARR and len(rhs.arr) >= 2 and tag(rhs) == "const" and rhs.arr[1].n == 1 and rhs.arr[1].kind == JKind.NUM:
+                elif rhs.kind == JKind.ARR and len(rhs.arr) >= 2 and tag(rhs) == "const" and rhs.arr[1].n == 1 and (rhs.arr[1].kind == JKind.NUM or rhs.arr[1].kind == JKind.BOOL):
                     body_is = "(p_is(" + a4.text + ", 3) && (" + a4.text + ")->i)"
-                elif rhs.kind == JKind.ARR and len(rhs.arr) >= 2 and tag(rhs) == "const" and rhs.arr[1].kind == JKind.NUM:
+                elif rhs.kind == JKind.ARR and len(rhs.arr) >= 2 and tag(rhs) == "const" and (rhs.arr[1].kind == JKind.NUM or rhs.arr[1].kind == JKind.BOOL):
                     body_is = "(p_is(" + a4.text + ", 3) && !(" + a4.text + ")->i)"
                 else:
                     body_is = "p_is(" + a4.text + ", 3)"
@@ -702,7 +715,10 @@ class Gen:
             if wrap.kind == JKind.ARR:
                 n_e = len(wrap.arr)
             if n_e == 0:
-                return te("list_new()", "list")
+                # the empty list starts life as a dynamic value: an
+                # `orelse = []` later receives PObj nodes, and typing it
+                # as a static List* would reinterpret those as List
+                return te("plist(list_new())", "obj")
             k: int = 0
             all_const: bool = True
             all_str: bool = True
@@ -719,8 +735,10 @@ class Gen:
                     if cvl.kind != JKind.STR:
                         all_str = False
                 k += 1
-            if not all_const:
-                # mixed dynamic elements: build a PObj list constructor
+            if not all_const or not all_str:
+                # mixed or non-str constants (["const", None]): every
+                # element must box into a PObj - the static LITL path
+                # would push raw Str*/int words
                 dname: str = "DLIT" + self.show_int(len(self.litlists))
                 dbody: list[str] = []
                 psig: str = "static PObj* " + dname + "("
@@ -765,6 +783,23 @@ class Gen:
                 return te(fname + "()", "list:str")
             return te(fname + "()", "list")
         if t == "dict":
+            w: JValue = elem(node, 1)
+            if w.kind == JKind.ARR and len(w.arr) > 0:
+                # literal dict with constant entries -> cached constructor
+                dname: str = "DDICT" + self.show_int(len(self.litlists))
+                dbody: list[str] = []
+                dbody.append("static Dict* " + dname + "(void) { Dict* d = dict_new();")
+                args_s: str = ""
+                k: int = 0
+                while k < len(w.arr):
+                    pairv: JValue = elem(w, k)
+                    kv: TE = self.expr(pairv.arr[0])
+                    vv: TE = self.expr(pairv.arr[1])
+                    dbody.append("    dict_set(d, " + kv.text + ", (int64_t)(" + self.box_te(vv) + "));")
+                    k += 1
+                dbody.append("    return d; }")
+                self.litlists.append("\n".join(dbody))
+                return te(dname + "()", "dict:obj")
             return te("dict_new()", "dict")
         if t == "in" or t == "not in":
             a_in: TE = self.expr(node.arr[1])
@@ -854,6 +889,10 @@ class Gen:
                 if a2.ty == "str":
                     return te("str_to_f64(" + a2.text + ")", "float")
                 return te("((double)(" + a2.text + "))", "float")
+            if nm == "int" and len(args.arr) == 2:
+                a3b: TE = self.expr(elem(args, 0))
+                b3b: TE = self.expr(elem(args, 1))
+                return te("str_to_i64_base(" + a3b.text + ", (int)(" + b3b.text + "))", "int")
             if nm == "int":
                 a3: TE = self.expr(elem(args, 0))
                 if a3.ty == "obj":
@@ -883,7 +922,8 @@ class Gen:
                 a6: TE = self.expr(elem(args, 0))
                 return te("str_chr1(" + a6.text + ")", "str")
             if find_class(nm) is not None:
-                return te(nm + "__new(" + self.args_text(args) + ")", nm)
+                bc3: ClassInfo = find_class(nm)
+                return te(nm + "__new(" + self.args_text_typed(args, bc3.field_types, 0) + ")", nm)
             fn: FnInfo = find_func(nm)
             if fn is not None:
                 return te("fn_" + nm + "(" + self.args_text_typed(args, fn.param_types, 0) + ")", fn.ret)
@@ -929,16 +969,17 @@ class Gen:
         return te("0", "int")
 
     def args_text(self, args: JValue) -> str:
-        return self.args_text_typed(args, None, 0)
+        none_t: list[str] = []
+        return self.args_text_typed(args, none_t, 0)
 
-    def args_text_typed(self, args: JValue, ptypes, skip: int) -> str:
+    def args_text_typed(self, args: JValue, ptypes: list[str], skip: int) -> str:
         out: str = ""
         i: int = 0
         while i < len(args.arr):
             a: TE = self.expr(elem(args, i))
             text: str = a.text
             pi: int = i + skip
-            if ptypes is not None and pi < len(ptypes) and pi >= 0:
+            if pi < len(ptypes) and pi >= 0:
                 pt: str = ptypes[pi]
                 if pt == "str" and a.ty == "obj":
                     text = "(pstr_of(" + a.text + ")->s)"
@@ -950,6 +991,12 @@ class Gen:
                     text = "((int64_t)((" + a.text + ")->i))"
                 elif pt == "obj" and a.ty != "obj":
                     text = self.box_te(a)
+                elif (pt == "list" or pt.startswith("list:")) and a.ty == "obj":
+                    # dynamic value into a list-typed parameter: a plist
+                    # wraps its List at ->items
+                    text = "((" + a.text + ")->items)"
+                elif pt == "dict" and a.ty == "obj":
+                    text = "((Dict*)(" + a.text + ")->i)"
             if out == "":
                 out = text
             else:
@@ -998,9 +1045,15 @@ class Gen:
                 # bare field declaration (x: int) - already collected
                 return 0
             if t == "ann_assign" and stmt.arr[3].kind != JKind.NIL:
-                # annotated: x: T = expr
+                # annotated: x: T = expr - for the empty-list literal the
+                # annotation owns the representation (list:Token stays a
+                # raw List, not the dynamic plist)
                 aty: str = anno_type(stmt.arr[3])
                 val_a: TE = self.expr(elem(stmt, 2))
+                if aty.startswith("list:") or aty == "list":
+                    lv: JValue = stmt.arr[2]
+                    if lv.kind == JKind.ARR and len(lv.arr) >= 2 and tag(lv) == "list" and lv.arr[1].kind == JKind.ARR and len(lv.arr[1].arr) == 0:
+                        val_a = te("list_new()", aty)
                 if self.var_declared(elem_str(stmt, 1)):
                     self.emit("v_" + elem_str(stmt, 1) + " = " + val_a.text + ";")
                     return 0
@@ -1015,19 +1068,39 @@ class Gen:
                 self.declare_or_assign(elem_str(stmt, 1), val)
                 return 0
             if stmt.arr[1].kind == JKind.ARR and tag(stmt.arr[1]) == "attribute":
-                # obj.f = v (instance field write)
+                # obj.f = v (instance field write): coerce the value to
+                # the field's declared type (an obj value into a list[str]
+                # field unwraps its wrapped List, etc.)
                 tgt: JValue = stmt.arr[1]
                 cls: str = self.class_of_expr(tgt.arr[1])
                 base: TE = self.expr(tgt.arr[1])
                 val2: TE = self.expr(elem(stmt, 2))
-                self.emit("(" + base.text + ")->" + tgt.arr[2].s + " = " + val2.text + ";")
+                vtxt: str = val2.text
+                if cls != "":
+                    bcw: ClassInfo = find_class(cls)
+                    if bcw is not None:
+                        fty: str = self.field_type(bcw, tgt.arr[2].s)
+                        if val2.ty == "obj":
+                            if fty == "list" or fty.startswith("list:"):
+                                vtxt = "((" + val2.text + ")->items)"
+                            elif fty == "str":
+                                vtxt = "(pstr_of(" + val2.text + ")->s)"
+                            elif fty == "int" or fty == "bool":
+                                vtxt = "((int64_t)((" + val2.text + ")->i))"
+                            elif fty == "float":
+                                vtxt = "((double)((" + val2.text + ")->f))"
+                        elif val2.ty != "obj" and fty == "obj":
+                            vtxt = self.box_te(val2)
+                self.emit("(" + base.text + ")->" + tgt.arr[2].s + " = " + vtxt + ";")
                 return 0
             return 0
         if t == "subscript_assign":
             base_sa: TE = self.expr(stmt.arr[1])
             key_sa: TE = self.expr(stmt.arr[2])
             val_sa: TE = self.expr(stmt.arr[3])
-            if base_sa.ty == "dict" or base_sa.ty.startswith("dict:"):
+            if base_sa.ty == "obj":
+                self.emit("pset(" + base_sa.text + ", " + key_sa.text + ", " + self.box_te(val_sa) + ");")
+            elif base_sa.ty == "dict" or base_sa.ty.startswith("dict:"):
                 self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
             else:
                 # 8-byte slots: str/instance values ride as pointers
@@ -1648,6 +1721,7 @@ RUNTIME: list[str] = [
     "static int str_isdigit(Str* s) { if (s->len == 0) return 0; for (int64_t i = 0; i < s->len; i++) { unsigned char c = (unsigned char)s->data[i]; if (c < '0' || c > '9') return 0; } return 1; }",
     "static int str_isalpha(Str* s) { if (s->len == 0) return 0; for (int64_t i = 0; i < s->len; i++) { unsigned char c = (unsigned char)s->data[i]; if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return 0; } return 1; }",
     "static double str_to_f64(Str* s) { char buf[64]; int64_t n = s->len < 63 ? s->len : 63; memcpy(buf, s->data, n); buf[n] = 0; return strtod(buf, 0); }",
+    "static int64_t str_to_i64_base(Str* s, int b) { char buf[64]; int64_t n = s->len < 63 ? s->len : 63; memcpy(buf, s->data, n); buf[n] = 0; return strtoll(buf, 0, b); }",
     "static int64_t str_to_i64(Str* s) { char buf[64]; int64_t n = s->len < 63 ? s->len : 63; memcpy(buf, s->data, n); buf[n] = 0; return strtoll(buf, 0, 10); }",
     "static int64_t str_ord0(Str* s) { unsigned char b = (unsigned char)s->data[0]; if (b < 0x80) return b; if (b < 0xE0) return ((b & 0x1F) << 6) | ((unsigned char)s->data[1] & 0x3F); if (b < 0xF0) return ((b & 0x0F) << 12) | (((unsigned char)s->data[1] & 0x3F) << 6) | ((unsigned char)s->data[2] & 0x3F); return ((b & 0x07) << 18) | (((unsigned char)s->data[1] & 0x3F) << 12) | (((unsigned char)s->data[2] & 0x3F) << 6) | ((unsigned char)s->data[3] & 0x3F); }",
     "static Str* str_chr1(int64_t cp) { char buf[4]; int64_t n; if (cp < 0x80) { buf[0] = (char)cp; n = 1; } else if (cp < 0x800) { buf[0] = (char)(0xC0 | (cp >> 6)); buf[1] = (char)(0x80 | (cp & 0x3F)); n = 2; } else { buf[0] = (char)(0xE0 | (cp >> 12)); buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[2] = (char)(0x80 | (cp & 0x3F)); n = 3; } return str_new(buf, n); }",
@@ -1687,6 +1761,8 @@ RUNTIME: list[str] = [
     "static int str_in_str(Str* needle, Str* hay) { if (needle->len == 0) return 1; for (int64_t i = 0; i + needle->len <= hay->len; i++) if (memcmp(hay->data + i, needle->data, needle->len) == 0) return 1; return 0; }",
     "static int str_in_list(Str* s, List* l) { for (int64_t i = 0; i < l->len; i++) if (str_eq(s, (Str*)list_get(l, i))) return 1; return 0; }",
     "static int p_truthy(PObj* o) { switch (o->tag) { case 0: return 0; case 1: case 3: return o->i != 0; case 2: return o->f != 0; case 4: return o->s->cp != 0; case 5: return o->items->len != 0; default: return 0; } }",
+    "static PObj* plist_strs(List* l) { List* o = list_new(); for (int64_t i = 0; i < l->len; i++) list_push(o, (int64_t)pstr((Str*)list_get(l, i))); return plist(o); }",
+    "static void pset(PObj* o, int64_t i, PObj* v) { if (o->tag != 5) return; if (i < 0) i += o->items->len; if (i < 0 || i >= o->items->len) return; o->items->items[i] = (int64_t)v; }",
     "static void pappend(PObj* l, PObj* v) { if (l->tag != 5) return; list_push(l->items, (int64_t)v); }",
     "static PObj* pconcat(PObj* a, PObj* b) { List* l = list_new(); if (a->tag == 5) for (int64_t i = 0; i < a->items->len; i++) list_push(l, list_get(a->items, i)); if (b->tag == 5) for (int64_t i = 0; i < b->items->len; i++) list_push(l, list_get(b->items, i)); PObj* o = pmake(5); o->items = l; return o; }",
     "static int64_t silu_fdiv(int64_t a, int64_t b) { int64_t q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }",
