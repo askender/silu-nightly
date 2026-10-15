@@ -961,19 +961,13 @@ def json_quote(s: str) -> str:
         else:
             out.append(ch)
     out.append('"')
-    result: str = ""
-    for piece in out:
-        result = result + piece
-    return result
+    return "".join(out)
 
 
 def json_dumps(node) -> str:
     out: list[str] = []
     json_emit(node, out)
-    result: str = ""
-    for piece in out:
-        result = result + piece
-    return result
+    return "".join(out)
 
 
 def main() -> int:

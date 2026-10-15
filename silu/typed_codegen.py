@@ -2093,6 +2093,113 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.store(new_length, field(builder, struct_ptr, 0))
         builder.ret(new_length)
 
+        # i8* rawlist_str_join(i8* list, i8* sep) - one allocation for
+        # sep.join(parts); two passes: size, then copy
+        self.rawlist_str_join = ir.Function(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i8p]),
+            name="rawlist_str_join",
+        )
+        f_join = self.rawlist_str_join
+        join_entry = f_join.append_basic_block("entry")
+        join_size_cond = f_join.append_basic_block("join_size_cond")
+        join_size = f_join.append_basic_block("join_size")
+        join_alloc = f_join.append_basic_block("join_alloc")
+        join_copy_cond = f_join.append_basic_block("join_copy_cond")
+        join_body = f_join.append_basic_block("join_body")
+        join_done = f_join.append_basic_block("join_done")
+        jb = ir.IRBuilder(join_entry)
+        join_list, join_sep = f_join.args
+        join_struct = jb.bitcast(
+            join_list, ir.PointerType(self.raw_list_struct_type)
+        )
+        join_count = jb.load(field(jb, join_struct, 0))
+        sep_struct = jb.bitcast(join_sep, ir.PointerType(self.rawstr_struct_type))
+        sep_len = jb.load(field(jb, sep_struct, 0))
+        sep_data = jb.load(field(jb, sep_struct, 2))
+        size_ptr = jb.alloca(i64, name="join_total")
+        jb.store(zero64, size_ptr)
+        size_i_ptr = jb.alloca(i64, name="join_si")
+        jb.store(zero64, size_i_ptr)
+        out_ptr = jb.alloca(i8p, name="join_out")
+        jb.branch(join_size_cond)
+
+        def join_item_at(builder, index):
+            items = builder.load(field(builder, join_struct, 2))
+            items_i64 = builder.bitcast(items, ir.PointerType(i64))
+            return builder.inttoptr(
+                builder.load(builder.gep(items_i64, [index])), i8p
+            )
+
+        jb.position_at_end(join_size_cond)
+        si = jb.load(size_i_ptr)
+        jb.cbranch(jb.icmp_signed("<", si, join_count), join_size, join_alloc)
+
+        jb.position_at_end(join_size)
+        item_struct = jb.bitcast(
+            join_item_at(jb, si), ir.PointerType(self.rawstr_struct_type)
+        )
+        item_len = jb.load(field(jb, item_struct, 0))
+        total_now = jb.load(size_ptr)
+        with_sep = jb.add(total_now, item_len)
+        not_last = jb.icmp_signed("<", jb.add(si, one64), join_count)
+        with_sep = jb.select(not_last, jb.add(with_sep, sep_len), with_sep)
+        jb.store(with_sep, size_ptr)
+        jb.store(jb.add(si, one64), size_i_ptr)
+        jb.branch(join_size_cond)
+
+        jb.position_at_end(join_alloc)
+        join_total = jb.load(size_ptr)
+        join_buf = jb.call(self.malloc, [join_total])
+        jb.store(join_buf, out_ptr)
+        jb.store(zero64, size_i_ptr)
+        jb.branch(join_copy_cond)
+
+        jb.position_at_end(join_copy_cond)
+        ci = jb.load(size_i_ptr)
+        jb.cbranch(jb.icmp_signed("<", ci, join_count), join_body, join_done)
+
+        jb.position_at_end(join_body)
+        c_not_first = jb.icmp_signed(">", ci, zero64)
+        write_at = jb.load(out_ptr)
+        write_at = jb.select(
+            c_not_first, jb.gep(write_at, [sep_len]), write_at
+        )
+        sep_blk = f_join.append_basic_block("join_sepblk")
+        item_blk = f_join.append_basic_block("join_itemblk")
+        jb.cbranch(c_not_first, sep_blk, item_blk)
+        jb.position_at_end(sep_blk)
+        jb.call(
+            self.memcpy,
+            [jb.load(out_ptr), sep_data, sep_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        jb.branch(item_blk)
+        jb.position_at_end(item_blk)
+        c_item = jb.bitcast(
+            join_item_at(jb, ci), ir.PointerType(self.rawstr_struct_type)
+        )
+        c_item_data = jb.load(field(jb, c_item, 2))
+        c_item_len = jb.load(field(jb, c_item, 0))
+        jb.call(
+            self.memcpy,
+            [write_at, c_item_data, c_item_len, ir.Constant(ir.IntType(1), 0)],
+        )
+        jb.store(jb.gep(write_at, [c_item_len]), out_ptr)
+        jb.store(jb.add(ci, one64), size_i_ptr)
+        jb.branch(join_copy_cond)
+
+        jb.position_at_end(join_done)
+        cp_total = jb.call(self.rawutf8_cp_count, [join_buf, join_total])
+        join_mem = jb.call(self.malloc, [ir.Constant(i64, 32)])
+        join_result = jb.bitcast(
+            join_mem, ir.PointerType(self.rawstr_struct_type)
+        )
+        jb.store(join_total, field(jb, join_result, 0))
+        jb.store(join_total, field(jb, join_result, 1))
+        jb.store(join_buf, field(jb, join_result, 2))
+        jb.store(cp_total, field(jb, join_result, 3))
+        jb.ret(jb.bitcast(join_result, i8p))
+
         # i8* rawlist_str_pop(i8* list) - drops the slot and returns a
         # fresh copy (the popped value outlives the list)
         self.rawlist_str_pop = ir.Function(
@@ -5151,6 +5258,14 @@ class TypedCodegen(SiluToLLVMConverter):
                 "isspace": self.rawstr_isspace,
             }[method_name]
             return finish((I1, self.current_builder.call(fn, [s_ptr])))
+        if method_name == "join" and len(args_node) == 1:
+            # sep.join(parts): one allocation instead of n appends
+            parts_tv = self._convert_node(args_node[0])
+            if parts_tv[0] == RAWLIST_S:
+                joined = self.current_builder.call(
+                    self.rawlist_str_join, [parts_tv[1], s_ptr]
+                )
+                return finish((RAWSTR, joined))
         return finish(None)
 
     def _rawdict_key_from_tv(self, kind: str, key_tv: Tuple[str, Any]):

@@ -247,6 +247,24 @@ FEATURE_PROGRAMS = [
         "    return 0\n",
         "255\n32\n5\n15\n",
     ),
+    # sep.join(parts) on a raw str list
+    (
+        "def main() -> int:\n"
+        "    parts: list[str] = []\n"
+        "    parts.append('a')\n"
+        "    parts.append('bb')\n"
+        "    parts.append('ccc')\n"
+        "    print(','.join(parts))\n"
+        "    print(''.join(parts))\n"
+        "    print('--'.join(parts))\n"
+        "    empty: list[str] = []\n"
+        "    print('x'.join(empty))\n"
+        "    single: list[str] = []\n"
+        "    single.append('only')\n"
+        "    print('|'.join(single))\n"
+        "    return 0\n",
+        "a,bb,ccc\nabbccc\na--bb--ccc\n\nonly\n",
+    ),
     # str predicates on dynamic (boxed) receivers
     (
         "def box(v) -> object:\n"

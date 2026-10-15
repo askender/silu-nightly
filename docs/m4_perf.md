@@ -41,11 +41,11 @@ IR 对拍（tests/test_selfhost_m4.py）字节级不变。对 Python 版
 | calc.si (154 行) | 171ms | ~5ms | ~34x |
 | silu_fe.si (979 行) | 177ms | 33.7ms | 5.2x |
 
-## 后续可做（未做）
+## 后续已做
 
-- json_dumps 的 `result = result + piece` 仍是 O(n²)（~35ms 里
-  的大头）：加 `str_join(list[str], sep)` 内建一次拼接，预计再省
-  ~20ms。在 33.7ms 基线下值得做但非急迫。
+- ~~json_dumps 的 O(n²) 拼接~~：`sep.join(list[str])` 内建已落地
+  （rawlist_str_join 运行时，一次分配两遍扫描），silu_fe 的
+  json_dumps/json_quote 改用 join，自解析 33.7ms → **27.2ms**。
 - 沿途发现的编译器缺口（记录待修）：
   - **未定义名在函数体中静默通过**（本轮 `ch` 引用残留变成了
     垃圾值而非编译错误，与"未知函数静默 null"同类）
