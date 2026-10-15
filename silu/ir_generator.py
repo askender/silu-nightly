@@ -119,7 +119,10 @@ class SiluIRGenerator(BaseASTProcessor):
 
     def visit_Module(self, node: ast.Module) -> Any:
         """Generate module IR with line markers between statements."""
-        return self.process_container("module", self._visit_stmts(node.body))
+        module = self.process_container("module", self._visit_stmts(node.body))
+        from .nested_hoist import hoist_module
+
+        return hoist_module(module)
 
     def process_control_flow(self, node_type: str, **kwargs) -> Tuple:
         """Generate control flow IR nodes."""

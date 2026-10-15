@@ -3562,6 +3562,33 @@ class SiluToLLVMConverter:
         builder = ir.IRBuilder(entry_block)
 
         left, right = func.args
+        # a null operand (an unboxed None) is not dereferenceable: null
+        # == null, null != anything, and no ordering holds against it
+        null_ptr = ir.Constant(
+            ir.PointerType(self.pyobj.pyobj_type), None
+        )
+        left_null = builder.icmp_signed("==", left, null_ptr)
+        right_null = builder.icmp_signed("==", right, null_ptr)
+        either_null = builder.or_(left_null, right_null)
+        null_block = func.append_basic_block("null_check")
+        tags_block = func.append_basic_block("tags")
+        builder.cbranch(either_null, null_block, tags_block)
+
+        builder.position_at_end(null_block)
+        both_null = builder.and_(left_null, right_null)
+        # eq holds on double null; ne holds unless both null; ordering
+        # never holds with a null
+        if pred == "==":
+            null_result = both_null
+        elif pred == "!=":
+            null_result = builder.not_(both_null)
+        else:
+            null_result = ir.Constant(ir.IntType(1), 0)
+        builder.ret(
+            builder.call(self.create_bool, [null_result])
+        )
+
+        builder.position_at_end(tags_block)
         left_tag = builder.load(
             builder.gep(
                 left,

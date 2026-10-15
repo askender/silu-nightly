@@ -334,7 +334,7 @@ class Parser:
                 continue
             stmts.append(["line", t.line])
             stmts.append(self.parse_stmt())
-        return ["module", stmts]
+        return hoist_module(["module", stmts])
 
     # ------------- statements -------------
     def parse_stmt(self) -> object:
@@ -905,6 +905,16 @@ class Parser:
             self.nxt()
             return ["name", t.text]
         if t.kind == TokKind.KW:
+            if t.text == "lambda":
+                self.nxt()
+                lparams: list[str] = []
+                lparams.append(self.expect_kind(TokKind.NAME).text)
+                while self.cur().kind == TokKind.OP and self.cur().text == ",":
+                    self.nxt()
+                    lparams.append(self.expect_kind(TokKind.NAME).text)
+                self.expect(":")
+                lbody = self.parse_expr()
+                return ["lambda", lparams, lbody]
             if t.text == "None":
                 self.nxt()
                 return ["const", None]
@@ -975,6 +985,292 @@ class Parser:
             self.expect("}")
             return ["dict", items]
         self.error("unexpected token '" + t.text + "'", t)
+
+
+# ---------- nested def / lambda hoisting (Rust nested-item) ----------
+# Mirrors silu/nested_hoist.py: same mangling, same self-prepend rules,
+# same funcref emission. Written only with the dynamic primitives the
+# typed backend supports: isinstance / enumerate / append / == / is None.
+
+
+class HG:
+    prefix: str
+    cls_name: str
+    is_method: bool
+    ren_src: list[str]
+    ren_dst: list[str]
+    counter: int
+    globals: list[str]
+
+
+def hg_lookup(g: HG, name: str) -> str:
+    i: int = 0
+    while i < len(g.ren_src):
+        if g.ren_src[i] == name:
+            return g.ren_dst[i]
+        i += 1
+    return ""
+
+
+def hg_empty_strs() -> list[str]:
+    out: list[str] = []
+    return out
+
+
+def dyn_get(node: object, k: int) -> object:
+    for i, e in enumerate(node):
+        if i == k:
+            return e
+    return None
+
+
+def dyn_len(node: object) -> int:
+    n: int = 0
+    for i, e in enumerate(node):
+        n += 1
+    return n
+
+
+def dyn_head(node: object) -> object:
+    for i, e in enumerate(node):
+        return e
+    return None
+
+
+def hoist_is_node(node: object) -> bool:
+    # a dynamic list whose head is a string = IR node
+    if node is None or not isinstance(node, (list, tuple)):
+        return False
+    if dyn_len(node) == 0:
+        return False
+    return isinstance(dyn_head(node), str)
+
+
+def hoist_is_scalar(node: object) -> bool:
+    return isinstance(node, str) or isinstance(node, int) or isinstance(node, float) or isinstance(node, bool) or node is None
+
+
+def hoist_mentions(node: object, name: str) -> bool:
+    if hoist_is_scalar(node):
+        return False
+    if hoist_is_node(node):
+        if dyn_head(node) == "name" and dyn_len(node) == 2 and dyn_get(node, 1) == name:
+            return True
+    for i, c in enumerate(node):
+        if hoist_mentions(c, name):
+            return True
+    return False
+
+
+def hg_in_list(names: object, name: str) -> bool:
+    for i, n in enumerate(names):
+        if n == name:
+            return True
+    return False
+
+
+def hoist_calls_one_of(node: object, names: object) -> bool:
+    if hoist_is_scalar(node):
+        return False
+    if hoist_is_node(node) and dyn_head(node) == "call":
+        callee = dyn_get(node, 1)
+        if hoist_is_node(callee) and dyn_head(callee) == "name":
+            if hg_in_list(names, dyn_get(callee, 1)):
+                return True
+    for i, c in enumerate(node):
+        if hoist_calls_one_of(c, names):
+            return True
+    return False
+
+
+def hoist_free_names(node: object, out: object) -> int:
+    if hoist_is_scalar(node):
+        return 0
+    if hoist_is_node(node):
+        if dyn_head(node) == "name" and dyn_len(node) == 2:
+            nm: str = dyn_get(node, 1)
+            if not hg_in_list(out, nm):
+                out.append(nm)
+            return 0
+    for i, c in enumerate(node):
+        hoist_free_names(c, out)
+    return 0
+
+
+def hoist_insert_self(body: object, needing: object) -> object:
+    if hoist_is_scalar(body):
+        return body
+    if hoist_is_node(body) and dyn_head(body) == "call":
+        callee = dyn_get(body, 1)
+        if hoist_is_node(callee) and dyn_head(callee) == "name":
+            if hg_in_list(needing, dyn_get(callee, 1)):
+                args = dyn_get(body, 2)
+                new_args = [["name", "self"]]
+                for i, a in enumerate(args):
+                    new_args.append(hoist_insert_self(a, needing))
+                return ["call", callee, new_args, dyn_get(body, 3)]
+    if hoist_is_node(body):
+        out2 = [dyn_head(body)]
+        for j, c in enumerate(body):
+            if j > 0:
+                out2.append(hoist_insert_self(c, needing))
+        return out2
+    out = []
+    for i, c in enumerate(body):
+        out.append(hoist_insert_self(c, needing))
+    return out
+
+
+def hoist_rec(node: object, g: HG, hoisted: object) -> object:
+    if hoist_is_scalar(node):
+        return node
+    op: object = None
+    if hoist_is_node(node):
+        op = dyn_head(node)
+    if op == "func_def":
+        mangled: str = g.prefix + "__" + str(dyn_get(node, 1))
+        g.ren_src.append(str(dyn_get(node, 1)))
+        g.ren_dst.append(mangled)
+        body = hoist_rec(dyn_get(node, 3), g, hoisted)
+        hoisted.append(["func_def", mangled, dyn_get(node, 2), body, dyn_get(node, 4), dyn_get(node, 5)])
+        return None
+    if op == "lambda":
+        g.counter += 1
+        mangled2: str = g.prefix + "__L" + str(g.counter)
+        if hoist_mentions(dyn_get(node, 2), "self"):
+            print("M4 hoist error: lambda capturing 'self' is not supported; use a nested def")
+            raise SystemExit(1)
+        lbody = hoist_rec(dyn_get(node, 2), g, hoisted)
+        annos = []
+        p: int = 0
+        while p < dyn_len(dyn_get(node, 1)):
+            annos.append(None)
+            p += 1
+        hoisted.append(["func_def", mangled2, dyn_get(node, 1), [["return", lbody]], annos, None])
+        return ["funcref", mangled2]
+    if op == "call":
+        callee = dyn_get(node, 1)
+        if hoist_is_node(callee) and dyn_head(callee) == "name":
+            m2: str = hg_lookup(g, str(dyn_get(callee, 1)))
+            if m2 != "":
+                new_args2 = []
+                for i, a in enumerate(dyn_get(node, 2)):
+                    new_args2.append(hoist_rec(a, g, hoisted))
+                return ["call", ["name", m2], new_args2, dyn_get(node, 3)]
+    if hoist_is_node(node):
+        out3 = [op]
+        for j, c in enumerate(node):
+            if j > 0:
+                out3.append(hoist_rec(c, g, hoisted))
+        return out3
+    out4 = []
+    for i, c in enumerate(node):
+        r2 = hoist_rec(c, g, hoisted)
+        if r2 is not None:
+            out4.append(r2)
+    return out4
+
+
+def hoist_def(func_def: object, cls_name: str, is_method: bool, global_names: list[str], extra: object) -> object:
+    prefix: str = str(dyn_get(func_def, 1))
+    if cls_name != "":
+        prefix = cls_name + "__" + str(dyn_get(func_def, 1))
+    g: HG = HG(prefix, cls_name, is_method, hg_empty_strs(), hg_empty_strs(), 0, global_names)
+    hoisted = []
+    new_body = hoist_rec(dyn_get(func_def, 3), g, hoisted)
+
+    needing = []
+    for i, h in enumerate(hoisted):
+        if hoist_mentions(dyn_get(h, 3), "self"):
+            needing.append(dyn_get(h, 1))
+    changed: bool = True
+    while changed:
+        changed = False
+        for j, h2 in enumerate(hoisted):
+            mangled: str = str(dyn_get(h2, 1))
+            if not hg_in_list(needing, mangled):
+                if hoist_calls_one_of(dyn_get(h2, 3), needing):
+                    needing.append(mangled)
+                    changed = True
+
+    final = []
+    for m, h3 in enumerate(hoisted):
+        mangled2: str = str(dyn_get(h3, 1))
+        body2 = dyn_get(h3, 3)
+        params = dyn_get(h3, 2)
+        annos2 = dyn_get(h3, 4)
+        if hg_in_list(needing, mangled2):
+            body2 = hoist_insert_self(body2, needing)
+            cls_anno = None
+            if cls_name != "":
+                cls_anno = ["name", cls_name]
+            new_params = ["self"]
+            for v, pv in enumerate(params):
+                new_params.append(pv)
+            new_annos = [cls_anno]
+            for u, av in enumerate(annos2):
+                new_annos.append(av)
+            h3 = ["func_def", mangled2, new_params, body2, new_annos, dyn_get(h3, 5)]
+        free = []
+        hoist_free_names(dyn_get(h3, 3), free)
+        allowed = []
+        for gi, gn in enumerate(global_names):
+            allowed.append(gn)
+        for ni, nn in enumerate(needing):
+            allowed.append(nn)
+        for pi, pv2 in enumerate(dyn_get(h3, 2)):
+            allowed.append(pv2)
+        allowed.append("self")
+        for fi, fname in enumerate(free):
+            if not hg_in_list(allowed, fname):
+                print("M4 hoist error: nested function '" + mangled2 + "' captures '" + str(fname) + "'; pass it as a parameter")
+                raise SystemExit(1)
+        final.append(h3)
+
+    if is_method and dyn_len(needing) > 0:
+        new_body = hoist_insert_self(new_body, needing)
+    for q, f2 in enumerate(final):
+        extra.append(f2)
+    return ["func_def", dyn_get(func_def, 1), dyn_get(func_def, 2), new_body, dyn_get(func_def, 4), dyn_get(func_def, 5)]
+
+
+def hoist_module(mod: object) -> object:
+    stmts = dyn_get(mod, 1)
+    global_names: list[str] = ["len", "range", "str", "int", "float", "bool", "print", "fmt", "min", "max", "abs", "input", "enumerate", "isinstance", "read_stdin", "read_file", "ord", "chr", "repr", "tuple", "list", "dict", "set", "type", "sorted", "zip", "map", "sum", "any", "all"]
+
+    for i, st in enumerate(stmts):
+        if hoist_is_node(st):
+            if dyn_head(st) == "func_def" or dyn_head(st) == "class_def":
+                global_names.append(dyn_get(st, 1))
+            elif dyn_head(st) == "assign" or dyn_head(st) == "ann_assign":
+                global_names.append(dyn_get(st, 1))
+
+    out = []
+    for j, st in enumerate(stmts):
+        if hoist_is_node(st) and dyn_head(st) == "func_def":
+            extra = []
+            out.append(hoist_def(st, "", False, global_names, extra))
+            for q, e in enumerate(extra):
+                out.append(e)
+        elif hoist_is_node(st) and dyn_head(st) == "class_def":
+            cls_name: str = str(dyn_get(st, 1))
+            new_members = []
+            extra2 = []
+            for k, mm in enumerate(dyn_get(st, 3)):
+                if hoist_is_node(mm) and dyn_head(mm) == "func_def":
+                    is_m: bool = False
+                    mparams = dyn_get(mm, 2)
+                    if dyn_len(mparams) > 0 and dyn_get(mparams, 0) == "self":
+                        is_m = True
+                    new_members.append(hoist_def(mm, cls_name, is_m, global_names, extra2))
+                else:
+                    new_members.append(mm)
+            out.append(["class_def", dyn_get(st, 1), dyn_get(st, 2), new_members])
+            for q2, e2 in enumerate(extra2):
+                out.append(e2)
+        else:
+            out.append(st)
+    return ["module", out]
 
 
 # ---------- JSON emission for the IR tuples ----------

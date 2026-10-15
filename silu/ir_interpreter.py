@@ -931,6 +931,11 @@ class IRInterpreter:
         """Execute break statement."""
         self.should_break = True
 
+    def _execute_funcref(self, name: Any) -> Any:
+        """A function reference as a value: the function's (mangled)
+        name. _execute_call's name dispatch resolves it at call sites."""
+        return name
+
     def _execute_raise(self, value: Any) -> None:
         """Execute raise statement (SystemExit propagates to the top)."""
         raise self.execute(value)

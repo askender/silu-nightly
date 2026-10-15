@@ -587,6 +587,13 @@ class Gen:
             if cv.kind == JKind.NIL:
                 return te("0", "none")
             return te("0", "int")
+        if t == "funcref":
+            # a lifted lambda referenced by name; text carries the source
+            # name (no C symbol prefix), type tags it as a function ref
+            mangled: str = node.arr[1].s
+            if find_func(mangled) is None:
+                return te("0", "int")
+            return te(mangled, "func")
         if t == "name":
             nm: str = node.arr[1].s
             return te("v_" + nm, self.var_type(nm))
@@ -983,6 +990,15 @@ class Gen:
         args: JValue = node.arr[2]
         if tag(callee) == "name":
             nm: str = callee.arr[1].s
+            vt_f: str = self.var_type(nm)
+            if vt_f.startswith("func:"):
+                # call through a lambda-held local: static dispatch to
+                # the recorded function
+                target: str = vt_f[5:]
+                fnf: FnInfo = find_func(target)
+                if fnf is not None:
+                    return te("fn_" + target + "(" + self.args_text_typed(args, fnf.param_types, 0) + ")", fnf.ret)
+                return te("0", "int")
             if nm == "isinstance" and len(args.arr) > 0:
                 a0c: TE = self.expr(elem(args, 0))
                 cls_n: JValue = elem(args, 1)
@@ -1153,6 +1169,13 @@ class Gen:
         return 0
 
     def declare_or_assign(self, nm: str, val: TE) -> int:
+        if val.ty == "func":
+            # g = lambda... / g = funcref: the slot is never read - every
+            # call site resolves statically through the recorded name
+            if not self.var_declared(nm):
+                self.names.append(nm)
+                self.types.append("func:" + val.text)
+            return 0
         if self.var_declared(nm):
             if self.var_type(nm) == "obj" and val.ty != "obj":
                 self.emit("v_" + nm + " = " + self.box_te(val) + ";")
@@ -1195,6 +1218,11 @@ class Gen:
                         self.emit("v_" + elem_str(stmt, 1) + " = dicti_new();")
                         return 0
                 val_a: TE = self.expr(elem(stmt, 2))
+                if aty == "obj" and val_a.ty != "obj":
+                    # x: object = <scalar/None> - box into a PObj so the
+                    # slot is never a raw int/NULL (a None const is
+                    # te(...,"none") and boxes to pnil())
+                    val_a = te(self.box_te(val_a), "obj")
                 if aty.startswith("list:") or aty == "list":
                     lv: JValue = stmt.arr[2]
                     if lv.kind == JKind.ARR and len(lv.arr) >= 2 and tag(lv) == "list" and lv.arr[1].kind == JKind.ARR and len(lv.arr[1].arr) == 0:
@@ -1620,9 +1648,19 @@ class Gen:
         while ord(self.out[k]) != 10:
             k += 1
         block: str = ""
+        seen: list[str] = []
         i: int = 0
         while i < len(self.decls):
-            block = block + "    " + self.decls[i] + "\n"
+            d: str = self.decls[i]
+            dup: bool = False
+            j: int = 0
+            while j < len(seen):
+                if seen[j] == d:
+                    dup = True
+                j += 1
+            if not dup:
+                seen.append(d)
+                block = block + "    " + d + "\n"
             i += 1
         self.out = self.out[: k + 1] + block + self.out[k + 1 :]
         return 0
@@ -2394,9 +2432,19 @@ def main() -> int:
     # splice the module-level declarations BEFORE main as statics
     if len(gen.decls) > 0:
         block2: str = ""
+        seen2: list[str] = []
         di: int = 0
         while di < len(gen.decls):
-            block2 = block2 + "static " + gen.decls[di] + "\n"
+            d2: str = gen.decls[di]
+            dup2: bool = False
+            j2: int = 0
+            while j2 < len(seen2):
+                if seen2[j2] == d2:
+                    dup2 = True
+                j2 += 1
+            if not dup2:
+                seen2.append(d2)
+                block2 = block2 + "static " + d2 + "\n"
             di += 1
         gen.out = gen.out[:mod_mark] + block2 + gen.out[mod_mark:]
     # string literal pool (needs to be at file scope: emit at end)

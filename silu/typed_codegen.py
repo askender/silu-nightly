@@ -142,6 +142,8 @@ class TypedCodegen(SiluToLLVMConverter):
         self._current_for_iter_name: Optional[str] = None
         # mangled method name -> owning class (self param binding)
         self._method_class: Dict[str, str] = {}
+        # function-reference locals: var name -> mangled function name
+        self._funcref_var: Dict[str, str] = {}
         # enums (class Color(Enum): RED = 1): name -> {member: int}
         # members fold to i64 constants at compile time
         self._enums: Dict[str, Dict[str, int]] = {}
@@ -4455,7 +4457,37 @@ class TypedCodegen(SiluToLLVMConverter):
 
         boxed = self._box(kind)
         builder = self.current_builder
+        # a null PyObject is the None literal - an instance of none of
+        # the builtin type names; the tag load must not dereference it
         result = ir.Constant(ir.IntType(1), 0)
+        if kind[0] == OBJ:
+            non_null = builder.icmp_signed(
+                "!=", boxed, ir.Constant(
+                    ir.PointerType(self.pyobj.pyobj_type), None
+                )
+            )
+            func = self.current_function
+            entry_block = builder.block
+            tags_block = func.append_basic_block("isa_tags")
+            merge_block = func.append_basic_block("isa_merge")
+            builder.cbranch(non_null, tags_block, merge_block)
+            builder.position_at_end(tags_block)
+            for tag in sorted(tags):
+                tag_ptr = builder.gep(
+                    boxed,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+                )
+                tag_val = builder.load(tag_ptr)
+                matches = builder.icmp_signed(
+                    "==", tag_val, ir.Constant(ir.IntType(32), tag)
+                )
+                result = builder.or_(result, matches)
+            builder.branch(merge_block)
+            builder.position_at_end(merge_block)
+            phi = builder.phi(ir.IntType(1))
+            phi.add_incoming(result, tags_block)
+            phi.add_incoming(ir.Constant(ir.IntType(1), 0), entry_block)
+            return phi
         for tag in sorted(tags):
             tag_ptr = builder.gep(
                 boxed, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
@@ -7068,6 +7100,13 @@ class TypedCodegen(SiluToLLVMConverter):
                 self._convert_statement(stmt, skip_func_defs)
             return (OBJ, null_obj)
 
+        if op == "funcref":
+            mangled = node[1]
+            fn = self.functions.get(mangled)
+            if fn is None:
+                raise NameError(f"funcref to unknown function '{mangled}'")
+            return ("func:" + mangled, fn)
+
         if op == "const":
             value = node[1]
             if value is None:
@@ -7180,6 +7219,19 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
                 return (OBJ, null_obj)
             if isinstance(target, str):
+                if (
+                    isinstance(value_node, list)
+                    and len(value_node) == 2
+                    and value_node[0] == "funcref"
+                ):
+                    mangled = value_node[1]
+                    if mangled not in self.functions:
+                        raise NameError(
+                            f"funcref to unknown function '{mangled}'"
+                        )
+                    self._declare_var(target, OBJ)
+                    self._funcref_var[target] = mangled
+                    return (OBJ, null_obj)
                 ctor_class = self._constructor_call_class(value_node)
                 if ctor_class is not None:
                     # st = JointState(1.0, 2.0) - optionally annotated
@@ -9592,6 +9644,35 @@ class TypedCodegen(SiluToLLVMConverter):
             and func_node[0] == "name"
         ):
             func_name = func_node[1]
+
+            if func_name in self._funcref_var:
+                # indirect call through a funcref local: resolve the
+                # target statically (the slot itself is never read)
+                mangled = self._funcref_var[func_name]
+                fn = self.functions.get(mangled)
+                if fn is None:
+                    raise NameError(
+                        f"funcref to unknown function '{mangled}'"
+                    )
+                static = self.static_funcs.get(mangled)
+                if static is not None:
+                    param_kinds, ret_kind = static[0], static[1]
+                else:
+                    param_kinds = self._dyn_func_kinds.get(mangled)
+                    ret_kind = OBJ
+                raw_args = []
+                for index, arg_node in enumerate(args_node):
+                    kind = (
+                        param_kinds[index]
+                        if param_kinds and index < len(param_kinds)
+                        else OBJ
+                    )
+                    arg_tv = self._convert_node(arg_node)
+                    if kind == OBJ:
+                        raw_args.append(self._box(arg_tv))
+                    else:
+                        raw_args.append(self._coerce(arg_tv, kind)[1])
+                return (ret_kind, self.current_builder.call(fn, raw_args))
 
             if func_name == "print":
                 kwargs = node[3] if len(node) > 3 else []
