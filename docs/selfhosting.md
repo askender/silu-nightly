@@ -47,6 +47,13 @@
   `from __future__ import annotations`（双端对拍同步支持）。
   性能（`docs/m4_perf.md`）：前端自解析 529ms → 33.7ms（15.7x），
   反超 Python 版 5.2x。
+- **源码 round-trip（IR 不动点）**：`silu ir` → `silu to-source` →
+  再 `silu ir`，全部 selfhost 程序（含 silu_fe.si 自身）IR **字节级
+  相同**；round-trip 源码重新编译后行为等价（calc 答题 / M2 执行 /
+  前端解析全部对拍）。注意：字节级源码复原不可能（注释、行内空白、
+  引号风格在 IR 生成时已丢弃）；IR 里保留的信息（每语句行号、
+  变量名、结构）精确复原——行距由 line 标记驱动，elif 链、n-ary
+  and/or、裸 enum 成员按原 IR 形态生成。
 
 ## 4. 明确不做
 

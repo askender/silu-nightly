@@ -107,9 +107,17 @@ def parse_ir_from_json_string(json_string: str) -> Union[Tuple, List]:
     except json.JSONDecodeError:
         pass
 
-    # Fall back to Python literal evaluation with replacements
+    # Fall back to Python literal evaluation. Try the text verbatim
+    # first: repr-style IR already spells None/True/False, and a blind
+    # null->None replace would corrupt identifiers (jnull -> jNone).
     try:
-        # Replace JSON null/boolean literals with Python equivalents
+        return ast.literal_eval(json_string)
+    except (ValueError, SyntaxError):
+        pass
+
+    # Last resort for JSON-ish text: rewrite bare null/true/false
+    # literals, then evaluate.
+    try:
         python_string = json_string.replace("null", "None")
         python_string = python_string.replace("true", "True")
         python_string = python_string.replace("false", "False")

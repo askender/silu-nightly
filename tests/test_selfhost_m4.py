@@ -322,3 +322,59 @@ def test_pycompat_ir_interp_runs():
         )
         assert out_p.returncode == 0, out_p.stderr[-400:]
         assert out_p.stdout == expected
+
+
+# ---- source round-trip: silu -> IR -> silu is an IR fixed point ----
+
+def _round_trip(source_path):
+    """source -> IR (repr) -> to-source -> source'. Returns the path."""
+    ir_repr = subprocess.run(
+        [sys.executable, "-m", "silu", "ir", source_path],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert ir_repr.returncode == 0, ir_repr.stderr
+    ir_file = source_path + ".roundtrip.ir"
+    with open(ir_file, "w") as handle:
+        handle.write(ir_repr.stdout)
+    out_file = source_path + ".roundtrip.si"
+    conv = subprocess.run(
+        [sys.executable, "-m", "silu", "to-source", ir_file, "-o", out_file],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    for path in (ir_file,):
+        os.remove(path)
+    assert conv.returncode == 0, conv.stderr
+    return out_file
+
+
+@pytest.mark.parametrize("source", SELFHOST_SOURCES)
+def test_round_trip_ir_fixed_point(source):
+    """IR(source) == IR(to_source(IR(source))) - byte-identical, for
+    every selfhost program including the front end itself."""
+    regenerated = _round_trip(source)
+    a = subprocess.run(
+        [sys.executable, "-m", "silu", "ir", source, "--format", "json"],
+        capture_output=True, text=True, cwd=REPO,
+    ).stdout
+    b = subprocess.run(
+        [sys.executable, "-m", "silu", "ir", regenerated, "--format", "json"],
+        capture_output=True, text=True, cwd=REPO,
+    ).stdout
+    os.remove(regenerated)
+    assert a == b
+
+
+def test_round_trip_semantics(tmp_path):
+    """The regenerated calculator compiles and answers like the original."""
+    regenerated = _round_trip(f"{REPO}/selfhost/calc.si")
+    binary = _build(regenerated, str(tmp_path / "calc_rt"))
+    for expr in ["1+2", "7/2", "(1+2)*3", "-(3+4)*2"]:
+        run = subprocess.run(
+            [binary], input=expr + "\n", capture_output=True, text=True,
+            timeout=30,
+        )
+        expected = subprocess.run(
+            [sys.executable, "-c", f"v=({expr}); print(int(v) if v==int(v) else v)"],
+            capture_output=True, text=True,
+        ).stdout
+        assert run.stdout == expected, (expr, run.stdout, expected)

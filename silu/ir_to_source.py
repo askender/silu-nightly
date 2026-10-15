@@ -36,10 +36,30 @@ class IRToSourceConverter:
                 return self._convert_module(ir_node, indent_level)
             elif node_type == "assign":
                 return self._convert_assign(ir_node, indent_level)
+            elif node_type == "ann_assign":
+                return self._convert_ann_assign(ir_node, indent_level)
+            elif node_type == "enum_def":
+                return self._convert_enum_def(ir_node, indent_level)
+            elif node_type == "class_def":
+                return self._convert_class_def(ir_node, indent_level)
+            elif node_type == "import":
+                return self._convert_import(ir_node, indent_level)
+            elif node_type == "from_import":
+                return self._convert_from_import(ir_node, indent_level)
+            elif node_type == "raise":
+                return self._convert_raise(ir_node, indent_level)
+            elif node_type == "match":
+                return self._convert_match(ir_node, indent_level)
+            elif node_type == "list_comp":
+                return self._convert_list_comp(ir_node)
             elif node_type == "subscript_assign":
                 return self._convert_subscript_assign(ir_node, indent_level)
             elif node_type == "aug_assign":
                 return self._convert_aug_assign(ir_node, indent_level)
+            elif node_type == "attribute_aug_assign":
+                return self._convert_attribute_aug_assign(
+                    ir_node, indent_level
+                )
             elif node_type == "tuple_assign":
                 return self._convert_tuple_assign(ir_node, indent_level)
             elif node_type == "multi_assign":
@@ -56,6 +76,10 @@ class IRToSourceConverter:
                 return self._convert_c_for(ir_node, indent_level)
             elif node_type == "aug_assign":
                 return self._convert_aug_assign(ir_node, indent_level)
+            elif node_type == "attribute_aug_assign":
+                return self._convert_attribute_aug_assign(
+                    ir_node, indent_level
+                )
             elif node_type in ["p++", "p--", "++", "--"]:
                 return self._convert_increment_decrement(ir_node, indent_level)
             elif node_type == "return":
@@ -114,14 +138,58 @@ class IRToSourceConverter:
             return self._convert_literal(ir_node)
 
     def _convert_module(self, ir_node: Tuple, indent_level: int) -> str:
-        """Convert module IR to source code."""
+        """Convert module IR to source code. Line markers drive the
+        emitted blank-line gaps so a re-parse reproduces the same IR
+        (the IR fixed point)."""
         _, statements = ir_node
-        lines = []
-        for stmt in statements:
-            converted = self.convert_to_source(stmt, indent_level)
-            if converted.strip():  # Don't add empty lines
-                lines.append(converted)
+        self._out_line = 0
+        self._pending_line = None
+        lines = self._render_stmts(statements, indent_level)
         return "\n".join(lines)
+
+    def _render_stmts(self, stmts, indent_level: int):
+        """Render a statement list, honouring ('line', n) markers:
+        blank lines are inserted so the statement lands on line n.
+        Statements themselves may render multi-line; _out_line counts
+        every emitted physical line."""
+        lines = []
+        indent = self._get_indent(indent_level)
+        for stmt in stmts:
+            if isinstance(stmt, (tuple, list)) and stmt and stmt[0] == "line":
+                self._pending_line = stmt[1]
+                continue
+            if getattr(self, "_pending_line", None) is not None:
+                gap = self._pending_line - getattr(self, "_out_line", 0) - 1
+                for _ in range(max(0, gap)):
+                    lines.append("")
+                    self._out_line = getattr(self, "_out_line", 0) + 1
+                self._pending_line = None
+            before = getattr(self, "_out_line", 0)
+            text = self.convert_to_source(stmt, indent_level)
+            # bare expression statements (name/const/binop/call) carry
+            # no leading indent at level 0 - add it positionally
+            if stmt[0] in ("name", "const", "call") and not text.startswith(
+                (" ", "\t")
+            ):
+                text = indent + text
+            if getattr(self, "_out_line", 0) == before:
+                # simple statement: no nested renderer advanced the
+                # counter - count the emitted lines here
+                for physical in text.split("\n"):
+                    lines.append(physical)
+                    self._out_line = getattr(self, "_out_line", 0) + 1
+            else:
+                # a nested renderer already counted every line it
+                # produced (headers included) - emit without recount
+                lines.append(text)
+        return lines
+
+    def _align_to(self, lines, target_line):
+        """Blank-fill so the NEXT emitted line lands on target_line."""
+        gap = target_line - getattr(self, "_out_line", 0) - 1
+        for _ in range(max(0, gap)):
+            lines.append("")
+            self._out_line = getattr(self, "_out_line", 0) + 1
 
     def _convert_name(self, ir_node: Tuple) -> str:
         """Convert name IR node to identifier."""
@@ -146,8 +214,12 @@ class IRToSourceConverter:
         indent = self._get_indent(indent_level)
         # Value in assignment could be literal or expression
         value_str = self._convert_value_in_context(value, "value")
-        # Target is always a variable name, so don't quote it
-        return f"{indent}{target} = {value_str}"
+        # Target is a name, or an attribute/subscript node (obj.f = v)
+        if isinstance(target, (tuple, list)):
+            target_str = self.convert_to_source(target)
+        else:
+            target_str = target
+        return f"{indent}{target_str} = {value_str}"
 
     def _convert_subscript_assign(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert subscript assignment IR to source code."""
@@ -165,6 +237,14 @@ class IRToSourceConverter:
         target_str = self.convert_to_source(target, 0).strip()
         value_str = self.convert_to_source(value, 0).strip()
         return f"{indent}{target_str} {op} {value_str}"
+
+    def _convert_attribute_aug_assign(self, ir_node, indent_level: int) -> str:
+        """obj.attr op= value: ("attribute_aug_assign", obj, attr, op, value)."""
+        _, obj, attr, op, value = ir_node
+        indent = self._get_indent(indent_level)
+        obj_str = self.convert_to_source(obj)
+        value_str = self.convert_to_source(value)
+        return f"{indent}{obj_str}.{attr} {op} {value_str}"
 
     def _convert_tuple_assign(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert tuple assignment IR to source code."""
@@ -198,26 +278,67 @@ class IRToSourceConverter:
         return f"{indent}{targets_str} = {value_str}"
 
     def _convert_if(self, ir_node: Tuple, indent_level: int) -> str:
-        """Convert if statement IR to source code."""
+        """Convert if statement IR to source code. Nested if-in-orelse
+        stays nested (else: if ...) - re-parsing reproduces the exact
+        same IR shape."""
         _, condition, body, orelse = ir_node
         lines = []
 
-        # If condition
         condition_str = self.convert_to_source(condition)
         indent = self._get_indent(indent_level)
         lines.append(f"{indent}if {condition_str}:")
+        self._out_line = getattr(self, "_out_line", 0) + 1
 
-        # If body
-        for stmt in body:
-            lines.append(self.convert_to_source(stmt, indent_level + 1))
+        lines.extend(self._render_stmts(body, indent_level + 1))
 
-        # Else clause
-        if orelse:
-            lines.append(f"{indent}else:")
-            for stmt in orelse:
-                lines.append(self.convert_to_source(stmt, indent_level + 1))
+        self._render_tail(orelse, indent_level, lines)
 
         return "\n".join(lines)
+
+    def _render_tail(self, orelse, indent_level: int, lines):
+        """Render an if/for orelse: [line, if...] with a single nested
+        if is an elif chain (one physical line per arm, so the IR line
+        markers round-trip exactly); anything else is a plain else."""
+        if not orelse:
+            return
+        first_line = None
+        for st in orelse:
+            if isinstance(st, (tuple, list)) and st and st[0] == "line":
+                first_line = st[1]
+            break
+        stmts = [
+            st
+            for st in orelse
+            if not (
+                isinstance(st, (tuple, list)) and st and st[0] == "line"
+            )
+        ]
+        indent = self._get_indent(indent_level)
+        if (
+            len(stmts) == 1
+            and isinstance(stmts[0], (tuple, list))
+            and stmts[0][0] == "if"
+        ):
+            # elif arm: its line marker is the elif keyword line
+            if first_line is not None:
+                self._align_to(lines, first_line)
+            self._render_if_like("elif", stmts[0], indent_level, lines)
+            return
+        if first_line is not None:
+            self._align_to(lines, first_line - 1)
+        lines.append(f"{indent}else:")
+        self._out_line = getattr(self, "_out_line", 0) + 1
+        lines.extend(self._render_stmts(orelse, indent_level + 1))
+
+    def _render_if_like(self, keyword, ir_node, indent_level: int, lines):
+        """One if/elif header + body + (recursive) tail."""
+        _, condition, body, orelse = ir_node
+        indent = self._get_indent(indent_level)
+        condition_str = self.convert_to_source(condition)
+        lines.append(f"{indent}{keyword} {condition_str}:")
+        self._out_line = getattr(self, "_out_line", 0) + 1
+        lines.extend(self._render_stmts(body, indent_level + 1))
+        self._render_tail(orelse, indent_level, lines)
 
     def _convert_while(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert while loop IR to source code."""
@@ -227,9 +348,9 @@ class IRToSourceConverter:
         condition_str = self.convert_to_source(condition)
         indent = self._get_indent(indent_level)
         lines.append(f"{indent}while {condition_str}:")
+        self._out_line = getattr(self, "_out_line", 0) + 1
 
-        for stmt in body:
-            lines.append(self.convert_to_source(stmt, indent_level + 1))
+        lines.extend(self._render_stmts(body, indent_level + 1))
 
         return "\n".join(lines)
 
@@ -238,21 +359,25 @@ class IRToSourceConverter:
         _, target, iter_val, body, orelse = ir_node
         lines = []
 
-        # Target is always a variable name (identifier)
-        target_str = (
-            target if isinstance(target, str) else self.convert_to_source(target)
-        )
+        # Target is a name, or a tuple_unpack node (for i, x in ...)
+        if isinstance(target, str):
+            target_str = target
+        elif (
+            isinstance(target, (tuple, list))
+            and target
+            and target[0] == "tuple_unpack"
+        ):
+            target_str = ", ".join(str(n) for n in target[1])
+        else:
+            target_str = self.convert_to_source(target)
         iter_str = self._convert_identifier_or_value(iter_val)
         indent = self._get_indent(indent_level)
         lines.append(f"{indent}for {target_str} in {iter_str}:")
+        self._out_line = getattr(self, "_out_line", 0) + 1
 
-        for stmt in body:
-            lines.append(self.convert_to_source(stmt, indent_level + 1))
+        lines.extend(self._render_stmts(body, indent_level + 1))
 
-        if orelse:
-            lines.append(f"{indent}else:")
-            for stmt in orelse:
-                lines.append(self.convert_to_source(stmt, indent_level + 1))
+        self._render_tail(orelse, indent_level, lines)
 
         return "\n".join(lines)
 
@@ -271,14 +396,158 @@ class IRToSourceConverter:
             )
         lines = []
 
-        args_str = ", ".join(str(arg) for arg in args)
+        annos = ir_node[4] if len(ir_node) > 4 else ()
+        param_bits = []
+        for index, arg in enumerate(args):
+            anno = annos[index] if index < len(annos) else None
+            if anno is not None:
+                param_bits.append(f"{arg}: {self._annotation_str(anno)}")
+            else:
+                param_bits.append(str(arg))
+        args_str = ", ".join(param_bits)
+        ret_anno = ir_node[5] if len(ir_node) > 5 else None
+        suffix = ""
+        if ret_anno is not None:
+            suffix = f" -> {self._annotation_str(ret_anno)}"
         indent = self._get_indent(indent_level)
-        lines.append(f"{indent}def {name}({args_str}):")
+        lines.append(f"{indent}def {name}({args_str}){suffix}:")
+        self._out_line = getattr(self, "_out_line", 0) + 1
 
-        for stmt in body:
-            lines.append(self.convert_to_source(stmt, indent_level + 1))
+        lines.extend(self._render_stmts(body, indent_level + 1))
 
         return "\n".join(lines)
+
+    def _annotation_str(self, ann) -> str:
+        if ann is None:
+            return ""
+        if isinstance(ann, (tuple, list)):
+            if ann[0] == "name":
+                return str(ann[1])
+            if ann[0] == "const" and len(ann) > 1 and ann[1] is None:
+                return "None"
+            if ann[0] == "subscript" and len(ann) >= 3:
+                base = self._annotation_str(ann[1])
+                inner = ann[2]
+                if isinstance(inner, (tuple, list)) and inner and inner[0] == "tuple":
+                    items = ", ".join(
+                        self._annotation_str(e) for e in inner[1]
+                    )
+                else:
+                    items = self._annotation_str(inner)
+                return f"{base}[{items}]"
+        return str(ann)
+
+    def _convert_ann_assign(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert annotated assignment IR to source: x: int = 3."""
+        _, target, value, ann = ir_node
+        indent = self._get_indent(indent_level)
+        ann_str = self._annotation_str(ann)
+        if value is None:
+            return f"{indent}{target}: {ann_str}"
+        value_str = self._convert_value_in_context(value, "value")
+        return f"{indent}{target}: {ann_str} = {value_str}"
+
+    def _convert_enum_def(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert enum definition IR: class X(Enum): A = 0 (bare member
+        when the IR value is None - re-parse reproduces the same IR)."""
+        _, name, members = ir_node
+        indent = self._get_indent(indent_level)
+        lines = [f"{indent}class {name}(Enum):"]
+        self._out_line = getattr(self, "_out_line", 0) + 1
+        for member in members:
+            mname, mvalue = member[0], member[1]
+            if mvalue is None:
+                lines.append(f"{indent}    {mname}")
+            else:
+                lines.append(
+                    f"{indent}    {mname} = {self.convert_to_source(mvalue)}"
+                )
+            self._out_line = getattr(self, "_out_line", 0) + 1
+        return "\n".join(lines)
+
+    def _convert_import(self, ir_node: Tuple, indent_level: int) -> str:
+        _, names = ir_node
+        indent = self._get_indent(indent_level)
+        parts = []
+        for item in names:
+            n, asname = item if isinstance(item, (tuple, list)) else (item, None)
+            parts.append(str(n) if asname is None else f"{n} as {asname}")
+        return f"{indent}import {', '.join(parts)}"
+
+    def _convert_from_import(self, ir_node: Tuple, indent_level: int) -> str:
+        _, module, names, _level = ir_node
+        indent = self._get_indent(indent_level)
+        parts = []
+        for item in names:
+            n, asname = item if isinstance(item, (tuple, list)) else (item, None)
+            parts.append(str(n) if asname is None else f"{n} as {asname}")
+        return f"{indent}from {module} import {', '.join(parts)}"
+
+    def _convert_raise(self, ir_node: Tuple, indent_level: int) -> str:
+        _, exc = ir_node if len(ir_node) > 1 else (ir_node[0], None)
+        indent = self._get_indent(indent_level)
+        if exc is None:
+            return f"{indent}raise"
+        return f"{indent}raise {self.convert_to_source(exc)}"
+
+    def _convert_match(self, ir_node: Tuple, indent_level: int) -> str:
+        """Convert match IR: match/case with value/as/or patterns."""
+        _, subject, cases = ir_node
+        indent = self._get_indent(indent_level)
+        lines = [f"{indent}match {self.convert_to_source(subject)}:"]
+        self._out_line = getattr(self, "_out_line", 0) + 1
+        for case in cases:
+            pattern, guard, body = case[1], case[2], case[3]
+            pat_str = self._pattern_str(pattern)
+            # the case keyword sits one line above the body's first line
+            first_line = None
+            for st in body:
+                if isinstance(st, (tuple, list)) and st and st[0] == "line":
+                    first_line = st[1]
+                break
+            if first_line is not None:
+                self._align_to(lines, first_line - 1)
+            if guard is not None:
+                lines.append(
+                    f"{indent}    case {pat_str} if "
+                    f"{self.convert_to_source(guard)}:"
+                )
+            else:
+                lines.append(f"{indent}    case {pat_str}:")
+            self._out_line = getattr(self, "_out_line", 0) + 1
+            lines.extend(self._render_stmts(body, indent_level + 2))
+        return "\n".join(lines)
+
+    def _pattern_str(self, pattern) -> str:
+        if isinstance(pattern, (tuple, list)) and pattern:
+            kind = pattern[0]
+            if kind == "match_value":
+                return self.convert_to_source(pattern[1])
+            if kind == "match_as":
+                inner, name = pattern[1], pattern[2]
+                if inner is None and name is None:
+                    return "_"
+                if inner is None:
+                    return str(name)
+                base = self._pattern_str(inner)
+                return base if name is None else f"{base} as {name}"
+            if kind == "match_or":
+                return " | ".join(self._pattern_str(p) for p in pattern[1])
+        return str(pattern)
+
+    def _convert_list_comp(self, ir_node: Tuple) -> str:
+        _, elt, generators = ir_node
+        parts = []
+        for gen in generators:
+            target, iter_val, conds = gen[0], gen[1], gen[2]
+            target_str = (
+                target[1] if isinstance(target, (tuple, list)) else str(target)
+            )
+            bit = f"for {target_str} in {self.convert_to_source(iter_val)}"
+            for cond in conds or ():
+                bit += f" if {self.convert_to_source(cond)}"
+            parts.append(bit)
+        return f"[{self.convert_to_source(elt)} {' '.join(parts)}]"
 
     def _convert_class_def(self, ir_node: Tuple, indent_level: int) -> str:
         """Convert class definition IR to source code."""
@@ -295,10 +564,10 @@ class IRToSourceConverter:
             )
 
         lines.append(f"{indent}class {name}{bases_str}:")
+        self._out_line = getattr(self, "_out_line", 0) + 1
 
         if body:
-            for stmt in body:
-                lines.append(self.convert_to_source(stmt, indent_level + 1))
+            lines.extend(self._render_stmts(body, indent_level + 1))
         else:
             # Empty class needs a pass statement
             lines.append(f"{indent}    pass")
@@ -517,7 +786,18 @@ class IRToSourceConverter:
         return f"{left_str} {op} {right_str}"
 
     def _convert_bool_op(self, ir_node: Tuple) -> str:
-        """Convert boolean operation IR to source code."""
+        """Convert boolean operation IR to source code. and/or are
+        n-ary in the IR; they re-parse to the same n-ary node."""
+        op = ir_node[0]
+        parts = []
+        for operand in ir_node[1:]:
+            operand_str = self.convert_to_source(operand)
+            if self._needs_parentheses(operand, op):
+                operand_str = f"({operand_str})"
+            parts.append(operand_str)
+        return f" {op} ".join(parts)
+
+    def _bool_op_binary_legacy(self, ir_node: Tuple) -> str:
         op, left, right = ir_node
         left_str = self.convert_to_source(left)
         right_str = self.convert_to_source(right)
