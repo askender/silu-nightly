@@ -106,8 +106,16 @@ get/len/has；`print` 家族（int/float/bool/str 的 Python 格式化——
   `tests/test_selfhost_m4.py::test_m5_ir2c_compiles_calc` 固化。
   沿途修复：typed 的 `return None`→实例字段 coerce（null 指针）、
   silu_fe 的 `s[:hi]` 缺 lo 切片错位。
-- 待办：阶段 1（dict 运行时）、4（ir_interp.si：dict/容器迭代/
-  嵌套函数）、5（silu_fe.si 冲刺）。
+- **阶段 4 完成（2026-10-15）**：dict 运行时（str 键开放寻址 +
+  FNV 哈希，8 字节值槽）、dict 字面量/下标读写/`in`、
+  `print(end="")`（kwargs 是 (name, const-value) 数组对）、
+  `subscript_assign`。**ir_interp.si 全链达标**——M5 链编译的
+  M2 解释器跑通 M2 全部程序集（5/5，含 30 万次循环的程序）。
+  途中修的语义坑：**字符串的 < <= > >= 必须走字典序 str_cmp**
+  （C 指针比较是错的——`ch >= "0"` 全部失真，Json.number 死循环
+  的根因）；类解析链补 subscript（`node.arr[i].s` 型链）。
+- 待办：阶段 5（silu_fe.si 冲刺：容器迭代/推导式/int(s,base)/
+  join 等）。
 
 ## 7. 实施顺序（每步可验证）
 

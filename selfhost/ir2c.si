@@ -284,6 +284,8 @@ def anno_type(anno: JValue) -> str:
         inner: str = anno_type(anno.arr[2])
         if base == "list":
             return "list:" + inner
+        if base == "dict":
+            return "dict:" + inner
         return "int"
     return "int"
 
@@ -299,6 +301,8 @@ def cty(ty: str) -> str:
         return "void"
     if ty == "list" or ty.startswith("list:"):
         return "List*"
+    if ty == "dict" or ty.startswith("dict:"):
+        return "Dict*"
     return ty + "*"
 
 
@@ -438,6 +442,26 @@ class Gen:
             if find_class(ft) is not None:
                 return ft
             return ""
+        if t == "subscript":
+            # xs[i].f: the element type of a list:<T> field/variable
+            if tag(node.arr[1]) == "name":
+                vt_s: str = self.var_type(node.arr[1].arr[1].s)
+                if vt_s.startswith("list:"):
+                    et: str = vt_s[5:]
+                    if find_class(et) is not None:
+                        return et
+                return ""
+            if tag(node.arr[1]) == "attribute":
+                owner: str = self.class_of_expr(node.arr[1].arr[1])
+                if owner != "":
+                    oc: ClassInfo = find_class(owner)
+                    if oc is not None:
+                        ft2: str = self.field_type(oc, node.arr[1].arr[2].s)
+                        if ft2.startswith("list:"):
+                            et2: str = ft2[5:]
+                            if find_class(et2) is not None:
+                                return et2
+            return ""
         if t == "call":
             callee: JValue = node.arr[1]
             if tag(callee) == "name":
@@ -508,6 +532,8 @@ class Gen:
             idx: TE = self.expr(key)
             if base.ty == "str":
                 return te("str_at(" + base.text + ", " + idx.text + ")", "str")
+            if base.ty == "dict" or base.ty.startswith("dict:"):
+                return te("dict_get(" + base.text + ", " + idx.text + ")", "int")
             if base.ty.startswith("list:"):
                 elem_ty: str = base.ty[5:]
                 if find_class(elem_ty) is not None:
@@ -540,6 +566,9 @@ class Gen:
         if t == "<" or t == "<=" or t == ">" or t == ">=":
             a2: TE = self.expr(node.arr[1])
             b2: TE = self.expr(node.arr[2])
+            if a2.ty == "str" and b2.ty == "str":
+                # string ordering is lexicographic, never pointer order
+                return te("(str_cmp(" + a2.text + ", " + b2.text + ") " + t + " 0)", "bool")
             return te("(" + a2.text + " " + t + " " + b2.text + ")", "bool")
         if t == "==" or t == "!=":
             a3: TE = self.expr(node.arr[1])
@@ -569,6 +598,15 @@ class Gen:
         if t == "list":
             # empty/inline list literal -> fresh list (elements push later)
             return te("list_new()", "list")
+        if t == "dict":
+            return te("dict_new()", "dict")
+        if t == "in" or t == "not in":
+            a_in: TE = self.expr(node.arr[1])
+            b_in: TE = self.expr(node.arr[2])
+            call: str = "dict_has(" + b_in.text + ", " + a_in.text + ")"
+            if t == "not in":
+                call = "(!" + call + ")"
+            return te("(" + call + ")", "bool")
         if t == "call":
             return self.call_expr(node)
         if t == "if_expr":
@@ -742,6 +780,15 @@ class Gen:
                 self.emit("(" + base.text + ")->" + tgt.arr[2].s + " = " + val2.text + ";")
                 return 0
             return 0
+        if t == "subscript_assign":
+            base_sa: TE = self.expr(stmt.arr[1])
+            key_sa: TE = self.expr(stmt.arr[2])
+            val_sa: TE = self.expr(stmt.arr[3])
+            if base_sa.ty == "dict" or base_sa.ty.startswith("dict:"):
+                self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
+            else:
+                self.emit("list_set(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
+            return 0
         if t == "aug_assign":
             tgt: JValue = stmt.arr[1]
             op: str = elem_str(stmt, 2)
@@ -776,7 +823,7 @@ class Gen:
         if t == "call":
             callee: JValue = stmt.arr[1]
             if tag(callee) == "name" and callee.arr[1].s == "print":
-                self.gen_print(stmt.arr[2])
+                self.gen_print(stmt.arr[2], stmt.arr[3])
                 return 0
             r: TE = self.call_expr(stmt)
             self.emit(r.text + ";")
@@ -834,7 +881,7 @@ class Gen:
             return 0
         return 0
 
-    def gen_print(self, args: JValue) -> int:
+    def gen_print(self, args: JValue, kwargs: JValue) -> int:
         i: int = 0
         while i < len(args.arr):
             a: TE = self.expr(elem(args, i))
@@ -849,7 +896,24 @@ class Gen:
             else:
                 self.emit("silu_print_int(" + a.text + ");")
             i += 1
-        self.emit("silu_nl();")
+        # print(..., end=E): E == "" suppresses the newline. kwargs is
+        # an array of (name, value) OBJ pairs (value rides in .nxt)
+        end_line: str = "silu_nl();"
+        if kwargs is not None and kwargs.kind == JKind.ARR:
+            k: int = 0
+            while k < len(kwargs.arr):
+                pair: JValue = elem(kwargs, k)
+                if pair.kind == JKind.ARR and len(pair.arr) == 2:
+                    if pair.arr[0].s == "end":
+                        v: JValue = pair.arr[1]
+                        # value rides as a ("const", "") node
+                        if v.kind == JKind.STR and v.s == "":
+                            end_line = ""
+                        elif v.kind == JKind.ARR and len(v.arr) == 2 and v.arr[0].s == "const" and v.arr[1].s == "":
+                            end_line = ""
+                k += 1
+        if end_line != "":
+            self.emit(end_line)
         return 0
 
     def gen_match(self, stmt: JValue) -> int:
@@ -1110,6 +1174,7 @@ RUNTIME: list[str] = [
     "}",
     "static Str* str_add(Str* a, Str* b) { Str* r = str_new(\"\", 0); r->data = silu_malloc(a->len + b->len); memcpy(r->data, a->data, a->len); memcpy(r->data + a->len, b->data, b->len); r->len = r->cap = a->len + b->len; int64_t cp = 0, i = 0; while (i < r->len) { unsigned char c = (unsigned char)r->data[i]; cp++; i += c < 0x80 ? 1 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : 4)); } r->cp = cp; return r; }",
     "static int str_eq(Str* a, Str* b) { return a->len == b->len && memcmp(a->data, b->data, a->len) == 0; }",
+    "static int str_cmp(Str* a, Str* b) { int64_t n = a->len < b->len ? a->len : b->len; int c = memcmp(a->data, b->data, n); if (c) return c; return a->len < b->len ? -1 : (a->len > b->len ? 1 : 0); }",
     "static int str_ne(Str* a, Str* b) { return !str_eq(a, b); }",
     "static int str_isdigit(Str* s) { if (s->len == 0) return 0; for (int64_t i = 0; i < s->len; i++) { unsigned char c = (unsigned char)s->data[i]; if (c < '0' || c > '9') return 0; } return 1; }",
     "static int str_isalpha(Str* s) { if (s->len == 0) return 0; for (int64_t i = 0; i < s->len; i++) { unsigned char c = (unsigned char)s->data[i]; if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return 0; } return 1; }",
@@ -1122,6 +1187,15 @@ RUNTIME: list[str] = [
     "static List* list_new(void) { List* l = silu_malloc(sizeof(List)); l->len = 0; l->cap = 0; l->items = 0; return l; }",
     "static void list_push(List* l, int64_t v) { if (l->len == l->cap) { int64_t nc = l->cap ? l->cap * 2 : 8; int64_t* ni = silu_malloc(nc * 8); if (l->len) memcpy(ni, l->items, l->len * 8); l->items = ni; l->cap = nc; } l->items[l->len++] = v; }",
     "static int64_t list_get(List* l, int64_t i) { if (i < 0) i += l->len; return l->items[i]; }",
+    "static void list_set(List* l, int64_t i, int64_t v) { if (i < 0) i += l->len; l->items[i] = v; }",
+    "typedef struct { Str* key; int64_t val; int used; } DEnt;",
+    "typedef struct { DEnt* ents; int64_t cap, cnt; } Dict;",
+    "static Dict* dict_new(void) { Dict* d = silu_malloc(sizeof(Dict)); d->cap = 16; d->cnt = 0; d->ents = silu_malloc(sizeof(DEnt) * 16); memset(d->ents, 0, sizeof(DEnt) * 16); return d; }",
+    "static int64_t str_hash(Str* s) { int64_t h = 1469598103934665603LL; for (int64_t i = 0; i < s->len; i++) { h ^= (unsigned char)s->data[i]; h *= 1099511628211LL; } return h & 0x7fffffffffffffffLL; }",
+    "static void dict_grow(Dict* d) { int64_t nc = d->cap * 2; DEnt* ne = silu_malloc(sizeof(DEnt) * nc); memset(ne, 0, sizeof(DEnt) * nc); for (int64_t i = 0; i < d->cap; i++) { if (d->ents[i].used) { int64_t j = str_hash(d->ents[i].key) % nc; while (ne[j].used) j = (j + 1) % nc; ne[j] = d->ents[i]; } } d->ents = ne; d->cap = nc; }",
+    "static void dict_set(Dict* d, Str* k, int64_t v) { if (d->cnt * 2 >= d->cap) dict_grow(d); int64_t j = str_hash(k) % d->cap; while (d->ents[j].used && !str_eq(d->ents[j].key, k)) j = (j + 1) % d->cap; if (!d->ents[j].used) { d->ents[j].used = 1; d->ents[j].key = k; d->cnt++; } d->ents[j].val = v; }",
+    "static int64_t dict_has(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return 1; j = (j + 1) % d->cap; } return 0; }",
+    "static int64_t dict_get(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return d->ents[j].val; j = (j + 1) % d->cap; } return 0; }",
     "static int64_t silu_fdiv(int64_t a, int64_t b) { int64_t q = a / b; if ((a % b != 0) && ((a < 0) != (b < 0))) q--; return q; }",
     "static Str* read_line(void) { char buf[4096]; if (!fgets(buf, 4096, stdin)) return str_of(\"\"); int64_t n = (int64_t)strlen(buf); if (n && buf[n-1] == '\\n') n--; return str_new(buf, n); }",
     "static Str* read_stdin_all(void) { int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, stdin)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } return str_new(buf, len); }",
