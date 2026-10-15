@@ -286,3 +286,39 @@ def test_system_exit_code(tmp_path, source, expected_code):
         [binary], capture_output=True, text=True, timeout=30
     )
     assert run.returncode == expected_code
+
+
+# ---- dual-stack: the same .si source also runs under CPython ----
+
+PYCOMPAT = f"{REPO}/tools/pycompat.py"
+
+
+@pytest.mark.parametrize("source", SELFHOST_SOURCES)
+def test_pycompat_silu_fe_matches(fe_bin, source):
+    """silu_fe.si via tools/pycompat.py (CPython) emits the same IR as
+    the compiled binary - one source, two execution stacks."""
+    with open(source) as handle:
+        cpython = subprocess.run(
+            [sys.executable, PYCOMPAT, FRONTEND],
+            stdin=handle, capture_output=True, text=True, timeout=300,
+        )
+    assert cpython.returncode == 0, cpython.stderr[-400:]
+    assert json.loads(cpython.stdout) == _fe_ir(fe_bin, source)
+
+
+def test_pycompat_ir_interp_runs():
+    """ir_interp.si under CPython executes the M2 program set with the
+    same output as the compiled M2 binary."""
+    for source, expected in CORE_PROGRAMS:
+        ir_json = subprocess.run(
+            [sys.executable, "-m", "silu", "ir", "--source", source,
+             "--format", "json"],
+            capture_output=True, text=True, cwd=REPO,
+        )
+        assert ir_json.returncode == 0, ir_json.stderr
+        out_p = subprocess.run(
+            [sys.executable, PYCOMPAT, M2_INTERP],
+            input=ir_json.stdout, capture_output=True, text=True, timeout=300,
+        )
+        assert out_p.returncode == 0, out_p.stderr[-400:]
+        assert out_p.stdout == expected

@@ -39,6 +39,14 @@
   解析为与 `silu ir --format json` 一致的 IR；M4→M2、M4→M3→C→clang
   端到端与 CPython 对拍通过（`tests/test_selfhost_m4.py`，
   详见 `docs/m4_status.md`）。
+- **双栖（dual-stack）**：同一份 `silu_fe.si` / `ir_interp.si` 源码
+  也能经 `tools/pycompat.py`（Enum/read_stdin 注入 + `__build_class__`
+  数据类钩子，**不改写 AST**）直接跑在 CPython 下，输出与编译版
+  一致（已固化为回归测试）。前提约定：enum 成员写显式值（裸成员
+  是 Silu-only 糖）、自引用类注解需要文件头
+  `from __future__ import annotations`（双端对拍同步支持）。
+  性能（`docs/m4_perf.md`）：前端自解析 529ms → 33.7ms（15.7x），
+  反超 Python 版 5.2x。
 
 ## 4. 明确不做
 

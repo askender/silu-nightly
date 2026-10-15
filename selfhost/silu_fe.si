@@ -8,13 +8,13 @@ import json
 
 
 class TokKind(Enum):
-    NAME
-    NUM
-    STR
-    OP
-    KW
-    NL
-    END
+    NAME = 0
+    NUM = 1
+    STR = 2
+    OP = 3
+    KW = 4
+    NL = 5
+    END = 6
 
 
 class Token:
@@ -31,43 +31,46 @@ class Lexer:
     col: int
     depth: int
 
-    def peek(self) -> str:
+    # The lexer hot loop works on code points (ord(src[i]) decodes a
+    # borrowed char view with zero allocation); strings are only
+    # materialized once per token as the text slice.
+    def peek_cp(self) -> int:
         if self.pos >= len(self.src):
-            return ""
-        return self.src[self.pos]
+            return -1
+        return ord(self.src[self.pos])
 
-    def peek2(self) -> str:
+    def peek2_cp(self) -> int:
         if self.pos + 1 >= len(self.src):
-            return ""
-        return self.src[self.pos + 1]
+            return -1
+        return ord(self.src[self.pos + 1])
 
-    def advance(self) -> str:
-        ch = self.src[self.pos]
+    def advance(self) -> int:
+        c: int = self.peek_cp()
         self.pos += 1
-        if ch == "\n":
+        if c == 10:
             self.line += 1
             self.col = 0
         else:
             self.col += 1
-        return ch
+        return c
 
     def skip_ws_and_comments(self) -> int:
         while self.pos < len(self.src):
-            ch = self.peek()
-            if ch == " " or ch == "\t":
+            c: int = self.peek_cp()
+            if c == 32 or c == 9:
                 self.advance()
-            elif ch == "#":
-                while self.pos < len(self.src) and self.peek() != "\n":
+            elif c == 35:
+                while self.pos < len(self.src) and self.peek_cp() != 10:
                     self.advance()
             else:
                 return 0
         return 0
 
-    def is_name_start(self, ch: str) -> bool:
-        return ch.isalpha() or ch == "_"
+    def is_name_start_cp(self, c: int) -> bool:
+        return (c >= 97 and c <= 122) or (c >= 65 and c <= 90) or c == 95
 
-    def is_name_char(self, ch: str) -> bool:
-        return ch.isalpha() or ch.isdigit() or ch == "_"
+    def is_name_char_cp(self, c: int) -> bool:
+        return self.is_name_start_cp(c) or (c >= 48 and c <= 57)
 
     def is_kw(self, text: str) -> bool:
         return (
@@ -87,78 +90,79 @@ class Lexer:
         self.skip_ws_and_comments()
         if self.pos >= len(self.src):
             return Token(TokKind.END, "", self.line, self.col)
-        ch = self.peek()
+        c: int = self.peek_cp()
         line = self.line
         col = self.col
-        if ch == "\n":
+        if c == 10:
             self.advance()
             if self.depth > 0:
                 return self.next_token()
             return Token(TokKind.NL, "\n", line, col)
-        if self.is_name_start(ch):
+        if self.is_name_start_cp(c):
             start: int = self.pos
-            while self.pos < len(self.src) and self.is_name_char(self.peek()):
+            while self.pos < len(self.src) and self.is_name_char_cp(self.peek_cp()):
                 self.advance()
             text: str = self.src[start:self.pos]
             if self.is_kw(text):
                 return Token(TokKind.KW, text, line, col)
             return Token(TokKind.NAME, text, line, col)
-        if ch.isdigit():
+        if c >= 48 and c <= 57:
             start: int = self.pos
             # 0x hex literal (and 0b/0o) - one token, no dot/exponent
-            if ch == "0" and self.pos + 1 < len(self.src):
-                nxt_ch: str = self.src[self.pos + 1]
-                if nxt_ch == "x" or nxt_ch == "X":
-                    self.advance()
-                    self.advance()
-                    while self.pos < len(self.src):
-                        c: str = self.peek()
-                        if c.isdigit() or (
-                            len(c) == 1
-                            and ((c >= "a" and c <= "f") or (c >= "A" and c <= "F"))
-                        ):
-                            self.advance()
-                        else:
-                            break
-                    return Token(TokKind.NUM, self.src[start:self.pos], line, col)
-                if nxt_ch == "b" or nxt_ch == "B" or nxt_ch == "o" or nxt_ch == "O":
-                    self.advance()
-                    self.advance()
-                    while self.pos < len(self.src) and (
-                        self.peek().isdigit() or self.peek() == "_"
-                    ):
+            nxt: int = self.peek2_cp()
+            if c == 48 and (nxt == 120 or nxt == 88):
+                self.advance()
+                self.advance()
+                while self.pos < len(self.src):
+                    d: int = self.peek_cp()
+                    if (d >= 48 and d <= 57) or (d >= 97 and d <= 102) or (d >= 65 and d <= 70):
                         self.advance()
-                    return Token(TokKind.NUM, self.src[start:self.pos], line, col)
+                    else:
+                        break
+                return Token(TokKind.NUM, self.src[start:self.pos], line, col)
+            if c == 48 and (nxt == 98 or nxt == 66 or nxt == 111 or nxt == 79):
+                self.advance()
+                self.advance()
+                while self.pos < len(self.src):
+                    d: int = self.peek_cp()
+                    if (d >= 48 and d <= 57) or d == 95:
+                        self.advance()
+                    else:
+                        break
+                return Token(TokKind.NUM, self.src[start:self.pos], line, col)
             seen_dot: bool = False
             seen_exp: bool = False
             while self.pos < len(self.src):
-                c: str = self.peek()
-                if c.isdigit() or c == "_":
+                d: int = self.peek_cp()
+                if (d >= 48 and d <= 57) or d == 95:
                     self.advance()
-                elif c == "." and not seen_dot and not seen_exp and self.peek2() != ".":
+                elif d == 46 and not seen_dot and not seen_exp and self.peek2_cp() != 46:
                     seen_dot = True
                     self.advance()
-                elif (c == "e" or c == "E") and not seen_exp:
+                elif (d == 101 or d == 69) and not seen_exp:
                     seen_exp = True
                     self.advance()
-                    if self.peek() == "+" or self.peek() == "-":
+                    nxt2: int = self.peek_cp()
+                    if nxt2 == 43 or nxt2 == 45:
                         self.advance()
                 else:
                     return Token(TokKind.NUM, self.src[start:self.pos], line, col)
             return Token(TokKind.NUM, self.src[start:self.pos], line, col)
-        if ch == '"' or ch == "'":
-            q: str = self.advance()
+        if c == 34 or c == 39:
+            q: int = self.advance()
             start: int = self.pos
-            while self.pos < len(self.src) and self.peek() != q:
-                if self.peek() == "\\":
+            while self.pos < len(self.src) and self.peek_cp() != q:
+                if self.peek_cp() == 92:
                     self.advance()
                 self.advance()
             text: str = self.src[start:self.pos]
             self.advance()  # closing quote
             return Token(TokKind.STR, text, line, col)
         # operators: longest match first
-        two: str = ch + self.peek2()
-        three: str = two + (self.src[self.pos + 2] if self.pos + 2 < len(self.src) else "")
+        two: str = self.src[self.pos : self.pos + 2]
+        three: str = two
+        if self.pos + 2 < len(self.src):
+            three = self.src[self.pos : self.pos + 3]
         if three == "//=" or three == "**=":
             self.advance()
             self.advance()
@@ -174,11 +178,11 @@ class Lexer:
             self.advance()
             return Token(TokKind.OP, two, line, col)
         self.advance()
-        if ch == "(" or ch == "[" or ch == "{":
+        if c == 40 or c == 91 or c == 123:
             self.depth += 1
-        elif ch == ")" or ch == "]" or ch == "}":
+        elif c == 41 or c == 93 or c == 125:
             self.depth -= 1
-        return Token(TokKind.OP, ch, line, col)
+        return Token(TokKind.OP, self.src[self.pos - 1 : self.pos], line, col)
 
 
 def tokenize(src: str) -> list[Token]:
@@ -372,13 +376,14 @@ class Parser:
             self.nxt()
             module = self.expect_kind(TokKind.NAME).text
             self.expect("import")
-            names = []
+            pairs = []
             while True:
-                names.append(self.expect_kind(TokKind.NAME).text)
+                n = self.expect_kind(TokKind.NAME).text
+                pairs.append([n, None])
                 if not self.accept(","):
                     break
             self.expect_nl()
-            return ["from_import", module, names]
+            return ["from_import", module, pairs, 0]
         self.expect("import")
         pairs = []
         while True:

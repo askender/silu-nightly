@@ -2261,6 +2261,75 @@ class TypedCodegen(SiluToLLVMConverter):
         ord_result.add_incoming(cp4, ord_four)
         builder.ret(ord_result)
 
+        # i64 view_ord(i8* data, i64 seq) - decode the UTF-8 sequence a
+        # char view points at; seq is the sequence length, no allocation
+        self.view_ord = ir.Function(
+            self.module, ir.FunctionType(i64, [i8p, i64]), name="view_ord"
+        )
+        f = self.view_ord
+        v_entry = f.append_basic_block("entry")
+        v_one = f.append_basic_block("v_one")
+        v_two = f.append_basic_block("v_two")
+        v_more = f.append_basic_block("v_more")
+        v_three = f.append_basic_block("v_three")
+        v_four = f.append_basic_block("v_four")
+        v_join = f.append_basic_block("v_join")
+        vb = ir.IRBuilder(v_entry)
+        (v_data, v_seq) = f.args
+
+        def v_byte(offset):
+            return vb.zext(
+                vb.load(vb.gep(v_data, [ir.Constant(i64, offset)])), i64
+            )
+
+        vb.cbranch(
+            vb.icmp_signed("==", v_seq, one64), v_one, v_two
+        )
+        vb.position_at_end(v_one)
+        vb.ret(v_byte(0))
+        vb.position_at_end(v_two)
+        v_b0 = v_byte(0)
+        v_c1 = vb.and_(v_byte(1), ir.Constant(i64, 0x3F))
+        v_cp2 = vb.or_(
+            vb.shl(vb.and_(v_b0, ir.Constant(i64, 0x1F)), ir.Constant(i64, 6)),
+            v_c1,
+        )
+        vb.cbranch(
+            vb.icmp_signed("==", v_seq, ir.Constant(i64, 2)), v_join, v_more
+        )
+        vb.position_at_end(v_more)
+        v_c2 = vb.and_(v_byte(2), ir.Constant(i64, 0x3F))
+        v_cp3 = vb.or_(
+            vb.or_(
+                vb.shl(vb.and_(v_b0, ir.Constant(i64, 0x0F)), ir.Constant(i64, 12)),
+                vb.shl(v_c1, ir.Constant(i64, 6)),
+            ),
+            v_c2,
+        )
+        vb.cbranch(
+            vb.icmp_signed("==", v_seq, ir.Constant(i64, 3)), v_three, v_four
+        )
+        vb.position_at_end(v_three)
+        vb.branch(v_join)
+        vb.position_at_end(v_four)
+        v_cp4 = vb.or_(
+            vb.or_(
+                vb.shl(vb.and_(v_b0, ir.Constant(i64, 0x07)), ir.Constant(i64, 18)),
+                vb.shl(v_c1, ir.Constant(i64, 12)),
+            ),
+            vb.or_(
+                vb.shl(v_c2, ir.Constant(i64, 6)),
+                vb.and_(v_byte(3), ir.Constant(i64, 0x3F)),
+            ),
+        )
+        vb.branch(v_join)
+        vb.position_at_end(v_join)
+        v_phi = vb.phi(i64)
+        v_phi.add_incoming(v_cp2, v_two)
+        v_phi.add_incoming(v_cp3, v_three)
+        v_phi.add_incoming(v_cp4, v_four)
+        vb.ret(v_phi)
+
         # i8* rawstr_chr(i64 cp) - one-character string from a code point
         self.rawstr_chr = ir.Function(
             self.module, ir.FunctionType(i8p, [i64]), name="rawstr_chr"
@@ -5995,6 +6064,47 @@ class TypedCodegen(SiluToLLVMConverter):
                 return
         raise AttributeError(f"'{cls}' object has no field '{attr}'")
 
+    def _node_contains_call(self, node: Any) -> bool:
+        if not isinstance(node, (list, tuple)):
+            return False
+        if node and node[0] == "call":
+            return True
+        return any(
+            self._node_contains_call(child)
+            for child in node[1:]
+            if isinstance(child, (list, tuple))
+        )
+
+    def _borrowed_field_str(
+        self, base_node: Any, key_node: Any = None
+    ) -> Optional[Tuple[str, Any]]:
+        """(RAWSTR, ptr) borrowed from an instance str field for a
+        read-only subscript/len within one expression - skips the
+        copy-on-read. Only when the key expression is call-free: a call
+        could reassign the field (freeing the buffer) mid-expression.
+        The borrow never escapes as an owned RAWSTR: the subscript
+        paths consume it as a view base or slice source, both of which
+        only read it."""
+        if not (
+            isinstance(base_node, (list, tuple))
+            and len(base_node) >= 3
+            and base_node[0] == "attribute"
+        ):
+            return None
+        cls = self._class_of_node(base_node[1])
+        if cls is None:
+            return None
+        attr = base_node[2]
+        fields = self._class_layouts[cls]["fields"]
+        for index, (fname, kind, _default, _fclass) in enumerate(fields):
+            if fname == attr and kind == RAWSTR:
+                if key_node is not None and self._node_contains_call(key_node):
+                    return None
+                inst_tv = self._convert_node(base_node[1])
+                slot = self._field_slot(inst_tv[1], index, kind)
+                return (RAWSTR, self.current_builder.load(slot))
+        return None
+
     def _emit_construct(
         self, class_name: str, args_node: list, kwargs_node: list
     ) -> Tuple[str, Any]:
@@ -7777,7 +7887,9 @@ class TypedCodegen(SiluToLLVMConverter):
                             self._cursor_slot(node[1][1])
                         ),
                     )
-                obj_tv = self._convert_node(node[1])
+                obj_tv = self._borrowed_field_str(node[1], node[2])
+                if obj_tv is None:
+                    obj_tv = self._convert_node(node[1])
                 if obj_tv[0] in RAWDICT_KINDS:
                     # machine-word lookup; rawdict_get panics KeyError
                     # on a missing key (Python raises, Rust panics).
@@ -9361,10 +9473,18 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (I1, self._emit_isinstance(args_node[0], args_node[1]))
 
             if func_name == "ord" and len(args_node) == 1:
+                arg_tv = self._convert_node(args_node[0])
+                if arg_tv[0] == RAWCHAR_VIEW:
+                    # a borrowed char view decodes in place - zero
+                    # allocation (the lexer hot loop: ord(src[i]))
+                    data = self.current_builder.extract_value(arg_tv[1], 0)
+                    seq = self.current_builder.extract_value(arg_tv[1], 1)
+                    return (
+                        I64,
+                        self.current_builder.call(self.view_ord, [data, seq]),
+                    )
                 # code point of a one-character string (panics otherwise)
-                raw_ptr, temp = self._rawstr_operand(
-                    self._convert_node(args_node[0])
-                )
+                raw_ptr, temp = self._rawstr_operand(arg_tv)
                 result = self.current_builder.call(self.rawstr_ord, [raw_ptr])
                 if temp is not None:
                     self.current_builder.call(self.rawstr_free, [temp])
@@ -9513,7 +9633,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
             if func_name == "len":
                 if args_node:
-                    arg_tv = self._convert_node(args_node[0])
+                    arg_tv = self._borrowed_field_str(args_node[0])
+                    if arg_tv is None:
+                        arg_tv = self._convert_node(args_node[0])
                     if arg_tv[0] in RAWLIST_KINDS:
                         # raw list: the length field is the answer; boxing
                         # the whole list to ask pyobj_len would allocate

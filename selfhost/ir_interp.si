@@ -1,4 +1,5 @@
 # M2 self-hosting milestone (docs/selfhosting.md): a tree-walking
+from __future__ import annotations
 # interpreter for a Silu IR subset, written in Silu itself.
 # Pipeline: read JSON IR from stdin -> parse to JValue trees -> execute.
 # Supported IR subset: module, line, const (int/str/bool), name,
@@ -9,12 +10,12 @@
 
 
 class JKind(Enum):
-    NIL
-    BOOL
-    NUM
-    STR
-    ARR
-    OBJ
+    NIL = 0
+    BOOL = 1
+    NUM = 2
+    STR = 3
+    ARR = 4
+    OBJ = 5
 
 
 class JValue:
