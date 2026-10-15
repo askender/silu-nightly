@@ -153,3 +153,22 @@ get/len/has；`print` 家族（int/float/bool/str 的 Python 格式化——
    - **自举 miscompile 根因**：args_text_typed 的 ptypes 参数无注解 → 动态化 → pget 返回 PObj 却按 Str* 比较（内存布局巧合在 typed 版"能跑"，自举版损坏）。修：`ptypes: list[str]` 注解 + 空表替代 None。
 
 **最终验证**：silu_fe（前端）→ 解析自己 → **自举版 ir2c**（ir2c 编译自己产出的 C 编译的 ir2c）→ C → clang → 新前端，对全部 selfhost 程序输出与 `silu ir --format json` 逐字节一致。`test_m5_self_hosted_toolchain` 固化，869 passed。
+
+## 9. 后端性能（2026-10-15 深夜二）
+
+纯 Silu 链（ir2c → C → clang -O2）对比 typed LLVM 后端（llvmlite →
+clang -O2），13 个 benchmark（jsonparse 除外）：
+
+- **几何平均 0.97x**——纯 Silu 链与 Python 写的 typed 后端整体持平
+- wordcount 0.45x、nbody 0.80x（更快）；knucleotide 1.44x（每轮
+  两次 str 切片分配，唯一显著差距）
+
+三项优化：
+1. **按需 PObj 前导**：benchmark 用户代码已零动态调用；后处理扫描
+   发现代码无 obj 家族调用时剥离动态运行时（fib.c 20→0 处 PObj）
+2. **摊销 str_add**：`s = s + lit` 循环内当左操作数有富余容量时
+   原地追加（capacity 翻倍预分配）——string.si 624ms → 2.8ms。
+   注意：C 后端无所有权检查，`t = s` 别名后 `s + x` 会波及 t
+   （typed 后端经槽所有权证明无此问题）——文档化为已知语义边界
+3. **小块 bump 分配器**：运行时从不 free（进程生命周期模型），
+   ≤64 字节分配走 64KB bump chunk——knucleotide 43.7ms → 20.2ms
