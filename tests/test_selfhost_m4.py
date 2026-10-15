@@ -378,3 +378,40 @@ def test_round_trip_semantics(tmp_path):
             capture_output=True, text=True,
         ).stdout
         assert run.stdout == expected, (expr, run.stdout, expected)
+
+
+# ---- strict compile-time errors (no silent nulls) ----
+
+@pytest.mark.parametrize(
+    "source,fragment",
+    [
+        # undefined name must fail at build time, not at runtime
+        (
+            "def f() -> int:\n    return totally_undefined_name\n\n"
+            "def main() -> int:\n    print(f())\n    return 0\n",
+            "totally_undefined_name",
+        ),
+        # a missing method inside an attribute chain (x.m().f) is
+        # caught even though the outer attribute intercepts the call
+        (
+            "class TokKind(Enum):\n    NAME = 0\n\n"
+            "class Token:\n    kind: TokKind\n    text: str\n\n"
+            "class Parser:\n    toks: list[Token]\n    pos: int\n\n"
+            "    def parse(self) -> object:\n"
+            "        name = self.expect_kind(TokKind.NAME).text\n"
+            "        return None\n\n"
+            "def main() -> int:\n    return 0\n",
+            "expect_kind",
+        ),
+    ],
+)
+def test_strict_compile_errors(tmp_path, source, fragment):
+    path = str(tmp_path / "strict.si")
+    with open(path, "w") as handle:
+        handle.write(source)
+    build = subprocess.run(
+        [sys.executable, "-m", "silu", "build", path, "-o", str(tmp_path / "x")],
+        capture_output=True, text=True, timeout=60, cwd=REPO,
+    )
+    assert build.returncode != 0
+    assert fragment in build.stderr

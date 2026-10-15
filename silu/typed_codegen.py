@@ -4434,13 +4434,49 @@ class TypedCodegen(SiluToLLVMConverter):
             self.current_builder.position_at_end(saved_block)
         self.var_kinds[name] = kind
 
+    def _check_receiver_methods(self, node: Any) -> None:
+        """Existence check for method calls nested inside an attribute
+        chain (x.m(...).f): the outer attribute intercepts the call
+        before the method-call emitter can reject a missing method.
+        Purely static - emits nothing."""
+        if not (
+            isinstance(node, (list, tuple))
+            and len(node) >= 3
+            and node[0] == "call"
+            and isinstance(node[1], (list, tuple))
+            and len(node[1]) >= 3
+            and node[1][0] == "attribute"
+        ):
+            return
+        recv_node, method_name = node[1][1], node[1][2]
+        cls = self._class_of_node(recv_node)
+        if cls is None:
+            return
+        methods = self._class_layouts[cls]["methods"]
+        if method_name not in methods:
+            raise AttributeError(
+                f"'{cls}' object has no attribute '{method_name}'"
+            )
+
     def _load_var(self, name: str) -> Tuple[str, Any]:
         if name in self.var_kinds:
             kind = self.var_kinds[name]
             return (kind, self.current_builder.load(self.variables[name]))
         if name in self.variables:
             return (OBJ, self.current_builder.load(self.variables[name]))
-        return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+        if (
+            name in self.functions
+            or name in self.function_defs
+            or name in self._enums
+            or name in self._class_layouts
+        ):
+            # a bare class/function/enum name is only meaningful at a
+            # call or attribute site; as a value there is nothing to load
+            raise NotImplementedError(
+                f"'{name}' used as a value (call it or access a member)"
+            )
+        # a silent null here becomes a far-away runtime crash; fail now
+        raise NameError(f"name '{name}' is not defined")
 
     def _cursor_slot(self, name: str):
         """The i64 slot backing a promoted scalar cursor (created once
@@ -6979,6 +7015,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 raise AttributeError(
                     f"'{node[1][1]}' has no member '{node[2]}'"
                 )
+            # a chained receiver (x.m().f) never reaches the method-call
+            # emitter, which is where missing methods are caught - check
+            # the receiver's methods here too
+            self._check_receiver_methods(node[1])
             if self._class_of_node(node[1]) is not None:
                 return self._emit_field_read(node[1], node[2])
             # dynamic attribute access stays unsupported (null)
