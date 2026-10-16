@@ -34,6 +34,29 @@ from llvmlite import ir
 
 from .silu_ir_to_llvm import SiluToLLVMConverter
 
+def _struct_gep(builder, struct_ptr, index):
+    """builder.gep(struct_ptr, [0, index]) - field address in a struct."""
+    return builder.gep(
+        struct_ptr,
+        [
+            ir.Constant(ir.IntType(32), 0),
+            ir.Constant(ir.IntType(32), index),
+        ],
+    )
+
+
+def _rawstr_load_len(b, struct_ptr):
+    return b.load(_struct_gep(b, struct_ptr, 0))
+
+
+def _rawstr_load_data(b, struct_ptr):
+    return b.load(_struct_gep(b, struct_ptr, 2))
+
+
+def _rawstr_load_cp(b, struct_ptr):
+    return b.load(_struct_gep(b, struct_ptr, 3))
+
+
 I64 = "i64"
 F64 = "f64"
 I1 = "i1"
@@ -216,8 +239,6 @@ class TypedCodegen(SiluToLLVMConverter):
 
         self.raw_list_struct_type = ir.LiteralStructType([i64, i64, i8p])
 
-        def field(builder, struct_ptr, index):
-            return builder.gep(struct_ptr, [zero32, ir.Constant(i32, index)])
 
         # i8* rawlist_new(i64 elem_size)
         self.rawlist_new = ir.Function(
@@ -232,9 +253,9 @@ class TypedCodegen(SiluToLLVMConverter):
         initial = builder.call(
             self.malloc, [builder.mul(elem_size, ir.Constant(i64, 4))]
         )
-        builder.store(ir.Constant(i64, 0), field(builder, struct_ptr, 0))
-        builder.store(ir.Constant(i64, 4), field(builder, struct_ptr, 1))
-        builder.store(initial, field(builder, struct_ptr, 2))
+        builder.store(ir.Constant(i64, 0), _struct_gep(builder, struct_ptr, 0))
+        builder.store(ir.Constant(i64, 4), _struct_gep(builder, struct_ptr, 1))
+        builder.store(initial, _struct_gep(builder, struct_ptr, 2))
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         # i64 rawlist_push(i8* list, <elem-width * elem_value>) -> new length
@@ -255,8 +276,8 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
-        capacity = builder.load(field(builder, struct_ptr, 1))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
+        capacity = builder.load(_struct_gep(builder, struct_ptr, 1))
         needs_grow = builder.icmp_signed("==", length, capacity)
         builder.cbranch(needs_grow, grow_block, do_push)
 
@@ -271,7 +292,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.cbranch(has_old, copy_block, do_push)
 
         builder.position_at_end(copy_block)
-        old_items = builder.load(field(builder, struct_ptr, 2))
+        old_items = builder.load(_struct_gep(builder, struct_ptr, 2))
         builder.call(
             self.memcpy,
             [
@@ -281,18 +302,18 @@ class TypedCodegen(SiluToLLVMConverter):
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
-        builder.store(new_capacity, field(builder, struct_ptr, 1))
-        builder.store(fresh, field(builder, struct_ptr, 2))
+        builder.store(new_capacity, _struct_gep(builder, struct_ptr, 1))
+        builder.store(fresh, _struct_gep(builder, struct_ptr, 2))
         builder.branch(do_push)
 
         builder.position_at_end(do_push)
-        items = builder.load(field(builder, struct_ptr, 2))
-        length_now = builder.load(field(builder, struct_ptr, 0))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
+        length_now = builder.load(_struct_gep(builder, struct_ptr, 0))
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         slot = builder.gep(items_i64, [length_now])
         builder.store(elem_arg, slot)
         new_length = builder.add(length_now, one64)
-        builder.store(new_length, field(builder, struct_ptr, 0))
+        builder.store(new_length, _struct_gep(builder, struct_ptr, 0))
         builder.ret(new_length)
 
         # i64 rawlist_pop(i8* list) - remove and return the last element
@@ -306,7 +327,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             self.rawlist_pop.args[0], ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
         is_empty = builder.icmp_signed("==", length, zero64)
         builder.cbranch(is_empty, empty_block, ok_block)
 
@@ -317,12 +338,12 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
-        items = builder.load(field(builder, struct_ptr, 2))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         last_index = builder.sub(length, one64)
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         slot = builder.gep(items_i64, [last_index])
         value = builder.load(slot)
-        builder.store(zero64, field(builder, struct_ptr, 0))
+        builder.store(zero64, _struct_gep(builder, struct_ptr, 0))
         builder.ret(value)
 
         # PyObject* rawlist_to_pylist(i8* list, i64 length)
@@ -341,7 +362,7 @@ class TypedCodegen(SiluToLLVMConverter):
         src_struct = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        items = builder.load(field(builder, src_struct, 2))
+        items = builder.load(_struct_gep(builder, src_struct, 2))
         result = builder.call(self.create_list, [])
         idx_ptr = builder.alloca(i64, name="cvt_i")
         builder.store(zero64, idx_ptr)
@@ -380,7 +401,7 @@ class TypedCodegen(SiluToLLVMConverter):
         src_struct = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        items = builder.load(field(builder, src_struct, 2))
+        items = builder.load(_struct_gep(builder, src_struct, 2))
         result = builder.call(self.create_list, [])
         idx_ptr = builder.alloca(i64, name="cvt_i")
         builder.store(zero64, idx_ptr)
@@ -425,8 +446,8 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.load(builder.gep(list_arg, [zero32b, one32b])),
             ir.PointerType(self.list_struct_type),
         )
-        length = builder.load(field(builder, struct_ptr, 0))
-        items = builder.load(field(builder, struct_ptr, 2))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         raw = builder.call(self.rawlist_new, [ir.Constant(i64, 8)])
         idx_ptr = builder.alloca(i64, name="p2r_i")
         builder.store(zero64, idx_ptr)
@@ -461,7 +482,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             self.rawlist_len.args[0], ir.PointerType(self.raw_list_struct_type)
         )
-        builder.ret(builder.load(field(builder, struct_ptr, 0)))
+        builder.ret(builder.load(_struct_gep(builder, struct_ptr, 0)))
 
         # ---- raw dicts: dict[int, int] / dict[int, float] ----
         # {i64 count, i64 filled, i64 entries_cap, i64 mask,
@@ -482,8 +503,6 @@ class TypedCodegen(SiluToLLVMConverter):
             ]
         )
 
-        def dfield(b, struct_ptr, index):
-            return b.gep(struct_ptr, [zero32, ir.Constant(i32, index)])
 
         def panic_string(data: bytes, label: str) -> ir.GlobalVariable:
             gv = ir.GlobalVariable(
@@ -524,12 +543,12 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         dict_arg, new_size_arg = self.rawdict_reindex.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        old_mask = builder.load(dfield(builder, struct_ptr, 3))
+        old_mask = builder.load(_struct_gep(builder, struct_ptr, 3))
         old_size = builder.add(old_mask, one64)
-        old_table = builder.load(dfield(builder, struct_ptr, 4))
-        old_keys = builder.load(dfield(builder, struct_ptr, 5))
-        old_vals = builder.load(dfield(builder, struct_ptr, 6))
-        entries_cap = builder.load(dfield(builder, struct_ptr, 2))
+        old_table = builder.load(_struct_gep(builder, struct_ptr, 4))
+        old_keys = builder.load(_struct_gep(builder, struct_ptr, 5))
+        old_vals = builder.load(_struct_gep(builder, struct_ptr, 6))
+        entries_cap = builder.load(_struct_gep(builder, struct_ptr, 2))
         new_mask = builder.sub(new_size_arg, one64)
         fresh_table = builder.bitcast(
             builder.call(self.calloc, [new_size_arg, ir.Constant(i64, 8)]),
@@ -542,10 +561,10 @@ class TypedCodegen(SiluToLLVMConverter):
         fresh_vals = builder.bitcast(
             builder.call(self.malloc, [cap_bytes]), ir.PointerType(i64)
         )
-        builder.store(new_mask, dfield(builder, struct_ptr, 3))
-        builder.store(fresh_table, dfield(builder, struct_ptr, 4))
-        builder.store(fresh_keys, dfield(builder, struct_ptr, 5))
-        builder.store(fresh_vals, dfield(builder, struct_ptr, 6))
+        builder.store(new_mask, _struct_gep(builder, struct_ptr, 3))
+        builder.store(fresh_table, _struct_gep(builder, struct_ptr, 4))
+        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
+        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         idx_ptr = builder.alloca(i64, name="re_i")
         live_ptr = builder.alloca(i64, name="re_live")
         slot_ptr = builder.alloca(i64, name="re_slot")
@@ -596,7 +615,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.branch(scan_cond)
 
         builder.position_at_end(scan_done)
-        builder.store(builder.load(live_ptr), dfield(builder, struct_ptr, 1))
+        builder.store(builder.load(live_ptr), _struct_gep(builder, struct_ptr, 1))
         builder.call(self.free, [builder.bitcast(old_table, i8p)])
         builder.call(self.free, [builder.bitcast(old_keys, i8p)])
         builder.call(self.free, [builder.bitcast(old_vals, i8p)])
@@ -611,10 +630,10 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.call(self.malloc, [ir.Constant(i64, 56)]),
             ir.PointerType(self.raw_dict_struct_type),
         )
-        builder.store(ir.Constant(i64, 0), dfield(builder, struct_ptr, 0))
-        builder.store(ir.Constant(i64, 0), dfield(builder, struct_ptr, 1))
-        builder.store(ir.Constant(i64, 8), dfield(builder, struct_ptr, 2))
-        builder.store(ir.Constant(i64, 7), dfield(builder, struct_ptr, 3))
+        builder.store(ir.Constant(i64, 0), _struct_gep(builder, struct_ptr, 0))
+        builder.store(ir.Constant(i64, 0), _struct_gep(builder, struct_ptr, 1))
+        builder.store(ir.Constant(i64, 8), _struct_gep(builder, struct_ptr, 2))
+        builder.store(ir.Constant(i64, 7), _struct_gep(builder, struct_ptr, 3))
         builder.store(
             builder.bitcast(
                 builder.call(
@@ -622,21 +641,21 @@ class TypedCodegen(SiluToLLVMConverter):
                 ),
                 ir.PointerType(i64),
             ),
-            dfield(builder, struct_ptr, 4),
+            _struct_gep(builder, struct_ptr, 4),
         )
         builder.store(
             builder.bitcast(
                 builder.call(self.malloc, [ir.Constant(i64, 64)]),
                 ir.PointerType(i64),
             ),
-            dfield(builder, struct_ptr, 5),
+            _struct_gep(builder, struct_ptr, 5),
         )
         builder.store(
             builder.bitcast(
                 builder.call(self.malloc, [ir.Constant(i64, 64)]),
                 ir.PointerType(i64),
             ),
-            dfield(builder, struct_ptr, 6),
+            _struct_gep(builder, struct_ptr, 6),
         )
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
@@ -665,8 +684,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg, val_arg = self.rawdict_set.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        filled = builder.load(dfield(builder, struct_ptr, 1))
-        mask = builder.load(dfield(builder, struct_ptr, 3))
+        filled = builder.load(_struct_gep(builder, struct_ptr, 1))
+        mask = builder.load(_struct_gep(builder, struct_ptr, 3))
         index_size = builder.add(mask, one64)
         load_would_exceed = builder.icmp_signed(
             ">",
@@ -682,7 +701,7 @@ class TypedCodegen(SiluToLLVMConverter):
         # count under the 2/3 load factor. Compaction in reindex drops
         # tombstones, so churn without growth does not grow the table.
         builder.position_at_end(rehash_block)
-        live_count = builder.load(dfield(builder, struct_ptr, 0))
+        live_count = builder.load(_struct_gep(builder, struct_ptr, 0))
         builder.store(ir.Constant(i64, 8), size_ptr)
         builder.branch(size_check)
 
@@ -705,12 +724,12 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(start_block)
         builder.store(ir.Constant(i64, -1), tomb_ptr)
-        mask_now = builder.load(dfield(builder, struct_ptr, 3))
+        mask_now = builder.load(_struct_gep(builder, struct_ptr, 3))
         builder.store(builder.and_(key_arg, mask_now), slot_ptr)
         builder.branch(probe_test)
 
         builder.position_at_end(probe_test)
-        table_now = builder.load(dfield(builder, struct_ptr, 4))
+        table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
         slot_now = builder.load(slot_ptr)
         slot_entry = builder.load(builder.gep(table_now, [slot_now]))
         is_empty = builder.icmp_signed("==", slot_entry, zero64)
@@ -731,18 +750,18 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(match_check)
         entry_index = builder.sub(slot_entry, one64)
-        keys_now = builder.load(dfield(builder, struct_ptr, 5))
+        keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
         stored_key = builder.load(builder.gep(keys_now, [entry_index]))
         is_match = builder.icmp_signed("==", stored_key, key_arg)
         builder.cbranch(is_match, overwrite, probe_step)
 
         builder.position_at_end(overwrite)
-        vals_now = builder.load(dfield(builder, struct_ptr, 6))
+        vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
         builder.store(val_arg, builder.gep(vals_now, [entry_index]))
         builder.ret_void()
 
         builder.position_at_end(probe_step)
-        mask_step = builder.load(dfield(builder, struct_ptr, 3))
+        mask_step = builder.load(_struct_gep(builder, struct_ptr, 3))
         builder.store(
             builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
         )
@@ -754,16 +773,16 @@ class TypedCodegen(SiluToLLVMConverter):
         has_tomb = builder.icmp_signed("!=", tomb_seen, ir.Constant(i64, -1))
         target_slot = builder.select(has_tomb, tomb_seen, builder.load(slot_ptr))
         builder.store(target_slot, slot_ptr)
-        filled_now = builder.load(dfield(builder, struct_ptr, 1))
-        entries_cap = builder.load(dfield(builder, struct_ptr, 2))
+        filled_now = builder.load(_struct_gep(builder, struct_ptr, 1))
+        entries_cap = builder.load(_struct_gep(builder, struct_ptr, 2))
         needs_room = builder.icmp_signed("==", filled_now, entries_cap)
         builder.cbranch(needs_room, grow_block, do_insert)
 
         builder.position_at_end(grow_block)
         new_cap = builder.mul(entries_cap, ir.Constant(i64, 2))
         byte_room = builder.mul(new_cap, ir.Constant(i64, 8))
-        old_keys = builder.load(dfield(builder, struct_ptr, 5))
-        old_vals = builder.load(dfield(builder, struct_ptr, 6))
+        old_keys = builder.load(_struct_gep(builder, struct_ptr, 5))
+        old_vals = builder.load(_struct_gep(builder, struct_ptr, 6))
         fresh_keys = builder.bitcast(
             builder.call(self.malloc, [byte_room]), ir.PointerType(i64)
         )
@@ -789,26 +808,26 @@ class TypedCodegen(SiluToLLVMConverter):
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
-        builder.store(new_cap, dfield(builder, struct_ptr, 2))
-        builder.store(fresh_keys, dfield(builder, struct_ptr, 5))
-        builder.store(fresh_vals, dfield(builder, struct_ptr, 6))
+        builder.store(new_cap, _struct_gep(builder, struct_ptr, 2))
+        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
+        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         builder.call(self.free, [builder.bitcast(old_keys, i8p)])
         builder.call(self.free, [builder.bitcast(old_vals, i8p)])
         builder.branch(do_insert)
 
         builder.position_at_end(do_insert)
         slot_free = builder.load(slot_ptr)
-        keys_final = builder.load(dfield(builder, struct_ptr, 5))
-        vals_final = builder.load(dfield(builder, struct_ptr, 6))
+        keys_final = builder.load(_struct_gep(builder, struct_ptr, 5))
+        vals_final = builder.load(_struct_gep(builder, struct_ptr, 6))
         builder.store(key_arg, builder.gep(keys_final, [filled_now]))
         builder.store(val_arg, builder.gep(vals_final, [filled_now]))
-        table_final = builder.load(dfield(builder, struct_ptr, 4))
+        table_final = builder.load(_struct_gep(builder, struct_ptr, 4))
         builder.store(
             builder.add(filled_now, one64), builder.gep(table_final, [slot_free])
         )
-        builder.store(builder.add(filled_now, one64), dfield(builder, struct_ptr, 1))
-        count = builder.load(dfield(builder, struct_ptr, 0))
-        builder.store(builder.add(count, one64), dfield(builder, struct_ptr, 0))
+        builder.store(builder.add(filled_now, one64), _struct_gep(builder, struct_ptr, 1))
+        count = builder.load(_struct_gep(builder, struct_ptr, 0))
+        builder.store(builder.add(count, one64), _struct_gep(builder, struct_ptr, 0))
         builder.ret_void()
 
         # i64 rawdict_get(i8* d, i64 key) - panics KeyError when missing
@@ -825,13 +844,13 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg = self.rawdict_get.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        mask = builder.load(dfield(builder, struct_ptr, 3))
+        mask = builder.load(_struct_gep(builder, struct_ptr, 3))
         slot_ptr = builder.alloca(i64, name="rdg_slot")
         builder.store(builder.and_(key_arg, mask), slot_ptr)
         builder.branch(probe_test)
 
         builder.position_at_end(probe_test)
-        table_now = builder.load(dfield(builder, struct_ptr, 4))
+        table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
         slot_now = builder.load(slot_ptr)
         slot_entry = builder.load(builder.gep(table_now, [slot_now]))
         is_empty = builder.icmp_signed("==", slot_entry, zero64)
@@ -843,17 +862,17 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(match_check)
         entry_index = builder.sub(slot_entry, one64)
-        keys_now = builder.load(dfield(builder, struct_ptr, 5))
+        keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
         stored_key = builder.load(builder.gep(keys_now, [entry_index]))
         is_match = builder.icmp_signed("==", stored_key, key_arg)
         builder.cbranch(is_match, found, probe_step)
 
         builder.position_at_end(found)
-        vals_now = builder.load(dfield(builder, struct_ptr, 6))
+        vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
         builder.ret(builder.load(builder.gep(vals_now, [entry_index])))
 
         builder.position_at_end(probe_step)
-        mask_step = builder.load(dfield(builder, struct_ptr, 3))
+        mask_step = builder.load(_struct_gep(builder, struct_ptr, 3))
         builder.store(
             builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
         )
@@ -878,13 +897,13 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg = self.rawdict_del.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        mask = builder.load(dfield(builder, struct_ptr, 3))
+        mask = builder.load(_struct_gep(builder, struct_ptr, 3))
         slot_ptr = builder.alloca(i64, name="rdd_slot")
         builder.store(builder.and_(key_arg, mask), slot_ptr)
         builder.branch(probe_test)
 
         builder.position_at_end(probe_test)
-        table_now = builder.load(dfield(builder, struct_ptr, 4))
+        table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
         slot_now = builder.load(slot_ptr)
         slot_entry = builder.load(builder.gep(table_now, [slot_now]))
         is_empty = builder.icmp_signed("==", slot_entry, zero64)
@@ -896,7 +915,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(match_check)
         entry_index = builder.sub(slot_entry, one64)
-        keys_now = builder.load(dfield(builder, struct_ptr, 5))
+        keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
         stored_key = builder.load(builder.gep(keys_now, [entry_index]))
         is_match = builder.icmp_signed("==", stored_key, key_arg)
         builder.cbranch(is_match, found, probe_step)
@@ -905,13 +924,13 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.store(
             ir.Constant(i64, -1), builder.gep(table_now, [slot_now])
         )
-        count = builder.load(dfield(builder, struct_ptr, 0))
-        builder.store(builder.sub(count, one64), dfield(builder, struct_ptr, 0))
-        vals_now = builder.load(dfield(builder, struct_ptr, 6))
+        count = builder.load(_struct_gep(builder, struct_ptr, 0))
+        builder.store(builder.sub(count, one64), _struct_gep(builder, struct_ptr, 0))
+        vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
         builder.ret(builder.load(builder.gep(vals_now, [entry_index])))
 
         builder.position_at_end(probe_step)
-        mask_step = builder.load(dfield(builder, struct_ptr, 3))
+        mask_step = builder.load(_struct_gep(builder, struct_ptr, 3))
         builder.store(
             builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
         )
@@ -955,7 +974,7 @@ class TypedCodegen(SiluToLLVMConverter):
             )
             # walk the index table: entries arrays hold dead slots after
             # deletions, live entries are exactly the slots > 0
-            mask = builder.load(dfield(builder, struct_ptr, 3))
+            mask = builder.load(_struct_gep(builder, struct_ptr, 3))
             table_size = builder.add(mask, one64)
             result = builder.call(self.create_dict, [])
             idx_ptr = builder.alloca(i64, name="cvt_i")
@@ -968,15 +987,15 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.cbranch(more, loop_body, loop_done)
 
             builder.position_at_end(loop_body)
-            table_now = builder.load(dfield(builder, struct_ptr, 4))
+            table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
             slot_entry = builder.load(builder.gep(table_now, [idx]))
             is_live = builder.icmp_signed(">", slot_entry, zero64)
             builder.cbranch(is_live, emit_block, loop_step)
 
             builder.position_at_end(emit_block)
             entry_index = builder.sub(slot_entry, one64)
-            keys_now = builder.load(dfield(builder, struct_ptr, 5))
-            vals_now = builder.load(dfield(builder, struct_ptr, 6))
+            keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
+            vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
             key_box = make_key(
                 builder, builder.load(builder.gep(keys_now, [entry_index]))
             )
@@ -1007,17 +1026,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
             )
 
-        def sfield(b, struct_ptr, index):
-            return b.gep(struct_ptr, [zero32, ir.Constant(i32, index)])
 
-        def load_len(b, struct_ptr):
-            return b.load(sfield(b, struct_ptr, 0))
 
-        def load_data(b, struct_ptr):
-            return b.load(sfield(b, struct_ptr, 2))
 
-        def load_cp(b, struct_ptr):
-            return b.load(sfield(b, struct_ptr, 3))
 
         type_error_msg = panic_string(
             b"TypeError: expected str\0", "str_typeerr"
@@ -1091,10 +1102,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 builder.call(self.malloc, [ir.Constant(i64, 32)]),
                 ir.PointerType(self.rawstr_struct_type),
             )
-            builder.store(header_len, sfield(builder, fresh, 0))
-            builder.store(header_len, sfield(builder, fresh, 1))
-            builder.store(data_value, sfield(builder, fresh, 2))
-            builder.store(cp_len, sfield(builder, fresh, 3))
+            builder.store(header_len, _struct_gep(builder, fresh, 0))
+            builder.store(header_len, _struct_gep(builder, fresh, 1))
+            builder.store(data_value, _struct_gep(builder, fresh, 2))
+            builder.store(cp_len, _struct_gep(builder, fresh, 3))
             return fresh
 
         # i8* rawstr_new_copy(i8* data, i64 len)
@@ -1123,9 +1134,9 @@ class TypedCodegen(SiluToLLVMConverter):
         src_struct = builder.bitcast(
             src_arg, ir.PointerType(self.rawstr_struct_type)
         )
-        src_len = load_len(builder, src_struct)
-        src_data = load_data(builder, src_struct)
-        src_cp = load_cp(builder, src_struct)
+        src_len = _rawstr_load_len(builder, src_struct)
+        src_data = _rawstr_load_data(builder, src_struct)
+        src_cp = _rawstr_load_cp(builder, src_struct)
         fresh_data = builder.call(self.malloc, [src_len])
         builder.call(
             self.memcpy,
@@ -1135,10 +1146,10 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.call(self.malloc, [ir.Constant(i64, 32)]),
             ir.PointerType(self.rawstr_struct_type),
         )
-        builder.store(src_len, sfield(builder, struct_ptr, 0))
-        builder.store(src_len, sfield(builder, struct_ptr, 1))
-        builder.store(fresh_data, sfield(builder, struct_ptr, 2))
-        builder.store(src_cp, sfield(builder, struct_ptr, 3))
+        builder.store(src_len, _struct_gep(builder, struct_ptr, 0))
+        builder.store(src_len, _struct_gep(builder, struct_ptr, 1))
+        builder.store(fresh_data, _struct_gep(builder, struct_ptr, 2))
+        builder.store(src_cp, _struct_gep(builder, struct_ptr, 3))
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         # void rawstr_free(i8* s) - drop a slot's buffer on overwrite
@@ -1163,7 +1174,7 @@ class TypedCodegen(SiluToLLVMConverter):
         free_struct = builder.bitcast(
             free_arg, ir.PointerType(self.rawstr_struct_type)
         )
-        builder.call(self.free, [load_data(builder, free_struct)])
+        builder.call(self.free, [_rawstr_load_data(builder, free_struct)])
         builder.call(self.free, [free_arg])
         builder.branch(done_block)
 
@@ -1180,21 +1191,21 @@ class TypedCodegen(SiluToLLVMConverter):
         a_arg, b_arg = self.rawstr_concat.args
         a_struct = builder.bitcast(a_arg, ir.PointerType(self.rawstr_struct_type))
         b_struct = builder.bitcast(b_arg, ir.PointerType(self.rawstr_struct_type))
-        a_len = load_len(builder, a_struct)
-        b_len = load_len(builder, b_struct)
+        a_len = _rawstr_load_len(builder, a_struct)
+        b_len = _rawstr_load_len(builder, b_struct)
         total = builder.add(a_len, b_len)
         total_cp = builder.add(
-            load_cp(builder, a_struct), load_cp(builder, b_struct)
+            _rawstr_load_cp(builder, a_struct), _rawstr_load_cp(builder, b_struct)
         )
         buffer = builder.call(self.malloc, [total])
         builder.call(
             self.memcpy,
-            [buffer, load_data(builder, a_struct), a_len, ir.Constant(ir.IntType(1), 0)],
+            [buffer, _rawstr_load_data(builder, a_struct), a_len, ir.Constant(ir.IntType(1), 0)],
         )
         b_dst = builder.gep(buffer, [a_len])
         builder.call(
             self.memcpy,
-            [b_dst, load_data(builder, b_struct), b_len, ir.Constant(ir.IntType(1), 0)],
+            [b_dst, _rawstr_load_data(builder, b_struct), b_len, ir.Constant(ir.IntType(1), 0)],
         )
         struct_ptr = build_rawstr(total, total, buffer, total_cp)
         builder.ret(builder.bitcast(struct_ptr, i8p))
@@ -1213,8 +1224,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         s_arg, data_arg, add_len_arg = self.rawstr_append.args
         struct_ptr = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        old_len = load_len(builder, struct_ptr)
-        old_cap = builder.load(sfield(builder, struct_ptr, 1))
+        old_len = _rawstr_load_len(builder, struct_ptr)
+        old_cap = builder.load(_struct_gep(builder, struct_ptr, 1))
         new_len = builder.add(old_len, add_len_arg)
         needs_room = builder.icmp_signed(">", new_len, old_cap)
         builder.cbranch(needs_room, grow_block, copy_block)
@@ -1223,30 +1234,30 @@ class TypedCodegen(SiluToLLVMConverter):
         doubled = builder.mul(old_cap, ir.Constant(i64, 2))
         enough = builder.icmp_signed(">=", doubled, new_len)
         new_cap = builder.select(enough, doubled, new_len)
-        old_data = load_data(builder, struct_ptr)
+        old_data = _rawstr_load_data(builder, struct_ptr)
         grown = builder.call(
             self.realloc,
             [old_data, new_cap],
         )
-        builder.store(new_cap, sfield(builder, struct_ptr, 1))
-        builder.store(grown, sfield(builder, struct_ptr, 2))
+        builder.store(new_cap, _struct_gep(builder, struct_ptr, 1))
+        builder.store(grown, _struct_gep(builder, struct_ptr, 2))
         builder.branch(copy_block)
 
         builder.position_at_end(copy_block)
-        data_now = load_data(builder, struct_ptr)
-        len_now = load_len(builder, struct_ptr)
+        data_now = _rawstr_load_data(builder, struct_ptr)
+        len_now = _rawstr_load_len(builder, struct_ptr)
         dst = builder.gep(data_now, [len_now])
         builder.call(
             self.memcpy,
             [dst, data_arg, add_len_arg, ir.Constant(ir.IntType(1), 0)],
         )
-        builder.store(new_len, sfield(builder, struct_ptr, 0))
+        builder.store(new_len, _struct_gep(builder, struct_ptr, 0))
         add_cp = builder.call(
             self.rawutf8_cp_count, [data_arg, add_len_arg]
         )
-        old_cp = builder.load(sfield(builder, struct_ptr, 3))
+        old_cp = builder.load(_struct_gep(builder, struct_ptr, 3))
         builder.store(
-            builder.add(old_cp, add_cp), sfield(builder, struct_ptr, 3)
+            builder.add(old_cp, add_cp), _struct_gep(builder, struct_ptr, 3)
         )
         builder.ret_void()
 
@@ -1261,15 +1272,15 @@ class TypedCodegen(SiluToLLVMConverter):
         a_arg, b_arg = self.rawstr_eq.args
         a_struct = builder.bitcast(a_arg, ir.PointerType(self.rawstr_struct_type))
         b_struct = builder.bitcast(b_arg, ir.PointerType(self.rawstr_struct_type))
-        a_len = load_len(builder, a_struct)
-        b_len = load_len(builder, b_struct)
+        a_len = _rawstr_load_len(builder, a_struct)
+        b_len = _rawstr_load_len(builder, b_struct)
         same_len = builder.icmp_signed("==", a_len, b_len)
         builder.cbranch(same_len, eq_ok, eq_out)
 
         builder.position_at_end(eq_ok)
         same = builder.call(
             self.memcmp,
-            [load_data(builder, a_struct), load_data(builder, b_struct), a_len],
+            [_rawstr_load_data(builder, a_struct), _rawstr_load_data(builder, b_struct), a_len],
         )
         is_zero = builder.icmp_signed("==", same, ir.Constant(i32, 0))
         builder.branch(eq_out)
@@ -1289,14 +1300,14 @@ class TypedCodegen(SiluToLLVMConverter):
         a_arg, b_arg = self.rawstr_cmp.args
         a_struct = builder.bitcast(a_arg, ir.PointerType(self.rawstr_struct_type))
         b_struct = builder.bitcast(b_arg, ir.PointerType(self.rawstr_struct_type))
-        a_len = load_len(builder, a_struct)
-        b_len = load_len(builder, b_struct)
+        a_len = _rawstr_load_len(builder, a_struct)
+        b_len = _rawstr_load_len(builder, b_struct)
         prefix_len = builder.select(
             builder.icmp_signed("<", a_len, b_len), a_len, b_len
         )
         memcmp_result = builder.call(
             self.memcmp,
-            [load_data(builder, a_struct), load_data(builder, b_struct), prefix_len],
+            [_rawstr_load_data(builder, a_struct), _rawstr_load_data(builder, b_struct), prefix_len],
         )
         memcmp_i64 = builder.sext(memcmp_result, i64)
         is_equal = builder.icmp_signed("==", memcmp_i64, zero64)
@@ -1319,7 +1330,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(eq_entry)
         s_arg, cdata_arg, clen_arg = self.rawstr_eq_cstr.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_len = load_len(builder, s_struct)
+        s_len = _rawstr_load_len(builder, s_struct)
         len_eq = builder.icmp_signed("==", s_len, clen_arg)
         builder.cbranch(len_eq, eq_bytes, eq_out)
 
@@ -1328,7 +1339,7 @@ class TypedCodegen(SiluToLLVMConverter):
             "==",
             builder.call(
                 self.memcmp,
-                [load_data(builder, s_struct), cdata_arg, clen_arg],
+                [_rawstr_load_data(builder, s_struct), cdata_arg, clen_arg],
             ),
             ir.Constant(ir.IntType(32), 0),
         )
@@ -1349,12 +1360,12 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(self.rawstr_cmp_cstr.append_basic_block("entry"))
         s_arg, cdata_arg, clen_arg = self.rawstr_cmp_cstr.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_len = load_len(builder, s_struct)
+        s_len = _rawstr_load_len(builder, s_struct)
         prefix = builder.select(
             builder.icmp_signed("<", s_len, clen_arg), s_len, clen_arg
         )
         mem = builder.call(
-            self.memcmp, [load_data(builder, s_struct), cdata_arg, prefix]
+            self.memcmp, [_rawstr_load_data(builder, s_struct), cdata_arg, prefix]
         )
         mem64 = builder.sext(mem, i64)
         is_eq = builder.icmp_signed("==", mem64, zero64)
@@ -1416,7 +1427,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         s_arg, index_arg, cdata_arg, clen_arg = self.rawstr_at_eq_cstr.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_cp = load_cp(builder, s_struct)
+        s_cp = _rawstr_load_cp(builder, s_struct)
         is_neg = builder.icmp_signed("<", index_arg, zero64)
         index_eff = builder.select(is_neg, builder.add(index_arg, s_cp), index_arg)
         below = builder.icmp_signed(">=", index_eff, zero64)
@@ -1429,8 +1440,8 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
         builder.position_at_end(ok_block)
-        s_data = load_data(builder, s_struct)
-        s_len = load_len(builder, s_struct)
+        s_data = _rawstr_load_data(builder, s_struct)
+        s_len = _rawstr_load_len(builder, s_struct)
         is_ascii = builder.icmp_signed("==", s_len, s_cp)
         builder.cbranch(is_ascii, ascii_block, walk_block)
 
@@ -1483,7 +1494,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         s_arg, index_arg, cdata_arg, clen_arg = self.rawstr_at_cmp_cstr.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_cp = load_cp(builder, s_struct)
+        s_cp = _rawstr_load_cp(builder, s_struct)
         is_neg = builder.icmp_signed("<", index_arg, zero64)
         index_eff = builder.select(is_neg, builder.add(index_arg, s_cp), index_arg)
         below = builder.icmp_signed(">=", index_eff, zero64)
@@ -1496,8 +1507,8 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
         builder.position_at_end(ok_block)
-        s_data = load_data(builder, s_struct)
-        s_len = load_len(builder, s_struct)
+        s_data = _rawstr_load_data(builder, s_struct)
+        s_len = _rawstr_load_len(builder, s_struct)
         is_ascii = builder.icmp_signed("==", s_len, s_cp)
         builder.cbranch(is_ascii, ascii_block, walk_block)
 
@@ -1543,7 +1554,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         s_arg, index_arg = self.rawstr_char_at.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_cp = load_cp(builder, s_struct)
+        s_cp = _rawstr_load_cp(builder, s_struct)
         is_neg = builder.icmp_signed("<", index_arg, zero64)
         index_eff = builder.select(is_neg, builder.add(index_arg, s_cp), index_arg)
         below = builder.icmp_signed(">=", index_eff, zero64)
@@ -1555,11 +1566,11 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, msg_ptr)
 
         builder.position_at_end(ok_block)
-        s_data = load_data(builder, s_struct)
+        s_data = _rawstr_load_data(builder, s_struct)
         # ASCII fast path: when every byte is a code point, the index
         # IS the byte offset - skip the code point walk entirely
         is_ascii = builder.icmp_signed(
-            "==", load_len(builder, s_struct), s_cp
+            "==", _rawstr_load_len(builder, s_struct), s_cp
         )
         ascii_block = self.rawstr_char_at.append_basic_block("ascii")
         walk_block = self.rawstr_char_at.append_basic_block("walk")
@@ -1604,8 +1615,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(self.rawstr_slice.append_basic_block("entry"))
         s_arg, lo_arg, hi_arg = self.rawstr_slice.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_cp = load_cp(builder, s_struct)
-        s_data = load_data(builder, s_struct)
+        s_cp = _rawstr_load_cp(builder, s_struct)
+        s_data = _rawstr_load_data(builder, s_struct)
 
         def clamp_cp_bound(b, bound):
             adjusted = b.select(
@@ -1625,7 +1636,7 @@ class TypedCodegen(SiluToLLVMConverter):
         # ASCII fast path: code point index == byte offset - skip the
         # code point walks entirely
         is_ascii = builder.icmp_signed(
-            "==", load_len(builder, s_struct), s_cp
+            "==", _rawstr_load_len(builder, s_struct), s_cp
         )
         ascii_block = self.rawstr_slice.append_basic_block("ascii")
         walk_block = self.rawstr_slice.append_basic_block("walk")
@@ -1687,8 +1698,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         s_arg, lo_arg, hi_arg = self.rawstr_slice_parts.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_cp = load_cp(builder, s_struct)
-        s_data = load_data(builder, s_struct)
+        s_cp = _rawstr_load_cp(builder, s_struct)
+        s_data = _rawstr_load_data(builder, s_struct)
 
         def clamp_view_bound(b, bound):
             adjusted = b.select(
@@ -1702,7 +1713,7 @@ class TypedCodegen(SiluToLLVMConverter):
         lo_eff = clamp_view_bound(builder, lo_arg)
         hi_eff = clamp_view_bound(builder, hi_arg)
         is_ascii = builder.icmp_signed(
-            "==", load_len(builder, s_struct), s_cp
+            "==", _rawstr_load_len(builder, s_struct), s_cp
         )
         builder.cbranch(is_ascii, ascii_block, walk_block)
 
@@ -1752,10 +1763,10 @@ class TypedCodegen(SiluToLLVMConverter):
         needle_struct = builder.bitcast(
             needle_arg, ir.PointerType(self.rawstr_struct_type)
         )
-        hay_len = load_len(builder, hay_struct)
-        needle_len = load_len(builder, needle_struct)
-        hay_data = load_data(builder, hay_struct)
-        needle_data = load_data(builder, needle_struct)
+        hay_len = _rawstr_load_len(builder, hay_struct)
+        needle_len = _rawstr_load_len(builder, needle_struct)
+        hay_data = _rawstr_load_data(builder, hay_struct)
+        needle_data = _rawstr_load_data(builder, needle_struct)
         scan_idx_ptr = builder.alloca(i64, name="rsc_i")
         builder.store(zero64, scan_idx_ptr)
         needle_empty = builder.icmp_signed("==", needle_len, zero64)
@@ -1809,13 +1820,13 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg = self.rawdict_has.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        mask = builder.load(dfield(builder, struct_ptr, 3))
+        mask = builder.load(_struct_gep(builder, struct_ptr, 3))
         slot_ptr = builder.alloca(i64, name="rdh_slot")
         builder.store(builder.and_(key_arg, mask), slot_ptr)
         builder.branch(probe_test)
 
         builder.position_at_end(probe_test)
-        table_now = builder.load(dfield(builder, struct_ptr, 4))
+        table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
         slot_now = builder.load(slot_ptr)
         slot_entry = builder.load(builder.gep(table_now, [slot_now]))
         is_empty = builder.icmp_signed("==", slot_entry, zero64)
@@ -1827,7 +1838,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(match_check)
         entry_index = builder.sub(slot_entry, one64)
-        keys_now = builder.load(dfield(builder, struct_ptr, 5))
+        keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
         stored_key = builder.load(builder.gep(keys_now, [entry_index]))
         is_match = builder.icmp_signed("==", stored_key, key_arg)
         builder.cbranch(is_match, has_found, probe_step)
@@ -1836,7 +1847,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.ret(ir.Constant(ir.IntType(1), 1))
 
         builder.position_at_end(probe_step)
-        mask_step = builder.load(dfield(builder, struct_ptr, 3))
+        mask_step = builder.load(_struct_gep(builder, struct_ptr, 3))
         builder.store(
             builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
         )
@@ -1868,13 +1879,13 @@ class TypedCodegen(SiluToLLVMConverter):
             struct_ptr = b.bitcast(
                 dict_arg, ir.PointerType(self.raw_dict_struct_type)
             )
-            mask = b.load(dfield(b, struct_ptr, 3))
+            mask = b.load(_struct_gep(b, struct_ptr, 3))
             probe_slot = b.alloca(i64, name="probe_slot")
             b.store(b.and_(key_arg, mask), probe_slot)
             b.branch(probe_test)
 
             b.position_at_end(probe_test)
-            table_now = b.load(dfield(b, struct_ptr, 4))
+            table_now = b.load(_struct_gep(b, struct_ptr, 4))
             slot_now = b.load(probe_slot)
             slot_entry = b.load(b.gep(table_now, [slot_now]))
             is_empty = b.icmp_signed("==", slot_entry, zero64)
@@ -1886,7 +1897,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
             b.position_at_end(match_check)
             entry_index = b.sub(slot_entry, one64)
-            keys_now = b.load(dfield(b, struct_ptr, 5))
+            keys_now = b.load(_struct_gep(b, struct_ptr, 5))
             stored_key = b.load(b.gep(keys_now, [entry_index]))
             is_match = b.icmp_signed("==", stored_key, key_arg)
             b.cbranch(is_match, hit_block, probe_step)
@@ -1897,7 +1908,7 @@ class TypedCodegen(SiluToLLVMConverter):
             on_hit(b, func, entry_index, slot_now, hit_slot)
 
             b.position_at_end(probe_step)
-            mask_step = b.load(dfield(b, struct_ptr, 3))
+            mask_step = b.load(_struct_gep(b, struct_ptr, 3))
             b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
             b.branch(probe_test)
 
@@ -1911,7 +1922,7 @@ class TypedCodegen(SiluToLLVMConverter):
             )
 
         def load_value_at(b, func, entry_index):
-            vals_now = b.load(dfield(b, probe_struct(b, func), 6))
+            vals_now = b.load(_struct_gep(b, probe_struct(b, func), 6))
             return b.load(b.gep(vals_now, [entry_index]))
 
         # i64 rawdict_get_or(i8* d, i64 key, i64 default_bits)
@@ -1929,8 +1940,8 @@ class TypedCodegen(SiluToLLVMConverter):
         def pop_or_hit(b, func, entry_index, slot_now, table_now):
             b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
             struct_ptr = probe_struct(b, func)
-            count = b.load(dfield(b, struct_ptr, 0))
-            b.store(b.sub(count, one64), dfield(b, struct_ptr, 0))
+            count = b.load(_struct_gep(b, struct_ptr, 0))
+            b.store(b.sub(count, one64), _struct_gep(b, struct_ptr, 0))
             b.ret(load_value_at(b, func, entry_index))
 
         self.rawdict_pop_or = emit_rawdict_probe(
@@ -1959,7 +1970,7 @@ class TypedCodegen(SiluToLLVMConverter):
         # i8* rawdict_int_slotof(i8* d, i64 key) - pointer to the
         # value's storage slot (must exist; entry() guarantees it)
         def slotof_hit(b, func, entry_index, _slot, _table):
-            vals_now = b.load(dfield(b, probe_struct(b, func), 6))
+            vals_now = b.load(_struct_gep(b, probe_struct(b, func), 6))
             b.ret(b.bitcast(b.gep(vals_now, [entry_index]), i8p))
 
         def slotof_miss(b, func):
@@ -1999,14 +2010,14 @@ class TypedCodegen(SiluToLLVMConverter):
         clear_ptr = builder.bitcast(
             clear_arg, ir.PointerType(self.raw_dict_struct_type)
         )
-        builder.store(zero64, dfield(builder, clear_ptr, 0))
-        builder.store(zero64, dfield(builder, clear_ptr, 1))
-        clear_mask = builder.load(dfield(builder, clear_ptr, 3))
+        builder.store(zero64, _struct_gep(builder, clear_ptr, 0))
+        builder.store(zero64, _struct_gep(builder, clear_ptr, 1))
+        clear_mask = builder.load(_struct_gep(builder, clear_ptr, 3))
         builder.call(
             self.memset,
             [
                 builder.bitcast(
-                    builder.load(dfield(builder, clear_ptr, 4)), i8p
+                    builder.load(_struct_gep(builder, clear_ptr, 4)), i8p
                 ),
                 ir.Constant(ir.IntType(8), 0),
                 builder.mul(builder.add(clear_mask, one64), ir.Constant(i64, 8)),
@@ -2052,8 +2063,8 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
-        capacity = builder.load(field(builder, struct_ptr, 1))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
+        capacity = builder.load(_struct_gep(builder, struct_ptr, 1))
         builder.cbranch(
             builder.icmp_signed("==", length, capacity), grow_block, do_push
         )
@@ -2069,7 +2080,7 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
         builder.position_at_end(copy_block)
-        old_items = builder.load(field(builder, struct_ptr, 2))
+        old_items = builder.load(_struct_gep(builder, struct_ptr, 2))
         builder.call(
             self.memcpy,
             [
@@ -2079,20 +2090,20 @@ class TypedCodegen(SiluToLLVMConverter):
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
-        builder.store(new_capacity, field(builder, struct_ptr, 1))
-        builder.store(fresh, field(builder, struct_ptr, 2))
+        builder.store(new_capacity, _struct_gep(builder, struct_ptr, 1))
+        builder.store(fresh, _struct_gep(builder, struct_ptr, 2))
         builder.branch(do_push)
 
         builder.position_at_end(do_push)
-        items = builder.load(field(builder, struct_ptr, 2))
-        length_now = builder.load(field(builder, struct_ptr, 0))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
+        length_now = builder.load(_struct_gep(builder, struct_ptr, 0))
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         owned = builder.call(self.rawstr_copy, [elem_arg])
         builder.store(
             builder.ptrtoint(owned, i64), builder.gep(items_i64, [length_now])
         )
         new_length = builder.add(length_now, one64)
-        builder.store(new_length, field(builder, struct_ptr, 0))
+        builder.store(new_length, _struct_gep(builder, struct_ptr, 0))
         builder.ret(new_length)
 
         # i8* rawlist_str_join(i8* list, i8* sep) - one allocation for
@@ -2115,10 +2126,10 @@ class TypedCodegen(SiluToLLVMConverter):
         join_struct = jb.bitcast(
             join_list, ir.PointerType(self.raw_list_struct_type)
         )
-        join_count = jb.load(field(jb, join_struct, 0))
+        join_count = jb.load(_struct_gep(jb, join_struct, 0))
         sep_struct = jb.bitcast(join_sep, ir.PointerType(self.rawstr_struct_type))
-        sep_len = jb.load(field(jb, sep_struct, 0))
-        sep_data = jb.load(field(jb, sep_struct, 2))
+        sep_len = jb.load(_struct_gep(jb, sep_struct, 0))
+        sep_data = jb.load(_struct_gep(jb, sep_struct, 2))
         size_ptr = jb.alloca(i64, name="join_total")
         jb.store(zero64, size_ptr)
         size_i_ptr = jb.alloca(i64, name="join_si")
@@ -2127,7 +2138,7 @@ class TypedCodegen(SiluToLLVMConverter):
         jb.branch(join_size_cond)
 
         def join_item_at(builder, index):
-            items = builder.load(field(builder, join_struct, 2))
+            items = builder.load(_struct_gep(builder, join_struct, 2))
             items_i64 = builder.bitcast(items, ir.PointerType(i64))
             return builder.inttoptr(
                 builder.load(builder.gep(items_i64, [index])), i8p
@@ -2141,7 +2152,7 @@ class TypedCodegen(SiluToLLVMConverter):
         item_struct = jb.bitcast(
             join_item_at(jb, si), ir.PointerType(self.rawstr_struct_type)
         )
-        item_len = jb.load(field(jb, item_struct, 0))
+        item_len = jb.load(_struct_gep(jb, item_struct, 0))
         total_now = jb.load(size_ptr)
         with_sep = jb.add(total_now, item_len)
         not_last = jb.icmp_signed("<", jb.add(si, one64), join_count)
@@ -2180,8 +2191,8 @@ class TypedCodegen(SiluToLLVMConverter):
         c_item = jb.bitcast(
             join_item_at(jb, ci), ir.PointerType(self.rawstr_struct_type)
         )
-        c_item_data = jb.load(field(jb, c_item, 2))
-        c_item_len = jb.load(field(jb, c_item, 0))
+        c_item_data = jb.load(_struct_gep(jb, c_item, 2))
+        c_item_len = jb.load(_struct_gep(jb, c_item, 0))
         jb.call(
             self.memcpy,
             [write_at, c_item_data, c_item_len, ir.Constant(ir.IntType(1), 0)],
@@ -2196,10 +2207,10 @@ class TypedCodegen(SiluToLLVMConverter):
         join_result = jb.bitcast(
             join_mem, ir.PointerType(self.rawstr_struct_type)
         )
-        jb.store(join_total, field(jb, join_result, 0))
-        jb.store(join_total, field(jb, join_result, 1))
-        jb.store(join_buf, field(jb, join_result, 2))
-        jb.store(cp_total, field(jb, join_result, 3))
+        jb.store(join_total, _struct_gep(jb, join_result, 0))
+        jb.store(join_total, _struct_gep(jb, join_result, 1))
+        jb.store(join_buf, _struct_gep(jb, join_result, 2))
+        jb.store(cp_total, _struct_gep(jb, join_result, 3))
         jb.ret(jb.bitcast(join_result, i8p))
 
         # i8* rawlist_str_pop(i8* list) - drops the slot and returns a
@@ -2214,7 +2225,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             self.rawlist_str_pop.args[0], ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
         builder.cbranch(
             builder.icmp_signed("==", length, zero64), empty_block, ok_block
         )
@@ -2226,7 +2237,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
-        items = builder.load(field(builder, struct_ptr, 2))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         last_index = builder.sub(length, one64)
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         slot = builder.gep(items_i64, [last_index])
@@ -2236,7 +2247,7 @@ class TypedCodegen(SiluToLLVMConverter):
         )
         builder.call(self.rawstr_free, [builder.inttoptr(bits, i8p)])
         builder.store(zero64, slot)
-        builder.store(last_index, field(builder, struct_ptr, 0))
+        builder.store(last_index, _struct_gep(builder, struct_ptr, 0))
         builder.ret(copy)
 
         # ---------- lexer-oriented string builtins (self-hosting) ----------
@@ -2273,7 +2284,7 @@ class TypedCodegen(SiluToLLVMConverter):
         (ord_s,) = f.args
         ord_struct = builder.bitcast(ord_s, ir.PointerType(self.rawstr_struct_type))
         builder.cbranch(
-            builder.icmp_signed("==", load_cp(builder, ord_struct), one64),
+            builder.icmp_signed("==", _rawstr_load_cp(builder, ord_struct), one64),
             ord_ok,
             ord_panic,
         )
@@ -2285,7 +2296,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, ord_msg)
 
         builder.position_at_end(ord_ok)
-        ord_data = load_data(builder, ord_struct)
+        ord_data = _rawstr_load_data(builder, ord_struct)
         b0_8 = builder.load(builder.gep(ord_data, [zero64]))
         b0 = builder.zext(b0_8, i64)
         builder.cbranch(
@@ -2540,8 +2551,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         (strip_s,) = f.args
         strip_struct = builder.bitcast(strip_s, ir.PointerType(self.rawstr_struct_type))
-        strip_data = load_data(builder, strip_struct)
-        strip_len = load_len(builder, strip_struct)
+        strip_data = _rawstr_load_data(builder, strip_struct)
+        strip_len = _rawstr_load_len(builder, strip_struct)
         lo_ptr = builder.alloca(i64, name="strip_lo")
         hi_ptr = builder.alloca(i64, name="strip_hi")
         builder.store(zero64, lo_ptr)
@@ -2598,12 +2609,12 @@ class TypedCodegen(SiluToLLVMConverter):
             b = ir.IRBuilder(entry)
             s_arg, p_arg, plen_arg = func.args
             s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-            s_len = load_len(b, s_struct)
+            s_len = _rawstr_load_len(b, s_struct)
             fits = b.icmp_signed("<=", plen_arg, s_len)
             b.cbranch(fits, cmp_blk, false_blk)
 
             b.position_at_end(cmp_blk)
-            s_data = load_data(b, s_struct)
+            s_data = _rawstr_load_data(b, s_struct)
             if not is_prefix:
                 s_data = b.gep(s_data, [b.sub(s_len, plen_arg)])
             cmp_r = b.call(self.memcmp, [s_data, p_arg, plen_arg])
@@ -2640,8 +2651,8 @@ class TypedCodegen(SiluToLLVMConverter):
             b = ir.IRBuilder(entry)
             (s_arg,) = func.args
             s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-            s_len = load_len(b, s_struct)
-            s_data = load_data(b, s_struct)
+            s_len = _rawstr_load_len(b, s_struct)
+            s_data = _rawstr_load_data(b, s_struct)
             idx_ptr = b.alloca(i64, name="cls_i")
             b.store(zero64, idx_ptr)
             b.cbranch(b.icmp_signed("==", s_len, zero64), fail_blk, cond)
@@ -2707,8 +2718,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         (sw_s,) = f.args
         sw_struct = builder.bitcast(sw_s, ir.PointerType(self.rawstr_struct_type))
-        sw_data = load_data(builder, sw_struct)
-        sw_len = load_len(builder, sw_struct)
+        sw_data = _rawstr_load_data(builder, sw_struct)
+        sw_len = _rawstr_load_len(builder, sw_struct)
         sw_result = builder.call(self.rawlist_new, [ir.Constant(i64, 8)])
         i_ptr = builder.alloca(i64, name="sw_i")
         start_ptr = builder.alloca(i64, name="sw_start")
@@ -2802,8 +2813,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         ss_s, sep_data, sep_len = f.args
         ss_struct = builder.bitcast(ss_s, ir.PointerType(self.rawstr_struct_type))
-        ss_data = load_data(builder, ss_struct)
-        ss_len = load_len(builder, ss_struct)
+        ss_data = _rawstr_load_data(builder, ss_struct)
+        ss_len = _rawstr_load_len(builder, ss_struct)
         builder.cbranch(
             builder.icmp_signed("==", sep_len, zero64), ss_panic, ss_cond
         )
@@ -2904,7 +2915,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
         builder.cbranch(
             builder.icmp_signed("<", index_arg, zero64), neg_block, bounds_block
         )
@@ -2930,7 +2941,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
-        items = builder.load(field(builder, struct_ptr, 2))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         slot = builder.gep(items_i64, [adj_phi])
         old_bits = builder.load(slot)
@@ -2969,7 +2980,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
         builder.cbranch(
             builder.icmp_signed("<", index_arg, zero64), neg_block, bounds_block
         )
@@ -2995,7 +3006,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
-        items = builder.load(field(builder, struct_ptr, 2))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         bits = builder.load(builder.gep(items_i64, [adj_phi]))
         copy = builder.call(
@@ -3016,7 +3027,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        items = builder.load(field(builder, struct_ptr, 2))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         bits = builder.load(builder.gep(items_i64, [index_arg]))
         builder.ret(builder.inttoptr(bits, i8p))
@@ -3088,8 +3099,8 @@ class TypedCodegen(SiluToLLVMConverter):
         clear_ptr = builder.bitcast(
             clear_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        clear_len = builder.load(field(builder, clear_ptr, 0))
-        clear_items = builder.load(field(builder, clear_ptr, 2))
+        clear_len = builder.load(_struct_gep(builder, clear_ptr, 0))
+        clear_items = builder.load(_struct_gep(builder, clear_ptr, 2))
         clear_i = builder.alloca(i64, name="rlcl_i")
         builder.store(zero64, clear_i)
         builder.branch(clear_cond)
@@ -3121,7 +3132,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.branch(clear_cond)
 
         builder.position_at_end(clear_done)
-        builder.store(zero64, field(builder, clear_ptr, 0))
+        builder.store(zero64, _struct_gep(builder, clear_ptr, 0))
         builder.ret_void()
 
 
@@ -3184,8 +3195,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(self.rawstr_to_pystr.append_basic_block("entry"))
         (s_arg,) = self.rawstr_to_pystr.args
         s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_len = load_len(builder, s_struct)
-        s_data = load_data(builder, s_struct)
+        s_len = _rawstr_load_len(builder, s_struct)
+        s_data = _rawstr_load_data(builder, s_struct)
         box_buffer = builder.call(self.malloc, [s_len])
         builder.call(
             self.memcpy,
@@ -3247,8 +3258,8 @@ class TypedCodegen(SiluToLLVMConverter):
         cstr_struct = builder.bitcast(
             cstr_arg, ir.PointerType(self.rawstr_struct_type)
         )
-        cstr_len = load_len(builder, cstr_struct)
-        cstr_data = load_data(builder, cstr_struct)
+        cstr_len = _rawstr_load_len(builder, cstr_struct)
+        cstr_data = _rawstr_load_data(builder, cstr_struct)
         cstr_buf = builder.call(self.malloc, [builder.add(cstr_len, one64)])
         builder.call(
             self.memcpy,
@@ -3272,8 +3283,8 @@ class TypedCodegen(SiluToLLVMConverter):
         fnv_struct = builder.bitcast(
             fnv_arg, ir.PointerType(self.rawstr_struct_type)
         )
-        fnv_len = builder.load(sfield(builder, fnv_struct, 0))
-        fnv_data = builder.load(sfield(builder, fnv_struct, 2))
+        fnv_len = builder.load(_struct_gep(builder, fnv_struct, 0))
+        fnv_data = builder.load(_struct_gep(builder, fnv_struct, 2))
         fnv_i = builder.alloca(i64, name="fnv_i")
         fnv_h = builder.alloca(i64, name="fnv_h")
         builder.store(zero64, fnv_i)
@@ -3324,7 +3335,7 @@ class TypedCodegen(SiluToLLVMConverter):
             struct_ptr = b.bitcast(
                 dict_arg, ir.PointerType(self.raw_dict_struct_type)
             )
-            mask = b.load(dfield(b, struct_ptr, 3))
+            mask = b.load(_struct_gep(b, struct_ptr, 3))
             probe_slot = b.alloca(i64, name="sprobe_slot")
             b.store(
                 b.and_(b.call(self.rawstr_fnv, [key_arg]), mask),
@@ -3333,7 +3344,7 @@ class TypedCodegen(SiluToLLVMConverter):
             b.branch(probe_test)
 
             b.position_at_end(probe_test)
-            table_now = b.load(dfield(b, struct_ptr, 4))
+            table_now = b.load(_struct_gep(b, struct_ptr, 4))
             slot_now = b.load(probe_slot)
             slot_entry = b.load(b.gep(table_now, [slot_now]))
             is_empty = b.icmp_signed("==", slot_entry, zero64)
@@ -3345,7 +3356,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
             b.position_at_end(match_check)
             entry_index = b.sub(slot_entry, one64)
-            keys_now = b.load(dfield(b, struct_ptr, 5))
+            keys_now = b.load(_struct_gep(b, struct_ptr, 5))
             stored_bits = b.load(b.gep(keys_now, [entry_index]))
             stored_key = b.inttoptr(stored_bits, i8p)
             is_match = b.call(self.rawstr_eq, [stored_key, key_arg])
@@ -3355,7 +3366,7 @@ class TypedCodegen(SiluToLLVMConverter):
             on_hit(b, func, entry_index, slot_now, table_now)
 
             b.position_at_end(probe_step)
-            mask_step = b.load(dfield(b, struct_ptr, 3))
+            mask_step = b.load(_struct_gep(b, struct_ptr, 3))
             b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
             b.branch(probe_test)
 
@@ -3369,7 +3380,7 @@ class TypedCodegen(SiluToLLVMConverter):
             )
 
         def str_value_at(b, func, entry_index):
-            vals_now = b.load(dfield(b, str_probe_struct(b, func), 6))
+            vals_now = b.load(_struct_gep(b, str_probe_struct(b, func), 6))
             return b.load(b.gep(vals_now, [entry_index]))
 
         def str_key_error(b, func):
@@ -3389,7 +3400,7 @@ class TypedCodegen(SiluToLLVMConverter):
         # i64 rawdict_str_del(i8* d, i8* key) - tombstones, frees the
         # dict's key copy, returns the value bits
         def str_del_hit(b, func, entry_index, slot_now, table_now):
-            keys_now = b.load(dfield(b, str_probe_struct(b, func), 5))
+            keys_now = b.load(_struct_gep(b, str_probe_struct(b, func), 5))
             key_bits = b.load(b.gep(keys_now, [entry_index]))
             b.call(self.rawstr_free, [b.inttoptr(key_bits, i8p)])
             # null the entry so rawdict_str_clear skips it (the entries
@@ -3397,8 +3408,8 @@ class TypedCodegen(SiluToLLVMConverter):
             b.store(zero64, b.gep(keys_now, [entry_index]))
             b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
             struct_ptr = str_probe_struct(b, func)
-            count = b.load(dfield(b, struct_ptr, 0))
-            b.store(b.sub(count, one64), dfield(b, struct_ptr, 0))
+            count = b.load(_struct_gep(b, struct_ptr, 0))
+            b.store(b.sub(count, one64), _struct_gep(b, struct_ptr, 0))
             b.ret(str_value_at(b, func, entry_index))
 
         self.rawdict_str_del = emit_rawdict_str_probe(
@@ -3453,12 +3464,12 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         dict_arg, new_size_arg = self.rawdict_str_reindex.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        old_mask = builder.load(dfield(builder, struct_ptr, 3))
+        old_mask = builder.load(_struct_gep(builder, struct_ptr, 3))
         old_size = builder.add(old_mask, one64)
-        old_table = builder.load(dfield(builder, struct_ptr, 4))
-        old_keys = builder.load(dfield(builder, struct_ptr, 5))
-        old_vals = builder.load(dfield(builder, struct_ptr, 6))
-        entries_cap = builder.load(dfield(builder, struct_ptr, 2))
+        old_table = builder.load(_struct_gep(builder, struct_ptr, 4))
+        old_keys = builder.load(_struct_gep(builder, struct_ptr, 5))
+        old_vals = builder.load(_struct_gep(builder, struct_ptr, 6))
+        entries_cap = builder.load(_struct_gep(builder, struct_ptr, 2))
         new_mask = builder.sub(new_size_arg, one64)
         fresh_table = builder.bitcast(
             builder.call(self.calloc, [new_size_arg, ir.Constant(i64, 8)]),
@@ -3471,10 +3482,10 @@ class TypedCodegen(SiluToLLVMConverter):
         fresh_vals = builder.bitcast(
             builder.call(self.malloc, [cap_bytes]), ir.PointerType(i64)
         )
-        builder.store(new_mask, dfield(builder, struct_ptr, 3))
-        builder.store(fresh_table, dfield(builder, struct_ptr, 4))
-        builder.store(fresh_keys, dfield(builder, struct_ptr, 5))
-        builder.store(fresh_vals, dfield(builder, struct_ptr, 6))
+        builder.store(new_mask, _struct_gep(builder, struct_ptr, 3))
+        builder.store(fresh_table, _struct_gep(builder, struct_ptr, 4))
+        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
+        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         idx_ptr = builder.alloca(i64, name="sre_i")
         live_ptr = builder.alloca(i64, name="sre_live")
         slot_ptr = builder.alloca(i64, name="sre_slot")
@@ -3529,7 +3540,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.branch(scan_cond)
 
         builder.position_at_end(scan_done)
-        builder.store(builder.load(live_ptr), dfield(builder, struct_ptr, 1))
+        builder.store(builder.load(live_ptr), _struct_gep(builder, struct_ptr, 1))
         builder.call(self.free, [builder.bitcast(old_table, i8p)])
         builder.call(self.free, [builder.bitcast(old_keys, i8p)])
         builder.call(self.free, [builder.bitcast(old_vals, i8p)])
@@ -3561,8 +3572,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg, val_arg = self.rawdict_str_set.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        filled = builder.load(dfield(builder, struct_ptr, 1))
-        mask = builder.load(dfield(builder, struct_ptr, 3))
+        filled = builder.load(_struct_gep(builder, struct_ptr, 1))
+        mask = builder.load(_struct_gep(builder, struct_ptr, 3))
         index_size = builder.add(mask, one64)
         load_would_exceed = builder.icmp_signed(
             ">",
@@ -3575,7 +3586,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.cbranch(load_would_exceed, rehash_block, start_block)
 
         builder.position_at_end(rehash_block)
-        live_count = builder.load(dfield(builder, struct_ptr, 0))
+        live_count = builder.load(_struct_gep(builder, struct_ptr, 0))
         builder.store(ir.Constant(i64, 8), size_ptr)
         builder.branch(size_check)
 
@@ -3600,13 +3611,13 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(start_block)
         builder.store(ir.Constant(i64, -1), tomb_ptr)
-        mask_now = builder.load(dfield(builder, struct_ptr, 3))
+        mask_now = builder.load(_struct_gep(builder, struct_ptr, 3))
         key_hash = builder.call(self.rawstr_fnv, [key_arg])
         builder.store(builder.and_(key_hash, mask_now), slot_ptr)
         builder.branch(probe_test)
 
         builder.position_at_end(probe_test)
-        table_now = builder.load(dfield(builder, struct_ptr, 4))
+        table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
         slot_now = builder.load(slot_ptr)
         slot_entry = builder.load(builder.gep(table_now, [slot_now]))
         is_empty = builder.icmp_signed("==", slot_entry, zero64)
@@ -3627,7 +3638,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         builder.position_at_end(match_check)
         entry_index = builder.sub(slot_entry, one64)
-        keys_now = builder.load(dfield(builder, struct_ptr, 5))
+        keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
         stored_key = builder.inttoptr(
             builder.load(builder.gep(keys_now, [entry_index])), i8p
         )
@@ -3635,12 +3646,12 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.cbranch(is_match, overwrite, probe_step)
 
         builder.position_at_end(overwrite)
-        vals_now = builder.load(dfield(builder, struct_ptr, 6))
+        vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
         builder.store(val_arg, builder.gep(vals_now, [entry_index]))
         builder.ret_void()
 
         builder.position_at_end(probe_step)
-        mask_step = builder.load(dfield(builder, struct_ptr, 3))
+        mask_step = builder.load(_struct_gep(builder, struct_ptr, 3))
         builder.store(
             builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
         )
@@ -3651,16 +3662,16 @@ class TypedCodegen(SiluToLLVMConverter):
         has_tomb = builder.icmp_signed("!=", tomb_seen, ir.Constant(i64, -1))
         target_slot = builder.select(has_tomb, tomb_seen, builder.load(slot_ptr))
         builder.store(target_slot, slot_ptr)
-        filled_now = builder.load(dfield(builder, struct_ptr, 1))
-        entries_cap = builder.load(dfield(builder, struct_ptr, 2))
+        filled_now = builder.load(_struct_gep(builder, struct_ptr, 1))
+        entries_cap = builder.load(_struct_gep(builder, struct_ptr, 2))
         needs_room = builder.icmp_signed("==", filled_now, entries_cap)
         builder.cbranch(needs_room, grow_block, do_insert)
 
         builder.position_at_end(grow_block)
         new_cap = builder.mul(entries_cap, ir.Constant(i64, 2))
         byte_room = builder.mul(new_cap, ir.Constant(i64, 8))
-        old_keys = builder.load(dfield(builder, struct_ptr, 5))
-        old_vals = builder.load(dfield(builder, struct_ptr, 6))
+        old_keys = builder.load(_struct_gep(builder, struct_ptr, 5))
+        old_vals = builder.load(_struct_gep(builder, struct_ptr, 6))
         fresh_keys = builder.bitcast(
             builder.call(self.malloc, [byte_room]), ir.PointerType(i64)
         )
@@ -3686,30 +3697,30 @@ class TypedCodegen(SiluToLLVMConverter):
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
-        builder.store(new_cap, dfield(builder, struct_ptr, 2))
-        builder.store(fresh_keys, dfield(builder, struct_ptr, 5))
-        builder.store(fresh_vals, dfield(builder, struct_ptr, 6))
+        builder.store(new_cap, _struct_gep(builder, struct_ptr, 2))
+        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
+        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         builder.call(self.free, [builder.bitcast(old_keys, i8p)])
         builder.call(self.free, [builder.bitcast(old_vals, i8p)])
         builder.branch(do_insert)
 
         builder.position_at_end(do_insert)
         slot_free = builder.load(slot_ptr)
-        keys_final = builder.load(dfield(builder, struct_ptr, 5))
-        vals_final = builder.load(dfield(builder, struct_ptr, 6))
+        keys_final = builder.load(_struct_gep(builder, struct_ptr, 5))
+        vals_final = builder.load(_struct_gep(builder, struct_ptr, 6))
         key_copy = builder.call(self.rawstr_copy, [key_arg])
         builder.store(
             builder.ptrtoint(key_copy, i64),
             builder.gep(keys_final, [filled_now]),
         )
         builder.store(val_arg, builder.gep(vals_final, [filled_now]))
-        table_final = builder.load(dfield(builder, struct_ptr, 4))
+        table_final = builder.load(_struct_gep(builder, struct_ptr, 4))
         builder.store(
             builder.add(filled_now, one64), builder.gep(table_final, [slot_free])
         )
-        builder.store(builder.add(filled_now, one64), dfield(builder, struct_ptr, 1))
-        count = builder.load(dfield(builder, struct_ptr, 0))
-        builder.store(builder.add(count, one64), dfield(builder, struct_ptr, 0))
+        builder.store(builder.add(filled_now, one64), _struct_gep(builder, struct_ptr, 1))
+        count = builder.load(_struct_gep(builder, struct_ptr, 0))
+        builder.store(builder.add(count, one64), _struct_gep(builder, struct_ptr, 0))
         builder.ret_void()
 
         # i64 rawdict_str_setdefault(i8* d, i8* key, i64 value_bits)
@@ -3732,7 +3743,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         # i8* rawdict_str_slotof(i8* d, i8* key) - value slot pointer
         def str_slotof_hit(b, func, entry_index, _slot, _table):
-            vals_now = b.load(dfield(b, str_probe_struct(b, func), 6))
+            vals_now = b.load(_struct_gep(b, str_probe_struct(b, func), 6))
             b.ret(b.bitcast(b.gep(vals_now, [entry_index]), i8p))
 
         self.rawdict_str_slotof = emit_rawdict_str_probe(
@@ -3771,8 +3782,8 @@ class TypedCodegen(SiluToLLVMConverter):
         clear_ptr = builder.bitcast(
             clear_arg, ir.PointerType(self.raw_dict_struct_type)
         )
-        clear_filled = builder.load(dfield(builder, clear_ptr, 1))
-        clear_keys = builder.load(dfield(builder, clear_ptr, 5))
+        clear_filled = builder.load(_struct_gep(builder, clear_ptr, 1))
+        clear_keys = builder.load(_struct_gep(builder, clear_ptr, 5))
         clear_i = builder.alloca(i64, name="rdc_i")
         builder.store(zero64, clear_i)
         builder.branch(clear_cond)
@@ -3833,7 +3844,7 @@ class TypedCodegen(SiluToLLVMConverter):
             struct_ptr = builder.bitcast(
                 dict_arg, ir.PointerType(self.raw_dict_struct_type)
             )
-            mask = builder.load(dfield(builder, struct_ptr, 3))
+            mask = builder.load(_struct_gep(builder, struct_ptr, 3))
             table_size = builder.add(mask, one64)
             result = builder.call(self.create_dict, [])
             idx_ptr = builder.alloca(i64, name="cvt_i")
@@ -3846,15 +3857,15 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.cbranch(more, loop_body, loop_done)
 
             builder.position_at_end(loop_body)
-            table_now = builder.load(dfield(builder, struct_ptr, 4))
+            table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
             slot_entry = builder.load(builder.gep(table_now, [idx]))
             is_live = builder.icmp_signed(">", slot_entry, zero64)
             builder.cbranch(is_live, emit_block, loop_step)
 
             builder.position_at_end(emit_block)
             entry_index = builder.sub(slot_entry, one64)
-            keys_now = builder.load(dfield(builder, struct_ptr, 5))
-            vals_now = builder.load(dfield(builder, struct_ptr, 6))
+            keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
+            vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
             key_bits = builder.load(builder.gep(keys_now, [entry_index]))
             key_box = builder.call(
                 self.rawstr_to_pystr, [builder.inttoptr(key_bits, i8p)]
@@ -3888,7 +3899,7 @@ class TypedCodegen(SiluToLLVMConverter):
         src_struct = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        items = builder.load(field(builder, src_struct, 2))
+        items = builder.load(_struct_gep(builder, src_struct, 2))
         result = builder.call(self.create_list, [])
         idx_ptr = builder.alloca(i64, name="cvt_i")
         builder.store(zero64, idx_ptr)
@@ -3930,8 +3941,8 @@ class TypedCodegen(SiluToLLVMConverter):
             builder.load(builder.gep(list_arg, [zero32b, one32b])),
             ir.PointerType(self.list_struct_type),
         )
-        length = builder.load(field(builder, struct_ptr, 0))
-        items = builder.load(field(builder, struct_ptr, 2))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         raw = builder.call(self.rawlist_new, [ir.Constant(i64, 8)])
         idx_ptr = builder.alloca(i64, name="p2s_i")
         builder.store(zero64, idx_ptr)
@@ -3970,7 +3981,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
         is_negative = builder.icmp_signed("<", index_arg, zero64)
         builder.cbranch(is_negative, negative_block, bounds_block)
 
@@ -3995,7 +4006,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
-        items = builder.load(field(builder, struct_ptr, 2))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         slot = builder.gep(items_i64, [adj_phi])
         builder.store(builder.load(slot), builder.bitcast(out_arg, ir.PointerType(i64)))
@@ -4017,7 +4028,7 @@ class TypedCodegen(SiluToLLVMConverter):
         struct_ptr = builder.bitcast(
             list_arg, ir.PointerType(self.raw_list_struct_type)
         )
-        length = builder.load(field(builder, struct_ptr, 0))
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
         builder.cbranch(
             builder.icmp_signed("<", index_arg, zero64), neg_block, bounds_block
         )
@@ -4043,7 +4054,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, msg)
 
         builder.position_at_end(ok_block)
-        items = builder.load(field(builder, struct_ptr, 2))
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         slot = builder.gep(items_i64, [adj_phi])
         elem_bits = builder.load(builder.bitcast(elem_arg, ir.PointerType(i64)))
