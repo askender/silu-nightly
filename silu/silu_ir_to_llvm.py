@@ -60,7 +60,7 @@ class SiluToLLVMConverter:
         self.target_machine = target.create_target_machine()
 
         # Create LLVM module
-        self.module = ir.Module(name="silu_module")
+        self.module = ir.Module('silu_module', )
         self.module.triple = self.target_machine.triple
         self.module.data_layout = str(self.target_machine.target_data)
 
@@ -126,22 +126,22 @@ class SiluToLLVMConverter:
 
         # printf declaration
         printf_ty = ir.FunctionType(
-            ir.IntType(32), [ir.PointerType(ir.IntType(8))], var_arg=True
+            ir.IntType(32), [ir.PointerType(ir.IntType(8))], True
         )
-        self.printf = ir.Function(self.module, printf_ty, name="printf")
+        self.printf = ir.Function(self.module, printf_ty, 'printf')
 
         # malloc and free
         malloc_ty = ir.FunctionType(ir.PointerType(ir.IntType(8)), [ir.IntType(64)])
-        self.malloc = ir.Function(self.module, malloc_ty, name="malloc")
+        self.malloc = ir.Function(self.module, malloc_ty, 'malloc')
 
         # calloc for zero-initialized hash index tables
         calloc_ty = ir.FunctionType(
             ir.PointerType(ir.IntType(8)), [ir.IntType(64), ir.IntType(64)]
         )
-        self.calloc = ir.Function(self.module, calloc_ty, name="calloc")
+        self.calloc = ir.Function(self.module, calloc_ty, 'calloc')
 
         free_ty = ir.FunctionType(ir.VoidType(), [ir.PointerType(ir.IntType(8))])
-        self.free = ir.Function(self.module, free_ty, name="free")
+        self.free = ir.Function(self.module, free_ty, 'free')
 
         # llvm.memcpy for string concatenation
         memcpy_ty = ir.FunctionType(
@@ -154,7 +154,7 @@ class SiluToLLVMConverter:
             ],
         )
         self.memcpy = ir.Function(
-            self.module, memcpy_ty, name="llvm.memcpy.p0i8.p0i8.i64"
+            self.module, memcpy_ty, 'llvm.memcpy.p0i8.p0i8.i64'
         )
         memset_ty = ir.FunctionType(
             ir.VoidType(),
@@ -166,17 +166,17 @@ class SiluToLLVMConverter:
             ],
         )
         self.memset = ir.Function(
-            self.module, memset_ty, name="llvm.memset.p0i8.i64"
+            self.module, memset_ty, 'llvm.memset.p0i8.i64'
         )
 
         # exit for runtime error aborts
         exit_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(32)])
-        self.exit_func = ir.Function(self.module, exit_ty, name="exit")
+        self.exit_func = ir.Function(self.module, exit_ty, 'exit')
 
         # current source line, updated by ("line", n) IR markers so
         # runtime errors can report where they happened
         self.line_global = ir.GlobalVariable(
-            self.module, ir.IntType(64), name="__silu_line"
+            self.module, ir.IntType(64), '__silu_line'
         )
         self.line_global.linkage = "internal"
         self.line_global.initializer = ir.Constant(ir.IntType(64), 0)
@@ -187,8 +187,8 @@ class SiluToLLVMConverter:
         # time, so even line-less helpers report the failing statement).
         i8p = ir.PointerType(ir.IntType(8))
         self.silu_panic = ir.Function(
-            self.module, ir.FunctionType(ir.VoidType(), [i8p]),
-            name="silu_panic",
+            self.module, ir.FunctionType(ir.VoidType(), [i8p]), 'silu_panic',
+
         )
         entry = self.silu_panic.append_basic_block("entry")
         line_block = self.silu_panic.append_basic_block("with_line")
@@ -223,10 +223,10 @@ class SiluToLLVMConverter:
                 ir.PointerType(ir.IntType(8)),
                 ir.IntType(64),
                 ir.PointerType(ir.IntType(8)),
-            ],
-            var_arg=True,
+            ], True,
+
         )
-        self.snprintf = ir.Function(self.module, snprintf_ty, name="snprintf")
+        self.snprintf = ir.Function(self.module, snprintf_ty, 'snprintf')
 
         strtod_ty = ir.FunctionType(
             ir.DoubleType(),
@@ -235,16 +235,16 @@ class SiluToLLVMConverter:
                 ir.PointerType(ir.PointerType(ir.IntType(8))),
             ],
         )
-        self.strtod = ir.Function(self.module, strtod_ty, name="strtod")
+        self.strtod = ir.Function(self.module, strtod_ty, 'strtod')
 
         memchr_ty = ir.FunctionType(
             ir.PointerType(ir.IntType(8)),
             [ir.PointerType(ir.IntType(8)), ir.IntType(32), ir.IntType(64)],
         )
-        self.memchr = ir.Function(self.module, memchr_ty, name="memchr")
+        self.memchr = ir.Function(self.module, memchr_ty, 'memchr')
 
         strlen_ty = ir.FunctionType(ir.IntType(64), [ir.PointerType(ir.IntType(8))])
-        self.strlen = ir.Function(self.module, strlen_ty, name="strlen")
+        self.strlen = ir.Function(self.module, strlen_ty, 'strlen')
 
         memcmp_ty = ir.FunctionType(
             ir.IntType(32),
@@ -254,11 +254,11 @@ class SiluToLLVMConverter:
                 ir.IntType(64),
             ],
         )
-        self.memcmp = ir.Function(self.module, memcmp_ty, name="memcmp")
+        self.memcmp = ir.Function(self.module, memcmp_ty, 'memcmp')
 
         # llvm.floor.f64 intrinsic for float floor division
         floor_ty = ir.FunctionType(ir.DoubleType(), [ir.DoubleType()])
-        self.floor_f64 = ir.Function(self.module, floor_ty, name="llvm.floor.f64")
+        self.floor_f64 = ir.Function(self.module, floor_ty, 'llvm.floor.f64')
 
         # PyObject creation functions
         self._create_overflow_intrinsics()
@@ -276,7 +276,7 @@ class SiluToLLVMConverter:
         create_int_ty = ir.FunctionType(
             ir.PointerType(self.pyobj.pyobj_type), [ir.IntType(64)]
         )
-        self.create_int = ir.Function(self.module, create_int_ty, name="create_int")
+        self.create_int = ir.Function(self.module, create_int_ty, 'create_int')
 
         block = self.create_int.append_basic_block("entry")
         builder = ir.IRBuilder(block)
@@ -313,7 +313,7 @@ class SiluToLLVMConverter:
             ir.PointerType(self.pyobj.pyobj_type),
             [ir.PointerType(ir.IntType(8)), ir.IntType(32)],
         )
-        self.create_str = ir.Function(self.module, create_str_ty, name="create_str")
+        self.create_str = ir.Function(self.module, create_str_ty, 'create_str')
 
         block = self.create_str.append_basic_block("entry")
         builder = ir.IRBuilder(block)
@@ -358,7 +358,7 @@ class SiluToLLVMConverter:
         create_bool_ty = ir.FunctionType(
             ir.PointerType(self.pyobj.pyobj_type), [ir.IntType(1)]
         )
-        self.create_bool = ir.Function(self.module, create_bool_ty, name="create_bool")
+        self.create_bool = ir.Function(self.module, create_bool_ty, 'create_bool')
 
         block = self.create_bool.append_basic_block("entry")
         builder = ir.IRBuilder(block)
@@ -392,7 +392,7 @@ class SiluToLLVMConverter:
             ir.PointerType(self.pyobj.pyobj_type), [ir.DoubleType()]
         )
         self.create_float = ir.Function(
-            self.module, create_float_ty, name="create_float"
+            self.module, create_float_ty, 'create_float'
         )
 
         block = self.create_float.append_basic_block("entry")
@@ -425,8 +425,8 @@ class SiluToLLVMConverter:
         # (created here so pyobj_add's list concatenation can reference it)
         self.create_list = ir.Function(
             self.module,
-            ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type), []),
-            name="create_list",
+            ir.FunctionType(ir.PointerType(self.pyobj.pyobj_type), []), 'create_list',
+
         )
         builder = ir.IRBuilder(self.create_list.append_basic_block("entry"))
         obj_ptr = builder.call(self.malloc, [ir.Constant(ir.IntType(64), 16)])
@@ -470,7 +470,7 @@ class SiluToLLVMConverter:
                 ir.PointerType(self.pyobj.pyobj_type),
             ],
         )
-        self.pyobj_add = ir.Function(self.module, add_ty, name="pyobj_add")
+        self.pyobj_add = ir.Function(self.module, add_ty, 'pyobj_add')
 
         block = self.pyobj_add.append_basic_block("entry")
         builder = ir.IRBuilder(block)
@@ -813,11 +813,11 @@ class SiluToLLVMConverter:
         print_ty = ir.FunctionType(
             ir.VoidType(), [ir.PointerType(self.pyobj.pyobj_type)]
         )
-        self.pyobj_print = ir.Function(self.module, print_ty, name="pyobj_print")
+        self.pyobj_print = ir.Function(self.module, print_ty, 'pyobj_print')
 
         # void pyobj_repr_print(PyObject* obj) - repr-style: strings quoted
         self.pyobj_repr_print = ir.Function(
-            self.module, print_ty, name="pyobj_repr_print"
+            self.module, print_ty, 'pyobj_repr_print'
         )
         repr_entry = self.pyobj_repr_print.append_basic_block("entry")
         repr_str_case = self.pyobj_repr_print.append_basic_block("repr_str")
@@ -906,7 +906,7 @@ class SiluToLLVMConverter:
         loop_body = self.pyobj_print.append_basic_block("list_loop_body")
         loop_incr = self.pyobj_print.append_basic_block("list_loop_incr")
         list_done = self.pyobj_print.append_basic_block("list_done")
-        counter_ptr = builder.alloca(i64, name="list_print_idx")
+        counter_ptr = builder.alloca(i64, None, 'list_print_idx')
         builder.store(ir.Constant(i64, 0), counter_ptr)
         builder.branch(loop_check)
 
@@ -970,8 +970,8 @@ class SiluToLLVMConverter:
         d_key = self.pyobj_print.append_basic_block("dict_key")
         d_incr = self.pyobj_print.append_basic_block("dict_incr")
         d_done = self.pyobj_print.append_basic_block("dict_done")
-        d_idx = builder.alloca(ir.IntType(64), name="dict_print_idx")
-        d_printed = builder.alloca(ir.IntType(64), name="dict_printed")
+        d_idx = builder.alloca(ir.IntType(64), None, 'dict_print_idx')
+        d_printed = builder.alloca(ir.IntType(64), None, 'dict_printed')
         builder.store(ir.Constant(ir.IntType(64), 0), d_idx)
         builder.store(ir.Constant(ir.IntType(64), 0), d_printed)
         builder.branch(d_check)
@@ -1126,7 +1126,7 @@ class SiluToLLVMConverter:
 
         # PyObject* list_append(PyObject* list, PyObject* item)
         append_fn_ty = ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr])
-        self.list_append = ir.Function(self.module, append_fn_ty, name="list_append")
+        self.list_append = ir.Function(self.module, append_fn_ty, 'list_append')
         entry = self.list_append.append_basic_block("entry")
         grow_block = self.list_append.append_basic_block("grow")
         do_append_block = self.list_append.append_basic_block("do_append")
@@ -1187,7 +1187,7 @@ class SiluToLLVMConverter:
 
         # i64 list_length(PyObject* list) - raw length helper
         self.list_length = ir.Function(
-            self.module, ir.FunctionType(i64, [pyobj_ptr]), name="list_length"
+            self.module, ir.FunctionType(i64, [pyobj_ptr]), 'list_length'
         )
         builder = ir.IRBuilder(self.list_length.append_basic_block("entry"))
         struct_ptr = self._load_list_struct(builder, self.list_length.args[0])
@@ -1196,7 +1196,7 @@ class SiluToLLVMConverter:
         # i64 pyobj_iter_len(PyObject* obj) - length for `for` iteration:
         # strings read the str struct, everything else the list struct
         self.pyobj_iter_len = ir.Function(
-            self.module, ir.FunctionType(i64, [pyobj_ptr]), name="pyobj_iter_len"
+            self.module, ir.FunctionType(i64, [pyobj_ptr]), 'pyobj_iter_len'
         )
         entry = self.pyobj_iter_len.append_basic_block("entry")
         str_block = self.pyobj_iter_len.append_basic_block("str_len_case")
@@ -1225,8 +1225,8 @@ class SiluToLLVMConverter:
         # PyObject* list_get(PyObject* list, PyObject* index)
         self.list_get = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
-            name="list_get",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]), 'list_get',
+
         )
         entry = self.list_get.append_basic_block("entry")
         bounds_block = self.list_get.append_basic_block("bounds")
@@ -1269,8 +1269,8 @@ class SiluToLLVMConverter:
         # void list_set(PyObject* list, PyObject* index, PyObject* value)
         self.list_set = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
-            name="list_set",
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]), 'list_set',
+
         )
         entry = self.list_set.append_basic_block("entry")
         neg_block = self.list_set.append_basic_block("negative")
@@ -1313,7 +1313,7 @@ class SiluToLLVMConverter:
 
         # PyObject* pyobj_len(PyObject* obj) - len() for lists and strings
         self.pyobj_len = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name="pyobj_len"
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), 'pyobj_len'
         )
         entry = self.pyobj_len.append_basic_block("entry")
         list_block = self.pyobj_len.append_basic_block("len_list")
@@ -1372,7 +1372,7 @@ class SiluToLLVMConverter:
 
         def for_i64_loop(builder, func, prefix, start, stop):
             """Emit a counting loop header; caller fills body, then closes."""
-            idx_ptr = builder.alloca(i64, name=f"{prefix}_i")
+            idx_ptr = builder.alloca(i64, None, f'{prefix}_i')
             builder.store(start, idx_ptr)
             cond = func.append_basic_block(f"{prefix}_cond")
             body = func.append_basic_block(f"{prefix}_body")
@@ -1399,8 +1399,8 @@ class SiluToLLVMConverter:
         # i1 pyobj_truthy(PyObject* obj) - Python truthiness by type
         self.pyobj_truthy = ir.Function(
             self.module,
-            ir.FunctionType(ir.IntType(1), [pyobj_ptr]),
-            name="pyobj_truthy",
+            ir.FunctionType(ir.IntType(1), [pyobj_ptr]), 'pyobj_truthy',
+
         )
         entry = self.pyobj_truthy.append_basic_block("entry")
         dispatch_block = self.pyobj_truthy.append_basic_block("dispatch")
@@ -1467,8 +1467,8 @@ class SiluToLLVMConverter:
         # list: recursive pairwise compare
         self.pyobj_deep_eq = ir.Function(
             self.module,
-            ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr]),
-            name="pyobj_deep_eq",
+            ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr]), 'pyobj_deep_eq',
+
         )
         entry = self.pyobj_deep_eq.append_basic_block("entry")
         dispatch_block = self.pyobj_deep_eq.append_basic_block("dispatch")
@@ -1562,9 +1562,9 @@ class SiluToLLVMConverter:
         builder.cbranch(lens_match, list_len_bad_block, false_block)
 
         builder.position_at_end(list_len_bad_block)
-        diff_ptr = builder.alloca(ir.IntType(1), name="deep_diff")
+        diff_ptr = builder.alloca(ir.IntType(1), None, 'deep_diff')
         builder.store(ir.Constant(ir.IntType(1), 0), diff_ptr)
-        idx_ptr = builder.alloca(i64, name="deep_i")
+        idx_ptr = builder.alloca(i64, None, 'deep_i')
         builder.store(zero64, idx_ptr)
         cond = self.pyobj_deep_eq.append_basic_block("deep_cond")
         inner = self.pyobj_deep_eq.append_basic_block("deep_body")
@@ -1602,7 +1602,7 @@ class SiluToLLVMConverter:
 
         # PyObject* list_reverse(PyObject* list)
         self.list_reverse = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name="list_reverse"
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), 'list_reverse'
         )
         builder = ir.IRBuilder(self.list_reverse.append_basic_block("entry"))
         (list_arg,) = self.list_reverse.args
@@ -1629,8 +1629,8 @@ class SiluToLLVMConverter:
         # PyObject* list_insert(PyObject* list, PyObject* index, PyObject* item)
         self.list_insert = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
-            name="list_insert",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]), 'list_insert',
+
         )
         builder = ir.IRBuilder(self.list_insert.append_basic_block("entry"))
         list_arg, index_arg, item_arg = self.list_insert.args
@@ -1682,15 +1682,15 @@ class SiluToLLVMConverter:
         # PyObject* list_count(PyObject* list, PyObject* item)
         self.list_count = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
-            name="list_count",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]), 'list_count',
+
         )
         builder = ir.IRBuilder(self.list_count.append_basic_block("entry"))
         list_arg, item_arg = self.list_count.args
         struct_ptr, length, items = load_list_parts(
             builder, self.list_count, list_arg, "cnt"
         )
-        count_ptr = builder.alloca(i64, name="count_acc")
+        count_ptr = builder.alloca(i64, None, 'count_acc')
         builder.store(zero64, count_ptr)
         idx_ptr, cond, body, done = for_i64_loop(
             builder, self.list_count, "cnt", zero64, length
@@ -1710,7 +1710,7 @@ class SiluToLLVMConverter:
 
         # PyObject* list_copy(PyObject* list)
         self.list_copy = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name="list_copy"
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), 'list_copy'
         )
         builder = ir.IRBuilder(self.list_copy.append_basic_block("entry"))
         (list_arg,) = self.list_copy.args
@@ -1750,7 +1750,7 @@ class SiluToLLVMConverter:
 
         # void list_clear(PyObject* list)
         self.list_clear = ir.Function(
-            self.module, ir.FunctionType(ir.VoidType(), [pyobj_ptr]), name="list_clear"
+            self.module, ir.FunctionType(ir.VoidType(), [pyobj_ptr]), 'list_clear'
         )
         builder = ir.IRBuilder(self.list_clear.append_basic_block("entry"))
         struct_ptr = self._load_list_struct(builder, self.list_clear.args[0])
@@ -1759,14 +1759,14 @@ class SiluToLLVMConverter:
 
         # PyObject* list_sum(PyObject* list)
         self.list_sum = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name="list_sum"
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), 'list_sum'
         )
         builder = ir.IRBuilder(self.list_sum.append_basic_block("entry"))
         (list_arg,) = self.list_sum.args
         struct_ptr, length, items = load_list_parts(
             builder, self.list_sum, list_arg, "sum"
         )
-        acc_ptr = builder.alloca(pyobj_ptr, name="sum_acc")
+        acc_ptr = builder.alloca(pyobj_ptr, None, 'sum_acc')
         builder.store(builder.call(self.create_int, [zero64]), acc_ptr)
         idx_ptr, cond, body, done = for_i64_loop(
             builder, self.list_sum, "sum", zero64, length
@@ -1820,7 +1820,7 @@ class SiluToLLVMConverter:
             builder.ret(builder.call(self.create_str, [buf, length]))
 
         self.str_upper = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name="str_upper"
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), 'str_upper'
         )
         emit_case_fold(
             ir.IRBuilder(self.str_upper.append_basic_block("entry")),
@@ -1828,7 +1828,7 @@ class SiluToLLVMConverter:
             to_upper=True,
         )
         self.str_lower = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name="str_lower"
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), 'str_lower'
         )
         emit_case_fold(
             ir.IRBuilder(self.str_lower.append_basic_block("entry")),
@@ -1840,7 +1840,7 @@ class SiluToLLVMConverter:
             """str.isdigit/isalpha/isspace for boxed strings (ASCII
             approximation of Python's Unicode classes; empty -> False)."""
             func = ir.Function(
-                self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name=name
+                self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr]), name
             )
             builder = ir.IRBuilder(func.append_basic_block("entry"))
             data = builder.load(builder.gep(func.args[0], [zero32, one32]))
@@ -1857,7 +1857,7 @@ class SiluToLLVMConverter:
             builder.cbranch(empty, ret_bool, loop)
 
             builder.position_at_end(loop)
-            idx_ptr = builder.alloca(i64, name="pred_i")
+            idx_ptr = builder.alloca(i64, None, 'pred_i')
             builder.store(zero64, idx_ptr)
             cond = func.append_basic_block("pred_cond")
             body = func.append_basic_block("pred_body")
@@ -1936,7 +1936,7 @@ class SiluToLLVMConverter:
             builder.position_at_end(scan_block)
             last_pos = builder.add(builder.sub(s_len, sub_len), ir.Constant(i64, 1))
             start = builder.sub(last_pos, one64) if from_right else zero64
-            idx_ptr = builder.alloca(i64, name="search_i")
+            idx_ptr = builder.alloca(i64, None, 'search_i')
             builder.store(start, idx_ptr)
             cond = func.append_basic_block("search_cond")
             body = func.append_basic_block("search_body")
@@ -1977,8 +1977,8 @@ class SiluToLLVMConverter:
 
         self.str_find = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
-            name="str_find",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]), 'str_find',
+
         )
         emit_sub_search(
             ir.IRBuilder(self.str_find.append_basic_block("entry")),
@@ -1987,8 +1987,8 @@ class SiluToLLVMConverter:
         )
         self.str_rfind = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
-            name="str_rfind",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]), 'str_rfind',
+
         )
         emit_sub_search(
             ir.IRBuilder(self.str_rfind.append_basic_block("entry")),
@@ -2031,7 +2031,7 @@ class SiluToLLVMConverter:
 
         # i64 pyobj_hash(PyObject* obj)
         self.pyobj_hash = ir.Function(
-            self.module, ir.FunctionType(i64, [pyobj_ptr]), name="pyobj_hash"
+            self.module, ir.FunctionType(i64, [pyobj_ptr]), 'pyobj_hash'
         )
         entry = self.pyobj_hash.append_basic_block("entry")
         dispatch = self.pyobj_hash.append_basic_block("dispatch")
@@ -2067,8 +2067,8 @@ class SiluToLLVMConverter:
         str_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
         chars = builder.load(builder.gep(str_struct, [zero32, one32]))
         # FNV-1a over the bytes
-        hash_ptr = builder.alloca(i64, name="fnv_h")
-        idx_ptr = builder.alloca(i64, name="fnv_i")
+        hash_ptr = builder.alloca(i64, None, 'fnv_h')
+        idx_ptr = builder.alloca(i64, None, 'fnv_i')
         builder.store(ir.Constant(i64, 0xCBF29CE484222325), hash_ptr)
         builder.store(zero64, idx_ptr)
         cond = self.pyobj_hash.append_basic_block("fnv_cond")
@@ -2102,8 +2102,8 @@ class SiluToLLVMConverter:
         # insert into (miss, reusing the first tombstone seen).
         self.dict_find_probe = ir.Function(
             self.module,
-            ir.FunctionType(i64, [pyobj_ptr, pyobj_ptr, ir.PointerType(i64)]),
-            name="dict_find_probe",
+            ir.FunctionType(i64, [pyobj_ptr, pyobj_ptr, ir.PointerType(i64)]), 'dict_find_probe',
+
         )
         entry = self.dict_find_probe.append_basic_block("entry")
         probe_cond = self.dict_find_probe.append_basic_block("probe_cond")
@@ -2116,8 +2116,8 @@ class SiluToLLVMConverter:
         dict_arg, key_arg, out_slot_arg = self.dict_find_probe.args
         _, _, _, mask, itable, entries = load_dict_parts(builder, dict_arg)
         hash_val = builder.call(self.pyobj_hash, [key_arg])
-        slot_ptr = builder.alloca(i64, name="probe_slot")
-        tomb_ptr = builder.alloca(i64, name="probe_tomb")
+        slot_ptr = builder.alloca(i64, None, 'probe_slot')
+        tomb_ptr = builder.alloca(i64, None, 'probe_tomb')
         builder.store(builder.and_(hash_val, mask), slot_ptr)
         builder.store(ir.Constant(i64, -1), tomb_ptr)
         builder.branch(probe_cond)
@@ -2164,8 +2164,8 @@ class SiluToLLVMConverter:
         # void dict_rehash(PyObject* d) - double the table, compact entries
         self.dict_rehash = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr]),
-            name="dict_rehash",
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr]), 'dict_rehash',
+
         )
         entry = self.dict_rehash.append_basic_block("entry")
         scan_cond = self.dict_rehash.append_basic_block("reh_scan_cond")
@@ -2192,8 +2192,8 @@ class SiluToLLVMConverter:
             self.malloc, [builder.mul(new_cap, ir.Constant(i64, 16))]
         )
         new_entries = builder.bitcast(new_entries, self.dict_entries_ptr_type)
-        j_ptr = builder.alloca(i64, name="reh_j")
-        i_ptr = builder.alloca(i64, name="reh_i")
+        j_ptr = builder.alloca(i64, None, 'reh_j')
+        i_ptr = builder.alloca(i64, None, 'reh_i')
         builder.store(zero64, j_ptr)
         builder.store(zero64, i_ptr)
         builder.branch(scan_cond)
@@ -2216,7 +2216,7 @@ class SiluToLLVMConverter:
         builder.position_at_end(scan_live)
         old_value = builder.load(builder.gep(old_entry, [zero32, one32]))
         key_hash = builder.call(self.pyobj_hash, [old_key])
-        place_ptr = builder.alloca(i64, name="reh_s")
+        place_ptr = builder.alloca(i64, None, 'reh_s')
         builder.store(builder.and_(key_hash, new_mask), place_ptr)
         builder.branch(place_cond)
 
@@ -2253,7 +2253,7 @@ class SiluToLLVMConverter:
 
         # PyObject* create_dict()
         self.create_dict = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, []), name="create_dict"
+            self.module, ir.FunctionType(pyobj_ptr, []), 'create_dict'
         )
         builder = ir.IRBuilder(self.create_dict.append_basic_block("entry"))
         obj_ptr = builder.call(self.malloc, [ir.Constant(i64, 16)])
@@ -2287,8 +2287,8 @@ class SiluToLLVMConverter:
         # PyObject* dict_get_or(PyObject* d, PyObject* key, PyObject* default)
         self.dict_get_or = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
-            name="dict_get_or",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]), 'dict_get_or',
+
         )
         entry = self.dict_get_or.append_basic_block("entry")
         found_block = self.dict_get_or.append_basic_block("found")
@@ -2296,7 +2296,7 @@ class SiluToLLVMConverter:
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg, default_arg = self.dict_get_or.args
         _, _, _, _, _, entries = load_dict_parts(builder, dict_arg)
-        out_slot = builder.alloca(i64, name="get_slot")
+        out_slot = builder.alloca(i64, None, 'get_slot')
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
         hit = builder.icmp_signed(">=", found, zero64)
         builder.cbranch(hit, found_block, missing_block)
@@ -2311,8 +2311,8 @@ class SiluToLLVMConverter:
         # void dict_set(PyObject* d, PyObject* key, PyObject* value)
         self.dict_set = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
-            name="dict_set",
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]), 'dict_set',
+
         )
         entry = self.dict_set.append_basic_block("entry")
         capacity_check = self.dict_set.append_basic_block("capacity_check")
@@ -2325,7 +2325,7 @@ class SiluToLLVMConverter:
         struct_ptr, count, used, mask, itable, entries = load_dict_parts(
             builder, dict_arg
         )
-        out_slot = builder.alloca(i64, name="set_slot")
+        out_slot = builder.alloca(i64, None, 'set_slot')
         # grow the table BEFORE probing at 2/3 load, not at full: a
         # table that becomes exactly full after this insert would send
         # the NEXT read-side probe (dict_get on a missing key never
@@ -2371,8 +2371,8 @@ class SiluToLLVMConverter:
         # PyObject* dict_pop(PyObject* d, PyObject* key)
         self.dict_pop = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
-            name="dict_pop",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]), 'dict_pop',
+
         )
         entry = self.dict_pop.append_basic_block("entry")
         found_block = self.dict_pop.append_basic_block("found")
@@ -2382,7 +2382,7 @@ class SiluToLLVMConverter:
         struct_ptr, count, used, mask, itable, entries = load_dict_parts(
             builder, dict_arg
         )
-        out_slot = builder.alloca(i64, name="pop_slot")
+        out_slot = builder.alloca(i64, None, 'pop_slot')
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
         hit = builder.icmp_signed(">=", found, zero64)
         builder.cbranch(hit, found_block, missing_block)
@@ -2407,8 +2407,8 @@ class SiluToLLVMConverter:
         # str substring via str_find, list elements via pyobj_eq scan.
         self.pyobj_contains = ir.Function(
             self.module,
-            ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr]),
-            name="pyobj_contains",
+            ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr]), 'pyobj_contains',
+
         )
         entry = self.pyobj_contains.append_basic_block("entry")
         str_check_block = self.pyobj_contains.append_basic_block("str_check")
@@ -2439,7 +2439,7 @@ class SiluToLLVMConverter:
         builder.cbranch(is_list, list_case, type_error)
 
         builder.position_at_end(dict_case)
-        out_slot = builder.alloca(i64, name="contains_slot")
+        out_slot = builder.alloca(i64, None, 'contains_slot')
         found = builder.call(
             self.dict_find_probe, [container_arg, item_arg, out_slot]
         )
@@ -2457,7 +2457,7 @@ class SiluToLLVMConverter:
         )
         list_len = builder.load(builder.gep(list_ptr, [zero32, zero32]))
         items = builder.load(builder.gep(list_ptr, [zero32, ir.Constant(i32, 2)]))
-        idx_ptr = builder.alloca(i64, name="contains_i")
+        idx_ptr = builder.alloca(i64, None, 'contains_i')
         builder.store(zero64, idx_ptr)
         builder.branch(list_cond)
 
@@ -2494,8 +2494,8 @@ class SiluToLLVMConverter:
         # bool True/False, str identity, null/None the string "None".
         self.pyobj_str_conv = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr]),
-            name="pyobj_str_conv",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr]), 'pyobj_str_conv',
+
         )
         entry = self.pyobj_str_conv.append_basic_block("entry")
         float_case = self.pyobj_str_conv.append_basic_block("str_float")
@@ -2565,14 +2565,14 @@ class SiluToLLVMConverter:
         # Python input() semantics: trailing newline stripped
         i8p = ir.PointerType(ir.IntType(8))
         self.getchar = ir.Function(
-            self.module, ir.FunctionType(i32, []), name="getchar"
+            self.module, ir.FunctionType(i32, []), 'getchar'
         )
         if self.realloc is None:
             self.realloc = ir.Function(
-                self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
+                self.module, ir.FunctionType(i8p, [i8p, i64]), 'realloc'
             )
         self.pyobj_input = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, []), name="pyobj_input"
+            self.module, ir.FunctionType(pyobj_ptr, []), 'pyobj_input'
         )
         entry = self.pyobj_input.append_basic_block("entry")
         read_cond = self.pyobj_input.append_basic_block("read_cond")
@@ -2580,9 +2580,9 @@ class SiluToLLVMConverter:
         eof_block = self.pyobj_input.append_basic_block("read_eof")
         builder = ir.IRBuilder(entry)
         # dynamic byte buffer, geometric growth
-        cap_ptr = builder.alloca(i64, name="in_cap")
-        len_ptr = builder.alloca(i64, name="in_len")
-        buf_ptr = builder.alloca(i8p, name="in_buf")
+        cap_ptr = builder.alloca(i64, None, 'in_cap')
+        len_ptr = builder.alloca(i64, None, 'in_len')
+        buf_ptr = builder.alloca(i8p, None, 'in_buf')
         builder.store(ir.Constant(i64, 64), cap_ptr)
         builder.store(zero64, len_ptr)
         builder.store(builder.call(self.malloc, [ir.Constant(i64, 64)]), buf_ptr)
@@ -2632,7 +2632,7 @@ class SiluToLLVMConverter:
         # PyObject* pyobj_read_stdin() - read stdin to EOF (keeps
         # newlines, unlike input(); Rust io::read_to_string)
         self.pyobj_read_stdin = ir.Function(
-            self.module, ir.FunctionType(pyobj_ptr, []), name="pyobj_read_stdin"
+            self.module, ir.FunctionType(pyobj_ptr, []), 'pyobj_read_stdin'
         )
         entry = self.pyobj_read_stdin.append_basic_block("entry")
         rs_cond = self.pyobj_read_stdin.append_basic_block("rs_cond")
@@ -2641,9 +2641,9 @@ class SiluToLLVMConverter:
         rs_store = self.pyobj_read_stdin.append_basic_block("rs_store")
         rs_done = self.pyobj_read_stdin.append_basic_block("rs_done")
         builder = ir.IRBuilder(entry)
-        cap_ptr = builder.alloca(i64, name="rs_cap")
-        len_ptr = builder.alloca(i64, name="rs_len")
-        buf_ptr = builder.alloca(i8p, name="rs_buf")
+        cap_ptr = builder.alloca(i64, None, 'rs_cap')
+        len_ptr = builder.alloca(i64, None, 'rs_len')
+        buf_ptr = builder.alloca(i8p, None, 'rs_buf')
         builder.store(ir.Constant(i64, 4096), cap_ptr)
         builder.store(zero64, len_ptr)
         builder.store(builder.call(self.malloc, [ir.Constant(i64, 4096)]), buf_ptr)
@@ -2689,29 +2689,29 @@ class SiluToLLVMConverter:
         # whole file (Rust fs::read_to_string); missing file panics
         self.fopen = ir.Function(
             self.module,
-            ir.FunctionType(i8p, [i8p, i8p]),
-            name="fopen",
+            ir.FunctionType(i8p, [i8p, i8p]), 'fopen',
+
         )
         self.fread = ir.Function(
             self.module,
-            ir.FunctionType(i64, [i8p, i64, i64, i8p]),
-            name="fread",
+            ir.FunctionType(i64, [i8p, i64, i64, i8p]), 'fread',
+
         )
         self.fseek = ir.Function(
             self.module,
-            ir.FunctionType(i32, [i8p, i64, i32]),
-            name="fseek",
+            ir.FunctionType(i32, [i8p, i64, i32]), 'fseek',
+
         )
         self.ftell = ir.Function(
-            self.module, ir.FunctionType(i64, [i8p]), name="ftell"
+            self.module, ir.FunctionType(i64, [i8p]), 'ftell'
         )
         self.fclose = ir.Function(
-            self.module, ir.FunctionType(i32, [i8p]), name="fclose"
+            self.module, ir.FunctionType(i32, [i8p]), 'fclose'
         )
         self.pyobj_read_file = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [i8p, i64]),
-            name="pyobj_read_file",
+            ir.FunctionType(pyobj_ptr, [i8p, i64]), 'pyobj_read_file',
+
         )
         entry = self.pyobj_read_file.append_basic_block("entry")
         open_fail = self.pyobj_read_file.append_basic_block("rf_fail")
@@ -2762,8 +2762,8 @@ class SiluToLLVMConverter:
         # so the path is copied first
         self.path_exists = ir.Function(
             self.module,
-            ir.FunctionType(ir.IntType(1), [i8p, i64]),
-            name="silu_path_exists",
+            ir.FunctionType(ir.IntType(1), [i8p, i64]), 'silu_path_exists',
+
         )
         pe_entry = self.path_exists.append_basic_block("pe_entry")
         pe_yes = self.path_exists.append_basic_block("pe_yes")
@@ -2793,8 +2793,8 @@ class SiluToLLVMConverter:
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr]),
-            name="dict_clear_entries",
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr]), 'dict_clear_entries',
+
         )
         entry = self.dict_clear_entries.append_basic_block("entry")
         wipe_cond = self.dict_clear_entries.append_basic_block("wipe_cond")
@@ -2805,7 +2805,7 @@ class SiluToLLVMConverter:
         struct_ptr, _, _, mask, itable, _ = load_dict_parts(builder, dict_arg)
         builder.store(zero64, dict_field(builder, struct_ptr, 0))
         builder.store(zero64, dict_field(builder, struct_ptr, 1))
-        wipe_idx = builder.alloca(i64, name="wipe_i")
+        wipe_idx = builder.alloca(i64, None, 'wipe_i')
         builder.store(zero64, wipe_idx)
         builder.branch(wipe_cond)
 
@@ -2825,8 +2825,8 @@ class SiluToLLVMConverter:
         # PyObject* dict_setdefault(PyObject* d, PyObject* key, PyObject* default)
         self.dict_setdefault = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
-            name="dict_setdefault",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr]), 'dict_setdefault',
+
         )
         entry = self.dict_setdefault.append_basic_block("entry")
         found_block = self.dict_setdefault.append_basic_block("found")
@@ -2834,7 +2834,7 @@ class SiluToLLVMConverter:
         builder = ir.IRBuilder(entry)
         dict_arg, key_arg, default_arg = self.dict_setdefault.args
         _, _, _, _, _, entries = load_dict_parts(builder, dict_arg)
-        out_slot = builder.alloca(i64, name="sd_slot")
+        out_slot = builder.alloca(i64, None, 'sd_slot')
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
         hit = builder.icmp_signed(">=", found, zero64)
         builder.cbranch(hit, found_block, insert_block)
@@ -2851,8 +2851,8 @@ class SiluToLLVMConverter:
         # src may be a dict (copy live entries) or a list of [k, v] pairs
         self.dict_update = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr]),
-            name="dict_update",
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr]), 'dict_update',
+
         )
         entry = self.dict_update.append_basic_block("entry")
         src_tag_check = self.dict_update.append_basic_block("upd_src_check")
@@ -2877,7 +2877,7 @@ class SiluToLLVMConverter:
         pair_items = builder.load(
             builder.gep(list_struct_ptr, [zero32, ir.Constant(i32, 2)])
         )
-        pair_idx = builder.alloca(i64, name="upd_pair_i")
+        pair_idx = builder.alloca(i64, None, 'upd_pair_i')
         builder.store(zero64, pair_idx)
         builder.branch(pair_loop_check)
 
@@ -2904,7 +2904,7 @@ class SiluToLLVMConverter:
         # dict source: copy all live entries
         builder.position_at_end(src_tag_check)
         _, _, src_used, _, _, src_entries = load_dict_parts(builder, src_arg)
-        upd_idx = builder.alloca(i64, name="upd_i")
+        upd_idx = builder.alloca(i64, None, 'upd_i')
         builder.store(zero64, upd_idx)
         builder.branch(loop_check)
 
@@ -2937,8 +2937,8 @@ class SiluToLLVMConverter:
         # out-of-range panics IndexError (byte semantics, ASCII-exact)
         self.pyobj_str_char_at = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
-            name="pyobj_str_char_at",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]), 'pyobj_str_char_at',
+
         )
         entry = self.pyobj_str_char_at.append_basic_block("entry")
         ok_block = self.pyobj_str_char_at.append_basic_block("ok")
@@ -2982,8 +2982,8 @@ class SiluToLLVMConverter:
             self.module,
             ir.FunctionType(
                 pyobj_ptr, [pyobj_ptr, i64, i64, i64, ir.IntType(1), ir.IntType(1)]
-            ),
-            name="pyobj_str_slice",
+            ), 'pyobj_str_slice',
+
         )
         entry = self.pyobj_str_slice.append_basic_block("entry")
         step_ok = self.pyobj_str_slice.append_basic_block("step_ok")
@@ -3068,7 +3068,7 @@ class SiluToLLVMConverter:
             builder.icmp_signed(">", count, zero64), count, one64
         )
         out_buf = builder.call(self.malloc, [alloc_len])
-        idx_ptr = builder.alloca(i64, name="slice_i")
+        idx_ptr = builder.alloca(i64, None, 'slice_i')
         builder.store(zero64, idx_ptr)
         builder.branch(copy_cond)
 
@@ -3097,8 +3097,8 @@ class SiluToLLVMConverter:
         # tag dispatch: 4 -> list_get, 5 -> dict_get_or(key, null)
         self.pyobj_subscript = ir.Function(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]),
-            name="pyobj_subscript",
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr]), 'pyobj_subscript',
+
         )
         entry = self.pyobj_subscript.append_basic_block("entry")
         list_block = self.pyobj_subscript.append_basic_block("sub_list")
@@ -3130,7 +3130,7 @@ class SiluToLLVMConverter:
         builder.position_at_end(dict_do)
         # d[k] on a missing key is a KeyError (Python raises, Rust panics);
         # .get() with its default goes through dict_get_or instead
-        out_slot = builder.alloca(ir.IntType(64), name="sub_slot")
+        out_slot = builder.alloca(ir.IntType(64), None, 'sub_slot')
         found = builder.call(self.dict_find_probe, [obj_arg, key_arg, out_slot])
         is_hit = builder.icmp_signed(">=", found, ir.Constant(ir.IntType(64), 0))
         hit_block = self.pyobj_subscript.append_basic_block("sub_dict_hit")
@@ -3160,8 +3160,8 @@ class SiluToLLVMConverter:
         # void pyobj_subscript_set(PyObject* obj, PyObject* key, PyObject* value)
         self.pyobj_subscript_set = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]),
-            name="pyobj_subscript_set",
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr, pyobj_ptr]), 'pyobj_subscript_set',
+
         )
         entry = self.pyobj_subscript_set.append_basic_block("entry")
         list_block = self.pyobj_subscript_set.append_basic_block("sub_list")
@@ -3195,8 +3195,8 @@ class SiluToLLVMConverter:
         # void pyobj_clear(PyObject* obj) - clear() for lists and dicts
         self.pyobj_clear = ir.Function(
             self.module,
-            ir.FunctionType(ir.VoidType(), [pyobj_ptr]),
-            name="pyobj_clear",
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr]), 'pyobj_clear',
+
         )
         entry = self.pyobj_clear.append_basic_block("entry")
         list_case = self.pyobj_clear.append_basic_block("clear_list")
@@ -3247,8 +3247,8 @@ class SiluToLLVMConverter:
                     ir.PointerType(self.pyobj.pyobj_type),
                     ir.PointerType(self.pyobj.pyobj_type),
                 ],
-            ),
-            name="str_repeat",
+            ), 'str_repeat',
+
         )
         builder = ir.IRBuilder(self.str_repeat.append_basic_block("entry"))
         s_arg, count_arg = self.str_repeat.args
@@ -3263,7 +3263,7 @@ class SiluToLLVMConverter:
         )
         total = builder.mul(s_len, repeat)
         buf = builder.call(self.malloc, [builder.add(total, one64)])
-        idx_ptr = builder.alloca(i64, name="rep_i")
+        idx_ptr = builder.alloca(i64, None, 'rep_i')
         builder.store(zero64, idx_ptr)
         cond = self.str_repeat.append_basic_block("rep_cond")
         body = self.str_repeat.append_basic_block("rep_body")
@@ -3309,7 +3309,7 @@ class SiluToLLVMConverter:
         f64 = ir.DoubleType()
         i8p = ir.PointerType(ir.IntType(8))
         repr_ty = ir.FunctionType(i8p, [f64])
-        func = ir.Function(self.module, repr_ty, name="float_repr")
+        func = ir.Function(self.module, repr_ty, 'float_repr')
 
         entry = func.append_basic_block("entry")
         retry = func.append_basic_block("retry")
@@ -3426,7 +3426,7 @@ class SiluToLLVMConverter:
                 ir.PointerType(self.pyobj.pyobj_type),
             ],
         )
-        func = ir.Function(self.module, func_ty, name=f"pyobj_{func_name}")
+        func = ir.Function(self.module, func_ty, f'pyobj_{func_name}')
 
         entry_block = func.append_basic_block("entry")
         num_check_block = func.append_basic_block("num_check")
@@ -3587,7 +3587,7 @@ class SiluToLLVMConverter:
                 ir.PointerType(self.pyobj.pyobj_type),
             ],
         )
-        func = ir.Function(self.module, func_ty, name=f"pyobj_{func_name}")
+        func = ir.Function(self.module, func_ty, f'pyobj_{func_name}')
 
         entry_block = func.append_basic_block("entry")
         num_check_block = func.append_basic_block("num_check")
@@ -3800,15 +3800,15 @@ class SiluToLLVMConverter:
             overflow_ty, [ir.IntType(64), ir.IntType(64)]
         )
         self.sadd_overflow = ir.Function(
-            self.module, sadd_overflow_ty, name="llvm.sadd.with.overflow.i64"
+            self.module, sadd_overflow_ty, 'llvm.sadd.with.overflow.i64'
         )
 
         # signed sub and mul with overflow detection (Rust panic semantics)
         self.ssub_overflow = ir.Function(
-            self.module, sadd_overflow_ty, name="llvm.ssub.with.overflow.i64"
+            self.module, sadd_overflow_ty, 'llvm.ssub.with.overflow.i64'
         )
         self.smul_overflow = ir.Function(
-            self.module, sadd_overflow_ty, name="llvm.smul.with.overflow.i64"
+            self.module, sadd_overflow_ty, 'llvm.smul.with.overflow.i64'
         )
         self.overflow_intrinsics = {
             "sub": self.ssub_overflow,
@@ -3837,7 +3837,7 @@ class SiluToLLVMConverter:
 
         # Create global variable
         global_str = ir.GlobalVariable(
-            self.module, string_type, name=f"str_{len(self.module.globals)}"
+            self.module, string_type, f'str_{len(self.module.globals)}'
         )
         global_str.global_constant = True
         global_str.initializer = ir.Constant(string_type, string_bytes)
@@ -3886,7 +3886,7 @@ class SiluToLLVMConverter:
         self._create_function_declarations()
 
         main_ty = ir.FunctionType(ir.IntType(32), [])
-        main_func = ir.Function(self.module, main_ty, name="main")
+        main_func = ir.Function(self.module, main_ty, 'main')
         self.current_function = main_func
 
         entry_block = main_func.append_basic_block("entry")
@@ -3965,7 +3965,7 @@ class SiluToLLVMConverter:
             func_ty = ir.FunctionType(
                 ir.PointerType(self.pyobj.pyobj_type), param_types
             )
-            func = ir.Function(self.module, func_ty, name=func_name)
+            func = ir.Function(self.module, func_ty, func_name)
             self.functions[func_name] = func
 
     def _generate_function_bodies(self):
@@ -4018,7 +4018,7 @@ class SiluToLLVMConverter:
         end_block = self.current_function.append_basic_block("iter_end")
 
         # Raw i64 index counter
-        counter_ptr = builder.alloca(i64, name="iter_idx")
+        counter_ptr = builder.alloca(i64, None, 'iter_idx')
         builder.store(ir.Constant(i64, 0), counter_ptr)
         list_len = builder.call(self.pyobj_iter_len, [list_obj])
         builder.branch(cond_block)
@@ -4040,7 +4040,7 @@ class SiluToLLVMConverter:
             var_name = target_node[1]
             if var_name not in self.variables:
                 self.variables[var_name] = builder.alloca(
-                    ir.PointerType(self.pyobj.pyobj_type), name=var_name
+                    ir.PointerType(self.pyobj.pyobj_type), None, var_name
                 )
             item = builder.call(
                 self.pyobj_subscript,
@@ -4143,7 +4143,7 @@ class SiluToLLVMConverter:
                 # Create alloca if variable doesn't exist
                 if target not in self.variables:
                     self.variables[target] = self.current_builder.alloca(
-                        ir.PointerType(self.pyobj.pyobj_type), name=target
+                        ir.PointerType(self.pyobj.pyobj_type), None, target
                     )
                 # Store the value
                 self.current_builder.store(value, self.variables[target])
@@ -4226,7 +4226,7 @@ class SiluToLLVMConverter:
             is_and = op == "and"
             null_const = ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None)
             result_ptr = builder.alloca(
-                ir.PointerType(self.pyobj.pyobj_type), name="sc_result"
+                ir.PointerType(self.pyobj.pyobj_type), None, 'sc_result'
             )
             end_block = self.current_function.append_basic_block("sc_end")
 
@@ -4693,7 +4693,7 @@ class SiluToLLVMConverter:
                     # Create alloca if variable doesn't exist
                     if var_name not in self.variables:
                         self.variables[var_name] = self.current_builder.alloca(
-                            ir.PointerType(self.pyobj.pyobj_type), name=var_name
+                            ir.PointerType(self.pyobj.pyobj_type), None, var_name
                         )
                     # Store current iteration value
                     current_iter_val = self.current_builder.load(counter_ptr)
@@ -4768,7 +4768,7 @@ class SiluToLLVMConverter:
                             # Create alloca if variable doesn't exist
                             if target not in self.variables:
                                 self.variables[target] = self.current_builder.alloca(
-                                    ir.PointerType(self.pyobj.pyobj_type), name=target
+                                    ir.PointerType(self.pyobj.pyobj_type), None, target
                                 )
                             # Store the value
                             self.current_builder.store(
@@ -4953,7 +4953,7 @@ class SiluToLLVMConverter:
             if i < len(func.args):
                 # Create alloca for parameter and store the argument value
                 param_alloca = self.current_builder.alloca(
-                    ir.PointerType(self.pyobj.pyobj_type), name=param_name
+                    ir.PointerType(self.pyobj.pyobj_type), None, param_name
                 )
                 self.current_builder.store(func.args[i], param_alloca)
                 self.variables[param_name] = param_alloca
