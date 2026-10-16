@@ -40,6 +40,67 @@ class PyObject:
         )
 
 
+def _dict_field(builder, struct_ptr, index):
+    return builder.gep(
+        struct_ptr,
+        [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), index)],
+    )
+
+def _normalize_ir(node: Any) -> Any:
+    """Recursively convert tuple IR nodes to lists.
+
+    parse_ir_from_json_string returns tuple structures, while node
+    dispatch in this converter expects lists.
+    """
+    if isinstance(node, (list, tuple)):
+        out = []
+        for item in node:
+            out.append(_normalize_ir(item))
+        return out
+    return node
+
+
+def _py_mod_apply(builder, left_val, right_val):
+    """Python modulo: result has the sign of the divisor."""
+    i64 = ir.IntType(64)
+    zero = ir.const_(i64, 0)
+    r = builder.srem(left_val, right_val)
+    r_ne_zero = builder.icmp_signed("!=", r, zero)
+    r_negative = builder.icmp_signed("<", r, zero)
+    right_negative = builder.icmp_signed("<", right_val, zero)
+    signs_differ = builder.xor(r_negative, right_negative)
+    adjust = builder.and_(r_ne_zero, signs_differ)
+    adj_val = builder.select(adjust, right_val, zero)
+    return builder.add(r, adj_val)
+
+
+def _floor_div_apply(builder, left_val, right_val):
+    """Python floor division: rounds toward negative infinity."""
+    i64 = ir.IntType(64)
+    zero = ir.const_(i64, 0)
+    q = builder.sdiv(left_val, right_val)
+    r = builder.srem(left_val, right_val)
+    r_ne_zero = builder.icmp_signed("!=", r, zero)
+    r_negative = builder.icmp_signed("<", r, zero)
+    right_negative = builder.icmp_signed("<", right_val, zero)
+    signs_differ = builder.xor(r_negative, right_negative)
+    adjust = builder.and_(r_ne_zero, signs_differ)
+    adj_val = builder.select(adjust, ir.const_(i64, -1), zero)
+    return builder.add(q, adj_val)
+
+
+def _is_numeric_tag(builder, tag):
+    """True if the tag is int (0), float (1), or bool (3)."""
+    i32 = ir.IntType(32)
+    return builder.or_(
+        builder.icmp_signed("==", tag, ir.const_(i32, 0)),
+        builder.or_(
+            builder.icmp_signed("==", tag, ir.const_(i32, 1)),
+            builder.icmp_signed("==", tag, ir.const_(i32, 3)),
+        ),
+    )
+
+
 class SiluToLLVMConverter:
     """Converts Silu IR to LLVM IR."""
 
@@ -489,8 +550,8 @@ class SiluToLLVMConverter:
 
         # Ints, bools and floats take the numeric path (bool coerces to int)
         both_numeric_cond = builder.and_(
-            self._is_numeric_tag(builder, left_tag),
-            self._is_numeric_tag(builder, right_tag),
+            _is_numeric_tag(builder, left_tag),
+            _is_numeric_tag(builder, right_tag),
         )
 
         float_check_block = self.pyobj_add.append_basic_block("float_check")
@@ -650,16 +711,8 @@ class SiluToLLVMConverter:
         zero32 = ir.const_(ir.IntType(32), 0)
         one32 = ir.const_(ir.IntType(32), 1)
 
-        def load_string_parts(obj):
-            data_ptr = builder.gep(obj, [zero32, one32])
-            data = builder.load(data_ptr)
-            str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
-            str_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
-            chars = builder.load(builder.gep(str_struct, [zero32, one32]))
-            return str_len, chars
-
-        left_len, left_chars = load_string_parts(left)
-        right_len, right_chars = load_string_parts(right)
+        left_len, left_chars = self._pyobj_string_parts(builder, left, zero32, one32)
+        right_len, right_chars = self._pyobj_string_parts(builder, right, zero32, one32)
         left_len64 = builder.zext(left_len, ir.IntType(64))
         right_len64 = builder.zext(right_len, ir.IntType(64))
         total_len = builder.add(left_len64, right_len64)
@@ -688,50 +741,49 @@ class SiluToLLVMConverter:
         self._create_str_repeat_runtime()
         self.pyobj_sub = self._create_numeric_binary_function(
             "sub",
-            int_apply=lambda b, left, right: b.sub(left, right),
-            float_apply=lambda b, left, right: b.fsub(left, right),
-            overflow_check=True,
+            lambda b, left, right: b.sub(left, right),
+            lambda b, left, right: b.fsub(left, right),
+            None,
+            False,
+            True,
         )
         self.pyobj_mul = self._create_numeric_binary_function(
             "mul",
-            int_apply=lambda b, left, right: b.mul(left, right),
-            float_apply=lambda b, left, right: b.fmul(left, right),
-            str_int_apply=lambda b, s, n: b.call(self.str_repeat, [s, n]),
-            overflow_check=True,
+            lambda b, left, right: b.mul(left, right),
+            lambda b, left, right: b.fmul(left, right),
+            lambda b, s, n: b.call(self.str_repeat, [s, n]),
+            False,
+            True,
         )
         # Python true division always returns a float
         self.pyobj_truediv = self._create_numeric_binary_function(
             "truediv",
-            float_apply=lambda b, left, right: b.fdiv(left, right),
-            zero_check=True,
+            None,
+            lambda b, left, right: b.fdiv(left, right),
+            None,
+            True,
+            False,
         )
         self.pyobj_floordiv = self._create_numeric_binary_function(
             "floordiv",
-            int_apply=self._floor_div_apply,
-            float_apply=self._float_floordiv_apply,
-            zero_check=True,
+            _floor_div_apply,
+            self._float_floordiv_apply,
+            None,
+            True,
+            False,
         )
         self.pyobj_mod = self._create_numeric_binary_function(
             "mod",
-            int_apply=self._py_mod_apply,
-            float_apply=self._float_mod_apply,
-            zero_check=True,
+            _py_mod_apply,
+            self._float_mod_apply,
+            None,
+            True,
+            False,
         )
 
         # Create print function for PyObjects
         self._create_pyobj_print()
 
-    @staticmethod
-    def _is_numeric_tag(builder, tag):
-        """True if the tag is int (0), float (1), or bool (3)."""
-        i32 = ir.IntType(32)
-        return builder.or_(
-            builder.icmp_signed("==", tag, ir.const_(i32, 0)),
-            builder.or_(
-                builder.icmp_signed("==", tag, ir.const_(i32, 1)),
-                builder.icmp_signed("==", tag, ir.const_(i32, 3)),
-            ),
-        )
 
     def _load_number_as_i64(self, builder, obj):
         """Load the payload of an int/bool PyObject as an i64."""
@@ -777,34 +829,273 @@ class SiluToLLVMConverter:
         adjust = builder.and_(r_ne_zero, signs_differ)
         return builder.select(adjust, builder.fadd(remainder, right_val), remainder)
 
-    @staticmethod
-    def _floor_div_apply(builder, left_val, right_val):
-        """Python floor division: rounds toward negative infinity."""
-        i64 = ir.IntType(64)
-        zero = ir.const_(i64, 0)
-        q = builder.sdiv(left_val, right_val)
-        r = builder.srem(left_val, right_val)
-        r_ne_zero = builder.icmp_signed("!=", r, zero)
-        r_negative = builder.icmp_signed("<", r, zero)
-        right_negative = builder.icmp_signed("<", right_val, zero)
-        signs_differ = builder.xor(r_negative, right_negative)
-        adjust = builder.and_(r_ne_zero, signs_differ)
-        adj_val = builder.select(adjust, ir.const_(i64, -1), zero)
-        return builder.add(q, adj_val)
 
-    @staticmethod
-    def _py_mod_apply(builder, left_val, right_val):
-        """Python modulo: result has the sign of the divisor."""
-        i64 = ir.IntType(64)
-        zero = ir.const_(i64, 0)
-        r = builder.srem(left_val, right_val)
-        r_ne_zero = builder.icmp_signed("!=", r, zero)
-        r_negative = builder.icmp_signed("<", r, zero)
-        right_negative = builder.icmp_signed("<", right_val, zero)
-        signs_differ = builder.xor(r_negative, right_negative)
-        adjust = builder.and_(r_ne_zero, signs_differ)
-        adj_val = builder.select(adjust, right_val, zero)
-        return builder.add(r, adj_val)
+
+    def _pyobj_string_parts(self, builder, obj, zero32, one32):
+        data_ptr = builder.gep(obj, [zero32, one32])
+        data = builder.load(data_ptr)
+        str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
+        str_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
+        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        return str_len, chars
+
+
+    def _for_i64_loop(self, i64, builder, func, prefix, start, stop):
+        """Emit a counting loop header; caller fills body, then closes."""
+        idx_ptr = builder.alloca(i64, None, f'{prefix}_i')
+        builder.store(start, idx_ptr)
+        cond = func.append_basic_block(f"{prefix}_cond")
+        body = func.append_basic_block(f"{prefix}_body")
+        done = func.append_basic_block(f"{prefix}_done")
+        builder.branch(cond)
+        builder.position_at_end(cond)
+        current = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", current, stop)
+        builder.cbranch(more, body, done)
+        builder.position_at_end(body)
+        return idx_ptr, cond, body, done
+
+
+    def _close_i64_loop(self, builder, idx_ptr, cond, one64):
+        builder.store(builder.add(builder.load(idx_ptr), one64), idx_ptr)
+        builder.branch(cond)
+
+
+    def _list_parts(self, builder, func, obj, prefix):
+        """Return (struct_ptr, length, items) with items loop-ready."""
+        zero32 = ir.const_(ir.IntType(32), 0)
+        struct_ptr = self._load_list_struct(builder, obj)
+        length = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
+        items = builder.load(builder.gep(struct_ptr, [zero32, ir.const_(ir.IntType(32), 2)]))
+        return struct_ptr, length, items
+
+
+    def _emit_case_fold(self, builder, func, to_upper, i32, i64, one32, one64, zero32, zero64):
+        (obj_arg,) = func.args
+        data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
+        length = builder.load(builder.gep(str_struct, [zero32, zero32]))
+        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        buf = builder.call(
+            self.malloc, [builder.add(builder.sext(length, i64), one64)]
+        )
+        idx_ptr, cond, body, done = self._for_i64_loop(i64, 
+            builder, func, "fold", zero64, builder.sext(length, i64)
+        )
+        ch = builder.load(builder.gep(chars, [builder.load(idx_ptr)]))
+        ch32 = builder.sext(ch, i32)
+        if to_upper:
+            in_range = builder.and_(
+                builder.icmp_signed(">=", ch32, ir.const_(i32, 97)),
+                builder.icmp_signed("<=", ch32, ir.const_(i32, 122)),
+            )
+            folded = builder.select(
+                in_range, builder.sub(ch, ir.const_(ir.IntType(8), 32)), ch
+            )
+        else:
+            in_range = builder.and_(
+                builder.icmp_signed(">=", ch32, ir.const_(i32, 65)),
+                builder.icmp_signed("<=", ch32, ir.const_(i32, 90)),
+            )
+            folded = builder.select(
+                in_range, builder.add(ch, ir.const_(ir.IntType(8), 32)), ch
+            )
+        builder.store(folded, builder.gep(buf, [builder.load(idx_ptr)]))
+        self._close_i64_loop(builder, idx_ptr, cond, one64)
+        builder.position_at_end(done)
+        builder.store(
+            ir.const_(ir.IntType(8), 0),
+            builder.gep(buf, [builder.sext(length, i64)]),
+        )
+        builder.ret(builder.call(self.create_str, [buf, length]))
+
+
+    def _emit_str_pred(self, name, lo_hi_pairs, extra_bytes, i64, one32, one64, zero32, zero64, pyobj_ptr):
+        """str.isdigit/isalpha/isspace for boxed strings (ASCII
+        approximation of Python's Unicode classes; empty -> False)."""
+        func = ir.func_(
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), name
+        )
+        builder = ir.builder_(func.append_basic_block("entry"))
+        data = builder.load(builder.gep(func.args[0], [zero32, one32]))
+        str_struct = builder.bitcast(
+            data, ir.PointerType(self.pyobj.string_type)
+        )
+        length = builder.sext(
+            builder.load(builder.gep(str_struct, [zero32, zero32])), i64
+        )
+        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        empty = builder.icmp_signed("==", length, zero64)
+        ret_bool = func.append_basic_block("pred_ret")
+        loop = func.append_basic_block("pred_loop")
+        builder.cbranch(empty, ret_bool, loop)
+
+        builder.position_at_end(loop)
+        idx_ptr = builder.alloca(i64, None, 'pred_i')
+        builder.store(zero64, idx_ptr)
+        cond = func.append_basic_block("pred_cond")
+        body = func.append_basic_block("pred_body")
+        false_block = func.append_basic_block("pred_false")
+        step = func.append_basic_block("pred_step")
+        builder.branch(cond)
+
+        builder.position_at_end(cond)
+        builder.cbranch(
+            builder.icmp_signed("<", builder.load(idx_ptr), length),
+            body,
+            ret_bool,
+        )
+
+        builder.position_at_end(body)
+        byte = builder.load(builder.gep(chars, [builder.load(idx_ptr)]))
+        matched = ir.const_(ir.IntType(1), 0)
+        for lo, hi in lo_hi_pairs:
+            in_range = builder.or_(
+                builder.and_(
+                    builder.icmp_signed(">=", byte, ir.const_(ir.IntType(8), lo)),
+                    builder.icmp_signed("<=", byte, ir.const_(ir.IntType(8), hi)),
+                ),
+                ir.const_(ir.IntType(1), 0),
+            )
+            matched = builder.or_(matched, in_range)
+        for extra in extra_bytes:
+            is_eq = builder.icmp_signed(
+                "==", byte, ir.const_(ir.IntType(8), extra)
+            )
+            matched = builder.or_(matched, is_eq)
+        builder.cbranch(matched, step, false_block)
+
+        builder.position_at_end(false_block)
+        builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 0)]))
+
+        builder.position_at_end(step)
+        builder.store(
+            builder.add(builder.load(idx_ptr), one64), idx_ptr
+        )
+        builder.branch(cond)
+
+        builder.position_at_end(ret_bool)
+        builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 1)]))
+        return func
+
+
+    def _emit_sub_search(self, builder, func, from_right, i32, i64, one32, one64, zero32, zero64):
+        s_arg, sub_arg = func.args
+        s_len_raw, s_chars = self._pyobj_string_parts(builder, s_arg, zero32, one32)
+        s_len = builder.sext(s_len_raw, i64)
+        sub_len_raw, sub_chars = self._pyobj_string_parts(builder, sub_arg, zero32, one32)
+        sub_len = builder.sext(sub_len_raw, i64)
+        too_long = builder.icmp_signed(">", sub_len, s_len)
+        miss_block = func.append_basic_block("search_miss")
+        scan_block = func.append_basic_block("search_scan")
+        builder.cbranch(too_long, miss_block, scan_block)
+
+        builder.position_at_end(miss_block)
+        builder.ret(builder.call(self.create_int, [ir.const_(i64, -1)]))
+
+        builder.position_at_end(scan_block)
+        last_pos = builder.add(builder.sub(s_len, sub_len), ir.const_(i64, 1))
+        start = builder.sub(last_pos, one64) if from_right else zero64
+        idx_ptr = builder.alloca(i64, None, 'search_i')
+        builder.store(start, idx_ptr)
+        cond = func.append_basic_block("search_cond")
+        body = func.append_basic_block("search_body")
+        after = func.append_basic_block("search_after")
+        builder.branch(cond)
+
+        builder.position_at_end(cond)
+        if from_right:
+            keep_going = builder.icmp_signed(">=", builder.load(idx_ptr), zero64)
+        else:
+            keep_going = builder.icmp_signed("<", builder.load(idx_ptr), last_pos)
+        builder.cbranch(keep_going, body, after)
+
+        builder.position_at_end(body)
+        at = builder.load(idx_ptr)
+        needle = builder.gep(s_chars, [at])
+        same = builder.icmp_signed(
+            "==",
+            builder.call(self.memcmp, [needle, sub_chars, sub_len]),
+            ir.const_(i32, 0),
+        )
+        hit_block = func.append_basic_block("search_hit")
+        step_block = func.append_basic_block("search_step")
+        builder.cbranch(same, hit_block, step_block)
+
+        builder.position_at_end(hit_block)
+        builder.ret(builder.call(self.create_int, [at]))
+
+        builder.position_at_end(step_block)
+        if from_right:
+            builder.store(builder.sub(at, one64), idx_ptr)
+        else:
+            builder.store(builder.add(at, one64), idx_ptr)
+        builder.branch(cond)
+
+        builder.position_at_end(after)
+        builder.ret(builder.call(self.create_int, [ir.const_(i64, -1)]))
+
+
+    def _load_dict_parts(self, builder, obj, zero32, one32):
+        """Return (struct_ptr, count, used, mask, itable, entries)."""
+        data = builder.load(builder.gep(obj, [zero32, one32]))
+        struct_ptr = builder.bitcast(data, ir.PointerType(self.dict_struct_type))
+        count = builder.load(_dict_field(builder, struct_ptr, 0))
+        used = builder.load(_dict_field(builder, struct_ptr, 1))
+        mask = builder.load(_dict_field(builder, struct_ptr, 2))
+        itable = builder.load(_dict_field(builder, struct_ptr, 3))
+        entries = builder.load(_dict_field(builder, struct_ptr, 4))
+        return struct_ptr, count, used, mask, itable, entries
+
+
+    def _slice_clamp_bound(self, b, bound, has, default, floor, ceil, s_len, zero64):
+        adjusted = b.select(
+            b.icmp_signed("<", bound, zero64), b.add(bound, s_len), bound
+        )
+        picked = b.select(has, adjusted, default)
+        floored = b.select(b.icmp_signed("<", picked, floor), floor, picked)
+        return b.select(b.icmp_signed(">", floored, ceil), ceil, floored)
+
+
+    def _float_emit_fmt(self, builder, value, fmt):
+        buf = builder.call(self.malloc, [ir.const_(ir.IntType(64), 40)])
+        fmt_ptr = self._create_global_string_with_builder(fmt, builder)
+        builder.call(
+            self.snprintf, [buf, ir.const_(ir.IntType(64), 40), fmt_ptr, value]
+        )
+        return buf
+
+
+    def _float_parsed_back(self, builder, value, i8p, buf):
+        endp = builder.call(self.malloc, [ir.const_(ir.IntType(64), 8)])
+        endp_i8pp = builder.bitcast(endp, ir.PointerType(i8p))
+        back = builder.call(self.strtod, [buf, endp_i8pp])
+        return builder.fcmp_ordered("==", back, value)
+
+
+    def _float_is_marker(self, builder, i8p, buf, ch):
+        hit = builder.call(
+            self.memchr,
+            [
+                buf,
+                ir.const_(ir.IntType(32), ord(ch)),
+                builder.call(self.strlen, [buf]),
+            ],
+        )
+        return builder.icmp_signed("!=", hit, ir.const_(i8p, None))
+
+
+    def _tag_is_intish(self, builder, tag):
+        zero = ir.const_(ir.IntType(32), 0)
+        return builder.or_(
+            builder.icmp_signed("==", tag, zero),
+            builder.icmp_signed("==", tag, ir.const_(ir.IntType(32), 3)),
+        )
+
+
+    def _tag_is_str(self, builder, tag):
+        return builder.icmp_signed("==", tag, ir.const_(ir.IntType(32), 2))
+
 
     def _create_pyobj_print(self):
         """Create PyObject print function."""
@@ -1370,32 +1661,6 @@ class SiluToLLVMConverter:
         zero64 = ir.const_(i64, 0)
         one64 = ir.const_(i64, 1)
 
-        def for_i64_loop(builder, func, prefix, start, stop):
-            """Emit a counting loop header; caller fills body, then closes."""
-            idx_ptr = builder.alloca(i64, None, f'{prefix}_i')
-            builder.store(start, idx_ptr)
-            cond = func.append_basic_block(f"{prefix}_cond")
-            body = func.append_basic_block(f"{prefix}_body")
-            done = func.append_basic_block(f"{prefix}_done")
-            builder.branch(cond)
-            builder.position_at_end(cond)
-            current = builder.load(idx_ptr)
-            more = builder.icmp_signed("<", current, stop)
-            builder.cbranch(more, body, done)
-            builder.position_at_end(body)
-            return idx_ptr, cond, body, done
-
-        def close_loop(builder, idx_ptr, cond):
-            builder.store(builder.add(builder.load(idx_ptr), one64), idx_ptr)
-            builder.branch(cond)
-
-        def load_list_parts(builder, func, obj, prefix):
-            """Return (struct_ptr, length, items) with items loop-ready."""
-            struct_ptr = self._load_list_struct(builder, obj)
-            length = builder.load(builder.gep(struct_ptr, [zero32, zero32]))
-            items = builder.load(builder.gep(struct_ptr, [zero32, ir.const_(i32, 2)]))
-            return struct_ptr, length, items
-
         # i1 pyobj_truthy(PyObject* obj) - Python truthiness by type
         self.pyobj_truthy = ir.func_(
             self.module,
@@ -1502,7 +1767,7 @@ class SiluToLLVMConverter:
         builder.cbranch(same_kind, dispatch_block, false_block)
 
         builder.position_at_end(dispatch_block)
-        is_num_tag = self._is_numeric_tag(builder, tag_a)
+        is_num_tag = _is_numeric_tag(builder, tag_a)
         is_str_tag = builder.icmp_signed("==", tag_a, ir.const_(i32, 2))
         is_list_tag = builder.icmp_signed("==", tag_a, ir.const_(i32, 4))
         builder.cbranch(is_num_tag, num_check_block, str_check_block)
@@ -1606,10 +1871,10 @@ class SiluToLLVMConverter:
         )
         builder = ir.builder_(self.list_reverse.append_basic_block("entry"))
         (list_arg,) = self.list_reverse.args
-        struct_ptr, length, items = load_list_parts(
+        struct_ptr, length, items = self._list_parts(
             builder, self.list_reverse, list_arg, "rev"
         )
-        idx_ptr, cond, body, done = for_i64_loop(
+        idx_ptr, cond, body, done = self._for_i64_loop(i64, 
             builder,
             self.list_reverse,
             "rev",
@@ -1622,7 +1887,7 @@ class SiluToLLVMConverter:
         front_val = builder.load(front_slot)
         builder.store(builder.load(back_slot), front_slot)
         builder.store(front_val, back_slot)
-        close_loop(builder, idx_ptr, cond)
+        self._close_i64_loop(builder, idx_ptr, cond, one64)
         builder.position_at_end(done)
         builder.ret(list_arg)
 
@@ -1634,7 +1899,7 @@ class SiluToLLVMConverter:
         )
         builder = ir.builder_(self.list_insert.append_basic_block("entry"))
         list_arg, index_arg, item_arg = self.list_insert.args
-        struct_ptr, length, items = load_list_parts(
+        struct_ptr, length, items = self._list_parts(
             builder, self.list_insert, list_arg, "ins"
         )
         raw_index = self._load_number_as_i64(builder, index_arg)
@@ -1655,17 +1920,17 @@ class SiluToLLVMConverter:
             self.malloc, [builder.mul(new_length, ir.const_(i64, 8))]
         )
         new_items = builder.bitcast(new_items, items_ptr_t)
-        idx_ptr, cond, body, done = for_i64_loop(
+        idx_ptr, cond, body, done = self._for_i64_loop(i64, 
             builder, self.list_insert, "ins1", zero64, clamped
         )
         builder.store(
             builder.load(builder.gep(items, [builder.load(idx_ptr)])),
             builder.gep(new_items, [builder.load(idx_ptr)]),
         )
-        close_loop(builder, idx_ptr, cond)
+        self._close_i64_loop(builder, idx_ptr, cond, one64)
         builder.position_at_end(done)
         builder.store(item_arg, builder.gep(new_items, [clamped]))
-        idx_ptr, cond, body, done = for_i64_loop(
+        idx_ptr, cond, body, done = self._for_i64_loop(i64, 
             builder, self.list_insert, "ins2", clamped, length
         )
         shifted = builder.add(builder.load(idx_ptr), one64)
@@ -1673,7 +1938,7 @@ class SiluToLLVMConverter:
             builder.load(builder.gep(items, [builder.load(idx_ptr)])),
             builder.gep(new_items, [shifted]),
         )
-        close_loop(builder, idx_ptr, cond)
+        self._close_i64_loop(builder, idx_ptr, cond, one64)
         builder.position_at_end(done)
         builder.store(new_length, builder.gep(struct_ptr, [zero32, zero32]))
         builder.store(new_items, builder.gep(struct_ptr, [zero32, ir.const_(i32, 2)]))
@@ -1687,12 +1952,12 @@ class SiluToLLVMConverter:
         )
         builder = ir.builder_(self.list_count.append_basic_block("entry"))
         list_arg, item_arg = self.list_count.args
-        struct_ptr, length, items = load_list_parts(
+        struct_ptr, length, items = self._list_parts(
             builder, self.list_count, list_arg, "cnt"
         )
         count_ptr = builder.alloca(i64, None, 'count_acc')
         builder.store(zero64, count_ptr)
-        idx_ptr, cond, body, done = for_i64_loop(
+        idx_ptr, cond, body, done = self._for_i64_loop(i64, 
             builder, self.list_count, "cnt", zero64, length
         )
         candidate = builder.load(builder.gep(items, [builder.load(idx_ptr)]))
@@ -1704,7 +1969,7 @@ class SiluToLLVMConverter:
         builder.store(builder.add(builder.load(count_ptr), one64), count_ptr)
         builder.branch(next_block)
         builder.position_at_end(next_block)
-        close_loop(builder, idx_ptr, cond)
+        self._close_i64_loop(builder, idx_ptr, cond, one64)
         builder.position_at_end(done)
         builder.ret(builder.call(self.create_int, [builder.load(count_ptr)]))
 
@@ -1714,7 +1979,7 @@ class SiluToLLVMConverter:
         )
         builder = ir.builder_(self.list_copy.append_basic_block("entry"))
         (list_arg,) = self.list_copy.args
-        struct_ptr, length, items = load_list_parts(
+        struct_ptr, length, items = self._list_parts(
             builder, self.list_copy, list_arg, "cpy"
         )
         new_list = builder.call(self.create_list, [])
@@ -1763,237 +2028,76 @@ class SiluToLLVMConverter:
         )
         builder = ir.builder_(self.list_sum.append_basic_block("entry"))
         (list_arg,) = self.list_sum.args
-        struct_ptr, length, items = load_list_parts(
+        struct_ptr, length, items = self._list_parts(
             builder, self.list_sum, list_arg, "sum"
         )
         acc_ptr = builder.alloca(pyobj_ptr, None, 'sum_acc')
         builder.store(builder.call(self.create_int, [zero64]), acc_ptr)
-        idx_ptr, cond, body, done = for_i64_loop(
+        idx_ptr, cond, body, done = self._for_i64_loop(i64, 
             builder, self.list_sum, "sum", zero64, length
         )
         item = builder.load(builder.gep(items, [builder.load(idx_ptr)]))
         acc_next = builder.call(self.pyobj_add, [builder.load(acc_ptr), item])
         builder.store(acc_next, acc_ptr)
-        close_loop(builder, idx_ptr, cond)
+        self._close_i64_loop(builder, idx_ptr, cond, one64)
         builder.position_at_end(done)
         builder.ret(builder.load(acc_ptr))
 
         # --- string methods ---
 
-        def emit_case_fold(builder, func, to_upper):
-            (obj_arg,) = func.args
-            data = builder.load(builder.gep(obj_arg, [zero32, one32]))
-            str_struct = builder.bitcast(data, ir.PointerType(self.pyobj.string_type))
-            length = builder.load(builder.gep(str_struct, [zero32, zero32]))
-            chars = builder.load(builder.gep(str_struct, [zero32, one32]))
-            buf = builder.call(
-                self.malloc, [builder.add(builder.sext(length, i64), one64)]
-            )
-            idx_ptr, cond, body, done = for_i64_loop(
-                builder, func, "fold", zero64, builder.sext(length, i64)
-            )
-            ch = builder.load(builder.gep(chars, [builder.load(idx_ptr)]))
-            ch32 = builder.sext(ch, i32)
-            if to_upper:
-                in_range = builder.and_(
-                    builder.icmp_signed(">=", ch32, ir.const_(i32, 97)),
-                    builder.icmp_signed("<=", ch32, ir.const_(i32, 122)),
-                )
-                folded = builder.select(
-                    in_range, builder.sub(ch, ir.const_(ir.IntType(8), 32)), ch
-                )
-            else:
-                in_range = builder.and_(
-                    builder.icmp_signed(">=", ch32, ir.const_(i32, 65)),
-                    builder.icmp_signed("<=", ch32, ir.const_(i32, 90)),
-                )
-                folded = builder.select(
-                    in_range, builder.add(ch, ir.const_(ir.IntType(8), 32)), ch
-                )
-            builder.store(folded, builder.gep(buf, [builder.load(idx_ptr)]))
-            close_loop(builder, idx_ptr, cond)
-            builder.position_at_end(done)
-            builder.store(
-                ir.const_(ir.IntType(8), 0),
-                builder.gep(buf, [builder.sext(length, i64)]),
-            )
-            builder.ret(builder.call(self.create_str, [buf, length]))
-
         self.str_upper = ir.func_(
             self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), 'str_upper'
         )
-        emit_case_fold(
+        self._emit_case_fold(
             ir.builder_(self.str_upper.append_basic_block("entry")),
             self.str_upper,
-            to_upper=True,
+            True,
+            i32, i64, one32, one64, zero32, zero64,
         )
         self.str_lower = ir.func_(
             self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), 'str_lower'
         )
-        emit_case_fold(
+        self._emit_case_fold(
             ir.builder_(self.str_lower.append_basic_block("entry")),
             self.str_lower,
-            to_upper=False,
+            False,
+            i32, i64, one32, one64, zero32, zero64,
         )
 
-        def emit_str_pred(name: str, lo_hi_pairs, extra_bytes=()):
-            """str.isdigit/isalpha/isspace for boxed strings (ASCII
-            approximation of Python's Unicode classes; empty -> False)."""
-            func = ir.func_(
-                self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), name
-            )
-            builder = ir.builder_(func.append_basic_block("entry"))
-            data = builder.load(builder.gep(func.args[0], [zero32, one32]))
-            str_struct = builder.bitcast(
-                data, ir.PointerType(self.pyobj.string_type)
-            )
-            length = builder.sext(
-                builder.load(builder.gep(str_struct, [zero32, zero32])), i64
-            )
-            chars = builder.load(builder.gep(str_struct, [zero32, one32]))
-            empty = builder.icmp_signed("==", length, zero64)
-            ret_bool = func.append_basic_block("pred_ret")
-            loop = func.append_basic_block("pred_loop")
-            builder.cbranch(empty, ret_bool, loop)
-
-            builder.position_at_end(loop)
-            idx_ptr = builder.alloca(i64, None, 'pred_i')
-            builder.store(zero64, idx_ptr)
-            cond = func.append_basic_block("pred_cond")
-            body = func.append_basic_block("pred_body")
-            false_block = func.append_basic_block("pred_false")
-            step = func.append_basic_block("pred_step")
-            builder.branch(cond)
-
-            builder.position_at_end(cond)
-            builder.cbranch(
-                builder.icmp_signed("<", builder.load(idx_ptr), length),
-                body,
-                ret_bool,
-            )
-
-            builder.position_at_end(body)
-            byte = builder.load(builder.gep(chars, [builder.load(idx_ptr)]))
-            matched = ir.const_(ir.IntType(1), 0)
-            for lo, hi in lo_hi_pairs:
-                in_range = builder.or_(
-                    builder.and_(
-                        builder.icmp_signed(">=", byte, ir.const_(ir.IntType(8), lo)),
-                        builder.icmp_signed("<=", byte, ir.const_(ir.IntType(8), hi)),
-                    ),
-                    ir.const_(ir.IntType(1), 0),
-                )
-                matched = builder.or_(matched, in_range)
-            for extra in extra_bytes:
-                is_eq = builder.icmp_signed(
-                    "==", byte, ir.const_(ir.IntType(8), extra)
-                )
-                matched = builder.or_(matched, is_eq)
-            builder.cbranch(matched, step, false_block)
-
-            builder.position_at_end(false_block)
-            builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 0)]))
-
-            builder.position_at_end(step)
-            builder.store(
-                builder.add(builder.load(idx_ptr), one64), idx_ptr
-            )
-            builder.branch(cond)
-
-            builder.position_at_end(ret_bool)
-            builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 1)]))
-            return func
-
-        self.str_isdigit = emit_str_pred("str_isdigit", [(ord("0"), ord("9"))])
-        self.str_isalpha = emit_str_pred(
-            "str_isalpha", [(ord("A"), ord("Z")), (ord("a"), ord("z"))]
+        self.str_isdigit = self._emit_str_pred(
+            "str_isdigit", [(ord("0"), ord("9"))], (),
+            i64, one32, one64, zero32, zero64, pyobj_ptr,
         )
-        self.str_isspace = emit_str_pred(
-            "str_isspace", [], extra_bytes=(0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D)
+        self.str_isalpha = self._emit_str_pred(
+            "str_isalpha", [(ord("A"), ord("Z")), (ord("a"), ord("z"))], (),
+            i64, one32, one64, zero32, zero64, pyobj_ptr,
         )
-
-        def emit_sub_search(builder, func, from_right):
-            def string_parts(obj):
-                data = builder.load(builder.gep(obj, [zero32, one32]))
-                str_struct = builder.bitcast(
-                    data, ir.PointerType(self.pyobj.string_type)
-                )
-                length = builder.load(builder.gep(str_struct, [zero32, zero32]))
-                chars = builder.load(builder.gep(str_struct, [zero32, one32]))
-                return builder.sext(length, i64), chars
-
-            s_arg, sub_arg = func.args
-            s_len, s_chars = string_parts(s_arg)
-            sub_len, sub_chars = string_parts(sub_arg)
-            too_long = builder.icmp_signed(">", sub_len, s_len)
-            miss_block = func.append_basic_block("search_miss")
-            scan_block = func.append_basic_block("search_scan")
-            builder.cbranch(too_long, miss_block, scan_block)
-
-            builder.position_at_end(miss_block)
-            builder.ret(builder.call(self.create_int, [ir.const_(i64, -1)]))
-
-            builder.position_at_end(scan_block)
-            last_pos = builder.add(builder.sub(s_len, sub_len), ir.const_(i64, 1))
-            start = builder.sub(last_pos, one64) if from_right else zero64
-            idx_ptr = builder.alloca(i64, None, 'search_i')
-            builder.store(start, idx_ptr)
-            cond = func.append_basic_block("search_cond")
-            body = func.append_basic_block("search_body")
-            after = func.append_basic_block("search_after")
-            builder.branch(cond)
-
-            builder.position_at_end(cond)
-            if from_right:
-                keep_going = builder.icmp_signed(">=", builder.load(idx_ptr), zero64)
-            else:
-                keep_going = builder.icmp_signed("<", builder.load(idx_ptr), last_pos)
-            builder.cbranch(keep_going, body, after)
-
-            builder.position_at_end(body)
-            at = builder.load(idx_ptr)
-            needle = builder.gep(s_chars, [at])
-            same = builder.icmp_signed(
-                "==",
-                builder.call(self.memcmp, [needle, sub_chars, sub_len]),
-                ir.const_(i32, 0),
-            )
-            hit_block = func.append_basic_block("search_hit")
-            step_block = func.append_basic_block("search_step")
-            builder.cbranch(same, hit_block, step_block)
-
-            builder.position_at_end(hit_block)
-            builder.ret(builder.call(self.create_int, [at]))
-
-            builder.position_at_end(step_block)
-            if from_right:
-                builder.store(builder.sub(at, one64), idx_ptr)
-            else:
-                builder.store(builder.add(at, one64), idx_ptr)
-            builder.branch(cond)
-
-            builder.position_at_end(after)
-            builder.ret(builder.call(self.create_int, [ir.const_(i64, -1)]))
+        self.str_isspace = self._emit_str_pred(
+            "str_isspace", [], (0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D),
+            i64, one32, one64, zero32, zero64, pyobj_ptr,
+        )
 
         self.str_find = ir.func_(
             self.module,
             ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False), 'str_find',
 
         )
-        emit_sub_search(
+        self._emit_sub_search(
             ir.builder_(self.str_find.append_basic_block("entry")),
             self.str_find,
             False,
+            i32, i64, one32, one64, zero32, zero64,
         )
         self.str_rfind = ir.func_(
             self.module,
             ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False), 'str_rfind',
 
         )
-        emit_sub_search(
+        self._emit_sub_search(
             ir.builder_(self.str_rfind.append_basic_block("entry")),
             self.str_rfind,
             True,
+            i32, i64, one32, one64, zero32, zero64,
         )
 
     def _create_dict_runtime(self):
@@ -2012,22 +2116,7 @@ class SiluToLLVMConverter:
         one64 = ir.const_(i64, 1)
         pyobj_null = ir.const_(pyobj_ptr, None)
 
-        def dict_field(builder, struct_ptr, index):
-            return builder.gep(
-                struct_ptr,
-                [zero32, ir.const_(i32, index)],
-            )
-
-        def load_dict_parts(builder, obj):
-            """Return (struct_ptr, count, used, mask, itable, entries)."""
-            data = builder.load(builder.gep(obj, [zero32, one32]))
-            struct_ptr = builder.bitcast(data, ir.PointerType(self.dict_struct_type))
-            count = builder.load(dict_field(builder, struct_ptr, 0))
-            used = builder.load(dict_field(builder, struct_ptr, 1))
-            mask = builder.load(dict_field(builder, struct_ptr, 2))
-            itable = builder.load(dict_field(builder, struct_ptr, 3))
-            entries = builder.load(dict_field(builder, struct_ptr, 4))
-            return struct_ptr, count, used, mask, itable, entries
+        dict_field = _dict_field
 
         # i64 pyobj_hash(PyObject* obj)
         self.pyobj_hash = ir.func_(
@@ -2114,7 +2203,7 @@ class SiluToLLVMConverter:
         probe_step = self.dict_find_probe.append_basic_block("probe_step")
         builder = ir.builder_(entry)
         dict_arg, key_arg, out_slot_arg = self.dict_find_probe.args
-        _, _, _, mask, itable, entries = load_dict_parts(builder, dict_arg)
+        _, _, _, mask, itable, entries = self._load_dict_parts(builder, dict_arg, zero32, one32)
         hash_val = builder.call(self.pyobj_hash, [key_arg])
         slot_ptr = builder.alloca(i64, None, 'probe_slot')
         tomb_ptr = builder.alloca(i64, None, 'probe_tomb')
@@ -2176,8 +2265,8 @@ class SiluToLLVMConverter:
         scan_done = self.dict_rehash.append_basic_block("reh_scan_done")
         builder = ir.builder_(entry)
         (dict_arg,) = self.dict_rehash.args
-        struct_ptr, count, used, mask, itable, entries = load_dict_parts(
-            builder, dict_arg
+        struct_ptr, count, used, mask, itable, entries = self._load_dict_parts(
+            builder, dict_arg, zero32, one32
         )
         old_cap = builder.add(mask, one64)
         new_cap = builder.select(
@@ -2295,7 +2384,7 @@ class SiluToLLVMConverter:
         missing_block = self.dict_get_or.append_basic_block("missing")
         builder = ir.builder_(entry)
         dict_arg, key_arg, default_arg = self.dict_get_or.args
-        _, _, _, _, _, entries = load_dict_parts(builder, dict_arg)
+        _, _, _, _, _, entries = self._load_dict_parts(builder, dict_arg, zero32, one32)
         out_slot = builder.alloca(i64, None, 'get_slot')
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
         hit = builder.icmp_signed(">=", found, zero64)
@@ -2322,8 +2411,8 @@ class SiluToLLVMConverter:
         insert_block = self.dict_set.append_basic_block("insert")
         builder = ir.builder_(entry)
         dict_arg, key_arg, value_arg = self.dict_set.args
-        struct_ptr, count, used, mask, itable, entries = load_dict_parts(
-            builder, dict_arg
+        struct_ptr, count, used, mask, itable, entries = self._load_dict_parts(
+            builder, dict_arg, zero32, one32
         )
         out_slot = builder.alloca(i64, None, 'set_slot')
         # grow the table BEFORE probing at 2/3 load, not at full: a
@@ -2346,7 +2435,7 @@ class SiluToLLVMConverter:
         builder.branch(probe_block)
 
         builder.position_at_end(probe_block)
-        _, count, used, mask, itable, entries = load_dict_parts(builder, dict_arg)
+        _, count, used, mask, itable, entries = self._load_dict_parts(builder, dict_arg, zero32, one32)
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
         hit = builder.icmp_signed(">=", found, zero64)
         builder.cbranch(hit, replace_block, insert_block)
@@ -2357,7 +2446,7 @@ class SiluToLLVMConverter:
         builder.ret_void()
 
         builder.position_at_end(insert_block)
-        _, count, used, mask, itable, entries = load_dict_parts(builder, dict_arg)
+        _, count, used, mask, itable, entries = self._load_dict_parts(builder, dict_arg, zero32, one32)
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
         slot = builder.load(out_slot)
         builder.store(builder.add(used, one64), builder.gep(itable, [slot]))
@@ -2379,8 +2468,8 @@ class SiluToLLVMConverter:
         missing_block = self.dict_pop.append_basic_block("missing")
         builder = ir.builder_(entry)
         dict_arg, key_arg = self.dict_pop.args
-        struct_ptr, count, used, mask, itable, entries = load_dict_parts(
-            builder, dict_arg
+        struct_ptr, count, used, mask, itable, entries = self._load_dict_parts(
+            builder, dict_arg, zero32, one32
         )
         out_slot = builder.alloca(i64, None, 'pop_slot')
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
@@ -2802,7 +2891,7 @@ class SiluToLLVMConverter:
         wipe_done = self.dict_clear_entries.append_basic_block("wipe_done")
         builder = ir.builder_(entry)
         (dict_arg,) = self.dict_clear_entries.args
-        struct_ptr, _, _, mask, itable, _ = load_dict_parts(builder, dict_arg)
+        struct_ptr, _, _, mask, itable, _ = self._load_dict_parts(builder, dict_arg, zero32, one32)
         builder.store(zero64, dict_field(builder, struct_ptr, 0))
         builder.store(zero64, dict_field(builder, struct_ptr, 1))
         wipe_idx = builder.alloca(i64, None, 'wipe_i')
@@ -2833,7 +2922,7 @@ class SiluToLLVMConverter:
         insert_block = self.dict_setdefault.append_basic_block("insert")
         builder = ir.builder_(entry)
         dict_arg, key_arg, default_arg = self.dict_setdefault.args
-        _, _, _, _, _, entries = load_dict_parts(builder, dict_arg)
+        _, _, _, _, _, entries = self._load_dict_parts(builder, dict_arg, zero32, one32)
         out_slot = builder.alloca(i64, None, 'sd_slot')
         found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
         hit = builder.icmp_signed(">=", found, zero64)
@@ -2903,7 +2992,7 @@ class SiluToLLVMConverter:
 
         # dict source: copy all live entries
         builder.position_at_end(src_tag_check)
-        _, _, src_used, _, _, src_entries = load_dict_parts(builder, src_arg)
+        _, _, src_used, _, _, src_entries = self._load_dict_parts(builder, src_arg, zero32, one32)
         upd_idx = builder.alloca(i64, None, 'upd_i')
         builder.store(zero64, upd_idx)
         builder.branch(loop_check)
@@ -3027,25 +3116,19 @@ class SiluToLLVMConverter:
         neg_step = builder.icmp_signed("<", step_arg, zero64)
         len_m1 = builder.sub(s_len, one64)
 
-        def clamp_bound(b, bound, has, default, floor, ceil):
-            adjusted = b.select(
-                b.icmp_signed("<", bound, zero64), b.add(bound, s_len), bound
-            )
-            picked = b.select(has, adjusted, default)
-            floored = b.select(b.icmp_signed("<", picked, floor), floor, picked)
-            return b.select(b.icmp_signed(">", floored, ceil), ceil, floored)
-
-        lo_eff = clamp_bound(
+        lo_eff = self._slice_clamp_bound(
             builder, lo_arg, has_lo,
             builder.select(neg_step, len_m1, zero64),
             zero64,
             builder.select(neg_step, len_m1, s_len),
+            s_len, zero64,
         )
-        hi_eff = clamp_bound(
+        hi_eff = self._slice_clamp_bound(
             builder, hi_arg, has_hi,
             builder.select(neg_step, ir.const_(i64, -1), s_len),
             builder.select(neg_step, ir.const_(i64, -1), zero64),
             builder.select(neg_step, len_m1, s_len),
+            s_len, zero64,
         )
         # element count: forward span/step, backward span/(-step)
         fwd_span = builder.sub(hi_eff, lo_eff)
@@ -3138,7 +3221,7 @@ class SiluToLLVMConverter:
         builder.cbranch(is_hit, hit_block, key_error)
 
         builder.position_at_end(hit_block)
-        _, _, _, _, _, entries = load_dict_parts(builder, obj_arg)
+        _, _, _, _, _, entries = self._load_dict_parts(builder, obj_arg, zero32, one32)
         entry_ptr = builder.gep(
             entries,
             [zero32, found],
@@ -3319,34 +3402,20 @@ class SiluToLLVMConverter:
         builder = ir.builder_(entry)
         value = func.args[0]
 
-        def emit(fmt):
-            buf = builder.call(self.malloc, [ir.const_(ir.IntType(64), 40)])
-            fmt_ptr = self._create_global_string_with_builder(fmt, builder)
-            builder.call(
-                self.snprintf, [buf, ir.const_(ir.IntType(64), 40), fmt_ptr, value]
-            )
-            return buf
-
-        def parsed_back(buf):
-            endp = builder.call(self.malloc, [ir.const_(ir.IntType(64), 8)])
-            endp_i8pp = builder.bitcast(endp, ir.PointerType(i8p))
-            back = builder.call(self.strtod, [buf, endp_i8pp])
-            return builder.fcmp_ordered("==", back, value)
-
         # First try: 15 significant digits
-        buf1 = emit("%.15g")
-        ok1 = parsed_back(buf1)
+        buf1 = self._float_emit_fmt(builder, value, "%.15g")
+        ok1 = self._float_parsed_back(builder, value, i8p, buf1)
         builder.cbranch(ok1, finish, retry)
 
         # Retry with 16 digits
         builder.position_at_end(retry)
-        buf2 = emit("%.16g")
-        ok2 = parsed_back(buf2)
+        buf2 = self._float_emit_fmt(builder, value, "%.16g")
+        ok2 = self._float_parsed_back(builder, value, i8p, buf2)
         builder.cbranch(ok2, finish, more_digits)
 
         # Retry with 17 digits
         builder.position_at_end(more_digits)
-        buf3 = emit("%.17g")
+        buf3 = self._float_emit_fmt(builder, value, "%.17g")
         builder.branch(finish)
 
         # finish: pick the winning buffer, then append ".0" when there
@@ -3357,24 +3426,13 @@ class SiluToLLVMConverter:
         buf.add_incoming(buf2, retry)
         buf.add_incoming(buf3, more_digits)
 
-        def is_float_marker(buf, ch):
-            hit = builder.call(
-                self.memchr,
-                [
-                    buf,
-                    ir.const_(ir.IntType(32), ord(ch)),
-                    builder.call(self.strlen, [buf]),
-                ],
-            )
-            return builder.icmp_signed("!=", hit, ir.const_(i8p, None))
-
         needs_dot = builder.and_(
-            builder.not_(is_float_marker(buf, ".")),
+            builder.not_(self._float_is_marker(builder, i8p, buf, ".")),
             builder.and_(
-                builder.not_(is_float_marker(buf, "e")),
+                builder.not_(self._float_is_marker(builder, i8p, buf, "e")),
                 builder.and_(
-                    builder.not_(is_float_marker(buf, "n")),
-                    builder.not_(is_float_marker(buf, "i")),
+                    builder.not_(self._float_is_marker(builder, i8p, buf, "n")),
+                    builder.not_(self._float_is_marker(builder, i8p, buf, "i")),
                 ),
             ),
         )
@@ -3400,12 +3458,12 @@ class SiluToLLVMConverter:
 
     def _create_numeric_binary_function(
         self,
-        func_name: str,
-        int_apply=None,
-        float_apply=None,
-        str_int_apply=None,
-        zero_check=False,
-        overflow_check=False,
+        func_name,
+        int_apply,
+        float_apply,
+        str_int_apply,
+        zero_check,
+        overflow_check,
     ) -> ir.Function:
         """Create a pyobj arithmetic function over int/bool/float operands.
 
@@ -3456,31 +3514,21 @@ class SiluToLLVMConverter:
             )
         )
         both_numeric = builder.and_(
-            self._is_numeric_tag(builder, left_tag),
-            self._is_numeric_tag(builder, right_tag),
+            _is_numeric_tag(builder, left_tag),
+            _is_numeric_tag(builder, right_tag),
         )
-
-        def is_intish(tag):
-            zero = ir.const_(ir.IntType(32), 0)
-            return builder.or_(
-                builder.icmp_signed("==", tag, zero),
-                builder.icmp_signed("==", tag, ir.const_(ir.IntType(32), 3)),
-            )
-
-        def is_str(tag):
-            return builder.icmp_signed("==", tag, ir.const_(ir.IntType(32), 2))
 
         if str_int_apply is not None:
             # str*int / int*str goes to the repetition path first
             str_mix = builder.or_(
-                builder.and_(is_str(left_tag), is_intish(right_tag)),
-                builder.and_(is_str(right_tag), is_intish(left_tag)),
+                builder.and_(self._tag_is_str(builder, left_tag), self._tag_is_intish(builder, right_tag)),
+                builder.and_(self._tag_is_str(builder, right_tag), self._tag_is_intish(builder, left_tag)),
             )
             str_gate_block = func.append_basic_block("str_gate")
             builder.cbranch(str_mix, str_op_block, str_gate_block)
 
             builder.position_at_end(str_op_block)
-            left_is_str = is_str(left_tag)
+            left_is_str = self._tag_is_str(builder, left_tag)
             str_obj = builder.select(left_is_str, left, right)
             int_obj = builder.select(left_is_str, right, left)
             str_result = str_int_apply(builder, str_obj, int_obj)
@@ -3637,8 +3685,8 @@ class SiluToLLVMConverter:
             )
         )
         both_numeric = builder.and_(
-            self._is_numeric_tag(builder, left_tag),
-            self._is_numeric_tag(builder, right_tag),
+            _is_numeric_tag(builder, left_tag),
+            _is_numeric_tag(builder, right_tag),
         )
         str_check_block = func.append_basic_block("str_check")
         builder.cbranch(both_numeric, num_check_block, str_check_block)
@@ -3656,17 +3704,8 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(str_op_block)
 
-        def string_parts(obj):
-            data = builder.load(builder.gep(obj, [zero32, one32]))
-            str_struct = builder.bitcast(
-                data, ir.PointerType(self.pyobj.string_type)
-            )
-            length = builder.load(builder.gep(str_struct, [zero32, zero32]))
-            chars = builder.load(builder.gep(str_struct, [zero32, one32]))
-            return length, chars
-
-        left_len, left_chars = string_parts(left)
-        right_len, right_chars = string_parts(right)
+        left_len, left_chars = self._pyobj_string_parts(builder, left, zero32, one32)
+        right_len, right_chars = self._pyobj_string_parts(builder, right, zero32, one32)
         prefix_len = builder.select(
             builder.icmp_signed("<", left_len, right_len), left_len, right_len
         )
@@ -3745,7 +3784,7 @@ class SiluToLLVMConverter:
         )
 
         is_float = builder.icmp_signed("==", tag, ir.const_(ir.IntType(32), 1))
-        is_numeric = self._is_numeric_tag(builder, tag)
+        is_numeric = _is_numeric_tag(builder, tag)
 
         float_block = self.current_function.append_basic_block("unary_minus_float")
         int_check_block = self.current_function.append_basic_block(
@@ -3846,16 +3885,6 @@ class SiluToLLVMConverter:
         zero = ir.const_(ir.IntType(32), 0)
         return builder.gep(global_str, [zero, zero])
 
-    @staticmethod
-    def _normalize_ir(node: Any) -> Any:
-        """Recursively convert tuple IR nodes to lists.
-
-        parse_ir_from_json_string returns tuple structures, while node
-        dispatch in this converter expects lists.
-        """
-        if isinstance(node, (list, tuple)):
-            return [SiluToLLVMConverter._normalize_ir(item) for item in node]
-        return node
 
     def convert(self, ir_json: str) -> str:
         """Convert Silu IR JSON to LLVM IR."""
@@ -3866,7 +3895,7 @@ class SiluToLLVMConverter:
         except IRParseError as e:
             raise ValueError(f"Failed to parse IR: {e}")
 
-        ir_data = self._normalize_ir(ir_data)
+        ir_data = _normalize_ir(ir_data)
 
         # First pass: collect function definitions. A user-defined
         # `main` is renamed to __silu_user_main up front and invoked
@@ -4008,7 +4037,7 @@ class SiluToLLVMConverter:
         i64 = ir.IntType(64)
         builder = self.current_builder
 
-        list_obj = self._convert_node(iter_node)
+        list_obj = self._convert_node(iter_node, False)
         if not list_obj:
             return None
 
@@ -4049,7 +4078,7 @@ class SiluToLLVMConverter:
             builder.store(item, self.variables[var_name])
 
         for stmt in body_stmts:
-            self._convert_node(stmt)
+            self._convert_node(stmt, False)
             if self.current_builder.block.is_terminated:
                 break
 
@@ -4072,10 +4101,10 @@ class SiluToLLVMConverter:
     def _convert_toplevel(self, node: Any):
         """Entry for the module root; subclasses override to route
         around their own _convert_node signature."""
-        return self._convert_node(node, skip_func_defs=True)
+        return self._convert_node(node, True)
 
     def _convert_node(
-        self, node: Any, skip_func_defs: bool = False
+        self, node, skip_func_defs
     ) -> Optional[ir.Value]:
         """Convert a single IR node."""
 
@@ -4138,7 +4167,7 @@ class SiluToLLVMConverter:
         elif op == "assign":
             target = node[1]
             value_node = node[2]
-            value = self._convert_node(value_node)
+            value = self._convert_node(value_node, False)
             if value and isinstance(target, str):
                 # Create alloca if variable doesn't exist
                 if target not in self.variables:
@@ -4153,12 +4182,12 @@ class SiluToLLVMConverter:
             # x: int = 5 - statically typed assignment. The annotation is
             # recorded in the IR (node[3]) but per project direction no
             # type inference is performed; runtime semantics match assign.
-            return self._convert_node(["assign", node[1], node[2]])
+            return self._convert_node(["assign", node[1], node[2]], False)
 
         elif op == "+":
             if len(node) >= 3:
-                left = self._convert_node(node[1])
-                right = self._convert_node(node[2])
+                left = self._convert_node(node[1], False)
+                right = self._convert_node(node[2], False)
                 if left and right:
                     return self.current_builder.call(self.pyobj_add, [left, right])
             return None
@@ -4166,20 +4195,20 @@ class SiluToLLVMConverter:
         elif op == "-":
             if len(node) == 2:
                 # Unary minus: -operand
-                operand = self._convert_node(node[1])
+                operand = self._convert_node(node[1], False)
                 if operand:
                     return self._create_unary_minus(operand)
             elif len(node) >= 3:
-                left = self._convert_node(node[1])
-                right = self._convert_node(node[2])
+                left = self._convert_node(node[1], False)
+                right = self._convert_node(node[2], False)
                 if left and right:
                     return self.current_builder.call(self.pyobj_sub, [left, right])
             return None
 
         elif op == "*":
             if len(node) >= 3:
-                left = self._convert_node(node[1])
-                right = self._convert_node(node[2])
+                left = self._convert_node(node[1], False)
+                right = self._convert_node(node[2], False)
                 if left and right:
                     return self.current_builder.call(self.pyobj_mul, [left, right])
             return None
@@ -4187,30 +4216,30 @@ class SiluToLLVMConverter:
         elif op == "/":
             # Python true division: always promotes to float
             if len(node) >= 3:
-                left = self._convert_node(node[1])
-                right = self._convert_node(node[2])
+                left = self._convert_node(node[1], False)
+                right = self._convert_node(node[2], False)
                 if left and right:
                     return self.current_builder.call(self.pyobj_truediv, [left, right])
             return None
 
         elif op == "//":
             if len(node) >= 3:
-                left = self._convert_node(node[1])
-                right = self._convert_node(node[2])
+                left = self._convert_node(node[1], False)
+                right = self._convert_node(node[2], False)
                 if left and right:
                     return self.current_builder.call(self.pyobj_floordiv, [left, right])
             return None
 
         elif op == "%":
             if len(node) >= 3:
-                left = self._convert_node(node[1])
-                right = self._convert_node(node[2])
+                left = self._convert_node(node[1], False)
+                right = self._convert_node(node[2], False)
                 if left and right:
                     return self.current_builder.call(self.pyobj_mod, [left, right])
             return None
 
         elif op == "not":
-            operand = self._convert_node(node[1])
+            operand = self._convert_node(node[1], False)
             if operand:
                 truthy = self._emit_truthiness(operand)
                 negated = self.current_builder.not_(truthy)
@@ -4231,7 +4260,7 @@ class SiluToLLVMConverter:
             end_block = self.current_function.append_basic_block("sc_end")
 
             for index, operand_node in enumerate(operands):
-                val = self._convert_node(operand_node) or null_const
+                val = self._convert_node(operand_node, False) or null_const
                 if index == len(operands) - 1:
                     builder.store(val, result_ptr)
                     builder.branch(end_block)
@@ -4254,7 +4283,7 @@ class SiluToLLVMConverter:
 
         elif op == "if_expr":
             if len(node) >= 4:
-                cond_val = self._convert_node(node[1])
+                cond_val = self._convert_node(node[1], False)
                 if cond_val:
                     then_block = self.current_function.append_basic_block("iexpr_then")
                     else_block = self.current_function.append_basic_block("iexpr_else")
@@ -4265,12 +4294,12 @@ class SiluToLLVMConverter:
                     self.current_builder.cbranch(condition, then_block, else_block)
 
                     self.current_builder.position_at_end(then_block)
-                    then_val = self._convert_node(node[2])
+                    then_val = self._convert_node(node[2], False)
                     if not self.current_builder.block.is_terminated:
                         self.current_builder.branch(merge_block)
 
                     self.current_builder.position_at_end(else_block)
-                    else_val = self._convert_node(node[3])
+                    else_val = self._convert_node(node[3], False)
                     if not self.current_builder.block.is_terminated:
                         self.current_builder.branch(merge_block)
 
@@ -4293,8 +4322,8 @@ class SiluToLLVMConverter:
                 ">=": self.pyobj_ge,
             }[op]
             if len(node) >= 3:
-                left = self._convert_node(node[1])
-                right = self._convert_node(node[2])
+                left = self._convert_node(node[1], False)
+                right = self._convert_node(node[2], False)
                 if left and right:
                     return self.current_builder.call(func, [left, right])
             return None
@@ -4302,8 +4331,8 @@ class SiluToLLVMConverter:
         elif op in ("in", "not in"):
             # (in, item, container); result is always a bool PyObject
             if len(node) >= 3:
-                item = self._convert_node(node[1])
-                container = self._convert_node(node[2])
+                item = self._convert_node(node[1], False)
+                container = self._convert_node(node[2], False)
                 if item and container:
                     result = self.current_builder.call(
                         self.pyobj_contains, [container, item]
@@ -4323,7 +4352,7 @@ class SiluToLLVMConverter:
                 and len(func_node) >= 3
                 and func_node[0] == "attribute"
             ):
-                obj_val = self._convert_node(func_node[1])
+                obj_val = self._convert_node(func_node[1], False)
                 method_name = func_node[2]
                 method_map = {
                     "append": (self.list_append, 1, True),
@@ -4347,10 +4376,9 @@ class SiluToLLVMConverter:
                 entry = method_map.get(method_name)
                 if obj_val and entry:
                     func, arg_count, has_result = entry
-                    arg_vals = [
-                        self._convert_node(arg_node)
-                        for arg_node in args_node[:arg_count]
-                    ]
+                    arg_vals = []
+                    for arg_node in args_node[:arg_count]:
+                        arg_vals.append(self._convert_node(arg_node, False))
                     # Optional-argument methods (get/setdefault) pad with
                     # null, which the runtimes treat as None.
                     while len(arg_vals) < arg_count:
@@ -4376,7 +4404,7 @@ class SiluToLLVMConverter:
                             if idx > 0:
                                 sep = self._create_global_string(" ")
                                 self.current_builder.call(self.printf, [sep])
-                            arg_val = self._convert_node(arg_node)
+                            arg_val = self._convert_node(arg_node, False)
                             if arg_val:
                                 self.current_builder.call(self.pyobj_print, [arg_val])
                     # Add newline
@@ -4390,7 +4418,7 @@ class SiluToLLVMConverter:
                 elif func_name == "str":
                     # scalar str() conversion: int/float/bool/str/None
                     if len(args_node) == 1:
-                        arg_val = self._convert_node(args_node[0])
+                        arg_val = self._convert_node(args_node[0], False)
                         if arg_val:
                             return self.current_builder.call(
                                 self.pyobj_str_conv, [arg_val]
@@ -4399,14 +4427,14 @@ class SiluToLLVMConverter:
 
                 elif func_name == "len":
                     if args_node:
-                        arg_val = self._convert_node(args_node[0])
+                        arg_val = self._convert_node(args_node[0], False)
                         if arg_val:
                             return self.current_builder.call(self.pyobj_len, [arg_val])
                     return None
 
                 elif func_name == "sum":
                     if args_node:
-                        arg_val = self._convert_node(args_node[0])
+                        arg_val = self._convert_node(args_node[0], False)
                         if arg_val:
                             return self.current_builder.call(self.list_sum, [arg_val])
                     return None
@@ -4415,14 +4443,14 @@ class SiluToLLVMConverter:
                     # dict(), dict({...}), dict(a=1, b=2)
                     dict_obj = self.current_builder.call(self.create_dict, [])
                     for arg_node in args_node:
-                        arg_val = self._convert_node(arg_node)
+                        arg_val = self._convert_node(arg_node, False)
                         if arg_val:
                             self.current_builder.call(
                                 self.dict_update, [dict_obj, arg_val]
                             )
                     for kw_name, kw_value_node in node[3] if len(node) > 3 else []:
-                        key_val = self._convert_node(["const", kw_name])
-                        value_val = self._convert_node(kw_value_node)
+                        key_val = self._convert_node(["const", kw_name], False)
+                        value_val = self._convert_node(kw_value_node, False)
                         if key_val and value_val:
                             self.current_builder.call(
                                 self.dict_set, [dict_obj, key_val, value_val]
@@ -4433,11 +4461,11 @@ class SiluToLLVMConverter:
                     # Handle range function with start and stop parameters
                     if len(args_node) == 1:
                         # range(stop) -> return stop
-                        return self._convert_node(args_node[0])
+                        return self._convert_node(args_node[0], False)
                     elif len(args_node) >= 2:
                         # range(start, stop) -> return stop for loop iteration count
                         # For proper loop implementation, we need the stop value
-                        stop_val = self._convert_node(args_node[1])
+                        stop_val = self._convert_node(args_node[1], False)
                         return (
                             stop_val
                             if stop_val
@@ -4454,7 +4482,7 @@ class SiluToLLVMConverter:
                     func = self.functions[func_name]
                     llvm_args = []
                     for arg_node in args_node:
-                        arg_val = self._convert_node(arg_node)
+                        arg_val = self._convert_node(arg_node, False)
                         if arg_val:
                             llvm_args.append(arg_val)
 
@@ -4473,7 +4501,7 @@ class SiluToLLVMConverter:
                 else_stmts = node[3]
 
                 # Evaluate condition
-                test_val = self._convert_node(test_node)
+                test_val = self._convert_node(test_node, False)
                 if test_val:
                     # Create basic blocks for if/else/merge
                     then_block = self.current_function.append_basic_block("if_then")
@@ -4487,7 +4515,7 @@ class SiluToLLVMConverter:
                     # Generate then block
                     self.current_builder.position_at_end(then_block)
                     for stmt in body_stmts:
-                        self._convert_node(stmt)
+                        self._convert_node(stmt, False)
                         if self.current_builder.block.is_terminated:
                             break
                     if not self.current_builder.block.is_terminated:
@@ -4496,7 +4524,7 @@ class SiluToLLVMConverter:
                     # Generate else block
                     self.current_builder.position_at_end(else_block)
                     for stmt in else_stmts:
-                        self._convert_node(stmt)
+                        self._convert_node(stmt, False)
                         if self.current_builder.block.is_terminated:
                             break
                     if not self.current_builder.block.is_terminated:
@@ -4520,7 +4548,7 @@ class SiluToLLVMConverter:
 
                 # Re-evaluate the condition on every iteration
                 self.current_builder.position_at_end(cond_block)
-                test_val = self._convert_node(test_node)
+                test_val = self._convert_node(test_node, False)
                 if test_val:
                     condition = self._extract_bool_condition(test_val)
                     self.current_builder.cbranch(condition, body_block, end_block)
@@ -4530,7 +4558,7 @@ class SiluToLLVMConverter:
                     self.loop_continue_blocks.append(cond_block)
                     self.current_builder.position_at_end(body_block)
                     for stmt in body_stmts:
-                        self._convert_node(stmt)
+                        self._convert_node(stmt, False)
                         if self.current_builder.block.is_terminated:
                             break
                     self.loop_break_blocks.pop()
@@ -4567,7 +4595,7 @@ class SiluToLLVMConverter:
                 }.get(bin_op)
                 if func is None:
                     return None
-                right = self._convert_node(value_node)
+                right = self._convert_node(value_node, False)
                 if not right:
                     return None
                 if (
@@ -4577,8 +4605,8 @@ class SiluToLLVMConverter:
                 ):
                     # obj[i] <op>= value: read-modify-write through the
                     # dynamic subscript runtime
-                    obj = self._convert_node(target_node[1])
-                    key = self._convert_node(target_node[2])
+                    obj = self._convert_node(target_node[1], False)
+                    key = self._convert_node(target_node[2], False)
                     if not obj or not key:
                         return None
                     current = self.current_builder.call(
@@ -4625,11 +4653,11 @@ class SiluToLLVMConverter:
                     start_val = self.current_builder.call(
                         self.create_int, [ir.const_(ir.IntType(64), 0)]
                     )
-                    end_val = self._convert_node(args_node[0])
+                    end_val = self._convert_node(args_node[0], False)
                 elif len(args_node) >= 2:
                     # range(start, stop) -> start=args[0], stop=args[1]
-                    start_val = self._convert_node(args_node[0])
-                    end_val = self._convert_node(args_node[1])
+                    start_val = self._convert_node(args_node[0], False)
+                    end_val = self._convert_node(args_node[1], False)
                 else:
                     start_val = self.current_builder.call(
                         self.create_int, [ir.const_(ir.IntType(64), 0)]
@@ -4703,7 +4731,7 @@ class SiluToLLVMConverter:
 
                 # Execute body statements
                 for stmt in body_stmts:
-                    self._convert_node(stmt)
+                    self._convert_node(stmt, False)
                     if self.current_builder.block.is_terminated:
                         break
 
@@ -4755,7 +4783,7 @@ class SiluToLLVMConverter:
                     # This ensures simultaneous assignment semantics for cases like a, b = b, a + b
                     evaluated_values = []
                     for element in elements:
-                        element_val = self._convert_node(element)
+                        element_val = self._convert_node(element, False)
                         evaluated_values.append(element_val)
 
                     # Then assign all values to targets
@@ -4781,14 +4809,14 @@ class SiluToLLVMConverter:
             # List literal: create runtime list and append each element
             list_obj = self.current_builder.call(self.create_list, [])
             for elem_node in node[1] if len(node) > 1 else []:
-                elem_val = self._convert_node(elem_node)
+                elem_val = self._convert_node(elem_node, False)
                 if elem_val:
                     self.current_builder.call(self.list_append, [list_obj, elem_val])
             return list_obj
 
         elif op == "subscript":
             if len(node) >= 3:
-                obj_val = self._convert_node(node[1])
+                obj_val = self._convert_node(node[1], False)
                 index_node = node[2]
                 if (
                     isinstance(index_node, list)
@@ -4809,7 +4837,7 @@ class SiluToLLVMConverter:
                     lo = (
                         self._load_number_as_i64(
                             self.current_builder,
-                            self._convert_node(lower_node),
+                            self._convert_node(lower_node, False),
                         )
                         if lower_node is not None
                         else ir.const_(i64t, 0)
@@ -4817,7 +4845,7 @@ class SiluToLLVMConverter:
                     hi = (
                         self._load_number_as_i64(
                             self.current_builder,
-                            self._convert_node(upper_node),
+                            self._convert_node(upper_node, False),
                         )
                         if upper_node is not None
                         else ir.const_(i64t, 0)
@@ -4825,7 +4853,7 @@ class SiluToLLVMConverter:
                     step = (
                         self._load_number_as_i64(
                             self.current_builder,
-                            self._convert_node(step_node),
+                            self._convert_node(step_node, False),
                         )
                         if step_node is not None
                         else ir.const_(i64t, 1)
@@ -4834,7 +4862,7 @@ class SiluToLLVMConverter:
                         self.pyobj_str_slice,
                         [obj_val, lo, hi, step, has_lo, has_hi],
                     )
-                index_val = self._convert_node(index_node)
+                index_val = self._convert_node(index_node, False)
                 if obj_val and index_val:
                     # Runtime tag dispatch: list index vs dict key vs str index
                     return self.current_builder.call(
@@ -4844,9 +4872,9 @@ class SiluToLLVMConverter:
 
         elif op == "subscript_assign":
             if len(node) >= 4:
-                obj_val = self._convert_node(node[1])
-                index_val = self._convert_node(node[2])
-                value_val = self._convert_node(node[3])
+                obj_val = self._convert_node(node[1], False)
+                index_val = self._convert_node(node[2], False)
+                value_val = self._convert_node(node[3], False)
                 if obj_val and index_val and value_val:
                     self.current_builder.call(
                         self.pyobj_subscript_set, [obj_val, index_val, value_val]
@@ -4857,8 +4885,8 @@ class SiluToLLVMConverter:
             # del obj[key]: dict_pop tombstones the entry; Python's del
             # raises KeyError when the key is missing
             if len(node) >= 3:
-                obj_val = self._convert_node(node[1])
-                key_val = self._convert_node(node[2])
+                obj_val = self._convert_node(node[1], False)
+                key_val = self._convert_node(node[2], False)
                 if obj_val and key_val:
                     popped = self.current_builder.call(
                         self.dict_pop, [obj_val, key_val]
@@ -4886,8 +4914,8 @@ class SiluToLLVMConverter:
             # Dict literal: {"k": v, ...} pairs
             dict_obj = self.current_builder.call(self.create_dict, [])
             for pair_node in node[1] if len(node) > 1 else []:
-                key_val = self._convert_node(pair_node[0])
-                value_val = self._convert_node(pair_node[1])
+                key_val = self._convert_node(pair_node[0], False)
+                value_val = self._convert_node(pair_node[1], False)
                 if key_val and value_val:
                     self.current_builder.call(
                         self.dict_set, [dict_obj, key_val, value_val]
@@ -4901,7 +4929,7 @@ class SiluToLLVMConverter:
             # assignment is not rejected as it would be in Rust/Python.
             tuple_obj = self.current_builder.call(self.create_list, [])
             for elem_node in node[1] if len(node) > 1 else []:
-                elem_val = self._convert_node(elem_node)
+                elem_val = self._convert_node(elem_node, False)
                 if elem_val:
                     self.current_builder.call(self.list_append, [tuple_obj, elem_val])
             return tuple_obj
@@ -4909,7 +4937,7 @@ class SiluToLLVMConverter:
         elif op == "return":
             # Handle return statements
             if len(node) > 1:
-                return_val = self._convert_node(node[1])
+                return_val = self._convert_node(node[1], False)
                 if (
                     return_val
                     and self.current_function
@@ -4962,7 +4990,7 @@ class SiluToLLVMConverter:
         return_generated = False
         for stmt in body_stmts:
             # result =
-            self._convert_node(stmt)
+            self._convert_node(stmt, False)
             if isinstance(stmt, list) and len(stmt) > 0 and stmt[0] == "return":
                 return_generated = True
                 break
