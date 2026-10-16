@@ -34,6 +34,71 @@ from llvmlite import ir
 
 from .silu_ir_to_llvm import SiluToLLVMConverter
 
+def _clamp_str_bound(b, bound, s_cp):
+    """Python slice-index clamp: negatives count from s_cp."""
+    i64 = ir.IntType(64)
+    zero64 = ir.Constant(i64, 0)
+    adjusted = b.select(
+        b.icmp_signed("<", bound, zero64), b.add(bound, s_cp), bound
+    )
+    floored = b.select(
+        b.icmp_signed("<", adjusted, zero64), zero64, adjusted
+    )
+    return b.select(b.icmp_signed(">", floored, s_cp), s_cp, floored)
+
+
+def _is_ws_byte(b, byte):
+    """ASCII whitespace: space, \\t \\n \\v \\f \\r. UTF-8
+    continuation/lead bytes (>= 0x80) are never whitespace."""
+    b8 = ir.IntType(8)
+    return b.or_(
+        b.icmp_signed("==", byte, ir.Constant(b8, 32)),
+        b.and_(
+            b.icmp_signed(">=", byte, ir.Constant(b8, 9)),
+            b.icmp_signed("<=", byte, ir.Constant(b8, 13)),
+        ),
+    )
+
+
+def _pred_digit(b, byte):
+    b8 = ir.IntType(8)
+    return b.and_(
+        b.icmp_signed(">=", byte, ir.Constant(b8, 0x30)),
+        b.icmp_signed("<=", byte, ir.Constant(b8, 0x39)),
+    )
+
+
+def _pred_alpha(b, byte):
+    b8 = ir.IntType(8)
+    lowered = b.or_(byte, ir.Constant(b8, 0x20))
+    ascii_alpha = b.and_(
+        b.icmp_signed(">=", lowered, ir.Constant(b8, 0x61)),
+        b.icmp_signed("<=", lowered, ir.Constant(b8, 0x7A)),
+    )
+    # i8 is signed: test the high bit, not >= 0x80 (which is -128)
+    non_ascii = b.icmp_signed(
+        "!=", b.and_(byte, ir.Constant(b8, 0x80)), ir.Constant(b8, 0)
+    )
+    return b.or_(ascii_alpha, non_ascii)
+
+
+def _load_byte(builder, data, offset):
+    i64 = ir.IntType(64)
+    return builder.zext(
+        builder.load(builder.gep(data, [ir.Constant(i64, offset)])),
+        i64,
+    )
+
+
+def _chr_store(builder, chr_buf, offset, value):
+    b8 = ir.IntType(8)
+    i32 = ir.IntType(32)
+    builder.store(
+        builder.trunc(value, b8),
+        builder.gep(chr_buf, [ir.Constant(i32, offset)]),
+    )
+
+
 def _struct_gep(builder, struct_ptr, index):
     """builder.gep(struct_ptr, [0, index]) - field address in a struct."""
     return builder.gep(
@@ -1075,40 +1140,6 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(count_done)
         builder.ret(builder.load(total_ptr))
 
-        def emit_seq_len(b, byte_value):
-            """UTF-8 sequence length from a lead byte (invalid -> 1)."""
-            b8 = ir.IntType(8)
-            two = b.icmp_signed(
-                "==",
-                b.and_(byte_value, ir.Constant(b8, 0xE0)),
-                ir.Constant(b8, 0xC0),
-            )
-            three = b.icmp_signed(
-                "==",
-                b.and_(byte_value, ir.Constant(b8, 0xF0)),
-                ir.Constant(b8, 0xE0),
-            )
-            four = b.icmp_signed(
-                "==",
-                b.and_(byte_value, ir.Constant(b8, 0xF8)),
-                ir.Constant(b8, 0xF0),
-            )
-            len2 = b.select(four, ir.Constant(i64, 4), one64)
-            len3 = b.select(three, ir.Constant(i64, 3), len2)
-            return b.select(two, ir.Constant(i64, 2), len3)
-
-        def build_rawstr(header_len, data_len, data_value, cp_len):
-            """Shared prologue: fresh struct + data buffer, fields set."""
-            fresh = builder.bitcast(
-                builder.call(self.malloc, [ir.Constant(i64, 32)]),
-                ir.PointerType(self.rawstr_struct_type),
-            )
-            builder.store(header_len, _struct_gep(builder, fresh, 0))
-            builder.store(header_len, _struct_gep(builder, fresh, 1))
-            builder.store(data_value, _struct_gep(builder, fresh, 2))
-            builder.store(cp_len, _struct_gep(builder, fresh, 3))
-            return fresh
-
         # i8* rawstr_new_copy(i8* data, i64 len)
         self.rawstr_new_copy = ir.Function(
             self.module,
@@ -1123,7 +1154,7 @@ class TypedCodegen(SiluToLLVMConverter):
             [buffer, data_arg, len_arg, ir.Constant(ir.IntType(1), 0)],
         )
         cp_count = builder.call(self.rawutf8_cp_count, [data_arg, len_arg])
-        struct_ptr = build_rawstr(len_arg, len_arg, buffer, cp_count)
+        struct_ptr = self._build_rawstr(builder, len_arg, len_arg, buffer, cp_count)
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         # i8* rawstr_copy(i8* src) - eager copy keeps slots exclusive
@@ -1208,7 +1239,7 @@ class TypedCodegen(SiluToLLVMConverter):
             self.memcpy,
             [b_dst, _rawstr_load_data(builder, b_struct), b_len, ir.Constant(ir.IntType(1), 0)],
         )
-        struct_ptr = build_rawstr(total, total, buffer, total_cp)
+        struct_ptr = self._build_rawstr(builder, total, total, buffer, total_cp)
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         # void rawstr_append(i8* s, i8* data, i64 len)
@@ -1401,7 +1432,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(scan_body)
         off = builder.load(off_ptr)
         lead = builder.load(builder.gep(data_arg, [off]))
-        seq = emit_seq_len(builder, lead)
+        seq = self._emit_seq_len(builder, lead)
         builder.store(builder.add(off, seq), off_ptr)
         builder.store(builder.add(seen, one64), seen_ptr)
         builder.branch(scan_cond)
@@ -1460,7 +1491,7 @@ class TypedCodegen(SiluToLLVMConverter):
         char_off.add_incoming(index_eff, ascii_block)
         char_off.add_incoming(walked_off, walk_block)
         lead = builder.load(builder.gep(s_data, [char_off]))
-        seq = builder.select(is_ascii, one64, emit_seq_len(builder, lead))
+        seq = builder.select(is_ascii, one64, self._emit_seq_len(builder, lead))
         same_len = builder.icmp_signed("==", seq, clen_arg)
         builder.cbranch(same_len, cmp_block, neq_block)
 
@@ -1527,7 +1558,7 @@ class TypedCodegen(SiluToLLVMConverter):
         char_off.add_incoming(index_eff, ascii_block)
         char_off.add_incoming(walked_off, walk_block)
         lead = builder.load(builder.gep(s_data, [char_off]))
-        seq = builder.select(is_ascii, one64, emit_seq_len(builder, lead))
+        seq = builder.select(is_ascii, one64, self._emit_seq_len(builder, lead))
         # memcmp over the shared prefix, longer sequence sorts after
         prefix = builder.select(
             builder.icmp_signed("<", seq, clen_arg), seq, clen_arg
@@ -1592,7 +1623,7 @@ class TypedCodegen(SiluToLLVMConverter):
         char_off.add_incoming(index_eff, ascii_block)
         char_off.add_incoming(walked_off, walk_block)
         lead = builder.load(builder.gep(s_data, [char_off]))
-        seq = builder.select(is_ascii, one64, emit_seq_len(builder, lead))
+        seq = builder.select(is_ascii, one64, self._emit_seq_len(builder, lead))
         char_buf = builder.call(self.malloc, [seq])
         builder.call(
             self.memcpy,
@@ -1603,7 +1634,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
-        char_struct = build_rawstr(seq, seq, char_buf, one64)
+        char_struct = self._build_rawstr(builder, seq, seq, char_buf, one64)
         builder.ret(builder.bitcast(char_struct, i8p))
 
         # i8* rawstr_slice(i8* s, i64 lo, i64 hi) - s[lo:hi] in code
@@ -1619,17 +1650,8 @@ class TypedCodegen(SiluToLLVMConverter):
         s_cp = _rawstr_load_cp(builder, s_struct)
         s_data = _rawstr_load_data(builder, s_struct)
 
-        def clamp_cp_bound(b, bound):
-            adjusted = b.select(
-                b.icmp_signed("<", bound, zero64), b.add(bound, s_cp), bound
-            )
-            floored = b.select(
-                b.icmp_signed("<", adjusted, zero64), zero64, adjusted
-            )
-            return b.select(b.icmp_signed(">", floored, s_cp), s_cp, floored)
-
-        lo_eff = clamp_cp_bound(builder, lo_arg)
-        hi_eff = clamp_cp_bound(builder, hi_arg)
+        lo_eff = _clamp_str_bound(builder, lo_arg, s_cp)
+        hi_eff = _clamp_str_bound(builder, hi_arg, s_cp)
         span_cp = builder.sub(hi_eff, lo_eff)
         out_cp = builder.select(
             builder.icmp_signed(">", span_cp, zero64), span_cp, zero64
@@ -1679,7 +1701,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 ir.Constant(ir.IntType(1), 0),
             ],
         )
-        slice_struct = build_rawstr(out_len, out_len, out_buf, out_cp)
+        slice_struct = self._build_rawstr(builder, out_len, out_len, out_buf, out_cp)
         builder.ret(builder.bitcast(slice_struct, i8p))
 
         # {i8*, i64} rawstr_slice_parts(i8* s, i64 lo, i64 hi) - the
@@ -1702,17 +1724,8 @@ class TypedCodegen(SiluToLLVMConverter):
         s_cp = _rawstr_load_cp(builder, s_struct)
         s_data = _rawstr_load_data(builder, s_struct)
 
-        def clamp_view_bound(b, bound):
-            adjusted = b.select(
-                b.icmp_signed("<", bound, zero64), b.add(bound, s_cp), bound
-            )
-            floored = b.select(
-                b.icmp_signed("<", adjusted, zero64), zero64, adjusted
-            )
-            return b.select(b.icmp_signed(">", floored, s_cp), s_cp, floored)
-
-        lo_eff = clamp_view_bound(builder, lo_arg)
-        hi_eff = clamp_view_bound(builder, hi_arg)
+        lo_eff = _clamp_str_bound(builder, lo_arg, s_cp)
+        hi_eff = _clamp_str_bound(builder, hi_arg, s_cp)
         is_ascii = builder.icmp_signed(
             "==", _rawstr_load_len(builder, s_struct), s_cp
         )
@@ -2041,20 +2054,13 @@ class TypedCodegen(SiluToLLVMConverter):
         out_ptr = jb.alloca(i8p, name="join_out")
         jb.branch(join_size_cond)
 
-        def join_item_at(builder, index):
-            items = builder.load(_struct_gep(builder, join_struct, 2))
-            items_i64 = builder.bitcast(items, ir.PointerType(i64))
-            return builder.inttoptr(
-                builder.load(builder.gep(items_i64, [index])), i8p
-            )
-
         jb.position_at_end(join_size_cond)
         si = jb.load(size_i_ptr)
         jb.cbranch(jb.icmp_signed("<", si, join_count), join_size, join_alloc)
 
         jb.position_at_end(join_size)
         item_struct = jb.bitcast(
-            join_item_at(jb, si), ir.PointerType(self.rawstr_struct_type)
+            self._join_item_at(jb, join_struct, si), ir.PointerType(self.rawstr_struct_type)
         )
         item_len = jb.load(_struct_gep(jb, item_struct, 0))
         total_now = jb.load(size_ptr)
@@ -2093,7 +2099,7 @@ class TypedCodegen(SiluToLLVMConverter):
         jb.branch(item_blk)
         jb.position_at_end(item_blk)
         c_item = jb.bitcast(
-            join_item_at(jb, ci), ir.PointerType(self.rawstr_struct_type)
+            self._join_item_at(jb, join_struct, ci), ir.PointerType(self.rawstr_struct_type)
         )
         c_item_data = jb.load(_struct_gep(jb, c_item, 2))
         c_item_len = jb.load(_struct_gep(jb, c_item, 0))
@@ -2158,17 +2164,6 @@ class TypedCodegen(SiluToLLVMConverter):
 
         b8 = ir.IntType(8)
 
-        def is_ws_byte(b, byte):
-            """ASCII whitespace: space, \\t \\n \\v \\f \\r. UTF-8
-            continuation/lead bytes (>= 0x80) are never whitespace."""
-            return b.or_(
-                b.icmp_signed("==", byte, ir.Constant(b8, 32)),
-                b.and_(
-                    b.icmp_signed(">=", byte, ir.Constant(b8, 9)),
-                    b.icmp_signed("<=", byte, ir.Constant(b8, 13)),
-                ),
-            )
-
         # i64 rawstr_ord(i8* s) - code point of a one-character string
         self.rawstr_ord = ir.Function(
             self.module, ir.FunctionType(i64, [i8p]), name="rawstr_ord"
@@ -2212,14 +2207,8 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(ord_ascii)
         builder.ret(b0)
 
-        def load_byte(offset):
-            return builder.zext(
-                builder.load(builder.gep(ord_data, [ir.Constant(i64, offset)])),
-                i64,
-            )
-
         builder.position_at_end(ord_multi)
-        seq = emit_seq_len(builder, b0_8)
+        seq = self._emit_seq_len(builder, b0_8)
         builder.cbranch(
             builder.icmp_signed("==", seq, ir.Constant(i64, 2)),
             ord_two,
@@ -2229,7 +2218,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(ord_two)
         cp2 = builder.or_(
             builder.shl(builder.and_(b0, ir.Constant(i64, 0x1F)), ir.Constant(i64, 6)),
-            builder.and_(load_byte(1), ir.Constant(i64, 0x3F)),
+            builder.and_(_load_byte(builder, ord_data, 1), ir.Constant(i64, 0x3F)),
         )
         builder.branch(ord_join)
 
@@ -2248,11 +2237,11 @@ class TypedCodegen(SiluToLLVMConverter):
                     ir.Constant(i64, 12),
                 ),
                 builder.shl(
-                    builder.and_(load_byte(1), ir.Constant(i64, 0x3F)),
+                    builder.and_(_load_byte(builder, ord_data, 1), ir.Constant(i64, 0x3F)),
                     ir.Constant(i64, 6),
                 ),
             ),
-            builder.and_(load_byte(2), ir.Constant(i64, 0x3F)),
+            builder.and_(_load_byte(builder, ord_data, 2), ir.Constant(i64, 0x3F)),
         )
         builder.branch(ord_join)
 
@@ -2264,16 +2253,16 @@ class TypedCodegen(SiluToLLVMConverter):
                     ir.Constant(i64, 18),
                 ),
                 builder.shl(
-                    builder.and_(load_byte(1), ir.Constant(i64, 0x3F)),
+                    builder.and_(_load_byte(builder, ord_data, 1), ir.Constant(i64, 0x3F)),
                     ir.Constant(i64, 12),
                 ),
             ),
             builder.or_(
                 builder.shl(
-                    builder.and_(load_byte(2), ir.Constant(i64, 0x3F)),
+                    builder.and_(_load_byte(builder, ord_data, 2), ir.Constant(i64, 0x3F)),
                     ir.Constant(i64, 6),
                 ),
-                builder.and_(load_byte(3), ir.Constant(i64, 0x3F)),
+                builder.and_(_load_byte(builder, ord_data, 3), ir.Constant(i64, 0x3F)),
             ),
         )
         builder.branch(ord_join)
@@ -2301,19 +2290,14 @@ class TypedCodegen(SiluToLLVMConverter):
         vb = ir.IRBuilder(v_entry)
         (v_data, v_seq) = f.args
 
-        def v_byte(offset):
-            return vb.zext(
-                vb.load(vb.gep(v_data, [ir.Constant(i64, offset)])), i64
-            )
-
         vb.cbranch(
             vb.icmp_signed("==", v_seq, one64), v_one, v_two
         )
         vb.position_at_end(v_one)
-        vb.ret(v_byte(0))
+        vb.ret(_load_byte(vb, v_data, 0))
         vb.position_at_end(v_two)
-        v_b0 = v_byte(0)
-        v_c1 = vb.and_(v_byte(1), ir.Constant(i64, 0x3F))
+        v_b0 = _load_byte(vb, v_data, 0)
+        v_c1 = vb.and_(_load_byte(vb, v_data, 1), ir.Constant(i64, 0x3F))
         v_cp2 = vb.or_(
             vb.shl(vb.and_(v_b0, ir.Constant(i64, 0x1F)), ir.Constant(i64, 6)),
             v_c1,
@@ -2322,7 +2306,7 @@ class TypedCodegen(SiluToLLVMConverter):
             vb.icmp_signed("==", v_seq, ir.Constant(i64, 2)), v_join, v_more
         )
         vb.position_at_end(v_more)
-        v_c2 = vb.and_(v_byte(2), ir.Constant(i64, 0x3F))
+        v_c2 = vb.and_(_load_byte(vb, v_data, 2), ir.Constant(i64, 0x3F))
         v_cp3 = vb.or_(
             vb.or_(
                 vb.shl(vb.and_(v_b0, ir.Constant(i64, 0x0F)), ir.Constant(i64, 12)),
@@ -2343,7 +2327,7 @@ class TypedCodegen(SiluToLLVMConverter):
             ),
             vb.or_(
                 vb.shl(v_c2, ir.Constant(i64, 6)),
-                vb.and_(v_byte(3), ir.Constant(i64, 0x3F)),
+                vb.and_(_load_byte(vb, v_data, 3), ir.Constant(i64, 0x3F)),
             ),
         )
         vb.branch(v_join)
@@ -2391,14 +2375,8 @@ class TypedCodegen(SiluToLLVMConverter):
             chr_more1,
         )
 
-        def chr_store(offset, value):
-            builder.store(
-                builder.trunc(value, b8),
-                builder.gep(chr_buf, [ir.Constant(i32, offset)]),
-            )
-
         builder.position_at_end(chr_one)
-        chr_store(0, chr_cp)
+        _chr_store(builder, chr_buf, 0, chr_cp)
         builder.branch(chr_make)
 
         builder.position_at_end(chr_more1)
@@ -2409,8 +2387,8 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
         builder.position_at_end(chr_two)
-        chr_store(0, builder.or_(ir.Constant(i64, 0xC0), builder.lshr(chr_cp, ir.Constant(i64, 6))))
-        chr_store(1, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
+        _chr_store(builder, chr_buf, 0, builder.or_(ir.Constant(i64, 0xC0), builder.lshr(chr_cp, ir.Constant(i64, 6))))
+        _chr_store(builder, chr_buf, 1, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
         builder.branch(chr_make)
 
         builder.position_at_end(chr_more2)
@@ -2421,16 +2399,16 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
         builder.position_at_end(chr_three)
-        chr_store(0, builder.or_(ir.Constant(i64, 0xE0), builder.lshr(chr_cp, ir.Constant(i64, 12))))
-        chr_store(1, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 6)), ir.Constant(i64, 0x3F))))
-        chr_store(2, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
+        _chr_store(builder, chr_buf, 0, builder.or_(ir.Constant(i64, 0xE0), builder.lshr(chr_cp, ir.Constant(i64, 12))))
+        _chr_store(builder, chr_buf, 1, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 6)), ir.Constant(i64, 0x3F))))
+        _chr_store(builder, chr_buf, 2, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
         builder.branch(chr_make)
 
         builder.position_at_end(chr_four)
-        chr_store(0, builder.or_(ir.Constant(i64, 0xF0), builder.lshr(chr_cp, ir.Constant(i64, 18))))
-        chr_store(1, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 12)), ir.Constant(i64, 0x3F))))
-        chr_store(2, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 6)), ir.Constant(i64, 0x3F))))
-        chr_store(3, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
+        _chr_store(builder, chr_buf, 0, builder.or_(ir.Constant(i64, 0xF0), builder.lshr(chr_cp, ir.Constant(i64, 18))))
+        _chr_store(builder, chr_buf, 1, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 12)), ir.Constant(i64, 0x3F))))
+        _chr_store(builder, chr_buf, 2, builder.or_(ir.Constant(i64, 0x80), builder.and_(builder.lshr(chr_cp, ir.Constant(i64, 6)), ir.Constant(i64, 0x3F))))
+        _chr_store(builder, chr_buf, 3, builder.or_(ir.Constant(i64, 0x80), builder.and_(chr_cp, ir.Constant(i64, 0x3F))))
         builder.branch(chr_make)
 
         builder.position_at_end(chr_make)
@@ -2468,7 +2446,7 @@ class TypedCodegen(SiluToLLVMConverter):
         hi = builder.load(hi_ptr)
         lo_in = builder.icmp_signed("<", lo, hi)
         lo_byte = builder.load(builder.gep(strip_data, [lo]))
-        lo_ws = is_ws_byte(builder, lo_byte)
+        lo_ws = _is_ws_byte(builder, lo_byte)
         builder.cbranch(builder.and_(lo_in, lo_ws), lo_body, hi_cond)
 
         builder.position_at_end(lo_body)
@@ -2482,7 +2460,7 @@ class TypedCodegen(SiluToLLVMConverter):
         hi_byte = builder.load(
             builder.gep(strip_data, [builder.sub(hi, one64)])
         )
-        hi_ws = is_ws_byte(builder, hi_byte)
+        hi_ws = _is_ws_byte(builder, hi_byte)
         builder.cbranch(builder.and_(hi_in, hi_ws), hi_body, strip_done)
 
         builder.position_at_end(hi_body)
@@ -2500,108 +2478,15 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
         # i1 rawstr_starts_with / rawstr_ends_with(i8* s, i8* p, i64 plen)
-        def emit_affix(fn_name, is_prefix):
-            func = ir.Function(
-                self.module,
-                ir.FunctionType(ir.IntType(1), [i8p, i8p, i64]),
-                name=fn_name,
-            )
-            entry = func.append_basic_block("entry")
-            cmp_blk = func.append_basic_block("affix_cmp")
-            false_blk = func.append_basic_block("affix_false")
-            join_blk = func.append_basic_block("affix_join")
-            b = ir.IRBuilder(entry)
-            s_arg, p_arg, plen_arg = func.args
-            s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-            s_len = _rawstr_load_len(b, s_struct)
-            fits = b.icmp_signed("<=", plen_arg, s_len)
-            b.cbranch(fits, cmp_blk, false_blk)
-
-            b.position_at_end(cmp_blk)
-            s_data = _rawstr_load_data(b, s_struct)
-            if not is_prefix:
-                s_data = b.gep(s_data, [b.sub(s_len, plen_arg)])
-            cmp_r = b.call(self.memcmp, [s_data, p_arg, plen_arg])
-            eq = b.icmp_signed("==", cmp_r, ir.Constant(i32, 0))
-            b.branch(join_blk)
-
-            b.position_at_end(false_blk)
-            b.branch(join_blk)
-
-            b.position_at_end(join_blk)
-            res = b.phi(ir.IntType(1))
-            res.add_incoming(eq, cmp_blk)
-            res.add_incoming(ir.Constant(ir.IntType(1), 0), false_blk)
-            b.ret(res)
-            return func
-
-        self.rawstr_starts_with = emit_affix("rawstr_starts_with", True)
-        self.rawstr_ends_with = emit_affix("rawstr_ends_with", False)
+        self.rawstr_starts_with = self._emit_affix("rawstr_starts_with", True)
+        self.rawstr_ends_with = self._emit_affix("rawstr_ends_with", False)
 
         # i1 rawstr_isdigit / rawstr_isalpha / rawstr_isspace(i8* s):
         # Python semantics = non-empty and every byte qualifies. ASCII is
         # precise; bytes >= 0x80 (non-ASCII code points) count as alpha.
-        def emit_classify(fn_name, pred):
-            func = ir.Function(
-                self.module,
-                ir.FunctionType(ir.IntType(1), [i8p]),
-                name=fn_name,
-            )
-            entry = func.append_basic_block("entry")
-            cond = func.append_basic_block("cls_cond")
-            body = func.append_basic_block("cls_body")
-            fail_blk = func.append_basic_block("cls_fail")
-            done_blk = func.append_basic_block("cls_done")
-            b = ir.IRBuilder(entry)
-            (s_arg,) = func.args
-            s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-            s_len = _rawstr_load_len(b, s_struct)
-            s_data = _rawstr_load_data(b, s_struct)
-            idx_ptr = b.alloca(i64, name="cls_i")
-            b.store(zero64, idx_ptr)
-            b.cbranch(b.icmp_signed("==", s_len, zero64), fail_blk, cond)
-
-            b.position_at_end(cond)
-            idx = b.load(idx_ptr)
-            b.cbranch(b.icmp_signed("<", idx, s_len), body, done_blk)
-
-            b.position_at_end(body)
-            byte = b.load(b.gep(s_data, [idx]))
-            ok_blk = func.append_basic_block("cls_ok")
-            b.cbranch(pred(b, byte), ok_blk, fail_blk)
-
-            b.position_at_end(ok_blk)
-            b.store(b.add(idx, one64), idx_ptr)
-            b.branch(cond)
-
-            b.position_at_end(fail_blk)
-            b.ret(ir.Constant(ir.IntType(1), 0))
-
-            b.position_at_end(done_blk)
-            b.ret(ir.Constant(ir.IntType(1), 1))
-            return func
-
-        def pred_digit(b, byte):
-            return b.and_(
-                b.icmp_signed(">=", byte, ir.Constant(b8, 0x30)),
-                b.icmp_signed("<=", byte, ir.Constant(b8, 0x39)),
-            )
-
-        def pred_alpha(b, byte):
-            lowered = b.or_(byte, ir.Constant(b8, 0x20))
-            ascii_alpha = b.and_(
-                b.icmp_signed(">=", lowered, ir.Constant(b8, 0x61)),
-                b.icmp_signed("<=", lowered, ir.Constant(b8, 0x7A)),
-            )
-            # i8 is signed: test the high bit, not >= 0x80 (which is -128)
-            non_ascii = b.icmp_signed(
-                "!=", b.and_(byte, ir.Constant(b8, 0x80)), ir.Constant(b8, 0)
-            )
-            return b.or_(ascii_alpha, non_ascii)
-
-        self.rawstr_isdigit = emit_classify("rawstr_isdigit", pred_digit)
-        self.rawstr_isalpha = emit_classify("rawstr_isalpha", pred_alpha)
-        self.rawstr_isspace = emit_classify("rawstr_isspace", is_ws_byte)
+        self.rawstr_isdigit = self._emit_classify("rawstr_isdigit", _pred_digit)
+        self.rawstr_isalpha = self._emit_classify("rawstr_isalpha", _pred_alpha)
+        self.rawstr_isspace = self._emit_classify("rawstr_isspace", _is_ws_byte)
 
         # i8* rawstr_split_ws(i8* s) -> rawlist - whitespace-run split
         # with empty-string suppression (Python s.split())
@@ -2641,7 +2526,7 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(sw_body)
         i_val = builder.load(i_ptr)
         byte = builder.load(builder.gep(sw_data, [i_val]))
-        builder.cbranch(is_ws_byte(builder, byte), sw_ws, sw_adv)
+        builder.cbranch(_is_ws_byte(builder, byte), sw_ws, sw_adv)
 
         builder.position_at_end(sw_ws)
         # token ends here iff it is non-empty
@@ -3134,7 +3019,7 @@ class TypedCodegen(SiluToLLVMConverter):
             [raw_buffer, box_data, wide_len, ir.Constant(ir.IntType(1), 0)],
         )
         wide_cp = builder.call(self.rawutf8_cp_count, [box_data, wide_len])
-        struct_ptr = build_rawstr(wide_len, wide_len, raw_buffer, wide_cp)
+        struct_ptr = self._build_rawstr(builder, wide_len, wide_len, raw_buffer, wide_cp)
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         builder.position_at_end(error_block)
@@ -4071,6 +3956,136 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.rawdict_str_slotof, [func.args[0], func.args[1]]
             )
         )
+
+    def _emit_seq_len(self, b, byte_value):
+        """UTF-8 sequence length from a lead byte (invalid -> 1)."""
+        i64 = ir.IntType(64)
+        one64 = ir.Constant(i64, 1)
+        b8 = ir.IntType(8)
+        two = b.icmp_signed(
+            "==",
+            b.and_(byte_value, ir.Constant(b8, 0xE0)),
+            ir.Constant(b8, 0xC0),
+        )
+        three = b.icmp_signed(
+            "==",
+            b.and_(byte_value, ir.Constant(b8, 0xF0)),
+            ir.Constant(b8, 0xE0),
+        )
+        four = b.icmp_signed(
+            "==",
+            b.and_(byte_value, ir.Constant(b8, 0xF8)),
+            ir.Constant(b8, 0xF0),
+        )
+        len2 = b.select(four, ir.Constant(i64, 4), one64)
+        len3 = b.select(three, ir.Constant(i64, 3), len2)
+        return b.select(two, ir.Constant(i64, 2), len3)
+
+    def _build_rawstr(self, builder, header_len, data_len, data_value, cp_len):
+        """Shared prologue: fresh struct + data buffer, fields set."""
+        i64 = ir.IntType(64)
+        fresh = builder.bitcast(
+            builder.call(self.malloc, [ir.Constant(i64, 32)]),
+            ir.PointerType(self.rawstr_struct_type),
+        )
+        builder.store(header_len, _struct_gep(builder, fresh, 0))
+        builder.store(header_len, _struct_gep(builder, fresh, 1))
+        builder.store(data_value, _struct_gep(builder, fresh, 2))
+        builder.store(cp_len, _struct_gep(builder, fresh, 3))
+        return fresh
+
+    def _join_item_at(self, builder, join_struct, index):
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        items = builder.load(_struct_gep(builder, join_struct, 2))
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        return builder.inttoptr(
+            builder.load(builder.gep(items_i64, [index])), i8p
+        )
+
+    def _emit_affix(self, fn_name, is_prefix):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        func = ir.Function(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [i8p, i8p, i64]),
+            name=fn_name,
+        )
+        entry = func.append_basic_block("entry")
+        cmp_blk = func.append_basic_block("affix_cmp")
+        false_blk = func.append_basic_block("affix_false")
+        join_blk = func.append_basic_block("affix_join")
+        b = ir.IRBuilder(entry)
+        s_arg, p_arg, plen_arg = func.args
+        s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = _rawstr_load_len(b, s_struct)
+        fits = b.icmp_signed("<=", plen_arg, s_len)
+        b.cbranch(fits, cmp_blk, false_blk)
+
+        b.position_at_end(cmp_blk)
+        s_data = _rawstr_load_data(b, s_struct)
+        if not is_prefix:
+            s_data = b.gep(s_data, [b.sub(s_len, plen_arg)])
+        cmp_r = b.call(self.memcmp, [s_data, p_arg, plen_arg])
+        eq = b.icmp_signed("==", cmp_r, ir.Constant(i32, 0))
+        b.branch(join_blk)
+
+        b.position_at_end(false_blk)
+        b.branch(join_blk)
+
+        b.position_at_end(join_blk)
+        res = b.phi(ir.IntType(1))
+        res.add_incoming(eq, cmp_blk)
+        res.add_incoming(ir.Constant(ir.IntType(1), 0), false_blk)
+        b.ret(res)
+        return func
+
+
+    def _emit_classify(self, fn_name, pred):
+        i64 = ir.IntType(64)
+        one64 = ir.Constant(i64, 1)
+        zero64 = ir.Constant(i64, 0)
+        i8p = ir.PointerType(ir.IntType(8))
+        func = ir.Function(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [i8p]),
+            name=fn_name,
+        )
+        entry = func.append_basic_block("entry")
+        cond = func.append_basic_block("cls_cond")
+        body = func.append_basic_block("cls_body")
+        fail_blk = func.append_basic_block("cls_fail")
+        done_blk = func.append_basic_block("cls_done")
+        b = ir.IRBuilder(entry)
+        (s_arg,) = func.args
+        s_struct = b.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = _rawstr_load_len(b, s_struct)
+        s_data = _rawstr_load_data(b, s_struct)
+        idx_ptr = b.alloca(i64, name="cls_i")
+        b.store(zero64, idx_ptr)
+        b.cbranch(b.icmp_signed("==", s_len, zero64), fail_blk, cond)
+
+        b.position_at_end(cond)
+        idx = b.load(idx_ptr)
+        b.cbranch(b.icmp_signed("<", idx, s_len), body, done_blk)
+
+        b.position_at_end(body)
+        byte = b.load(b.gep(s_data, [idx]))
+        ok_blk = func.append_basic_block("cls_ok")
+        b.cbranch(pred(b, byte), ok_blk, fail_blk)
+
+        b.position_at_end(ok_blk)
+        b.store(b.add(idx, one64), idx_ptr)
+        b.branch(cond)
+
+        b.position_at_end(fail_blk)
+        b.ret(ir.Constant(ir.IntType(1), 0))
+
+        b.position_at_end(done_blk)
+        b.ret(ir.Constant(ir.IntType(1), 1))
+        return func
+
 
     def _create_unbox_runtime(self):
         """unbox helpers for the typed -> dynamic -> typed boundary."""
