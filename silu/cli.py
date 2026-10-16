@@ -69,7 +69,9 @@ def format_ir_output(ir_result: Any, output_format: str) -> str:
 def run_interpreter(source_code: str, **kwargs) -> None:
     """Run the interpreter on the source code."""
     try:
-        tree = ast.parse(source_code)
+        from silu.importer import parse_with_imports
+
+        tree = parse_with_imports(source_code)
         interpreter = SiluInterpreter(**kwargs)
         interpreter.visit(tree)
     except SyntaxError as e:
@@ -104,7 +106,9 @@ def check_interpreter(source_code: str, **kwargs) -> tuple[bool, str]:
     import contextlib
 
     try:
-        tree = ast.parse(source_code)
+        from silu.importer import parse_with_imports
+
+        tree = parse_with_imports(source_code)
         interpreter = SiluInterpreter(**kwargs)
 
         # Suppress all output during interpretation
@@ -171,7 +175,9 @@ def run_check(filename: str) -> None:
 def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> None:
     """Generate IR from source code and print it."""
     try:
-        tree = ast.parse(source_code)
+        from silu.importer import parse_with_imports
+
+        tree = parse_with_imports(source_code)
         ir_generator = SiluIRGenerator(**kwargs)
         ir_result = ir_generator.visit(tree)
 
@@ -276,7 +282,11 @@ def _compile_to_binary(source_file: str, out_path: str) -> None:
 
     with open(source_file, "r", encoding="utf-8") as handle:
         source_code = handle.read()
-    tree = ast.parse(source_code)
+    from silu.importer import expand_imports_tree
+
+    tree = expand_imports_tree(
+        source_code, os.path.dirname(os.path.abspath(source_file))
+    )
     ir_result = SiluIRGenerator().visit(tree)
     ir_json = json.dumps(ir_result)
 
@@ -412,7 +422,9 @@ def run_symbolic_executor(
                 # Silu source file - need to convert to IR first
                 # TODO
                 source_code = read_source_file(source)
-                tree = ast.parse(source_code)
+                from silu.importer import parse_with_imports
+
+                tree = parse_with_imports(source_code)
                 ir_generator = SiluIRGenerator()
                 ir_result = ir_generator.visit(tree)
                 paths = executor.execute_program(ir_result)
@@ -825,6 +837,11 @@ def main() -> None:
     if args.file:
         source_code = read_source_file(args.file)
         source_name = args.file
+        # cross-file imports (Rust mod shape): inline sibling .si
+        # files; the parse hook below picks the directory up
+        from silu import importer
+
+        importer.SOURCE_DIR = os.path.dirname(os.path.abspath(args.file))
     else:
         source_code = args.source
         source_name = "<string>"
@@ -847,7 +864,9 @@ def main() -> None:
 
             if hasattr(args, "output") and args.output:
                 # Generate IR and save to file
-                tree = ast.parse(source_code)
+                from silu.importer import parse_with_imports
+
+                tree = parse_with_imports(source_code)
                 ir_generator = SiluIRGenerator(**ir_kwargs)
                 ir_result = ir_generator.visit(tree)
                 save_ir_to_file(ir_result, args.output, args.format)

@@ -17,6 +17,7 @@ Enum members must carry explicit values in the source (``A = 0``):
 bare members are Silu-only sugar and mean an undefined name to Python.
 """
 
+import os
 import sys
 from enum import Enum
 
@@ -59,6 +60,7 @@ def run(path):
         "Enum": Enum,
         "read_stdin": read_stdin,
         "read_file": read_file,
+        "file_exists": os.path.exists,
     }
     # LOAD_BUILD_CLASS reads __build_class__ from builtins (a class
     # statement ignores the surrounding globals for this name)

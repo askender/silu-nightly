@@ -2757,6 +2757,39 @@ class SiluToLLVMConverter:
             builder.call(self.create_str, [fbuf, builder.trunc(size, i32)])
         )
 
+        # i1 silu_path_exists(i8* data, i64 len) - Rust Path::exists:
+        # fopen/fclose probe; the rawstr data is not NUL-terminated,
+        # so the path is copied first
+        self.path_exists = ir.Function(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [i8p, i64]),
+            name="silu_path_exists",
+        )
+        pe_entry = self.path_exists.append_basic_block("pe_entry")
+        pe_yes = self.path_exists.append_basic_block("pe_yes")
+        pe_no = self.path_exists.append_basic_block("pe_no")
+        peb = ir.IRBuilder(pe_entry)
+        pe_data, pe_len = self.path_exists.args
+        pe_name = peb.call(self.malloc, [peb.add(pe_len, one64)])
+        peb.call(self.memcpy, [pe_name, pe_data, pe_len, ir.Constant(ir.IntType(1), 0)])
+        peb.store(
+            ir.Constant(ir.IntType(8), 0), peb.gep(pe_name, [pe_len])
+        )
+        pe_mode = self._create_global_string_with_builder("r", peb)
+        pe_handle = peb.call(self.fopen, [pe_name, pe_mode])
+        peb.cbranch(
+            peb.icmp_signed(
+                "==", pe_handle, ir.Constant(i8p, None)
+            ),
+            pe_no,
+            pe_yes,
+        )
+        peb.position_at_end(pe_yes)
+        peb.call(self.fclose, [pe_handle])
+        peb.ret(ir.Constant(ir.IntType(1), 1))
+        peb.position_at_end(pe_no)
+        peb.ret(ir.Constant(ir.IntType(1), 0))
+
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.Function(
             self.module,

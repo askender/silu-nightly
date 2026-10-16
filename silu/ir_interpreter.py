@@ -60,6 +60,7 @@ class IRInterpreter:
             "str": self._builtin_str,
             "bool": self._builtin_bool,
             "len": self._builtin_len,
+            "file_exists": lambda p: __import__("os").path.exists(p),
             "range": self._builtin_range,
             "abs": self._builtin_abs,
             "min": self._builtin_min,

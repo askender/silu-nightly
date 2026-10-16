@@ -10111,6 +10111,27 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.current_builder.call(self.rawstr_chr, [cp]),
                 )
 
+            if func_name == "file_exists":
+                # file_exists(path) -> bool (Rust Path::exists)
+                path_ptr, path_temp = self._rawstr_operand(
+                    self._convert_node(args_node[0])
+                )
+                path_struct = self.current_builder.bitcast(
+                    path_ptr, ir.PointerType(self.rawstr_struct_type)
+                )
+                exists_i1 = self.current_builder.call(
+                    self.path_exists,
+                    [
+                        _rawstr_load_data(self.current_builder, path_struct),
+                        _rawstr_load_len(self.current_builder, path_struct),
+                    ],
+                )
+                if path_temp is not None:
+                    self.current_builder.call(
+                        self.rawstr_free, [path_temp]
+                    )
+                return (I1, exists_i1)
+
             if func_name == "read_file":
                 # read_file(path) -> str (Rust fs::read_to_string)
                 if not args_node:

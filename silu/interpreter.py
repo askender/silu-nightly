@@ -5,6 +5,7 @@ Simplified interpreter that extends BaseASTProcessor for direct execution of Sil
 """
 
 import ast
+import os
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -204,6 +205,7 @@ class Environment:
                 "type": type,
                 "isinstance": self._isinstance,
                 "int": int,
+                "file_exists": lambda p: os.path.exists(p),
                 "float": float,
                 "str": str,
                 "bool": bool,
