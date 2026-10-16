@@ -18,26 +18,28 @@ from .ir_utils import parse_ir_from_json_string, IRParseError
 class PyObject:
     """Runtime representation of Python objects in LLVM IR."""
 
-    def __init__(self, module: ir.Module):
-        self.module = module
+    module: object
+    pyobj_type: object
+    string_type: object
 
-        # Define PyObject struct: { i32 type_tag, i8* data }
-        self.pyobj_type = ir.LiteralStructType(
-            [
-                ir.IntType(
-                    32
-                ),  # type tag (0=int, 1=float, 2=str, 3=bool, 4=list, 5=dict, 6=none)
-                ir.PointerType(ir.IntType(8)),  # data pointer
-            ]
-        )
 
-        # Define string struct: { i32 length, i8* chars }
-        self.string_type = ir.LiteralStructType(
+def pyobj_new(module):
+    p = PyObject(
+        module,
+        ir.LiteralStructType(
             [
-                ir.IntType(32),  # length
-                ir.PointerType(ir.IntType(8)),  # chars
+                ir.IntType(32),
+                ir.PointerType(ir.IntType(8)),
             ]
-        )
+        ),
+        ir.LiteralStructType(
+            [
+                ir.IntType(32),
+                ir.PointerType(ir.IntType(8)),
+            ]
+        ),
+    )
+    return p
 
 
 def _dict_field(builder, struct_ptr, index):
@@ -126,7 +128,7 @@ class SiluToLLVMConverter:
         self.module.data_layout = str(self.target_machine.target_data)
 
         # Runtime object system
-        self.pyobj = PyObject(self.module)
+        self.pyobj = pyobj_new(self.module)
 
         # List struct layout: {i64 length, i64 capacity, PyObject** items}
         self.list_struct_type = ir.LiteralStructType(
@@ -5042,3 +5044,14 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _pyobj_init(self, module, pyobj_type, string_type):
+    # Python bootstrap for the dual-valid PyObject (Silu's auto-ctor
+    # already has this shape); the flatten script strips this hook
+    self.module = module
+    self.pyobj_type = pyobj_type
+    self.string_type = string_type
+
+
+PyObject.__init__ = _pyobj_init

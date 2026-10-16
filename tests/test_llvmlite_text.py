@@ -92,3 +92,25 @@ def test_flattened_converter_matches(tmp_path):
                 flat.TypedCodegen().convert(ir), program
     finally:
         os.unlink(flat_path)
+
+
+def test_flatten_si_output_checks(tmp_path):
+    """The --si emission of the flatten script is valid Silu (and its
+    module-level code, with the inlined llvmlite twin, executes under
+    the AST interpreter)."""
+    r = subprocess.run(
+        [sys.executable, f"{REPO}/tools/flatten_codegen.py", "--si"],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert r.returncode == 0, r.stderr
+    # the import resolves against selfhost/llvmlite.si
+    out = tmp_path / "typed_codegen_flat.si"
+    out.write_text(r.stdout)
+    llvmlite_twin = (tmp_path / "llvmlite.si")
+    llvmlite_twin.write_text(open(f"{REPO}/selfhost/llvmlite.si").read())
+    c = subprocess.run(
+        [sys.executable, "-m", "silu", "check", str(out)],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert c.returncode == 0, c.stdout + c.stderr
+    assert c.stdout.strip().endswith("ok")

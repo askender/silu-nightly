@@ -21,6 +21,9 @@ programs) prove the merge before any Silu-syntax conversion. Usage:
 import ast
 import sys
 
+__SI_MODE = "--si" in sys.argv
+sys.argv = [a for a in sys.argv if a != "--si"]
+
 REPO = __file__.rsplit("/tools/", 1)[0]
 BASE = f"{REPO}/silu/silu_ir_to_llvm.py"
 DERIVED = f"{REPO}/silu/typed_codegen.py"
@@ -178,5 +181,220 @@ def main():
     sys.stdout.write(text)
 
 
+# ---------------------------------------------------------------- --
+# --si mode: emit the flattened converter as Silu source
+
+def si_main():
+    import io
+    import contextlib
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        main()
+    text = buf.getvalue()
+
+    import ast as A
+
+    tree = A.parse(text)
+
+    class ToSilu(A.NodeTransformer):
+        def visit_ImportFrom(self, node):
+            if node.module == "silu.ir_iface":
+                return None
+            return node
+
+        def _strip_doc(self, body):
+            if (body and isinstance(body[0], A.Expr)
+                    and isinstance(body[0].value, A.Constant)
+                    and isinstance(body[0].value.value, str)):
+                return body[1:]
+            return body
+
+        def visit_ClassDef(self, node):
+            self.generic_visit(node)
+            node.body = self._strip_doc(node.body)
+            return node
+
+        def _strip_default_args(self, node):
+            node.args.defaults = []
+            node.args.kw_defaults = []
+            return node
+
+        def visit_FunctionDef(self, node):
+            # kw_defaults holds None for unset keyword defaults, which
+            # generic_visit would choke on
+            node.args.kw_defaults = []
+            self.generic_visit(node)
+            node.body = self._strip_doc(node.body)
+            node.returns = None
+            for a in node.args.args + node.args.kwonlyargs:
+                a.annotation = None
+            if node.args.vararg:
+                node.args.vararg.annotation = None
+            return node
+
+        def visit_Lambda(self, node):
+            self.generic_visit(node)
+            for a in node.args.args:
+                a.annotation = None
+            return node
+
+        def visit_AnnAssign(self, node):
+            self.generic_visit(node)
+            if node.value is None:
+                # bare declaration (class field): Silu wants the shape
+                # `x: T`; any annotation slot works, use object
+                node.annotation = A.Name(id="object", ctx=A.Load())
+                return node
+            new = A.Assign(
+                targets=[node.target], value=node.value
+            )
+            return A.copy_location(new, node)
+
+        def visit_arg(self, node):
+            node.annotation = None
+            return node
+
+        def visit_Try(self, node):
+            # keep the guarded body, drop handlers
+            out = []
+            for st in node.body:
+                out.append(st)
+            return out
+
+        def visit_With(self, node):
+            self.generic_visit(node)
+            out = []
+            for st in node.body:
+                out.append(st)
+            return out
+
+        def visit_Attribute(self, node):
+            self.generic_visit(node)
+            if (isinstance(node.value, A.Name) and node.value.id == "ir"):
+                attr = node.attr
+                if attr == "module_str":
+                    attr = "module_text"
+                return A.copy_location(
+                    A.Attribute(
+                        value=A.Name(id="llvmlite", ctx=A.Load()),
+                        attr=attr, ctx=node.ctx,
+                    ),
+                    node,
+                )
+            return node
+
+    tree = ToSilu().visit(tree)
+
+    # class-level constants keep the annotated shape (Silu classes
+    # support `x: T = value` but not bare assignment)
+    for n in A.walk(tree):
+        if isinstance(n, A.ClassDef):
+            n.body = [
+                (A.AnnAssign(
+                    target=st.targets[0],
+                    annotation=A.Name(id="object", ctx=A.Load()),
+                    value=st.value, simple=1,
+                ) if isinstance(st, A.Assign) else st)
+                for st in n.body
+            ]
+
+    # the merged converter class: Silu classes declare fields and get
+    # an auto-ctor; the Python __init__ becomes a _py_init method plus
+    # a module-level factory constructing with None placeholders
+    for n in A.walk(tree):
+        if isinstance(n, A.ClassDef) and n.name == "TypedCodegen":
+            fields = []
+            for m in n.body:
+                if isinstance(m, A.FunctionDef):
+                    for x in A.walk(m):
+                        if (isinstance(x, A.Attribute)
+                                and isinstance(x.value, A.Name)
+                                and x.value.id == "self"
+                                and isinstance(x.ctx, A.Store)
+                                and x.attr not in fields):
+                            fields.append(x.attr)
+            decls = [
+                A.AnnAssign(
+                    target=A.Name(id=f, ctx=A.Store()),
+                    annotation=A.Name(id="object", ctx=A.Load()),
+                    value=None, simple=1,
+                )
+                for f in fields
+            ]
+            for m in n.body:
+                if isinstance(m, A.FunctionDef) and m.name == "__init__":
+                    m.name = "_py_init"
+            args = [A.Constant(value=None) for _ in fields]
+            factory = A.FunctionDef(
+                name="typed_codegen_new",
+                args=A.arguments(
+                    posonlyargs=[], args=[], vararg=None,
+                    kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[],
+                ),
+                body=[
+                    A.Assign(
+                        targets=[A.Name(id="c", ctx=A.Store())],
+                        value=A.Call(
+                            func=A.Name(id="TypedCodegen", ctx=A.Load()),
+                            args=args, keywords=[],
+                        ),
+                    ),
+                    A.Expr(
+                        value=A.Call(
+                            func=A.Attribute(
+                                value=A.Name(id="c", ctx=A.Load()),
+                                attr="_py_init", ctx=A.Load(),
+                            ),
+                            args=[], keywords=[],
+                        )
+                    ),
+                    A.Return(value=A.Name(id="c", ctx=A.Load())),
+                ],
+                decorator_list=[], returns=None, type_params=[],
+            )
+            n.body = decls + n.body
+            # module-level factory after the class
+            tree.body.append(factory)
+
+    # drop Python-only module tails: the base file's CLI main() and
+    # the __main__ guard (the .si gets its own stdin entry later)
+    tree.body = [
+        st for st in tree.body
+        if not (
+            isinstance(st, A.FunctionDef)
+            and st.name == "main"
+            and isinstance(st.args.args, list)
+            and len(st.args.args) == 0
+        )
+        and not (
+            isinstance(st, A.If)
+            and isinstance(st.test, A.Compare)
+            and isinstance(st.test.left, A.Name)
+            and st.test.left.id == "__name__"
+        )
+        and not (
+            isinstance(st, A.Assign)
+            and isinstance(st.targets[0], A.Attribute)
+            and st.targets[0].attr == "__init__"
+        )
+        and not (
+            isinstance(st, A.FunctionDef)
+            and st.name == "_pyobj_init"
+        )
+    ]
+
+    # constructor call sites go through the factory
+    A.fix_missing_locations(tree)
+    out = A.unparse(tree)
+    out = out.replace("TypedCodegen()", "typed_codegen_new()")
+
+    out = "import llvmlite\n\n" + out
+    sys.stdout.write(out)
+
+
 if __name__ == "__main__":
-    main()
+    if __SI_MODE:
+        si_main()
+    else:
+        main()

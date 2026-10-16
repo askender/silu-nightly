@@ -290,7 +290,13 @@ RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF)  # kinds with rawstr keys
 # class name lives in the compile-time _var_class side table, never
 # in the object itself - Rust struct layout, no vtable, no header)
 INSTANCE = "instance"
-RAW_STORAGE_KINDS = {**RAWLIST_KINDS, **RAWDICT_KINDS, RAWSTR: RAWSTR, INSTANCE: INSTANCE}
+RAW_STORAGE_KINDS = {}
+for _k in RAWLIST_KINDS:
+    RAW_STORAGE_KINDS[_k] = RAWLIST_KINDS[_k]
+for _k in RAWDICT_KINDS:
+    RAW_STORAGE_KINDS[_k] = RAWDICT_KINDS[_k]
+RAW_STORAGE_KINDS[RAWSTR] = RAWSTR
+RAW_STORAGE_KINDS[INSTANCE] = INSTANCE
 LLVM_KIND_TYPES = {
     I64: ir.IntType(64),
     F64: ir.DoubleType(),
@@ -6851,7 +6857,11 @@ class TypedCodegen(SiluToLLVMConverter):
                 body_annotations: Dict[str, str] = {}
                 collect_annotations(body, body_annotations)
                 local_kinds = self._infer_assign_kinds(body, param_env)
-                body_env = {**param_env, **body_annotations}
+                body_env = {}
+                for _k in param_env:
+                    body_env[_k] = param_env[_k]
+                for _k in body_annotations:
+                    body_env[_k] = body_annotations[_k]
                 body_candidates = dict(local_kinds)
                 returns: list = []
                 find_returns(body, returns)

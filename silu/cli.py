@@ -95,6 +95,18 @@ def run_interpreter(source_code: str, **kwargs) -> None:
         sys.exit(1)
 
 
+def check_interpreter_tree(tree, **kwargs) -> tuple[bool, str]:
+    """Check whether a prepared module tree interprets cleanly."""
+    try:
+        from silu.interpreter import SiluInterpreter
+
+        interpreter = SiluInterpreter(**kwargs)
+        interpreter.visit(tree)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def check_interpreter(source_code: str, **kwargs) -> tuple[bool, str]:
     """Check if the source code can be interpreted by Silu without errors.
 
@@ -157,7 +169,12 @@ def run_check(filename: str) -> None:
             print(f"{filename} bad: empty file")
             return
 
-        success, error_reason = check_interpreter(source_code)
+        from silu.importer import expand_imports_tree
+
+        tree = expand_imports_tree(
+            source_code, os.path.dirname(os.path.abspath(filename))
+        )
+        success, error_reason = check_interpreter_tree(tree)
         if success:
             print(f"{filename} ok")
         else:
