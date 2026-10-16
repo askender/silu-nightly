@@ -516,7 +516,8 @@ class TypedCodegen(SiluToLLVMConverter):
             )
             return gv
 
-        key_error_msg = panic_string(b"KeyError: key not found\0", "str_keyerr")
+        self._key_error_msg = panic_string(b"KeyError: key not found\0", "str_keyerr")
+        key_error_msg = self._key_error_msg
         str_index_error_msg = panic_string(
             b"IndexError: string index out of range\0", "str_idxerr"
         )
@@ -1856,148 +1857,51 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(has_missing)
         builder.ret(ir.Constant(ir.IntType(1), 0))
 
-        def emit_rawdict_probe(name, ret_type, arg_types, on_hit, on_miss):
-            """Shared tombstone-skipping probe for rawdict helpers.
-
-            on_hit(builder, func, entry_index) and on_miss(builder, func)
-            receive a positioned builder and must ret.
-            """
-            func = ir.Function(
-                self.module,
-                ir.FunctionType(ret_type, arg_types),
-                name=name,
-            )
-            entry = func.append_basic_block("entry")
-            probe_test = func.append_basic_block("probe_test")
-            tomb_or_match = func.append_basic_block("probe_tomb")
-            match_check = func.append_basic_block("probe_match")
-            hit_block = func.append_basic_block("hit")
-            probe_step = func.append_basic_block("probe_step")
-            miss_block = func.append_basic_block("miss")
-            b = ir.IRBuilder(entry)
-            dict_arg, key_arg = func.args[0], func.args[1]
-            struct_ptr = b.bitcast(
-                dict_arg, ir.PointerType(self.raw_dict_struct_type)
-            )
-            mask = b.load(_struct_gep(b, struct_ptr, 3))
-            probe_slot = b.alloca(i64, name="probe_slot")
-            b.store(b.and_(key_arg, mask), probe_slot)
-            b.branch(probe_test)
-
-            b.position_at_end(probe_test)
-            table_now = b.load(_struct_gep(b, struct_ptr, 4))
-            slot_now = b.load(probe_slot)
-            slot_entry = b.load(b.gep(table_now, [slot_now]))
-            is_empty = b.icmp_signed("==", slot_entry, zero64)
-            b.cbranch(is_empty, miss_block, tomb_or_match)
-
-            b.position_at_end(tomb_or_match)
-            is_tomb = b.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
-            b.cbranch(is_tomb, probe_step, match_check)
-
-            b.position_at_end(match_check)
-            entry_index = b.sub(slot_entry, one64)
-            keys_now = b.load(_struct_gep(b, struct_ptr, 5))
-            stored_key = b.load(b.gep(keys_now, [entry_index]))
-            is_match = b.icmp_signed("==", stored_key, key_arg)
-            b.cbranch(is_match, hit_block, probe_step)
-
-            b.position_at_end(hit_block)
-            hit_slot = table_now
-            # on_hit may need the probe slot for tombstoning (pop)
-            on_hit(b, func, entry_index, slot_now, hit_slot)
-
-            b.position_at_end(probe_step)
-            mask_step = b.load(_struct_gep(b, struct_ptr, 3))
-            b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
-            b.branch(probe_test)
-
-            b.position_at_end(miss_block)
-            on_miss(b, func)
-            return func
-
-        def probe_struct(b, func):
-            return b.bitcast(
-                func.args[0], ir.PointerType(self.raw_dict_struct_type)
-            )
-
-        def load_value_at(b, func, entry_index):
-            vals_now = b.load(_struct_gep(b, probe_struct(b, func), 6))
-            return b.load(b.gep(vals_now, [entry_index]))
 
         # i64 rawdict_get_or(i8* d, i64 key, i64 default_bits)
-        self.rawdict_get_or = emit_rawdict_probe(
+        self.rawdict_get_or = self._emit_rawdict_probe(
             "rawdict_get_or",
             i64,
             [i8p, i64, i64],
             lambda b, func, entry_index, _slot, _table: b.ret(
-                load_value_at(b, func, entry_index)
+                self._rawdict_load_value_at(b, func, entry_index)
             ),
             lambda b, func: b.ret(func.args[2]),
         )
 
         # i64 rawdict_pop_or(i8* d, i64 key, i64 default_bits)
-        def pop_or_hit(b, func, entry_index, slot_now, table_now):
-            b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
-            struct_ptr = probe_struct(b, func)
-            count = b.load(_struct_gep(b, struct_ptr, 0))
-            b.store(b.sub(count, one64), _struct_gep(b, struct_ptr, 0))
-            b.ret(load_value_at(b, func, entry_index))
-
-        self.rawdict_pop_or = emit_rawdict_probe(
+        self.rawdict_pop_or = self._emit_rawdict_probe(
             "rawdict_pop_or",
             i64,
             [i8p, i64, i64],
-            pop_or_hit,
+            self._rawdict_pop_or_hit,
             lambda b, func: b.ret(func.args[2]),
         )
 
         # i64 rawdict_setdefault(i8* d, i64 key, i64 value_bits)
-        def setdefault_miss(b, func):
-            b.call(self.rawdict_set, [func.args[0], func.args[1], func.args[2]])
-            b.ret(func.args[2])
-
-        self.rawdict_setdefault = emit_rawdict_probe(
+        self.rawdict_setdefault = self._emit_rawdict_probe(
             "rawdict_setdefault",
             i64,
             [i8p, i64, i64],
             lambda b, func, entry_index, _slot, _table: b.ret(
-                load_value_at(b, func, entry_index)
+                self._rawdict_load_value_at(b, func, entry_index)
             ),
-            setdefault_miss,
+            self._rawdict_setdefault_miss,
         )
 
         # i8* rawdict_int_slotof(i8* d, i64 key) - pointer to the
         # value's storage slot (must exist; entry() guarantees it)
-        def slotof_hit(b, func, entry_index, _slot, _table):
-            vals_now = b.load(_struct_gep(b, probe_struct(b, func), 6))
-            b.ret(b.bitcast(b.gep(vals_now, [entry_index]), i8p))
-
-        def slotof_miss(b, func):
-            self._emit_panic(b, b.gep(key_error_msg, [zero32, zero32]))
-
-        self.rawdict_int_slotof = emit_rawdict_probe(
-            "rawdict_int_slotof", i8p, [i8p, i64], slotof_hit, slotof_miss
+        self.rawdict_int_slotof = self._emit_rawdict_probe(
+            "rawdict_int_slotof", i8p, [i8p, i64], self._rawdict_slotof_hit, self._rawdict_slotof_miss
         )
 
         # i8* rawdict_int_entry(i8* d, i64 key, i64 default_bits) -
         # Rust's entry().or_insert(): one probe on the hit path; the
         # miss path inserts the default and re-probes (misses are the
         # rare first sighting of each key)
-        def int_entry_miss(b, func):
-            b.call(
-                self.rawdict_set,
-                [func.args[0], func.args[1], func.args[2]],
-            )
-            b.ret(
-                b.call(
-                    self.rawdict_int_slotof, [func.args[0], func.args[1]]
-                )
-            )
-
-        self.rawdict_int_entry = emit_rawdict_probe(
+        self.rawdict_int_entry = self._emit_rawdict_probe(
             "rawdict_int_entry", i8p, [i8p, i64, i64],
-            slotof_hit, int_entry_miss,
+            self._rawdict_slotof_hit, self._rawdict_int_entry_miss,
         )
 
         # void rawdict_clear(i8* d) - keep the table, drop every entry
@@ -3314,110 +3218,25 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(fnv_done)
         builder.ret(builder.load(fnv_h))
 
-        def emit_rawdict_str_probe(name, ret_type, arg_types, on_hit, on_miss):
-            """Tombstone-skipping probe over str keys (FNV-1a hash,
-            rawstr_eq match). on_hit(builder, func, entry_index,
-            slot_now, table_now) / on_miss(builder, func) must ret."""
-            func = ir.Function(
-                self.module,
-                ir.FunctionType(ret_type, arg_types),
-                name=name,
-            )
-            entry = func.append_basic_block("entry")
-            probe_test = func.append_basic_block("probe_test")
-            tomb_or_match = func.append_basic_block("probe_tomb")
-            match_check = func.append_basic_block("probe_match")
-            hit_block = func.append_basic_block("hit")
-            probe_step = func.append_basic_block("probe_step")
-            miss_block = func.append_basic_block("miss")
-            b = ir.IRBuilder(entry)
-            dict_arg, key_arg = func.args[0], func.args[1]
-            struct_ptr = b.bitcast(
-                dict_arg, ir.PointerType(self.raw_dict_struct_type)
-            )
-            mask = b.load(_struct_gep(b, struct_ptr, 3))
-            probe_slot = b.alloca(i64, name="sprobe_slot")
-            b.store(
-                b.and_(b.call(self.rawstr_fnv, [key_arg]), mask),
-                probe_slot,
-            )
-            b.branch(probe_test)
-
-            b.position_at_end(probe_test)
-            table_now = b.load(_struct_gep(b, struct_ptr, 4))
-            slot_now = b.load(probe_slot)
-            slot_entry = b.load(b.gep(table_now, [slot_now]))
-            is_empty = b.icmp_signed("==", slot_entry, zero64)
-            b.cbranch(is_empty, miss_block, tomb_or_match)
-
-            b.position_at_end(tomb_or_match)
-            is_tomb = b.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
-            b.cbranch(is_tomb, probe_step, match_check)
-
-            b.position_at_end(match_check)
-            entry_index = b.sub(slot_entry, one64)
-            keys_now = b.load(_struct_gep(b, struct_ptr, 5))
-            stored_bits = b.load(b.gep(keys_now, [entry_index]))
-            stored_key = b.inttoptr(stored_bits, i8p)
-            is_match = b.call(self.rawstr_eq, [stored_key, key_arg])
-            b.cbranch(is_match, hit_block, probe_step)
-
-            b.position_at_end(hit_block)
-            on_hit(b, func, entry_index, slot_now, table_now)
-
-            b.position_at_end(probe_step)
-            mask_step = b.load(_struct_gep(b, struct_ptr, 3))
-            b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
-            b.branch(probe_test)
-
-            b.position_at_end(miss_block)
-            on_miss(b, func)
-            return func
-
-        def str_probe_struct(b, func):
-            return b.bitcast(
-                func.args[0], ir.PointerType(self.raw_dict_struct_type)
-            )
-
-        def str_value_at(b, func, entry_index):
-            vals_now = b.load(_struct_gep(b, str_probe_struct(b, func), 6))
-            return b.load(b.gep(vals_now, [entry_index]))
-
-        def str_key_error(b, func):
-            self._emit_panic(b, b.gep(key_error_msg, [zero32, zero32]))
-
         # i64 rawdict_str_get(i8* d, i8* key) - KeyError when missing
-        self.rawdict_str_get = emit_rawdict_str_probe(
+        self.rawdict_str_get = self._emit_rawdict_str_probe(
             "rawdict_str_get",
             i64,
             [i8p, i8p],
             lambda b, func, entry_index, _slot, _table: b.ret(
-                str_value_at(b, func, entry_index)
+                self._rawdict_load_value_at(b, func, entry_index)
             ),
-            str_key_error,
+            self._rawdict_str_key_error,
         )
 
         # i64 rawdict_str_del(i8* d, i8* key) - tombstones, frees the
         # dict's key copy, returns the value bits
-        def str_del_hit(b, func, entry_index, slot_now, table_now):
-            keys_now = b.load(_struct_gep(b, str_probe_struct(b, func), 5))
-            key_bits = b.load(b.gep(keys_now, [entry_index]))
-            b.call(self.rawstr_free, [b.inttoptr(key_bits, i8p)])
-            # null the entry so rawdict_str_clear skips it (the entries
-            # array still holds the dangling pointer otherwise)
-            b.store(zero64, b.gep(keys_now, [entry_index]))
-            b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
-            struct_ptr = str_probe_struct(b, func)
-            count = b.load(_struct_gep(b, struct_ptr, 0))
-            b.store(b.sub(count, one64), _struct_gep(b, struct_ptr, 0))
-            b.ret(str_value_at(b, func, entry_index))
-
-        self.rawdict_str_del = emit_rawdict_str_probe(
-            "rawdict_str_del", i64, [i8p, i8p], str_del_hit, str_key_error
+        self.rawdict_str_del = self._emit_rawdict_str_probe(
+            "rawdict_str_del", i64, [i8p, i8p], self._rawdict_str_del_hit, self._rawdict_str_key_error
         )
 
         # i1 rawdict_str_has(i8* d, i8* key)
-        self.rawdict_str_has = emit_rawdict_str_probe(
+        self.rawdict_str_has = self._emit_rawdict_str_probe(
             "rawdict_str_has",
             ir.IntType(1),
             [i8p, i8p],
@@ -3428,19 +3247,19 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
         # i64 rawdict_str_get_or(i8* d, i8* key, i64 default_bits)
-        self.rawdict_str_get_or = emit_rawdict_str_probe(
+        self.rawdict_str_get_or = self._emit_rawdict_str_probe(
             "rawdict_str_get_or",
             i64,
             [i8p, i8p, i64],
             lambda b, func, entry_index, _slot, _table: b.ret(
-                str_value_at(b, func, entry_index)
+                self._rawdict_load_value_at(b, func, entry_index)
             ),
             lambda b, func: b.ret(func.args[2]),
         )
 
         # i64 rawdict_str_pop_or(i8* d, i8* key, i64 default_bits)
-        self.rawdict_str_pop_or = emit_rawdict_str_probe(
-            "rawdict_str_pop_or", i64, [i8p, i8p, i64], str_del_hit,
+        self.rawdict_str_pop_or = self._emit_rawdict_str_probe(
+            "rawdict_str_pop_or", i64, [i8p, i8p, i64], self._rawdict_str_del_hit,
             lambda b, func: b.ret(func.args[2]),
         )
 
@@ -3724,48 +3543,26 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.ret_void()
 
         # i64 rawdict_str_setdefault(i8* d, i8* key, i64 value_bits)
-        def str_setdefault_miss(b, func):
-            b.call(
-                self.rawdict_str_set,
-                [func.args[0], func.args[1], func.args[2]],
-            )
-            b.ret(func.args[2])
-
-        self.rawdict_str_setdefault = emit_rawdict_str_probe(
+        self.rawdict_str_setdefault = self._emit_rawdict_str_probe(
             "rawdict_str_setdefault",
             i64,
             [i8p, i8p, i64],
             lambda b, func, entry_index, _slot, _table: b.ret(
-                str_value_at(b, func, entry_index)
+                self._rawdict_load_value_at(b, func, entry_index)
             ),
-            str_setdefault_miss,
+            self._rawdict_str_setdefault_miss,
         )
 
         # i8* rawdict_str_slotof(i8* d, i8* key) - value slot pointer
-        def str_slotof_hit(b, func, entry_index, _slot, _table):
-            vals_now = b.load(_struct_gep(b, str_probe_struct(b, func), 6))
-            b.ret(b.bitcast(b.gep(vals_now, [entry_index]), i8p))
-
-        self.rawdict_str_slotof = emit_rawdict_str_probe(
-            "rawdict_str_slotof", i8p, [i8p, i8p], str_slotof_hit,
-            str_key_error,
+        self.rawdict_str_slotof = self._emit_rawdict_str_probe(
+            "rawdict_str_slotof", i8p, [i8p, i8p], self._rawdict_slotof_hit,
+            self._rawdict_str_key_error,
         )
 
         # i8* rawdict_str_entry(i8* d, i8* key, i64 default_bits)
-        def str_entry_miss(b, func):
-            b.call(
-                self.rawdict_str_set,
-                [func.args[0], func.args[1], func.args[2]],
-            )
-            b.ret(
-                b.call(
-                    self.rawdict_str_slotof, [func.args[0], func.args[1]]
-                )
-            )
-
-        self.rawdict_str_entry = emit_rawdict_str_probe(
+        self.rawdict_str_entry = self._emit_rawdict_str_probe(
             "rawdict_str_entry", i8p, [i8p, i8p, i64],
-            str_slotof_hit, str_entry_miss,
+            self._rawdict_slotof_hit, self._rawdict_str_entry_miss,
         )
 
         # void rawdict_str_clear(i8* d) - free every key copy, keep table
@@ -4060,6 +3857,220 @@ class TypedCodegen(SiluToLLVMConverter):
         elem_bits = builder.load(builder.bitcast(elem_arg, ir.PointerType(i64)))
         builder.store(elem_bits, slot)
         builder.ret_void()
+
+    def _emit_rawdict_probe(self, name, ret_type, arg_types, on_hit, on_miss):
+        """Shared tombstone-skipping probe for rawdict helpers.
+
+        on_hit(builder, func, entry_index) and on_miss(builder, func)
+        receive a positioned builder and must ret.
+        """
+        i64 = ir.IntType(64)
+        one64 = ir.Constant(i64, 1)
+        zero64 = ir.Constant(i64, 0)
+        func = ir.Function(
+            self.module,
+            ir.FunctionType(ret_type, arg_types),
+            name=name,
+        )
+        entry = func.append_basic_block("entry")
+        probe_test = func.append_basic_block("probe_test")
+        tomb_or_match = func.append_basic_block("probe_tomb")
+        match_check = func.append_basic_block("probe_match")
+        hit_block = func.append_basic_block("hit")
+        probe_step = func.append_basic_block("probe_step")
+        miss_block = func.append_basic_block("miss")
+        b = ir.IRBuilder(entry)
+        dict_arg, key_arg = func.args[0], func.args[1]
+        struct_ptr = b.bitcast(
+            dict_arg, ir.PointerType(self.raw_dict_struct_type)
+        )
+        mask = b.load(_struct_gep(b, struct_ptr, 3))
+        probe_slot = b.alloca(i64, name="probe_slot")
+        b.store(b.and_(key_arg, mask), probe_slot)
+        b.branch(probe_test)
+
+        b.position_at_end(probe_test)
+        table_now = b.load(_struct_gep(b, struct_ptr, 4))
+        slot_now = b.load(probe_slot)
+        slot_entry = b.load(b.gep(table_now, [slot_now]))
+        is_empty = b.icmp_signed("==", slot_entry, zero64)
+        b.cbranch(is_empty, miss_block, tomb_or_match)
+
+        b.position_at_end(tomb_or_match)
+        is_tomb = b.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
+        b.cbranch(is_tomb, probe_step, match_check)
+
+        b.position_at_end(match_check)
+        entry_index = b.sub(slot_entry, one64)
+        keys_now = b.load(_struct_gep(b, struct_ptr, 5))
+        stored_key = b.load(b.gep(keys_now, [entry_index]))
+        is_match = b.icmp_signed("==", stored_key, key_arg)
+        b.cbranch(is_match, hit_block, probe_step)
+
+        b.position_at_end(hit_block)
+        hit_slot = table_now
+        # on_hit may need the probe slot for tombstoning (pop)
+        on_hit(b, func, entry_index, slot_now, hit_slot)
+
+        b.position_at_end(probe_step)
+        mask_step = b.load(_struct_gep(b, struct_ptr, 3))
+        b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
+        b.branch(probe_test)
+
+        b.position_at_end(miss_block)
+        on_miss(b, func)
+        return func
+
+    def _rawdict_probe_struct(self, b, func):
+        return b.bitcast(
+            func.args[0], ir.PointerType(self.raw_dict_struct_type)
+        )
+
+    def _rawdict_load_value_at(self, b, func, entry_index):
+        vals_now = b.load(_struct_gep(b, self._rawdict_probe_struct(b, func), 6))
+        return b.load(b.gep(vals_now, [entry_index]))
+
+    def _rawdict_pop_or_hit(self, b, func, entry_index, slot_now, table_now):
+        i64 = ir.IntType(64)
+        b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
+        struct_ptr = self._rawdict_probe_struct(b, func)
+        count = b.load(_struct_gep(b, struct_ptr, 0))
+        b.store(
+            b.sub(count, ir.Constant(i64, 1)), _struct_gep(b, struct_ptr, 0)
+        )
+        b.ret(self._rawdict_load_value_at(b, func, entry_index))
+
+    def _rawdict_setdefault_miss(self, b, func):
+        b.call(self.rawdict_set, [func.args[0], func.args[1], func.args[2]])
+        b.ret(func.args[2])
+
+    def _rawdict_slotof_hit(self, b, func, entry_index, _slot, _table):
+        vals_now = b.load(_struct_gep(b, self._rawdict_probe_struct(b, func), 6))
+        b.ret(
+            b.bitcast(
+                b.gep(vals_now, [entry_index]),
+                ir.PointerType(ir.IntType(8)),
+            )
+        )
+
+    def _rawdict_slotof_miss(self, b, func):
+        zero32 = ir.Constant(ir.IntType(32), 0)
+        self._emit_panic(b, b.gep(self._key_error_msg, [zero32, zero32]))
+
+    def _rawdict_int_entry_miss(self, b, func):
+        b.call(
+            self.rawdict_set,
+            [func.args[0], func.args[1], func.args[2]],
+        )
+        b.ret(
+            b.call(
+                self.rawdict_int_slotof, [func.args[0], func.args[1]]
+            )
+        )
+
+    def _emit_rawdict_str_probe(self, name, ret_type, arg_types, on_hit, on_miss):
+        """Tombstone-skipping probe over str keys (FNV-1a hash,
+        rawstr_eq match). on_hit(builder, func, entry_index,
+        slot_now, table_now) / on_miss(builder, func) must ret."""
+        i64 = ir.IntType(64)
+        one64 = ir.Constant(i64, 1)
+        zero64 = ir.Constant(i64, 0)
+        i8p = ir.PointerType(ir.IntType(8))
+        func = ir.Function(
+            self.module,
+            ir.FunctionType(ret_type, arg_types),
+            name=name,
+        )
+        entry = func.append_basic_block("entry")
+        probe_test = func.append_basic_block("probe_test")
+        tomb_or_match = func.append_basic_block("probe_tomb")
+        match_check = func.append_basic_block("probe_match")
+        hit_block = func.append_basic_block("hit")
+        probe_step = func.append_basic_block("probe_step")
+        miss_block = func.append_basic_block("miss")
+        b = ir.IRBuilder(entry)
+        dict_arg, key_arg = func.args[0], func.args[1]
+        struct_ptr = b.bitcast(
+            dict_arg, ir.PointerType(self.raw_dict_struct_type)
+        )
+        mask = b.load(_struct_gep(b, struct_ptr, 3))
+        probe_slot = b.alloca(i64, name="sprobe_slot")
+        b.store(
+            b.and_(b.call(self.rawstr_fnv, [key_arg]), mask),
+            probe_slot,
+        )
+        b.branch(probe_test)
+
+        b.position_at_end(probe_test)
+        table_now = b.load(_struct_gep(b, struct_ptr, 4))
+        slot_now = b.load(probe_slot)
+        slot_entry = b.load(b.gep(table_now, [slot_now]))
+        is_empty = b.icmp_signed("==", slot_entry, zero64)
+        b.cbranch(is_empty, miss_block, tomb_or_match)
+
+        b.position_at_end(tomb_or_match)
+        is_tomb = b.icmp_signed("==", slot_entry, ir.Constant(i64, -1))
+        b.cbranch(is_tomb, probe_step, match_check)
+
+        b.position_at_end(match_check)
+        entry_index = b.sub(slot_entry, one64)
+        keys_now = b.load(_struct_gep(b, struct_ptr, 5))
+        stored_bits = b.load(b.gep(keys_now, [entry_index]))
+        stored_key = b.inttoptr(stored_bits, i8p)
+        is_match = b.call(self.rawstr_eq, [stored_key, key_arg])
+        b.cbranch(is_match, hit_block, probe_step)
+
+        b.position_at_end(hit_block)
+        on_hit(b, func, entry_index, slot_now, table_now)
+
+        b.position_at_end(probe_step)
+        mask_step = b.load(_struct_gep(b, struct_ptr, 3))
+        b.store(b.and_(b.add(slot_now, one64), mask_step), probe_slot)
+        b.branch(probe_test)
+
+        b.position_at_end(miss_block)
+        on_miss(b, func)
+        return func
+
+    def _rawdict_str_key_error(self, b, func):
+        zero32 = ir.Constant(ir.IntType(32), 0)
+        self._emit_panic(b, b.gep(self._key_error_msg, [zero32, zero32]))
+
+    def _rawdict_str_del_hit(self, b, func, entry_index, slot_now, table_now):
+        i64 = ir.IntType(64)
+        zero64 = ir.Constant(i64, 0)
+        i8p = ir.PointerType(ir.IntType(8))
+        keys_now = b.load(_struct_gep(b, self._rawdict_probe_struct(b, func), 5))
+        key_bits = b.load(b.gep(keys_now, [entry_index]))
+        b.call(self.rawstr_free, [b.inttoptr(key_bits, i8p)])
+        # null the entry so rawdict_str_clear skips it (the entries
+        # array still holds the dangling pointer otherwise)
+        b.store(zero64, b.gep(keys_now, [entry_index]))
+        b.store(ir.Constant(i64, -1), b.gep(table_now, [slot_now]))
+        struct_ptr = self._rawdict_probe_struct(b, func)
+        count = b.load(_struct_gep(b, struct_ptr, 0))
+        b.store(
+            b.sub(count, ir.Constant(i64, 1)), _struct_gep(b, struct_ptr, 0)
+        )
+        b.ret(self._rawdict_load_value_at(b, func, entry_index))
+
+    def _rawdict_str_setdefault_miss(self, b, func):
+        b.call(
+            self.rawdict_str_set,
+            [func.args[0], func.args[1], func.args[2]],
+        )
+        b.ret(func.args[2])
+
+    def _rawdict_str_entry_miss(self, b, func):
+        b.call(
+            self.rawdict_str_set,
+            [func.args[0], func.args[1], func.args[2]],
+        )
+        b.ret(
+            b.call(
+                self.rawdict_str_slotof, [func.args[0], func.args[1]]
+            )
+        )
 
     def _create_unbox_runtime(self):
         """unbox helpers for the typed -> dynamic -> typed boundary."""
