@@ -81,3 +81,23 @@ supported (Python-only idiom).
 | ir2c -> C | done | Dict/DictI slot walk; get(k) boxes to pint/pnil |
 
 Tests: `tests/test_dict_ops.py`, 6 programs x 6 dimensions.
+
+## cross-file imports (Rust mod shape)
+
+`import foo` / `from foo import a`: foo.si next to the importer is
+inlined at the import position (recursively, each file once);
+`foo.X` rewrites to `X`. Cycles are compile errors; names with no
+.si file keep their import node and stay inert.
+
+| Surface | Status | Notes |
+|---------|--------|-------|
+| CPython | done | reference runs the expanded program |
+| AST interp | done | |
+| IR interp | done | |
+| typed LLVM | done | |
+| silu_fe parity | done | native expansion in silu_fe.si |
+| ir2c -> C | done | single-file IR |
+
+New builtin: `file_exists(path)` (Rust Path::exists), all surfaces.
+Tests: `tests/test_import.py`, 5 program shapes x 6 dimensions +
+cycle rejection on both front ends.
