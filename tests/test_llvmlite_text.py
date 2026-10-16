@@ -63,3 +63,32 @@ def test_si_copy_locked_to_core():
     core = open(f"{REPO}/silu/llvmlite_text.py").read()
     twin = open(f"{REPO}/selfhost/llvmlite.si").read()
     assert twin == core
+
+
+def test_flattened_converter_matches(tmp_path):
+    """The inheritance-flattened single class (tools/flatten_codegen.py)
+    produces byte-identical .ll to the original two-class converter."""
+    import importlib
+
+    flat_src = subprocess.run(
+        [sys.executable, f"{REPO}/tools/flatten_codegen.py"],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert flat_src.returncode == 0, flat_src.stderr
+    flat_path = f"{REPO}/silu/_flat_test_codegen.py"
+    with open(flat_path, "w") as h:
+        h.write(flat_src.stdout)
+    try:
+        flat = importlib.import_module("silu._flat_test_codegen")
+        from silu.typed_codegen import TypedCodegen
+
+        for program in PROGRAMS:
+            ir = subprocess.run(
+                [sys.executable, "-m", "silu", "ir", program,
+                 "--format", "json"],
+                capture_output=True, text=True, cwd=REPO, timeout=600,
+            ).stdout
+            assert TypedCodegen().convert(ir) == \
+                flat.TypedCodegen().convert(ir), program
+    finally:
+        os.unlink(flat_path)

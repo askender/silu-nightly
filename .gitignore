@@ -141,3 +141,5 @@ zcode_check
 *.ret.json
 *.roundtrip.si
 *.roundtrip.ir
+_flat_test_codegen.py
+typed_codegen_flat.py
