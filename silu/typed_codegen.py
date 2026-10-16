@@ -34,6 +34,28 @@ from llvmlite import ir
 
 from .silu_ir_to_llvm import SiluToLLVMConverter
 
+def _targets_parent(target_node, parent_names):
+    if isinstance(target_node, str):
+        return target_node in parent_names
+    if (
+        isinstance(target_node, (list, tuple))
+        and len(target_node) >= 2
+        and target_node[0] == "name"
+        and isinstance(target_node[1], str)
+    ):
+        return target_node[1] in parent_names
+    if (
+        isinstance(target_node, (list, tuple))
+        and len(target_node) >= 3
+        and target_node[0] == "subscript"
+        and isinstance(target_node[1], (list, tuple))
+        and len(target_node[1]) >= 2
+        and target_node[1][0] == "name"
+    ):
+        return target_node[1][1] in parent_names
+    return False
+
+
 def _clamp_str_bound(b, bound, s_cp):
     """Python slice-index clamp: negatives count from s_cp."""
     i64 = ir.IntType(64)
@@ -4087,6 +4109,193 @@ class TypedCodegen(SiluToLLVMConverter):
         return func
 
 
+    def _emit_unbox(self, name, out_type, message, convert_payload):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.Constant(i32, 0)
+        one32 = ir.Constant(i32, 1)
+        func = ir.Function(
+            self.module, ir.FunctionType(out_type, [pyobj_ptr]), name=name
+        )
+        entry = func.append_basic_block("entry")
+        ok_block = func.append_basic_block("unbox_ok")
+        bad_block = func.append_basic_block("unbox_bad")
+        builder = ir.IRBuilder(entry)
+        (obj_arg,) = func.args
+        is_null = builder.icmp_signed("==", obj_arg, ir.Constant(pyobj_ptr, None))
+        builder.cbranch(is_null, bad_block, ok_block)
+
+        builder.position_at_end(ok_block)
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        # int and bool payloads both feed i64 conversion
+        data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        as_i64 = builder.load(builder.bitcast(data, ir.PointerType(i64)))
+        builder.ret(convert_payload(builder, tag, as_i64, data))
+
+        builder.position_at_end(bad_block)
+        msg = self._create_global_string_with_builder(message, builder)
+        self._emit_panic(builder, msg)
+        return func
+
+    def _dict_value_bits(self, value_node, value_kind):
+        value = self._coerce(self._convert_node(value_node), value_kind)
+        bits = value[1]
+        if value_kind == F64:
+            bits = self.current_builder.bitcast(
+                value[1], ir.IntType(64)
+            )
+        return bits
+
+    def _dict_bits_to_value(self, bits, value_kind):
+        if value_kind == F64:
+            return (
+                F64,
+                self.current_builder.bitcast(bits, ir.DoubleType()),
+            )
+        return (I64, bits)
+
+    def _match_pattern_parts(self, pattern, subject_kind, subject_tv):
+        """(condition_or_None, capture_name_or_None). A None condition
+        means the pattern always matches (capture/wildcard)."""
+        if not isinstance(pattern, (list, tuple)) or not pattern:
+            raise NotImplementedError("unsupported match pattern")
+        kind_tag = pattern[0]
+        if kind_tag == "match_value":
+            return self._match_value_condition(pattern[1], subject_kind, subject_tv), None
+        if kind_tag == "match_or":
+            cond = None
+            for alt in pattern[1]:
+                alt_cond, capture = self._match_pattern_parts(alt, subject_kind, subject_tv)
+                if capture is not None:
+                    raise NotImplementedError(
+                        "capture inside an or-pattern is not supported "
+                        "in compiled code"
+                    )
+                cond = (
+                    alt_cond
+                    if cond is None
+                    else self.current_builder.or_(cond, alt_cond)
+                )
+            return cond, None
+        if kind_tag == "match_singleton":
+            # True / False (None stays interpreter-only)
+            value = pattern[1]
+            if not isinstance(value, bool):
+                raise NotImplementedError(
+                    "compiled match does not support None patterns"
+                )
+            return self._match_value_condition(["const", int(value)], subject_kind, subject_tv), None
+        if kind_tag == "match_as":
+            nested, capture = pattern[1], pattern[2]
+            if nested is not None:
+                raise NotImplementedError(
+                    "compiled match does not support nested capture "
+                    "patterns"
+                )
+            return None, capture  # capture may be None (wildcard)
+        raise NotImplementedError(
+            f"compiled match does not support '{kind_tag}' patterns "
+            "(value / or / capture / wildcard / guard only)"
+        )
+
+
+    def _match_value_condition(self, value_node, subject_kind, subject_tv):
+        """i1 condition: subject == the pattern's value."""
+        if subject_kind == RAWSTR:
+            if (
+                isinstance(value_node, list)
+                and len(value_node) >= 2
+                and value_node[0] == "const"
+                and isinstance(value_node[1], str)
+            ):
+                text = value_node[1]
+                return self.current_builder.call(
+                    self.rawstr_eq_cstr,
+                    [
+                        subject_tv[1],
+                        self._create_global_string(text),
+                        ir.Constant(
+                            ir.IntType(64), len(text.encode("utf-8"))
+                        ),
+                    ],
+                )
+            value_tv = self._coerce(self._convert_node(value_node), RAWSTR)
+            cond = self.current_builder.call(
+                self.rawstr_eq, [subject_tv[1], value_tv[1]]
+            )
+            self.current_builder.call(self.rawstr_free, [value_tv[1]])
+            return cond
+        target_kind = I64 if subject_kind == I1 else subject_kind
+        value_tv = self._coerce(
+            self._convert_node(value_node), target_kind
+        )
+        if subject_kind == F64:
+            return self.current_builder.fcmp_ordered(
+                "==", subject_tv[1], value_tv[1]
+            )
+        if subject_kind == I1:
+            subject_i64 = self.current_builder.zext(
+                subject_tv[1], ir.IntType(64)
+            )
+            return self.current_builder.icmp_signed(
+                "==", subject_i64, value_tv[1]
+            )
+        return self.current_builder.icmp_signed(
+            "==", subject_tv[1], value_tv[1]
+        )
+
+
+    def _count_scalar_uses(self, node, scalar_uses, other_uses):
+        if not isinstance(node, (list, tuple)):
+            return
+        if (
+            len(node) >= 3
+            and node[0] == "subscript"
+            and isinstance(node[1], (list, tuple))
+            and len(node[1]) >= 2
+            and node[1][0] == "name"
+            and isinstance(node[2], (list, tuple))
+            and len(node[2]) >= 2
+            and node[2][0] == "const"
+            and node[2][1] == 0
+        ):
+            name = node[1][1]
+            scalar_uses[name] = scalar_uses.get(name, 0) + 1
+            return  # the index expression belongs to other names
+        if (
+            isinstance(node, (list, tuple))
+            and len(node) >= 2
+            and node[0] == "name"
+            and isinstance(node[1], str)
+        ):
+            name = node[1]
+            other_uses[name] = other_uses.get(name, 0) + 1
+            return
+        for child in node:
+            self._count_scalar_uses(child, scalar_uses, other_uses)
+
+    def _scan_calls(self, node: Any, calls: Dict[str, list]):
+        if not isinstance(node, (list, tuple)):
+            return
+        if (
+            len(node) >= 3
+            and node[0] == "call"
+            and isinstance(node[1], (list, tuple))
+            and len(node[1]) >= 2
+            and node[1][0] == "name"
+            and node[1][1] in calls
+        ):
+            keywords = node[3] if len(node) > 3 else ()
+            calls[node[1][1]].append((node[2], keywords))
+        for child in node:
+            self._scan_calls(child, calls)
+
+    def _rawstr_finish(self, temp, result):
+        if temp is not None:
+            self.current_builder.call(self.rawstr_free, [temp])
+        return result
+
     def _create_unbox_runtime(self):
         """unbox helpers for the typed -> dynamic -> typed boundary."""
         i32 = ir.IntType(32)
@@ -4095,52 +4304,28 @@ class TypedCodegen(SiluToLLVMConverter):
         zero32 = ir.Constant(i32, 0)
         one32 = ir.Constant(i32, 1)
 
-        def emit_unbox(name, out_type, message, convert_payload):
-            func = ir.Function(
-                self.module, ir.FunctionType(out_type, [pyobj_ptr]), name=name
-            )
-            entry = func.append_basic_block("entry")
-            ok_block = func.append_basic_block("unbox_ok")
-            bad_block = func.append_basic_block("unbox_bad")
-            builder = ir.IRBuilder(entry)
-            (obj_arg,) = func.args
-            is_null = builder.icmp_signed("==", obj_arg, ir.Constant(pyobj_ptr, None))
-            builder.cbranch(is_null, bad_block, ok_block)
-
-            builder.position_at_end(ok_block)
-            tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
-            # int and bool payloads both feed i64 conversion
-            data = builder.load(builder.gep(obj_arg, [zero32, one32]))
-            as_i64 = builder.load(builder.bitcast(data, ir.PointerType(i64)))
-            builder.ret(convert_payload(builder, tag, as_i64, data))
-
-            builder.position_at_end(bad_block)
-            msg = self._create_global_string_with_builder(message, builder)
-            self._emit_panic(builder, msg)
-            return func
-
-        self.unbox_int = emit_unbox(
+        self.unbox_int = self._emit_unbox(
             "unbox_int",
             i64,
             "TypeError: expected an int value",
             lambda b, tag, as_i64, data: as_i64,
         )
-        self.unbox_float = emit_unbox(
+        self.unbox_float = self._emit_unbox(
             "unbox_float",
             ir.DoubleType(),
             "TypeError: expected a float value",
             lambda b, tag, as_i64, data: b.select(
-                b.icmp_signed("==", tag, ir.Constant(i32, 1)),
+                b.icmp_signed("==", tag, ir.Constant(ir.IntType(32), 1)),
                 b.load(b.bitcast(data, ir.PointerType(ir.DoubleType()))),
                 b.sitofp(as_i64, ir.DoubleType()),
             ),
         )
-        self.unbox_bool = emit_unbox(
+        self.unbox_bool = self._emit_unbox(
             "unbox_bool",
             ir.IntType(1),
             "TypeError: expected a bool value",
             lambda b, tag, as_i64, data: b.icmp_signed(
-                "!=", as_i64, ir.Constant(i64, 0)
+                "!=", as_i64, ir.Constant(ir.IntType(64), 0)
             ),
         )
 
@@ -4720,33 +4905,12 @@ class TypedCodegen(SiluToLLVMConverter):
                 return any(contains_call(child) for child in node[1:])
             return False
 
-        def targets_parent(target_node):
-            if isinstance(target_node, str):
-                return target_node in parent_names
-            if (
-                isinstance(target_node, (list, tuple))
-                and len(target_node) >= 2
-                and target_node[0] == "name"
-                and isinstance(target_node[1], str)
-            ):
-                return target_node[1] in parent_names
-            if (
-                isinstance(target_node, (list, tuple))
-                and len(target_node) >= 3
-                and target_node[0] == "subscript"
-                and isinstance(target_node[1], (list, tuple))
-                and len(target_node[1]) >= 2
-                and target_node[1][0] == "name"
-            ):
-                return target_node[1][1] in parent_names
-            return False
-
         if op == "call" or (
             op in (
                 "assign", "ann_assign", "aug_assign", "subscript_assign",
                 "subscript_aug_assign", "delete",
             )
-            and targets_parent(stmt[1])
+            and _targets_parent(stmt[1], parent_names)
         ) or (
             op in ("if", "while", "for", "c_for", "try", "with", "match")
             and contains_call(stmt)
@@ -5288,19 +5452,14 @@ class TypedCodegen(SiluToLLVMConverter):
         call frees (Rust end-of-statement temporary drop)."""
         s_ptr, temp = self._rawstr_operand(obj_tv)
 
-        def finish(result):
-            if temp is not None:
-                self.current_builder.call(self.rawstr_free, [temp])
-            return result
-
         if method_name == "strip" and not args_node:
-            return finish(
+            return self._rawstr_finish(temp, 
                 (RAWSTR, self.current_builder.call(self.rawstr_strip, [s_ptr]))
             )
         if method_name == "split":
             if not args_node:
                 # whitespace runs, empty strings suppressed (Python)
-                return finish(
+                return self._rawstr_finish(temp, 
                     (
                         RAWLIST_S,
                         self.current_builder.call(self.rawstr_split_ws, [s_ptr]),
@@ -5313,8 +5472,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
                 if sep_temp is not None:
                     self.current_builder.call(self.rawstr_free, [sep_temp])
-                return finish((RAWLIST_S, result))
-            return finish(None)
+                return self._rawstr_finish(temp, (RAWLIST_S, result))
+            return self._rawstr_finish(temp, None)
         if method_name in ("startswith", "endswith") and len(args_node) == 1:
             data, length, arg_temp = self._rawstr_append_operand(args_node[0])
             fn = (
@@ -5325,14 +5484,14 @@ class TypedCodegen(SiluToLLVMConverter):
             result = self.current_builder.call(fn, [s_ptr, data, length])
             if arg_temp is not None:
                 self.current_builder.call(self.rawstr_free, [arg_temp])
-            return finish((I1, result))
+            return self._rawstr_finish(temp, (I1, result))
         if method_name in ("isdigit", "isalpha", "isspace") and not args_node:
             fn = {
                 "isdigit": self.rawstr_isdigit,
                 "isalpha": self.rawstr_isalpha,
                 "isspace": self.rawstr_isspace,
             }[method_name]
-            return finish((I1, self.current_builder.call(fn, [s_ptr])))
+            return self._rawstr_finish(temp, (I1, self.current_builder.call(fn, [s_ptr])))
         if method_name == "join" and len(args_node) == 1:
             # sep.join(parts): one allocation instead of n appends
             parts_tv = self._convert_node(args_node[0])
@@ -5340,8 +5499,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 joined = self.current_builder.call(
                     self.rawlist_str_join, [parts_tv[1], s_ptr]
                 )
-                return finish((RAWSTR, joined))
-        return finish(None)
+                return self._rawstr_finish(temp, (RAWSTR, joined))
+        return self._rawstr_finish(temp, None)
 
     def _rawdict_key_from_tv(self, kind: str, key_tv: Tuple[str, Any]):
         """Dict key materialization: rawstr pointer for str keys (the
@@ -5660,18 +5819,18 @@ class TypedCodegen(SiluToLLVMConverter):
         return 8  # both i64 and double elements are 8 bytes
 
     # ================== conservative kind inference ==================
-
-    def _kind_resolver(
+    def _resolve_kind(
         self,
+        node: Any,
         annotations: Dict[str, str],
         candidates: Dict[str, Optional[str]],
         func_ret: Dict[str, str],
-    ):
-        """Build a resolve() closure over the given name environments.
+    ) -> Optional[str]:
+        """Resolve one expression's kind under the given environments.
 
-        Resolution uses only literals, annotated names, names already
-        inferred earlier, and outer-scope kinds - never method calls or
-        other dynamic values.
+        Uses only literals, annotated names, names already inferred
+        earlier, and outer-scope kinds - never method calls or other
+        dynamic values.
         """
 
         def merge_arith(left: Optional[str], right: Optional[str]) -> Optional[str]:
@@ -5685,78 +5844,76 @@ class TypedCodegen(SiluToLLVMConverter):
                 return F64
             return I64  # i1 operands promote like bool arithmetic
 
-        def resolve(node: Any) -> Optional[str]:
-            if not isinstance(node, list) or not node:
-                return None
-            op = node[0]
-            if op == "const":
-                value = node[1]
-                if isinstance(value, bool):
-                    return I1
-                if isinstance(value, int):
-                    return I64
-                if isinstance(value, float):
-                    return F64
-                if isinstance(value, str):
-                    return RAWSTR
-                return None
-            if op == "name":
-                name = node[1]
-                if name in annotations:
-                    return annotations[name]
-                if name in candidates:
-                    return candidates[name]
-                return self.var_kinds.get(name)
-            if op == "-" and len(node) == 2:
-                return resolve(node[1])
-            if op in ("+", "-", "*", "**") and len(node) >= 3:
-                return merge_arith(resolve(node[1]), resolve(node[2]))
-            if op in ("/", "//", "%") and len(node) >= 3:
-                left, right = resolve(node[1]), resolve(node[2])
-                if left is None or right is None or OBJ in (left, right):
-                    return None
-                if op == "/":
-                    return F64  # truediv always rebinds to float
-                return F64 if F64 in (left, right) else I64
-            if op in ("==", "!=", "<", "<=", ">", ">=", "not", "in", "not in", "is", "is not"):
-                return I1  # comparisons produce a bool whatever the operands
-            if op in ("and", "or") and len(node) >= 3:
-                left, right = resolve(node[1]), resolve(node[2])
-                return left if left == right else None
-            if op == "if_expr" and len(node) >= 4:
-                then_kind, else_kind = resolve(node[2]), resolve(node[3])
-                return then_kind if then_kind == else_kind else None
-            if op == "list":
-                # [str, str, ...] literal: raw str list when every
-                # element resolves to rawstr (a non-constant element
-                # resolves dynamically and keeps the list boxed)
-                elements = node[1] if len(node) >= 2 else []
-                if not elements:
-                    return None
-                kinds = [resolve(e) for e in elements]
-                if kinds and all(k == RAWSTR for k in kinds):
-                    return RAWLIST_S
-                return None
-            if op == "call" and isinstance(node[1], list) and node[1][0] == "name":
-                callee = node[1][1]
-                if callee == "len":
-                    return I64
-                return func_ret.get(callee)
-            if (
-                op == "subscript"
-                and isinstance(node[1], list)
-                and node[1][0] == "name"
-            ):
-                base_kind = resolve(node[1])
-                if base_kind == RAWLIST_I:
-                    return I64
-                if base_kind == RAWLIST_F:
-                    return F64
-                if base_kind == RAWSTR:
-                    return RAWSTR  # s[i] / s[a:b] both yield str
+        if not isinstance(node, list) or not node:
             return None
+        op = node[0]
+        if op == "const":
+            value = node[1]
+            if isinstance(value, bool):
+                return I1
+            if isinstance(value, int):
+                return I64
+            if isinstance(value, float):
+                return F64
+            if isinstance(value, str):
+                return RAWSTR
+            return None
+        if op == "name":
+            name = node[1]
+            if name in annotations:
+                return annotations[name]
+            if name in candidates:
+                return candidates[name]
+            return self.var_kinds.get(name)
+        if op == "-" and len(node) == 2:
+            return self._resolve_kind(node[1], annotations, candidates, func_ret)
+        if op in ("+", "-", "*", "**") and len(node) >= 3:
+            return merge_arith(self._resolve_kind(node[1], annotations, candidates, func_ret), self._resolve_kind(node[2], annotations, candidates, func_ret))
+        if op in ("/", "//", "%") and len(node) >= 3:
+            left, right = self._resolve_kind(node[1], annotations, candidates, func_ret), self._resolve_kind(node[2], annotations, candidates, func_ret)
+            if left is None or right is None or OBJ in (left, right):
+                return None
+            if op == "/":
+                return F64  # truediv always rebinds to float
+            return F64 if F64 in (left, right) else I64
+        if op in ("==", "!=", "<", "<=", ">", ">=", "not", "in", "not in", "is", "is not"):
+            return I1  # comparisons produce a bool whatever the operands
+        if op in ("and", "or") and len(node) >= 3:
+            left, right = self._resolve_kind(node[1], annotations, candidates, func_ret), self._resolve_kind(node[2], annotations, candidates, func_ret)
+            return left if left == right else None
+        if op == "if_expr" and len(node) >= 4:
+            then_kind, else_kind = self._resolve_kind(node[2], annotations, candidates, func_ret), self._resolve_kind(node[3], annotations, candidates, func_ret)
+            return then_kind if then_kind == else_kind else None
+        if op == "list":
+            # [str, str, ...] literal: raw str list when every
+            # element resolves to rawstr (a non-constant element
+            # resolves dynamically and keeps the list boxed)
+            elements = node[1] if len(node) >= 2 else []
+            if not elements:
+                return None
+            kinds = [self._resolve_kind(e, annotations, candidates, func_ret) for e in elements]
+            if kinds and all(k == RAWSTR for k in kinds):
+                return RAWLIST_S
+            return None
+        if op == "call" and isinstance(node[1], list) and node[1][0] == "name":
+            callee = node[1][1]
+            if callee == "len":
+                return I64
+            return func_ret.get(callee)
+        if (
+            op == "subscript"
+            and isinstance(node[1], list)
+            and node[1][0] == "name"
+        ):
+            base_kind = self._resolve_kind(node[1], annotations, candidates, func_ret)
+            if base_kind == RAWLIST_I:
+                return I64
+            if base_kind == RAWLIST_F:
+                return F64
+            if base_kind == RAWSTR:
+                return RAWSTR  # s[i] / s[a:b] both yield str
+        return None
 
-        return resolve
 
     def _param_shared_names(self) -> set:
         """Names that appear as a parameter of more than one function:
@@ -5788,36 +5945,7 @@ class TypedCodegen(SiluToLLVMConverter):
         scalar_uses: Dict[str, int] = {}
         other_uses: Dict[str, int] = {}
 
-        def count_uses(node):
-            if not isinstance(node, (list, tuple)):
-                return
-            if (
-                len(node) >= 3
-                and node[0] == "subscript"
-                and isinstance(node[1], (list, tuple))
-                and len(node[1]) >= 2
-                and node[1][0] == "name"
-                and isinstance(node[2], (list, tuple))
-                and len(node[2]) >= 2
-                and node[2][0] == "const"
-                and node[2][1] == 0
-            ):
-                name = node[1][1]
-                scalar_uses[name] = scalar_uses.get(name, 0) + 1
-                return  # the index expression belongs to other names
-            if (
-                isinstance(node, (list, tuple))
-                and len(node) >= 2
-                and node[0] == "name"
-                and isinstance(node[1], str)
-            ):
-                name = node[1]
-                other_uses[name] = other_uses.get(name, 0) + 1
-                return
-            for child in node:
-                count_uses(child)
-
-        count_uses(stmts)
+        self._count_scalar_uses(stmts, scalar_uses, other_uses)
         # only int-element lists promote in this first cut: the slot is
         # an i64 and f64 slots need bit-pattern care end to end
         return {
@@ -5858,18 +5986,25 @@ class TypedCodegen(SiluToLLVMConverter):
             if ret_kind:
                 func_ret[func_name] = ret_kind
 
-        resolve = self._kind_resolver(annotations, candidates, func_ret)
+        self._walk_assign_kinds(stmts, annotations, candidates, func_ret)
 
-        def add(name: str, kind: Optional[str]):
-            if name in annotations:
-                return  # declared kind always wins
-            if kind not in (I64, F64, I1, RAWSTR, RAWLIST_S):
-                kind = None
-            if name not in candidates:
-                candidates[name] = kind
-            elif candidates[name] != kind:
-                candidates[name] = None  # conflict: keep it dynamic
+        return {
+            name: kind for name, kind in candidates.items() if kind is not None
+        }
 
+
+    def _add_kind_candidate(self, name: str, kind: Optional[str], annotations: Dict[str, str], candidates: Dict[str, Optional[str]]):
+        if name in annotations:
+            return  # declared kind always wins
+        if kind not in (I64, F64, I1, RAWSTR, RAWLIST_S):
+            kind = None
+        if name not in candidates:
+            candidates[name] = kind
+        elif candidates[name] != kind:
+            candidates[name] = None  # conflict: keep it dynamic
+
+
+    def _walk_assign_kinds(self, stmt_list: list, annotations: Dict[str, str], candidates: Dict[str, Optional[str]], func_ret: Dict[str, str]):
         def is_range_call(iter_node: Any) -> bool:
             return (
                 isinstance(iter_node, list)
@@ -5881,69 +6016,68 @@ class TypedCodegen(SiluToLLVMConverter):
                 and iter_node[1][1] == "range"
             )
 
-        def walk(stmt_list: list):
-            for stmt in stmt_list if isinstance(stmt_list, list) else []:
-                if not isinstance(stmt, list) or not stmt:
-                    continue
-                op = stmt[0]
-                if op == "assign" and isinstance(stmt[1], str):
-                    add(stmt[1], resolve(stmt[2]))
-                elif op == "ann_assign" and isinstance(stmt[1], str):
-                    kind = self._annotation_kind(stmt[3])
-                    if kind:
-                        annotations[stmt[1]] = kind
-                elif op == "aug_assign" and isinstance(stmt[1], str):
-                    current = annotations.get(stmt[1])
-                    if current is None:
-                        current = candidates.get(
-                            stmt[1], self.var_kinds.get(stmt[1])
-                        )
-                    if current == resolve(stmt[3]):
-                        add(stmt[1], current)
-                    else:
-                        add(stmt[1], None)
-                elif op == "for":
-                    iter_kind = I64 if is_range_call(stmt[2]) else None
-                    if iter_kind is None:
-                        resolved = resolve(stmt[2])
-                        if resolved == RAWLIST_I:
-                            iter_kind = I64
-                        elif resolved == RAWLIST_F:
-                            iter_kind = F64
-                        elif resolved == RAWLIST_S:
-                            iter_kind = RAWSTR  # a copy per iteration
-                        elif resolved == RAWSTR:
-                            iter_kind = RAWSTR  # for ch in s: 1-byte str
-                    # the IR spells assign targets as bare names but for
-                    # targets as name nodes; accept both
-                    if isinstance(stmt[1], str):
-                        target_name = stmt[1]
-                    elif (
-                        isinstance(stmt[1], list)
-                        and len(stmt[1]) >= 2
-                        and stmt[1][0] == "name"
-                    ):
-                        target_name = stmt[1][1]
-                    else:
-                        target_name = None
-                    if target_name is not None:
-                        # None (dynamic iteration) must also register:
-                        # the loop rebinds the target and blocks inference
-                        add(target_name, iter_kind)
-                    walk(stmt[3])
-                elif op == "if" and len(stmt) >= 4:
-                    walk(stmt[2])
-                    walk(stmt[3])
-                elif op == "while" and len(stmt) >= 3:
-                    walk(stmt[2])
-                # func_def bodies are separate scopes; other statements
-                # introduce no assignments in this scope
+        for stmt in stmt_list if isinstance(stmt_list, list) else []:
+            if not isinstance(stmt, list) or not stmt:
+                continue
+            op = stmt[0]
+            if op == "assign" and isinstance(stmt[1], str):
+                self._add_kind_candidate(
+                    stmt[1],
+                    self._resolve_kind(stmt[2], annotations, candidates, func_ret),
+                    annotations, candidates,
+                )
+            elif op == "ann_assign" and isinstance(stmt[1], str):
+                kind = self._annotation_kind(stmt[3])
+                if kind:
+                    annotations[stmt[1]] = kind
+            elif op == "aug_assign" and isinstance(stmt[1], str):
+                current = annotations.get(stmt[1])
+                if current is None:
+                    current = candidates.get(
+                        stmt[1], self.var_kinds.get(stmt[1])
+                    )
+                if current == self._resolve_kind(stmt[3], annotations, candidates, func_ret):
+                    self._add_kind_candidate(stmt[1], current, annotations, candidates)
+                else:
+                    self._add_kind_candidate(stmt[1], None, annotations, candidates)
+            elif op == "for":
+                iter_kind = I64 if is_range_call(stmt[2]) else None
+                if iter_kind is None:
+                    resolved = self._resolve_kind(stmt[2], annotations, candidates, func_ret)
+                    if resolved == RAWLIST_I:
+                        iter_kind = I64
+                    elif resolved == RAWLIST_F:
+                        iter_kind = F64
+                    elif resolved == RAWLIST_S:
+                        iter_kind = RAWSTR  # a copy per iteration
+                    elif resolved == RAWSTR:
+                        iter_kind = RAWSTR  # for ch in s: 1-byte str
+                # the IR spells assign targets as bare names but for
+                # targets as name nodes; accept both
+                if isinstance(stmt[1], str):
+                    target_name = stmt[1]
+                elif (
+                    isinstance(stmt[1], list)
+                    and len(stmt[1]) >= 2
+                    and stmt[1][0] == "name"
+                ):
+                    target_name = stmt[1][1]
+                else:
+                    target_name = None
+                if target_name is not None:
+                    # None (dynamic iteration) must also register:
+                    # the loop rebinds the target and blocks inference
+                    self._add_kind_candidate(target_name, iter_kind, annotations, candidates)
+                self._walk_assign_kinds(stmt[3], annotations, candidates, func_ret)
+            elif op == "if" and len(stmt) >= 4:
+                self._walk_assign_kinds(stmt[2], annotations, candidates, func_ret)
+                self._walk_assign_kinds(stmt[3], annotations, candidates, func_ret)
+            elif op == "while" and len(stmt) >= 3:
+                self._walk_assign_kinds(stmt[2], annotations, candidates, func_ret)
+            # func_def bodies are separate scopes; other statements
+            # introduce no assignments in this scope
 
-        walk(stmts)
 
-        return {
-            name: kind for name, kind in candidates.items() if kind is not None
-        }
 
     def _collect_function_defs(self, node):
         """Also stash the module statement list for signature inference,
@@ -6529,33 +6663,15 @@ class TypedCodegen(SiluToLLVMConverter):
         module_annotations: Dict[str, str] = {}
         collect_annotations(self._module_stmt_list, module_annotations)
         module_kinds = self._infer_assign_kinds(self._module_stmt_list)
-        module_resolver = self._kind_resolver(
-            module_annotations, dict(module_kinds), annotated_ret
-        )
+        module_candidates = dict(module_kinds)
 
         # every call to a known function, scanning into nested
         # expressions (x = f(1) + 2) and all function bodies
         calls: Dict[str, list] = {name: [] for name in self.function_defs}
 
-        def scan(node: Any):
-            if not isinstance(node, (list, tuple)):
-                return
-            if (
-                len(node) >= 3
-                and node[0] == "call"
-                and isinstance(node[1], (list, tuple))
-                and len(node[1]) >= 2
-                and node[1][0] == "name"
-                and node[1][1] in calls
-            ):
-                keywords = node[3] if len(node) > 3 else ()
-                calls[node[1][1]].append((node[2], keywords))
-            for child in node:
-                scan(child)
-
-        scan(self._module_stmt_list)
+        self._scan_calls(self._module_stmt_list, calls)
         for func_def in self.function_defs.values():
-            scan(func_def[3] if len(func_def) > 3 else [])
+            self._scan_calls(func_def[3] if len(func_def) > 3 else [], calls)
 
         def rebound_names(stmts: list, sink: set):
             for stmt in stmts if isinstance(stmts, list) else []:
@@ -6625,7 +6741,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         if keywords or len(args) != len(params):
                             ok = False
                             break
-                        arg_kind = module_resolver(args[index])
+                        arg_kind = self._resolve_kind(args[index], module_annotations, module_candidates, annotated_ret)
                         if arg_kind not in (I64, F64, I1, RAWSTR):
                             ok = False
                             break
@@ -6646,11 +6762,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 body_annotations: Dict[str, str] = {}
                 collect_annotations(body, body_annotations)
                 local_kinds = self._infer_assign_kinds(body, param_env)
-                body_resolver = self._kind_resolver(
-                    {**param_env, **body_annotations},
-                    dict(local_kinds),
-                    annotated_ret,
-                )
+                body_env = {**param_env, **body_annotations}
+                body_candidates = dict(local_kinds)
                 returns: list = []
                 find_returns(body, returns)
                 inferred_ret: Optional[str] = None
@@ -6659,7 +6772,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     if rexpr is None:
                         ok = False  # bare return yields None
                         break
-                    rk = body_resolver(rexpr)
+                    rk = self._resolve_kind(rexpr, body_env, body_candidates, annotated_ret)
                     if rk is None:
                         ok = False
                         break
@@ -8584,95 +8697,6 @@ class TypedCodegen(SiluToLLVMConverter):
         func = self.current_function
         end_block = func.append_basic_block("match_end")
 
-        def value_condition(value_node):
-            """i1 condition: subject == the pattern's value."""
-            if subject_kind == RAWSTR:
-                if (
-                    isinstance(value_node, list)
-                    and len(value_node) >= 2
-                    and value_node[0] == "const"
-                    and isinstance(value_node[1], str)
-                ):
-                    text = value_node[1]
-                    return self.current_builder.call(
-                        self.rawstr_eq_cstr,
-                        [
-                            subject_tv[1],
-                            self._create_global_string(text),
-                            ir.Constant(
-                                ir.IntType(64), len(text.encode("utf-8"))
-                            ),
-                        ],
-                    )
-                value_tv = self._coerce(self._convert_node(value_node), RAWSTR)
-                cond = self.current_builder.call(
-                    self.rawstr_eq, [subject_tv[1], value_tv[1]]
-                )
-                self.current_builder.call(self.rawstr_free, [value_tv[1]])
-                return cond
-            target_kind = I64 if subject_kind == I1 else subject_kind
-            value_tv = self._coerce(
-                self._convert_node(value_node), target_kind
-            )
-            if subject_kind == F64:
-                return self.current_builder.fcmp_ordered(
-                    "==", subject_tv[1], value_tv[1]
-                )
-            if subject_kind == I1:
-                subject_i64 = self.current_builder.zext(
-                    subject_tv[1], ir.IntType(64)
-                )
-                return self.current_builder.icmp_signed(
-                    "==", subject_i64, value_tv[1]
-                )
-            return self.current_builder.icmp_signed(
-                "==", subject_tv[1], value_tv[1]
-            )
-
-        def pattern_parts(pattern):
-            """(condition_or_None, capture_name_or_None). A None condition
-            means the pattern always matches (capture/wildcard)."""
-            if not isinstance(pattern, (list, tuple)) or not pattern:
-                raise NotImplementedError("unsupported match pattern")
-            kind_tag = pattern[0]
-            if kind_tag == "match_value":
-                return value_condition(pattern[1]), None
-            if kind_tag == "match_or":
-                cond = None
-                for alt in pattern[1]:
-                    alt_cond, capture = pattern_parts(alt)
-                    if capture is not None:
-                        raise NotImplementedError(
-                            "capture inside an or-pattern is not supported "
-                            "in compiled code"
-                        )
-                    cond = (
-                        alt_cond
-                        if cond is None
-                        else self.current_builder.or_(cond, alt_cond)
-                    )
-                return cond, None
-            if kind_tag == "match_singleton":
-                # True / False (None stays interpreter-only)
-                value = pattern[1]
-                if not isinstance(value, bool):
-                    raise NotImplementedError(
-                        "compiled match does not support None patterns"
-                    )
-                return value_condition(["const", int(value)]), None
-            if kind_tag == "match_as":
-                nested, capture = pattern[1], pattern[2]
-                if nested is not None:
-                    raise NotImplementedError(
-                        "compiled match does not support nested capture "
-                        "patterns"
-                    )
-                return None, capture  # capture may be None (wildcard)
-            raise NotImplementedError(
-                f"compiled match does not support '{kind_tag}' patterns "
-                "(value / or / capture / wildcard / guard only)"
-            )
-
         for case in node[2]:
             if (
                 not isinstance(case, (list, tuple))
@@ -8684,7 +8708,7 @@ class TypedCodegen(SiluToLLVMConverter):
             body_block = func.append_basic_block("case_body")
             next_block = func.append_basic_block("case_next")
 
-            cond, capture = pattern_parts(pattern)
+            cond, capture = self._match_pattern_parts(pattern, subject_kind, subject_tv)
             if capture is not None:
                 # bind before the guard (guard may reference it)
                 if subject_kind == RAWSTR:
@@ -9512,15 +9536,12 @@ class TypedCodegen(SiluToLLVMConverter):
             recv_tv[1], ir.PointerType(self.raw_dict_struct_type)
         )
 
-        def fld(idx: int):
-            return b.load(
-                b.gep(struct_ptr, [zero32, ir.Constant(ir.IntType(32), idx)])
-            )
-
-        cap = b.add(fld(3), ir.Constant(i64, 1))  # mask + 1
-        table = fld(4)
-        keys = fld(5)
-        vals = fld(6)
+        cap = b.add(
+            b.load(_struct_gep(b, struct_ptr, 3)), ir.Constant(i64, 1)
+        )  # mask + 1
+        table = b.load(_struct_gep(b, struct_ptr, 4))
+        keys = b.load(_struct_gep(b, struct_ptr, 5))
+        vals = b.load(_struct_gep(b, struct_ptr, 6))
         k_name, v_name = self._dict_loop_names(target_node, mode)
 
         cond_block, check_block, body_block, incr_block, end_block = (
@@ -9727,23 +9748,6 @@ class TypedCodegen(SiluToLLVMConverter):
             if raw_kind in RAWDICT_KINDS:
                 value_kind = RAWDICT_KINDS[raw_kind]
 
-                def dict_value_bits(value_node):
-                    value = self._coerce(self._convert_node(value_node), value_kind)
-                    bits = value[1]
-                    if value_kind == F64:
-                        bits = self.current_builder.bitcast(
-                            value[1], ir.IntType(64)
-                        )
-                    return bits
-
-                def bits_to_value(bits):
-                    if value_kind == F64:
-                        return (
-                            F64,
-                            self.current_builder.bitcast(bits, ir.DoubleType()),
-                        )
-                    return (I64, bits)
-
                 if method_name == "pop" and args_node:
                     key_tv = self._convert_node(args_node[0])
                     if len(args_node) == 1:
@@ -9756,21 +9760,21 @@ class TypedCodegen(SiluToLLVMConverter):
                         bits = self._rawdict_key_call_tv(
                             raw_kind, raw_obj_tv[1], key_tv,
                             self.rawdict_pop_or, self.rawdict_str_pop_or,
-                            (dict_value_bits(args_node[1]),),
+                            (self._dict_value_bits(args_node[1], value_kind),),
                         )
                     else:
                         bits = None
                     if bits is not None:
-                        return bits_to_value(bits)
+                        return self._dict_bits_to_value(bits, value_kind)
                 if method_name == "get" and args_node:
                     key_tv = self._convert_node(args_node[0])
                     if len(args_node) == 2:
                         bits = self._rawdict_key_call_tv(
                             raw_kind, raw_obj_tv[1], key_tv,
                             self.rawdict_get_or, self.rawdict_str_get_or,
-                            (dict_value_bits(args_node[1]),),
+                            (self._dict_value_bits(args_node[1], value_kind),),
                         )
-                        return bits_to_value(bits)
+                        return self._dict_bits_to_value(bits, value_kind)
                     if len(args_node) == 1:
                         # get(k): value when present, None (null)
                         # otherwise. Materialize the key once: the view
@@ -9807,7 +9811,7 @@ class TypedCodegen(SiluToLLVMConverter):
                             self.current_builder.call(
                                 self.rawstr_free, [key_temp]
                             )
-                        boxed_hit = self._box(bits_to_value(bits))
+                        boxed_hit = self._box(self._dict_bits_to_value(bits, value_kind))
                         self.current_builder.branch(merge_block)
                         self.current_builder.position_at_end(miss_block)
                         if key_temp is not None:
@@ -9832,9 +9836,9 @@ class TypedCodegen(SiluToLLVMConverter):
                         raw_kind, raw_obj_tv[1],
                         args_node[0],
                         self.rawdict_setdefault, self.rawdict_str_setdefault,
-                        (dict_value_bits(args_node[1]),),
+                        (self._dict_value_bits(args_node[1], value_kind),),
                     )
-                    return bits_to_value(bits)
+                    return self._dict_bits_to_value(bits, value_kind)
                 if method_name == "clear" and not args_node:
                     self.current_builder.call(
                         self._rawdict_call_fn(
