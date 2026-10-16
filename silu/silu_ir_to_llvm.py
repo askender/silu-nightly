@@ -3876,11 +3876,14 @@ class SiluToLLVMConverter:
                         self.current_builder.trunc(result, ir.IntType(32))
                     )
                 else:
-                    self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
+                    if not self.current_builder.block.is_terminated:
+                        self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
             else:
-                self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
+                if not self.current_builder.block.is_terminated:
+                    self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
         else:
-            self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
+            if not self.current_builder.block.is_terminated:
+                self.current_builder.ret(ir.Constant(ir.IntType(32), 0))
 
         # Generate function bodies
         self._generate_function_bodies()

@@ -8235,8 +8235,41 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.current_builder.call(self.exit_func, [code_i32])
                 self.current_builder.unreachable()
                 return (OBJ, null_obj)
+            # raise X(msg): Rust panic! shape - print "X: msg" and
+            # exit(1); the exception object never propagates
+            if (
+                isinstance(value_node, (list, tuple))
+                and len(value_node) >= 3
+                and value_node[0] == "call"
+                and isinstance(value_node[1], (list, tuple))
+                and len(value_node[1]) >= 2
+                and value_node[1][0] == "name"
+            ):
+                exc_name = value_node[1][1]
+                exc_args = value_node[2]
+                if exc_args:
+                    prefix = self._create_global_string(exc_name + ": ")
+                else:
+                    prefix = self._create_global_string(exc_name)
+                self.current_builder.call(self.printf, [prefix])
+                for index, arg_node in enumerate(exc_args):
+                    if index > 0:
+                        sep = self._create_global_string(" ")
+                        self.current_builder.call(self.printf, [sep])
+                    boxed = self._box(self._convert_node(arg_node))
+                    if boxed is not None:
+                        self.current_builder.call(self.pyobj_print, [boxed])
+                nl = self._create_global_string("\n")
+                self.current_builder.call(self.printf, [nl])
+                self._emit_local_rawstr_drops()
+                self.current_builder.call(
+                    self.exit_func, [ir.Constant(ir.IntType(32), 1)]
+                )
+                self.current_builder.unreachable()
+                return (OBJ, null_obj)
             raise NotImplementedError(
-                "only 'raise SystemExit(code)' is supported"
+                "only 'raise SystemExit(code)' and 'raise X(msg)' "
+                "are supported"
             )
 
         if op == "for":

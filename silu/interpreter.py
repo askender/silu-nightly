@@ -184,6 +184,18 @@ class Environment:
             self._register_builtins()
 
     def _register_builtins(self):
+        # the standard exception classes, so raise ValueError("...")
+        # evaluates (uncaught they abort the program)
+        import builtins as _py_builtins
+
+        for _exc_name in (
+            "Exception", "ValueError", "TypeError", "NameError",
+            "AttributeError", "NotImplementedError", "RuntimeError",
+            "KeyError", "IndexError", "ZeroDivisionError",
+            "StopIteration", "OverflowError",
+        ):
+            self.set(_exc_name, getattr(_py_builtins, _exc_name))
+
         """Register all built-in functions and types."""
         self.vars.update(
             {

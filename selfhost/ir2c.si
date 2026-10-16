@@ -1473,14 +1473,26 @@ class Gen:
             self.emit("continue;")
             return 0
         if t == "raise":
-            # raise SystemExit(n) -> exit(n)
+            # raise SystemExit(n) -> exit(n); raise X(msg) -> panic:
+            # print "X: msg" and exit(1) (Rust panic! shape - the
+            # exception object never propagates)
             ex: JValue = stmt.arr[1]
             if ex.kind == JKind.NIL:
                 self.emit("exit(1);")
                 return 0
-            if tag(ex) == "call":
-                code: TE = self.expr(elem(ex.arr[2], 0))
-                self.emit("exit((int)(" + code.text + "));")
+            if tag(ex) == "call" and tag(ex.arr[1]) == "name":
+                exc_name: str = ex.arr[1].arr[1].s
+                if exc_name == "SystemExit":
+                    code: TE = self.expr(elem(ex.arr[2], 0))
+                    self.emit("exit((int)(" + code.text + "));")
+                    return 0
+                exc_args: JValue = ex.arr[2]
+                if len(exc_args.arr) > 0:
+                    self.emit('printf("' + exc_name + ': ");')
+                else:
+                    self.emit('printf("' + exc_name + '");')
+                self.gen_print(exc_args, None)
+                self.emit("exit(1);")
                 return 0
             self.emit("exit(1);")
             return 0
