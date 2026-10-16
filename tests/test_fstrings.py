@@ -101,3 +101,29 @@ def test_fstring_frontend_parity(source, expected, tmp_path):
         [fe], input=source, capture_output=True, text=True, timeout=60
     ).stdout)
     assert got == ref
+
+
+@pytest.mark.parametrize("source,expected", PROGRAMS)
+def test_fstring_ir2c_build(source, expected, tmp_path):
+    """The pure-Silu C backend runs the fmt() desugar."""
+    ir = subprocess.run(
+        [sys.executable, "-m", "silu", "ir", "--source", source, "--format", "json"],
+        capture_output=True, text=True, cwd=REPO,
+    ).stdout
+    ir2c = str(tmp_path / "ir2c")
+    subprocess.run(
+        [sys.executable, "-m", "silu", "build",
+         os.path.join(REPO, "selfhost/ir2c.si"), "-o", ir2c],
+        check=True, capture_output=True, cwd=REPO,
+    )
+    c_file = str(tmp_path / "fs.c")
+    binary = str(tmp_path / "fs")
+    c = subprocess.run(
+        [ir2c], input=ir, capture_output=True, text=True, timeout=120
+    )
+    assert c.returncode == 0, c.stderr
+    with open(c_file, "w") as h:
+        h.write(c.stdout)
+    subprocess.run(["clang", "-O2", c_file, "-o", binary], check=True)
+    r = subprocess.run([binary], capture_output=True, text=True, timeout=30)
+    assert r.stdout == expected

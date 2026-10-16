@@ -1058,6 +1058,23 @@ class Gen:
                 if a4.ty == "float":
                     return te("str_from_f64(" + a4.text + ")", "str")
                 return te(a4.text, "str")
+            if nm == "fmt":
+                # f-string desugar: fold every arg to its str form and
+                # concatenate (str_add folds left to right)
+                parts: list[str] = []
+                fk: int = 0
+                while fk < len(args.arr):
+                    ak: TE = self.expr(elem(args, fk))
+                    parts.append("(pstr_of(" + self.box_te(ak) + ")->s)")
+                    fk += 1
+                if len(parts) == 0:
+                    return te('str_of("")', "str")
+                fout: str = parts[0]
+                fk2: int = 1
+                while fk2 < len(parts):
+                    fout = "str_add(" + fout + ", " + parts[fk2] + ")"
+                    fk2 += 1
+                return te(fout, "str")
             if nm == "input":
                 return te("read_line()", "str")
             if nm == "read_stdin":
