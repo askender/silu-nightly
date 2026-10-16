@@ -56,6 +56,44 @@ def _targets_parent(target_node, parent_names):
     return False
 
 
+def _all_name_parts(parts):
+    for part in parts:
+        if not (
+            isinstance(part, list) and len(part) >= 2 and part[0] == "name"
+        ):
+            return False
+    return True
+
+
+def _all_of_kind(kinds, want):
+    for k in kinds:
+        if k != want:
+            return False
+    return True
+
+
+def _all_non_obj(kinds):
+    for k in kinds:
+        if k == OBJ:
+            return False
+    return True
+
+
+def _all_str(names):
+    for name in names:
+        if not isinstance(name, str):
+            return False
+    return True
+
+
+def _non_obj_param_env(params, param_kinds, keep_obj):
+    env = {}
+    for name, kind in zip(params, param_kinds):
+        if keep_obj or kind != OBJ:
+            env[name] = kind
+    return env
+
+
 def _clamp_str_bound(b, bound, s_cp):
     """Python slice-index clamp: negatives count from s_cp."""
     i64 = ir.IntType(64)
@@ -254,6 +292,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._method_class: Dict[str, str] = {}
         # function-reference locals: var name -> mangled function name
         self._funcref_var: Dict[str, str] = {}
+        self._enum_ctr_seq = 0
         # enums (class Color(Enum): RED = 1): name -> {member: int}
         # members fold to i64 constants at compile time
         self._enums: Dict[str, Dict[str, int]] = {}
@@ -4894,15 +4933,18 @@ class TypedCodegen(SiluToLLVMConverter):
             return
         op = stmt[0] if isinstance(stmt, (list, tuple)) and stmt else None
 
-        parent_names = {
-            entry[0] for entry in self._char_aliases.values()
-        }
+        parent_names = set()
+        for entry in self._char_aliases.values():
+            parent_names.add(entry[0])
 
         def contains_call(node):
             if isinstance(node, (list, tuple)):
                 if len(node) >= 2 and node[0] == "call":
                     return True
-                return any(contains_call(child) for child in node[1:])
+                for child in node[1:]:
+                    if contains_call(child):
+                        return True
+                return False
             return False
 
         if op == "call" or (
@@ -5796,14 +5838,11 @@ class TypedCodegen(SiluToLLVMConverter):
             and isinstance(node[2], list)
             and node[2][0] == "tuple"
             and len(node[2][1]) == 2
-            and all(
-                isinstance(part, list)
-                and len(part) >= 2
-                and part[0] == "name"
-                for part in node[2][1]
-            )
+            and _all_name_parts(node[2][1])
         ):
-            key_annotation, value_annotation = (part[1] for part in node[2][1])
+            dict_pair = node[2][1]
+            key_annotation = dict_pair[0][1]
+            value_annotation = dict_pair[1][1]
             if key_annotation == "int" and value_annotation == "int":
                 return RAWDICT_II
             if key_annotation == "int" and value_annotation == "float":
@@ -5891,8 +5930,10 @@ class TypedCodegen(SiluToLLVMConverter):
             elements = node[1] if len(node) >= 2 else []
             if not elements:
                 return None
-            kinds = [self._resolve_kind(e, annotations, candidates, func_ret) for e in elements]
-            if kinds and all(k == RAWSTR for k in kinds):
+            kinds = []
+            for e in elements:
+                kinds.append(self._resolve_kind(e, annotations, candidates, func_ret))
+            if kinds and _all_of_kind(kinds, RAWSTR):
                 return RAWLIST_S
             return None
         if op == "call" and isinstance(node[1], list) and node[1][0] == "name":
@@ -5923,7 +5964,11 @@ class TypedCodegen(SiluToLLVMConverter):
         for func_def in self.function_defs.values():
             for param in func_def[2] if len(func_def) > 2 else ():
                 seen[param] = seen.get(param, 0) + 1
-        return {name for name, count in seen.items() if count > 1}
+        repeated = set()
+        for name, count in seen.items():
+            if count > 1:
+                repeated.add(name)
+        return repeated
 
     def _infer_cursors(
         self, stmts: list, shared: set = frozenset(),
@@ -5948,14 +5993,16 @@ class TypedCodegen(SiluToLLVMConverter):
         self._count_scalar_uses(stmts, scalar_uses, other_uses)
         # only int-element lists promote in this first cut: the slot is
         # an i64 and f64 slots need bit-pattern care end to end
-        return {
-            name: RAWLIST_I
-            for name, sc in scalar_uses.items()
-            if sc > 0
-            and other_uses.get(name, 0) == 0
-            and name not in shared
-            and annotations.get(name) == RAWLIST_I
-        }
+        promoted: Dict[str, str] = {}
+        for name, sc in scalar_uses.items():
+            if (
+                sc > 0
+                and other_uses.get(name, 0) == 0
+                and name not in shared
+                and annotations.get(name) == RAWLIST_I
+            ):
+                promoted[name] = RAWLIST_I
+        return promoted
 
     def _infer_assign_kinds(
         self, stmts: list, param_kinds: Optional[Dict[str, str]] = None
@@ -5988,9 +6035,11 @@ class TypedCodegen(SiluToLLVMConverter):
 
         self._walk_assign_kinds(stmts, annotations, candidates, func_ret)
 
-        return {
-            name: kind for name, kind in candidates.items() if kind is not None
-        }
+        resolved: Dict[str, str] = {}
+        for name, kind in candidates.items():
+            if kind is not None:
+                resolved[name] = kind
+        return resolved
 
 
     def _add_kind_candidate(self, name: str, kind: Optional[str], annotations: Dict[str, str], candidates: Dict[str, Optional[str]]):
@@ -6429,11 +6478,11 @@ class TypedCodegen(SiluToLLVMConverter):
             return False
         if node and node[0] == "call":
             return True
-        return any(
-            self._node_contains_call(child)
-            for child in node[1:]
-            if isinstance(child, (list, tuple))
-        )
+        for child in node[1:]:
+            if isinstance(child, (list, tuple)):
+                if self._node_contains_call(child):
+                    return True
+        return False
 
     def _borrowed_field_str(
         self, base_node: Any, key_node: Any = None
@@ -6481,7 +6530,9 @@ class TypedCodegen(SiluToLLVMConverter):
         for (field_name, _kind, _d, _fc), arg_node in zip(fields, args_node):
             bound[field_name] = arg_node
         for kw_name, kw_value_node in kwargs_node or ():
-            field_names = {f[0] for f in fields}
+            field_names = set()
+            for f in fields:
+                field_names.add(f[0])
             if kw_name not in field_names:
                 raise TypeError(
                     f"{class_name}() got an unexpected keyword argument "
@@ -6667,7 +6718,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
         # every call to a known function, scanning into nested
         # expressions (x = f(1) + 2) and all function bodies
-        calls: Dict[str, list] = {name: [] for name in self.function_defs}
+        calls: Dict[str, list] = {}
+        for name in self.function_defs:
+            calls[name] = []
 
         self._scan_calls(self._module_stmt_list, calls)
         for func_def in self.function_defs.values():
@@ -6756,9 +6809,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
             ret_kind = annotated_ret.get(name)
             if ret_kind is None:
-                param_env = {
-                    p: k for p, k in zip(params, param_kinds) if k != OBJ
-                }
+                param_env = _non_obj_param_env(params, param_kinds, False)
                 body_annotations: Dict[str, str] = {}
                 collect_annotations(body, body_annotations)
                 local_kinds = self._infer_assign_kinds(body, param_env)
@@ -6953,8 +7004,10 @@ class TypedCodegen(SiluToLLVMConverter):
         for func_name, func_def in self.function_defs.items():
             # sigs merge written annotations with inference results
             param_kinds, ret_kind = self._inferred_sigs[func_name]
-            if ret_kind is not None and all(kind != OBJ for kind in param_kinds):
-                param_types = [LLVM_KIND_TYPES[k] for k in param_kinds]
+            if ret_kind is not None and _all_non_obj(param_kinds):
+                param_types = []
+                for k in param_kinds:
+                    param_types.append(LLVM_KIND_TYPES[k])
                 func_ty = ir.FunctionType(LLVM_KIND_TYPES[ret_kind], param_types)
                 func = ir.Function(self.module, func_ty, name=func_name)
                 # module-private + inline hint: the recursive-descent
@@ -7016,24 +7069,20 @@ class TypedCodegen(SiluToLLVMConverter):
         old_cursor_kinds = self.cursor_kinds
         old_cursor_slots = self._cursor_slots
         param_annotations = func_def[4] if len(func_def) > 4 else ()
-        param_kind_env = {
-            pname: self._annotation_kind(
+        param_kind_env: Dict[str, str] = {}
+        for index, pname in enumerate(func_def[2]):
+            ann_node = (
                 param_annotations[index]
                 if index < len(param_annotations) else None
-            ) or OBJ
-            for index, pname in enumerate(func_def[2])
-        }
+            )
+            param_kind_env[pname] = self._annotation_kind(ann_node) or OBJ
         self.cursor_kinds = self._infer_cursors(
             func_def[3], self._param_shared_names(), param_kind_env
         )
         self._cursor_slots = {}
         self._inferred_kinds = self._infer_assign_kinds(
             func_def[3],
-            {
-                name: kind
-                for name, kind in zip(func_def[2], param_kinds)
-                if kind != OBJ
-            },
+            _non_obj_param_env(func_def[2], param_kinds, False),
         )
         # keep module-level variables visible (they act as globals);
         # remember which names are function-local so we can pop them on
@@ -7138,12 +7187,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.cursor_kinds = self._infer_cursors(
             func_def[3],
             self._param_shared_names(),
-            {
-                name: kind
-                for name, kind in self._dyn_func_kinds.get(
-                    func_def[1], []
-                ) and {} or {}
-            },
+            {},
         )
         self._cursor_slots = {}
         self._scope_depth = getattr(self, "_scope_depth", 0) + 1
@@ -7179,10 +7223,7 @@ class TypedCodegen(SiluToLLVMConverter):
         )
         self._inferred_kinds = self._infer_assign_kinds(
             func_def[3],
-            {
-                name: kind
-                for name, kind in zip(func_def[2], param_kinds_dyn)
-            },
+            _non_obj_param_env(func_def[2], param_kinds_dyn, keep_obj=True),
         )
         for index, param_name in enumerate(func_def[2]):
             if index < len(func.args):
@@ -8202,9 +8243,11 @@ class TypedCodegen(SiluToLLVMConverter):
             element_nodes = node[1] if len(node) > 1 else []
             # a list literal of instances ([Token(1), ...]) becomes a raw
             # pointer array: elements ride as words, same as list[Token]
-            if element_nodes and all(
-                self._instance_expr_kind(elem_node) for elem_node in element_nodes
-            ):
+            all_instances = True
+            for elem_node in element_nodes:
+                if not self._instance_expr_kind(elem_node):
+                    all_instances = False
+            if element_nodes and all_instances:
                 return self._build_raw_list(element_nodes, RAWLIST_I)
             list_obj = self.current_builder.call(self.create_list, [])
             for elem_node in element_nodes:
@@ -8660,7 +8703,9 @@ class TypedCodegen(SiluToLLVMConverter):
                     and value_node[0] == "tuple"
                 ):
                     elements = value_node[1] if len(value_node) > 1 else []
-                    evaluated = [self._convert_node(e) for e in elements]
+                    evaluated = []
+                    for e in elements:
+                        evaluated.append(self._convert_node(e))
                     for index, target in enumerate(targets):
                         if index >= len(evaluated) or not isinstance(target, str):
                             continue
@@ -8754,8 +8799,10 @@ class TypedCodegen(SiluToLLVMConverter):
     def _convert_bool_chain(self, op: str, operand_nodes: list) -> Tuple[str, Any]:
         """N-ary short-circuit and/or over TypedValues."""
         is_and = op == "and"
-        operand_kinds = [self._static_kind_of(n) for n in operand_nodes]
-        all_i1 = all(k == I1 for k in operand_kinds)
+        operand_kinds = []
+        for n in operand_nodes:
+            operand_kinds.append(self._static_kind_of(n))
+        all_i1 = _all_of_kind(operand_kinds, I1)
 
         result_ptr = self.current_builder.alloca(
             ir.IntType(1) if all_i1 else ir.PointerType(self.pyobj.pyobj_type),
@@ -8827,12 +8874,11 @@ class TypedCodegen(SiluToLLVMConverter):
             and len(target_node) >= 2
             and target_node[0] == "tuple_unpack"
             and len(target_node[1]) == 2
-            and all(
-                isinstance(name, str) for name in target_node[1]
-            )
+            and _all_str(target_node[1])
         ):
             idx_name, val_name = target_node[1]
-            counter_name = f"__enum_ctr_{id(node) & 0xFFFFFF:x}"
+            counter_name = "__enum_ctr_" + str(self._enum_ctr_seq)
+            self._enum_ctr_seq += 1
             seq_node = iter_node[2][0]
             self._convert_statement(
                 ["assign", counter_name, ["const", 0], None]
