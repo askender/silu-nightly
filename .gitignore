@@ -139,3 +139,5 @@ xsi/
 zcode_check
 *.jsonl
 *.ret.json
+*.roundtrip.si
+*.roundtrip.ir
