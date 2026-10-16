@@ -2511,7 +2511,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._emit_panic(builder, chr_msg)
 
         builder.position_at_end(chr_ok)
-        chr_buf = builder.alloca(b8, None, 'chr_buf', size=ir.Constant(i32, 4))
+        chr_buf = builder.alloca(b8, ir.Constant(i32, 4), 'chr_buf')
         builder.cbranch(
             builder.icmp_signed("<", chr_cp, ir.Constant(i64, 0x80)),
             chr_one,
