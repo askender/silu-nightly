@@ -61,3 +61,23 @@ capture-rejection case.
   pattern (`list[str]` from `[]`) needed `hg_empty_strs()` to stay in
   typed land on both sides
 - typed LLVM: null-safe `pyobj_eq`/`isinstance` (null PyObject == None)
+
+## dict Rust-shaped ops (get / iteration; comprehension excluded)
+
+`d.get(k)`, `d.get(k, default)`, `for k, v in d.items()`,
+`for k in d.keys()`, `for v in d.values()`, `for k in d`.
+Iteration order is hash-slot order (implementation-defined, like
+`HashMap::iter()`); items()/keys()/values() only in the for header,
+no intermediate list. Dict comprehensions are deliberately not
+supported (Python-only idiom).
+
+| Surface | Status | Notes |
+|---------|--------|-------|
+| CPython | done | reference semantics |
+| AST interp | done | real dicts, no change needed |
+| IR interp | done | real dicts + tuple_unpack, no change |
+| typed LLVM | done | raw slot-table walk + boxed entry walk |
+| silu_fe parity | done | parses unchanged |
+| ir2c -> C | done | Dict/DictI slot walk; get(k) boxes to pint/pnil |
+
+Tests: `tests/test_dict_ops.py`, 6 programs x 6 dimensions.
