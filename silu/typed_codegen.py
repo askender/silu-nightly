@@ -9264,7 +9264,31 @@ class TypedCodegen(SiluToLLVMConverter):
         self, target_node: Any, iter_node: Any, body_stmts: list
     ) -> Tuple[str, Any]:
         i64 = ir.IntType(64)
+        # dict iteration: for k, v in d.items() / for k in d.keys() /
+        # for v in d.values() — a direct index walk over the entry
+        # storage, no intermediate list (Rust HashMap::iter() shape;
+        # iteration order is implementation-defined)
+        iter_attr = None
+        if (
+            isinstance(iter_node, (list, tuple))
+            and len(iter_node) >= 3
+            and iter_node[0] == "call"
+            and isinstance(iter_node[1], (list, tuple))
+            and len(iter_node[1]) >= 3
+            and iter_node[1][0] == "attribute"
+            and iter_node[1][2] in ("items", "keys", "values")
+        ):
+            iter_attr = iter_node[1]
+        if iter_attr is not None:
+            return self._convert_dict_for_loop(
+                target_node, iter_attr[1], iter_attr[2], body_stmts
+            )
         iter_tv = self._convert_node(iter_node)
+        if iter_tv[0] in RAWDICT_KINDS:
+            # `for k in d` on a raw dict iterates the keys
+            return self._convert_dict_for_loop(
+                target_node, iter_node, "keys", body_stmts
+            )
         if iter_tv[0] in RAWLIST_KINDS:
             # remember the iterated name so instance-element lists can
             # bind the loop target as INSTANCE
@@ -9362,6 +9386,214 @@ class TypedCodegen(SiluToLLVMConverter):
 
         self.current_builder.position_at_end(end_block)
         return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _bind_loop_var(self, name: str, tv: Tuple[str, Any]) -> None:
+        """Store an iterated value into its loop variable, coercing into
+        an existing slot or declaring a fresh one."""
+        if name in self.var_kinds and self.var_kinds[name] != tv[0]:
+            coerced = self._coerce(tv, self.var_kinds[name])
+            self.current_builder.store(coerced[1], self.variables[name])
+            return
+        if name not in self.variables:
+            self._declare_var(name, tv[0])
+        self.current_builder.store(tv[1], self.variables[name])
+
+    @staticmethod
+    def _dict_loop_names(target_node: Any, mode: str) -> Tuple[Any, Any]:
+        """(key_name, value_name) for the loop target; None where the
+        mode does not bind that side."""
+        if (
+            isinstance(target_node, (list, tuple))
+            and len(target_node) >= 2
+            and target_node[0] == "tuple_unpack"
+            and len(target_node[1]) == 2
+        ):
+            k_name, v_name = target_node[1]
+            if mode == "keys":
+                return k_name, None
+            if mode == "values":
+                return None, v_name
+            return k_name, v_name
+        if (
+            isinstance(target_node, (list, tuple))
+            and len(target_node) >= 2
+            and target_node[0] == "name"
+        ):
+            name = target_node[1]
+        elif isinstance(target_node, str):
+            name = target_node
+        else:
+            return None, None
+        if mode == "values":
+            return None, name
+        return name, None
+
+    def _convert_dict_for_loop(
+        self, target_node: Any, recv_node: Any, mode: str, body_stmts: list
+    ) -> Tuple[str, Any]:
+        recv_tv = self._convert_node(recv_node)
+        if recv_tv[0] in RAWDICT_KINDS:
+            return self._convert_rawdict_for_loop(
+                target_node, recv_tv, mode, body_stmts
+            )
+        return self._convert_boxed_dict_for_loop(
+            target_node, recv_tv, mode, body_stmts
+        )
+
+    def _dict_loop_blocks(self):
+        func = self.current_function
+        cond_block = func.append_basic_block("dict_iter_cond")
+        check_block = func.append_basic_block("dict_iter_check")
+        body_block = func.append_basic_block("dict_iter_body")
+        incr_block = func.append_basic_block("dict_iter_incr")
+        end_block = func.append_basic_block("dict_iter_end")
+        return cond_block, check_block, body_block, incr_block, end_block
+
+    def _run_dict_loop_body(self, body_stmts, incr_block, end_block):
+        self.loop_break_blocks.append(end_block)
+        self.loop_continue_blocks.append(incr_block)
+        for stmt in body_stmts:
+            self._convert_statement(stmt)
+            if self.current_builder.block.is_terminated:
+                break
+        if not self.current_builder.block.is_terminated:
+            self.current_builder.branch(incr_block)
+        self.loop_break_blocks.pop()
+        self.loop_continue_blocks.pop()
+
+    def _convert_rawdict_for_loop(
+        self, target_node: Any, recv_tv: Tuple[str, Any], mode: str,
+        body_stmts: list,
+    ) -> Tuple[str, Any]:
+        """Index walk over a raw dict's slot table: live slots hold
+        entry_index + 1 (0 = empty, -1 = tombstone)."""
+        i64 = ir.IntType(64)
+        zero32 = ir.Constant(ir.IntType(32), 0)
+        b = self.current_builder
+        kind = recv_tv[0]
+        struct_ptr = b.bitcast(
+            recv_tv[1], ir.PointerType(self.raw_dict_struct_type)
+        )
+
+        def fld(idx: int):
+            return b.load(
+                b.gep(struct_ptr, [zero32, ir.Constant(ir.IntType(32), idx)])
+            )
+
+        cap = b.add(fld(3), ir.Constant(i64, 1))  # mask + 1
+        table = fld(4)
+        keys = fld(5)
+        vals = fld(6)
+        k_name, v_name = self._dict_loop_names(target_node, mode)
+
+        cond_block, check_block, body_block, incr_block, end_block = (
+            self._dict_loop_blocks()
+        )
+        idx_ptr = b.alloca(i64, name="dict_iter_idx")
+        b.store(ir.Constant(i64, 0), idx_ptr)
+        b.branch(cond_block)
+
+        b.position_at_end(cond_block)
+        index = b.load(idx_ptr)
+        b.cbranch(b.icmp_signed("<", index, cap), check_block, end_block)
+
+        b.position_at_end(check_block)
+        slot_entry = b.load(b.gep(table, [index]))
+        b.cbranch(
+            b.icmp_signed(">", slot_entry, ir.Constant(i64, 0)),
+            body_block,
+            incr_block,
+        )
+
+        b.position_at_end(body_block)
+        entry_index = b.sub(slot_entry, ir.Constant(i64, 1))
+        if k_name is not None:
+            key_bits = b.load(b.gep(keys, [entry_index]))
+            if kind in RAWDICT_STR_KINDS:
+                # stored key is the rawstr pointer itself (i8*); a
+                # RAWSTR value IS that pointer — box a copy so the
+                # loop variable owns no dict storage
+                kptr = b.inttoptr(key_bits, ir.PointerType(ir.IntType(8)))
+                self._bind_loop_var(
+                    k_name, (OBJ, self._box((RAWSTR, kptr)))
+                )
+            else:
+                self._bind_loop_var(k_name, (I64, key_bits))
+        if v_name is not None:
+            val_bits = b.load(b.gep(vals, [entry_index]))
+            if RAWDICT_KINDS[kind] == F64:
+                self._bind_loop_var(
+                    v_name, (F64, b.bitcast(val_bits, ir.DoubleType()))
+                )
+            else:
+                self._bind_loop_var(v_name, (I64, val_bits))
+        self._run_dict_loop_body(body_stmts, incr_block, end_block)
+
+        b.position_at_end(incr_block)
+        b.store(b.add(b.load(idx_ptr), ir.Constant(i64, 1)), idx_ptr)
+        b.branch(cond_block)
+
+        b.position_at_end(end_block)
+        return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _convert_boxed_dict_for_loop(
+        self, target_node: Any, recv_tv: Tuple[str, Any], mode: str,
+        body_stmts: list,
+    ) -> Tuple[str, Any]:
+        """Walk a boxed dict's entry array; deleted entries carry a
+        null key and are skipped. Keys and values bind as PyObject."""
+        i64 = ir.IntType(64)
+        zero32 = ir.Constant(ir.IntType(32), 0)
+        one32 = ir.Constant(ir.IntType(32), 1)
+        b = self.current_builder
+        pyobj_null = ir.Constant(
+            ir.PointerType(self.pyobj.pyobj_type), None
+        )
+        obj = self._box(recv_tv)
+        data = b.load(b.gep(obj, [zero32, one32]))
+        struct_ptr = b.bitcast(
+            data, ir.PointerType(self.dict_struct_type)
+        )
+        used = b.load(
+            b.gep(struct_ptr, [zero32, ir.Constant(ir.IntType(32), 1)])
+        )
+        entries = b.load(
+            b.gep(struct_ptr, [zero32, ir.Constant(ir.IntType(32), 4)])
+        )
+        k_name, v_name = self._dict_loop_names(target_node, mode)
+
+        cond_block, check_block, body_block, incr_block, end_block = (
+            self._dict_loop_blocks()
+        )
+        idx_ptr = b.alloca(i64, name="dict_iter_idx")
+        b.store(ir.Constant(i64, 0), idx_ptr)
+        b.branch(cond_block)
+
+        b.position_at_end(cond_block)
+        index = b.load(idx_ptr)
+        b.cbranch(b.icmp_signed("<", index, used), check_block, end_block)
+
+        b.position_at_end(check_block)
+        entry_ptr = b.gep(entries, [zero32, index])
+        key_obj = b.load(b.gep(entry_ptr, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("!=", key_obj, pyobj_null), body_block, incr_block
+        )
+
+        b.position_at_end(body_block)
+        if k_name is not None:
+            self._bind_loop_var(k_name, (OBJ, key_obj))
+        if v_name is not None:
+            val_obj = b.load(b.gep(entry_ptr, [zero32, one32]))
+            self._bind_loop_var(v_name, (OBJ, val_obj))
+        self._run_dict_loop_body(body_stmts, incr_block, end_block)
+
+        b.position_at_end(incr_block)
+        b.store(b.add(b.load(idx_ptr), ir.Constant(i64, 1)), idx_ptr)
+        b.branch(cond_block)
+
+        b.position_at_end(end_block)
+        return (OBJ, pyobj_null)
 
     def _convert_call(self, node: list) -> Tuple[str, Any]:
         func_node = node[1]

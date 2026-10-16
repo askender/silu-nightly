@@ -922,15 +922,68 @@ class Gen:
                 # literal dict with constant entries -> cached constructor
                 dname: str = "DDICT" + self.show_int(len(self.litlists))
                 dbody: list[str] = []
-                dbody.append("static Dict* " + dname + "(void) { Dict* d = dict_new();")
-                args_s: str = ""
                 k: int = 0
+                vtes: list[TE] = []
+                all_int_v: bool = True
+                all_float_v: bool = True
+                all_int_k: bool = True
                 while k < len(w.arr):
                     pairv: JValue = elem(w, k)
-                    kv: TE = self.expr(pairv.arr[0])
-                    vv: TE = self.expr(pairv.arr[1])
-                    dbody.append("    dict_set(d, " + kv.text + ", (int64_t)(" + self.box_te(vv) + "));")
+                    kv0: TE = self.expr(pairv.arr[0])
+                    vtes.append(kv0)
+                    if kv0.ty != "int":
+                        all_int_k = False
+                    vv0: TE = self.expr(pairv.arr[1])
+                    vtes.append(vv0)
+                    if vv0.ty != "int":
+                        all_int_v = False
+                    if vv0.ty != "float":
+                        all_float_v = False
                     k += 1
+                if all_float_v and not all_int_v:
+                    # homogeneous float values ride as raw bit patterns
+                    setter: str = "dict_set"
+                    retk: str = "dict:S:float"
+                    newexpr: str = "dict_new()"
+                    rett: str = "Dict*"
+                    if all_int_k:
+                        setter = "dicti_set"
+                        retk = "dict:I:float"
+                        newexpr = "dicti_new()"
+                        rett = "DictI*"
+                    dbody.append("static " + rett + " " + dname + "(void) { " + rett + " d = " + newexpr + ";")
+                    k2f: int = 0
+                    while k2f < len(vtes) // 2:
+                        dbody.append("    " + setter + "(d, " + vtes[k2f * 2].text + ", bits_i(" + vtes[k2f * 2 + 1].text + "));")
+                        k2f += 1
+                    dbody.append("    return d; }")
+                    self.litlists.append("\n".join(dbody))
+                    return te(dname + "()", retk)
+                if all_int_k and all_int_v:
+                    # dict[int, int] literal: unboxed int-keyed table
+                    dbody.append("static DictI* " + dname + "(void) { DictI* d = dicti_new();")
+                    k2i: int = 0
+                    while k2i < len(vtes) // 2:
+                        dbody.append("    dicti_set(d, " + vtes[k2i * 2].text + ", " + vtes[k2i * 2 + 1].text + ");")
+                        k2i += 1
+                    dbody.append("    return d; }")
+                    self.litlists.append("\n".join(dbody))
+                    return te(dname + "()", "dict:I:int")
+                if all_int_v:
+                    # homogeneous int values stay unboxed: dict[str, int]
+                    dbody.append("static Dict* " + dname + "(void) { Dict* d = dict_new();")
+                    k2v: int = 0
+                    while k2v < len(vtes) // 2:
+                        dbody.append("    dict_set(d, " + vtes[k2v * 2].text + ", " + vtes[k2v * 2 + 1].text + ");")
+                        k2v += 1
+                    dbody.append("    return d; }")
+                    self.litlists.append("\n".join(dbody))
+                    return te(dname + "()", "dict:S:int")
+                dbody.append("static Dict* " + dname + "(void) { Dict* d = dict_new();")
+                k3v: int = 0
+                while k3v < len(vtes) // 2:
+                    dbody.append("    dict_set(d, " + vtes[k3v * 2].text + ", (int64_t)(" + self.box_te(vtes[k3v * 2 + 1]) + "));")
+                    k3v += 1
                 dbody.append("    return d; }")
                 self.litlists.append("\n".join(dbody))
                 return te(dname + "()", "dict:obj")
@@ -1113,6 +1166,15 @@ class Gen:
             recv2: TE = self.expr(callee.arr[1])
             mname: str = callee.arr[2].s
             arg0: TE = self.expr(elem(args, 0)) if len(args.arr) > 0 else te("", "none")
+            if mname == "get" and len(args.arr) == 1:
+                # get(k) without a default boxes the outcome: present
+                # -> pint(value), missing -> pnil (Python's None)
+                kg: TE = self.expr(elem(args, 0))
+                if recv2.ty == "dict:obj" or recv2.ty == "dict:S:obj":
+                    return te("((PObj*)dict_get(" + recv2.text + ", " + kg.text + "))", "obj")
+                if recv2.ty.startswith("dict:I"):
+                    return te("(dicti_has(" + recv2.text + ", " + kg.text + ") ? pint(dicti_get(" + recv2.text + ", " + kg.text + ")) : pnil())", "obj")
+                return te("(dict_has(" + recv2.text + ", " + kg.text + ") ? pint(dict_get(" + recv2.text + ", " + kg.text + ")) : pnil())", "obj")
             if mname == "get" and len(args.arr) == 2:
                 if recv2.ty.startswith("dict:I"):
                     return te("dicti_get_or(" + recv2.text + ", " + self.expr(elem(args, 0)).text + ", " + self.expr(elem(args, 1)).text + ")", "int")
@@ -1229,6 +1291,15 @@ class Gen:
                 if aty.startswith("dict:I"):
                     lv2: JValue = stmt.arr[2]
                     if lv2.kind == JKind.ARR and tag(lv2) == "dict":
+                        if lv2.arr[1].kind == JKind.ARR and len(lv2.arr[1].arr) > 0:
+                            # non-empty literal: the expression path
+                            # builds the populated DictI constructor
+                            val_di: TE = self.expr(lv2)
+                            self.names.append(elem_str(stmt, 1))
+                            self.types.append(aty)
+                            self.decls.append("DictI* v_" + elem_str(stmt, 1) + ";")
+                            self.emit("v_" + elem_str(stmt, 1) + " = " + val_di.text + ";")
+                            return 0
                         self.names.append(elem_str(stmt, 1))
                         self.types.append(aty)
                         self.decls.append("DictI* v_" + elem_str(stmt, 1) + ";")
@@ -1426,6 +1497,8 @@ class Gen:
                 self.emit("silu_sep();")
             if a.ty == "str":
                 self.emit("silu_print_str(" + a.text + ");")
+            elif a.ty == "obj":
+                self.emit("silu_print_str(pstr_of(" + a.text + ")->s);")
             elif a.ty == "float":
                 self.emit("silu_print_f64(" + a.text + ");")
             elif a.ty == "bool":
@@ -1453,10 +1526,77 @@ class Gen:
             self.emit(end_line)
         return 0
 
+    def gen_dict_for(self, stmt: JValue, recv_node: JValue, mode: str) -> int:
+        recv: TE = self.expr(recv_node)
+        target: JValue = stmt.arr[1]
+        body: JValue = stmt.arr[3]
+        kn: str = ""
+        vn: str = ""
+        if tag(target) == "tuple_unpack":
+            if mode != "values":
+                kn = target.arr[1].arr[0].s
+            if mode != "keys":
+                vn = target.arr[1].arr[1].s
+        elif tag(target) == "name":
+            if mode == "values":
+                vn = target.arr[1].s
+            else:
+                kn = target.arr[1].s
+        int_keys: bool = recv.ty.startswith("dict:I")
+        iv: str = "v___di" + self.show_int(len(self.names))
+        self.decls.append("int64_t " + iv + ";")
+        self.emit("for (" + iv + " = 0; " + iv + " < (" + recv.text + ")->cap; " + iv + "++) {")
+        self.indent += 1
+        self.emit("if (!(" + recv.text + ")->ents[" + iv + "].used) continue;")
+        if kn != "":
+            if int_keys:
+                self.decls.append("int64_t v_" + kn + ";")
+                self.emit("v_" + kn + " = (" + recv.text + ")->ents[" + iv + "].key;")
+                self.names.append(kn)
+                self.types.append("int")
+            else:
+                self.decls.append("Str* v_" + kn + ";")
+                self.emit("v_" + kn + " = (" + recv.text + ")->ents[" + iv + "].key;")
+                self.names.append(kn)
+                self.types.append("str")
+        if vn != "":
+            vt: str = "int"
+            if recv.ty == "dict:obj" or recv.ty == "dict:S:obj":
+                vt = "obj"
+            if recv.ty.endswith(":float"):
+                vt = "float"
+            if vt == "obj":
+                self.decls.append("PObj* v_" + vn + ";")
+                self.emit("v_" + vn + " = (PObj*)((" + recv.text + ")->ents[" + iv + "].val);")
+            elif vt == "float":
+                self.decls.append("double v_" + vn + ";")
+                self.emit("v_" + vn + " = bits_f((" + recv.text + ")->ents[" + iv + "].val);")
+            else:
+                self.decls.append("int64_t v_" + vn + ";")
+                self.emit("v_" + vn + " = (" + recv.text + ")->ents[" + iv + "].val;")
+            self.names.append(vn)
+            self.types.append(vt)
+        self.gen_stmts(body)
+        self.indent -= 1
+        self.emit("}")
+        return 0
+
     def gen_for(self, stmt: JValue) -> int:
         target: JValue = stmt.arr[1]
         iter_node: JValue = stmt.arr[2]
         body: JValue = stmt.arr[3]
+        # for k, v in d.items() / for k in d.keys() / for v in
+        # d.values() / for k in d — a direct walk over the slot array,
+        # skipping empty entries (Rust HashMap::iter() shape; the
+        # iteration order is implementation-defined)
+        if tag(iter_node) == "call" and tag(iter_node.arr[1]) == "attribute":
+            am: JValue = iter_node.arr[1]
+            mnm: str = am.arr[2].s
+            if mnm == "items" or mnm == "keys" or mnm == "values":
+                return self.gen_dict_for(stmt, am.arr[1], mnm)
+        it0: TE = self.expr(iter_node)
+        if it0.ty == "dict" or it0.ty.startswith("dict:"):
+            return self.gen_dict_for(stmt, iter_node, "keys")
         # for i in range(n) / range(a, b): plain counting loop
         if tag(iter_node) == "call" and tag(iter_node.arr[1]) == "name" and iter_node.arr[1].arr[1].s == "range":
             rargs: JValue = iter_node.arr[2]
@@ -2254,6 +2394,7 @@ RUNTIME: list[str] = [
     "static void list_push_f(List* l, double v) { int64_t b = 0; memcpy(&b, &v, 8); list_push(l, b); }",
     "static void list_set_f(List* l, int64_t i, double v) { if (i < 0) i += l->len; int64_t b = 0; memcpy(&b, &v, 8); l->items[i] = b; }",
     "static double bits_f(int64_t b) { double d; memcpy(&d, &b, 8); return d; }",
+    "static int64_t bits_i(double d) { int64_t b; memcpy(&b, &d, 8); return b; }",
     "static int64_t ipow_i(int64_t b, int64_t e) { int64_t r = 1; while (e > 0) { if (e & 1) r *= b; b *= b; e >>= 1; } return r; }",
     "static Str* read_line(void) { char buf[4096]; if (!fgets(buf, 4096, stdin)) return str_of(\"\"); int64_t n = (int64_t)strlen(buf); if (n && buf[n-1] == '\\n') n--; return str_new(buf, n); }",
     "static Str* read_stdin_all(void) { int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, stdin)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } return str_new(buf, len); }",
