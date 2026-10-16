@@ -34,6 +34,83 @@ from llvmlite import ir
 
 from .silu_ir_to_llvm import SiluToLLVMConverter
 
+
+def _dict_loop_names(target_node: Any, mode: str) -> Tuple[Any, Any]:
+    """(key_name, value_name) for the loop target; None where the
+    mode does not bind that side."""
+    if (
+        isinstance(target_node, (list, tuple))
+        and len(target_node) >= 2
+        and target_node[0] == "tuple_unpack"
+        and len(target_node[1]) == 2
+    ):
+        k_name, v_name = target_node[1]
+        if mode == "keys":
+            return k_name, None
+        if mode == "values":
+            return None, v_name
+        return k_name, v_name
+    if (
+        isinstance(target_node, (list, tuple))
+        and len(target_node) >= 2
+        and target_node[0] == "name"
+    ):
+        name = target_node[1]
+    elif isinstance(target_node, str):
+        name = target_node
+    else:
+        return None, None
+    if mode == "values":
+        return None, name
+    return name, None
+
+
+def _const_int_of(node: Any) -> Optional[int]:
+    """Compile-time int for ('const', n) and unary minus thereof."""
+    if (
+        isinstance(node, list)
+        and len(node) >= 2
+        and node[0] == "const"
+        and isinstance(node[1], int)
+        and not isinstance(node[1], bool)
+    ):
+        return node[1]
+    if (
+        isinstance(node, list)
+        and len(node) == 2
+        and node[0] == "-"
+        and isinstance(node[1], list)
+        and len(node[1]) >= 2
+        and node[1][0] == "const"
+        and isinstance(node[1][1], int)
+        and not isinstance(node[1][1], bool)
+    ):
+        return -node[1][1]
+    return None
+
+
+def _rawlist_elem_size(kind: str) -> int:
+    return 8  # both i64 and double elements are 8 bytes
+
+
+def _rawdict_call_fn(kind: str, int_fn: Any, str_fn: Any):
+    return str_fn if kind in RAWDICT_STR_KINDS else int_fn
+
+
+def _extract_i64_const(value: Any) -> Optional[int]:
+    if isinstance(value, ir.Constant) and isinstance(
+        value.type, ir.IntType
+    ) and value.type.width == 64:
+        return int(value.constant)
+    return None
+
+
+def _kind_of_llvm_type(kind: str) -> ir.Type:
+    if kind == OBJ:
+        return ir.PointerType(ir.IntType(8))  # placeholder, unused
+    return LLVM_KIND_TYPES[kind]
+
+
 def _targets_parent(target_node, parent_names):
     if isinstance(target_node, str):
         return target_node in parent_names
@@ -235,6 +312,11 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def __init__(self):
         super().__init__()
+        self._char_idxerr = None
+        self._module_kinds = set()
+        self._module_vars: set = set()
+        self._scope_depth = 0
+        self.rawdict_to_pydict: Dict[str, Any] = {}
         # Overflow/precision panics and rawlist bounds branches follow
         # Rust's release profile: set SILU_CHECKS=0 to disable them
         # (values wrap, out-of-range access is UB). Zero-division
@@ -1138,7 +1220,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
             builder.position_at_end(loop_done)
             builder.ret(result)
-            setattr(self, f"rawdict_to_pydict_{tag}", func)
+            self.rawdict_to_pydict[tag] = func
         # {i64 byte_len, i64 cap, i8* data, i64 cp_len}. Every slot owns
         # its buffer exclusively (assignment copies), so appends may
         # realloc in place and grow amortized like Rust's String.
@@ -1148,7 +1230,7 @@ class TypedCodegen(SiluToLLVMConverter):
         # equals code point semantics.
         self.rawstr_struct_type = ir.LiteralStructType([i64, i64, i8p, i64])
 
-        if not hasattr(self, "realloc"):
+        if self.realloc is None:
             self.realloc = ir.Function(
                 self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
             )
@@ -3625,7 +3707,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
             builder.position_at_end(loop_done)
             builder.ret(result)
-            setattr(self, f"rawdict_to_pydict_{tag}", func)
+            self.rawdict_to_pydict[tag] = func
 
         # PyObject* rawlist_str_to_pylist(i8* list, i64 length)
         self.rawlist_str_to_pylist = ir.Function(
@@ -4370,12 +4452,6 @@ class TypedCodegen(SiluToLLVMConverter):
 
     # ================== value plumbing ==================
 
-    @staticmethod
-    def _kind_of_llvm_type(kind: str) -> ir.Type:
-        if kind == OBJ:
-            return ir.PointerType(ir.IntType(8))  # placeholder, unused
-        return LLVM_KIND_TYPES[kind]
-
     def _const_kind(self, value: Any) -> Optional[str]:
         if isinstance(value, bool):
             return I1
@@ -4404,12 +4480,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 [value, self.current_builder.call(self.rawlist_len, [value])],
             )
         if kind in RAWDICT_KINDS:
-            converter = {
-                RAWDICT_II: self.rawdict_to_pydict_ii,
-                RAWDICT_IF: self.rawdict_to_pydict_if,
-                RAWDICT_SI: self.rawdict_to_pydict_si,
-                RAWDICT_SF: self.rawdict_to_pydict_sf,
-            }[kind]
+            converter = self.rawdict_to_pydict[
+                {RAWDICT_II: "ii", RAWDICT_IF: "if",
+                 RAWDICT_SI: "si", RAWDICT_SF: "sf"}[kind]
+            ]
             return self.current_builder.call(converter, [value])
         if kind == RAWSTR:
             return self.current_builder.call(self.rawstr_to_pystr, [value])
@@ -4775,7 +4849,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 and (
                     self.current_function is None
                     or self.current_function.name == "main"
-                    or name not in getattr(self, "_module_vars", ())
+                    or name not in self._module_vars
                 )
             ):
                 return
@@ -5013,7 +5087,7 @@ class TypedCodegen(SiluToLLVMConverter):
         excluded (their names are recorded in _module_kinds)."""
         if self.current_function is None or self.current_function.name == "main":
             return
-        module_kinds = getattr(self, "_module_kinds", set())
+        module_kinds = self._module_kinds
         for name, kind in list(self.var_kinds.items()):
             if (
                 kind == RAWSTR
@@ -5035,13 +5109,16 @@ class TypedCodegen(SiluToLLVMConverter):
         "with", "import", "from_import", "match",
     }
 
-    def _convert_statement(self, stmt: Any, skip_func_defs: bool = False):
+    def _convert_statement(self, stmt: Any):
+        return self._convert_statement_scoped(stmt, False)
+
+    def _convert_statement_scoped(self, stmt: Any, skip_func_defs: bool):
         """Convert one statement; a discarded rawstr expression result
         (e.g. shout("x") as a statement) is a temporary and is dropped
         like Rust's end-of-statement temporary drop. Assignment-family
         statements return values that alias slot storage - never freed."""
         self._char_alias_invalidate_before(stmt)
-        result = self._convert_node(stmt, skip_func_defs)
+        result = self._convert_node_scoped(stmt, skip_func_defs)
         if (
             isinstance(result, tuple)
             and len(result) == 2
@@ -5178,14 +5255,6 @@ class TypedCodegen(SiluToLLVMConverter):
             return (I64, self._py_mod_inline(l_val, r_val))
         raise NotImplementedError(f"typed binop {op}")
 
-    @staticmethod
-    def _extract_i64_const(value: Any) -> Optional[int]:
-        if isinstance(value, ir.Constant) and isinstance(
-            value.type, ir.IntType
-        ) and value.type.width == 64:
-            return int(value.constant)
-        return None
-
     def _typed_pow(self, left: Tuple[str, Any], right: Tuple[str, Any]):
         """x ** y: int ** int stays int (repeated multiply), float ** 0.5
         takes the sqrt fast path, everything else goes through libc pow."""
@@ -5197,7 +5266,7 @@ class TypedCodegen(SiluToLLVMConverter):
             # exponentiation by squaring on i64 with overflow check
             i64 = ir.IntType(64)
             builder = self.current_builder
-            exp = self._extract_i64_const(right[1])
+            exp = _extract_i64_const(right[1])
             if exp is not None and 0 <= exp <= 64:
                 result = ir.Constant(i64, 1)
                 base = left[1]
@@ -5371,7 +5440,7 @@ class TypedCodegen(SiluToLLVMConverter):
             ),
         )
 
-    def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any], left_node: Any = None, right_node: Any = None):
+    def _typed_compare(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any], left_node: Any, right_node: Any):
         if left[0] == RAWCHAR_VIEW or right[0] == RAWCHAR_VIEW:
             # view <op> view / const / rawstr: wrap each side in a
             # stack header (borrowed, no allocation) and memcmp.
@@ -5551,10 +5620,6 @@ class TypedCodegen(SiluToLLVMConverter):
             return self._coerce(key_tv, RAWSTR)[1]
         return self._coerce(key_tv, I64)[1]
 
-    @staticmethod
-    def _rawdict_call_fn(kind: str, int_fn: Any, str_fn: Any):
-        return str_fn if kind in RAWDICT_STR_KINDS else int_fn
-
     def _rawstr_stack_view(self, data_ptr: Any, byte_len: Any):
         """A stack rawstr struct pointing at borrowed bytes - heap-free
         for dict key operations (the dict only reads, or copies on
@@ -5687,7 +5752,7 @@ class TypedCodegen(SiluToLLVMConverter):
         key_node: Any,
         int_fn: Any,
         str_fn: Any,
-        tail_args: tuple = (),
+        tail_args: tuple,
     ):
         """Call a rawdict key operation; a coerced key temporary is
         freed right after the call."""
@@ -5697,8 +5762,8 @@ class TypedCodegen(SiluToLLVMConverter):
             key = self._coerce(self._convert_node(key_node), I64)[1]
             temp = None
         result = self.current_builder.call(
-            self._rawdict_call_fn(kind, int_fn, str_fn),
-            [dict_ptr, key, *tail_args],
+            _rawdict_call_fn(kind, int_fn, str_fn),
+            [dict_ptr, key] + list(tail_args),
         )
         if temp is not None:
             self.current_builder.call(self.rawstr_free, [temp])
@@ -5711,7 +5776,7 @@ class TypedCodegen(SiluToLLVMConverter):
         key_tv: Tuple[str, Any],
         int_fn: Any,
         str_fn: Any,
-        tail_args: tuple = (),
+        tail_args: tuple,
     ):
         """Like _rawdict_key_call but for an already-evaluated key
         (the caller converted it to share with sibling branches)."""
@@ -5721,8 +5786,8 @@ class TypedCodegen(SiluToLLVMConverter):
             key = self._coerce(key_tv, I64)[1]
             temp = None
         result = self.current_builder.call(
-            self._rawdict_call_fn(kind, int_fn, str_fn),
-            [dict_ptr, key, *tail_args],
+            _rawdict_call_fn(kind, int_fn, str_fn),
+            [dict_ptr, key] + list(tail_args),
         )
         if temp is not None:
             self.current_builder.call(self.rawstr_free, [temp])
@@ -5746,6 +5811,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 container_tv[0], container_tv[1],
                 item_node,
                 self.rawdict_has, self.rawdict_str_has,
+            (),
             )
         elif container_tv[0] == RAWLIST_S:
             elem = self._coerce(self._convert_node(item_node), RAWSTR)
@@ -5852,10 +5918,6 @@ class TypedCodegen(SiluToLLVMConverter):
             if key_annotation == "str" and value_annotation == "float":
                 return RAWDICT_SF
         return None
-
-    @staticmethod
-    def _rawlist_elem_size(kind: str) -> int:
-        return 8  # both i64 and double elements are 8 bytes
 
     # ================== conservative kind inference ==================
     def _resolve_kind(
@@ -5971,8 +6033,8 @@ class TypedCodegen(SiluToLLVMConverter):
         return repeated
 
     def _infer_cursors(
-        self, stmts: list, shared: set = frozenset(),
-        annotations: Dict[str, str] = None,
+        self, stmts: list, shared: set,
+        annotations: Dict[str, str],
     ) -> Dict[str, str]:
         annotations = annotations or {}
         """Scalar cursor promotion for one scope (SILU_SCALARS=0 off).
@@ -6005,7 +6067,7 @@ class TypedCodegen(SiluToLLVMConverter):
         return promoted
 
     def _infer_assign_kinds(
-        self, stmts: list, param_kinds: Optional[Dict[str, str]] = None
+        self, stmts: list, param_kinds: Optional[Dict[str, str]]
     ) -> Dict[str, str]:
         """Kinds for unannotated names whose every assignment in this
         scope provably yields one and the same raw scalar kind.
@@ -6177,7 +6239,7 @@ class TypedCodegen(SiluToLLVMConverter):
             if value_node is None:
                 value = next_value
             else:
-                value = self._const_int_of(value_node)
+                value = _const_int_of(value_node)
                 if value is None:
                     raise NotImplementedError(
                         f"enum '{name}': member '{member_name}' must be an "
@@ -6186,30 +6248,6 @@ class TypedCodegen(SiluToLLVMConverter):
             table[member_name] = value
             next_value = value + 1
         self._enums[name] = table
-
-    @staticmethod
-    def _const_int_of(node: Any) -> Optional[int]:
-        """Compile-time int for ('const', n) and unary minus thereof."""
-        if (
-            isinstance(node, list)
-            and len(node) >= 2
-            and node[0] == "const"
-            and isinstance(node[1], int)
-            and not isinstance(node[1], bool)
-        ):
-            return node[1]
-        if (
-            isinstance(node, list)
-            and len(node) == 2
-            and node[0] == "-"
-            and isinstance(node[1], list)
-            and len(node[1]) >= 2
-            and node[1][0] == "const"
-            and isinstance(node[1][1], int)
-            and not isinstance(node[1][1], bool)
-        ):
-            return -node[1][1]
-        return None
 
     def _register_class(self, node: list):
         """Build the compile-time layout table for one class and register
@@ -6485,7 +6523,7 @@ class TypedCodegen(SiluToLLVMConverter):
         return False
 
     def _borrowed_field_str(
-        self, base_node: Any, key_node: Any = None
+        self, base_node: Any, key_node: Any
     ) -> Optional[Tuple[str, Any]]:
         """(RAWSTR, ptr) borrowed from an instance str field for a
         read-only subscript/len within one expression - skips the
@@ -6713,7 +6751,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
         module_annotations: Dict[str, str] = {}
         collect_annotations(self._module_stmt_list, module_annotations)
-        module_kinds = self._infer_assign_kinds(self._module_stmt_list)
+        module_kinds = self._infer_assign_kinds(self._module_stmt_list, None)
         module_candidates = dict(module_kinds)
 
         # every call to a known function, scanning into nested
@@ -6879,7 +6917,7 @@ class TypedCodegen(SiluToLLVMConverter):
         constructor of one same class - their call results then resolve
         class chains like elem(node, 1).s."""
 
-        def ctor_class_of(expr, depth=0, param_class=None):
+        def ctor_class_of(expr, depth, param_class):
             param_class = param_class or {}
             if not isinstance(expr, (list, tuple)) or depth > 8:
                 return None
@@ -6901,7 +6939,7 @@ class TypedCodegen(SiluToLLVMConverter):
             ):
                 return expr[1][1]
             if len(expr) >= 3 and expr[0] == "subscript":
-                base_cls = ctor_class_of(expr[1], depth + 1)
+                base_cls = ctor_class_of(expr[1], depth + 1, None)
                 if base_cls is None:
                     # a list[Token] variable base
                     if (
@@ -6918,7 +6956,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         return elem
                 return None
             if len(expr) >= 3 and expr[0] == "attribute":
-                base_cls = ctor_class_of(expr[1], depth + 1)
+                base_cls = ctor_class_of(expr[1], depth + 1, None)
                 if base_cls is None:
                     return None
                 for fname, fkind, _d, fclass in self._class_layouts[base_cls][
@@ -7087,7 +7125,7 @@ class TypedCodegen(SiluToLLVMConverter):
         # keep module-level variables visible (they act as globals);
         # remember which names are function-local so we can pop them on
         # exit - a local kind must never leak into other functions
-        self._scope_depth = getattr(self, "_scope_depth", 0) + 1
+        self._scope_depth = self._scope_depth + 1
         if self._scope_depth == 1:
             self._module_vars = set(self.variables.keys())
             self._module_kinds = set(self.var_kinds.keys())
@@ -7166,7 +7204,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self._var_class = old_var_class
         self.cursor_kinds = old_cursor_kinds
         self._cursor_slots = old_cursor_slots
-        self._scope_depth = getattr(self, "_scope_depth", 1) - 1
+        self._scope_depth = self._scope_depth - 1
 
     def _generate_dynamic_function_body(self, func: ir.Function, func_def: list):
         """PyObject-ABI function body (unannotated functions)."""
@@ -7190,7 +7228,7 @@ class TypedCodegen(SiluToLLVMConverter):
             {},
         )
         self._cursor_slots = {}
-        self._scope_depth = getattr(self, "_scope_depth", 0) + 1
+        self._scope_depth = self._scope_depth + 1
         if self._scope_depth == 1:
             self._module_vars = set(self.variables.keys())
             self._module_kinds = set(self.var_kinds.keys())
@@ -7263,11 +7301,17 @@ class TypedCodegen(SiluToLLVMConverter):
         self._var_class = old_var_class
         self.cursor_kinds = old_cursor_kinds
         self._cursor_slots = old_cursor_slots
-        self._scope_depth = getattr(self, "_scope_depth", 1) - 1
+        self._scope_depth = self._scope_depth - 1
 
     # ================== statement / expression dispatch ==================
 
-    def _convert_node(self, node: Any, skip_func_defs: bool = False) -> Tuple[str, Any]:
+    def _convert_toplevel(self, node: Any) -> Tuple[str, Any]:
+        return self._convert_node_scoped(node, True)
+
+    def _convert_node(self, node: Any) -> Tuple[str, Any]:
+        return self._convert_node_scoped(node, False)
+
+    def _convert_node_scoped(self, node: Any, skip_func_defs: bool) -> Tuple[str, Any]:
         """Convert an IR node, returning a TypedValue (kind, llvm value)."""
         if not isinstance(node, list) or len(node) == 0:
             return (OBJ, ir.Constant(ir.PointerType(self.pyobj.pyobj_type), None))
@@ -7285,10 +7329,11 @@ class TypedCodegen(SiluToLLVMConverter):
 
         if op == "module":
             self._inferred_kinds = self._infer_assign_kinds(
-                node[1] if len(node) > 1 else []
+                node[1] if len(node) > 1 else [],
+                None,
             )
             for stmt in node[1] if len(node) > 1 else []:
-                self._convert_statement(stmt, skip_func_defs)
+                self._convert_statement_scoped(stmt, skip_func_defs)
             return (OBJ, null_obj)
 
         if op == "funcref":
@@ -7570,7 +7615,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 # expand at compile time, runtime counts use a fill loop
                 elem_nodes = value_node[1][1] if len(value_node[1]) > 1 else []
                 count_tv = self._convert_node(value_node[2])
-                count_const = self._extract_i64_const(count_tv[1])
+                count_const = _extract_i64_const(count_tv[1])
                 if count_const is not None:
                     expanded: list = []
                     for _ in range(count_const):
@@ -7832,6 +7877,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     current_bits = self._rawdict_key_call_tv(
                         obj_tv[0], obj_tv[1], key_tv,
                         self.rawdict_get, self.rawdict_str_get,
+                    (),
                     )
                     if value_kind == F64:
                         current_tv = (
@@ -8304,6 +8350,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     val_bits = self._rawdict_key_call(
                         obj_tv[0], obj_tv[1], node[2],
                         self.rawdict_get, self.rawdict_str_get,
+                    (),
                     )
                     value_kind = RAWDICT_KINDS[obj_tv[0]]
                     if value_kind == F64:
@@ -8666,6 +8713,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         obj_tv[0], obj_tv[1],
                         node[2],
                         self.rawdict_del, self.rawdict_str_del,
+                    (),
                     )
                     return (OBJ, null_obj)
                 obj = self._box(obj_tv)
@@ -9265,7 +9313,7 @@ class TypedCodegen(SiluToLLVMConverter):
         b.cbranch(b.and_(below, above), ok_block, err_block)
 
         b.position_at_end(err_block)
-        if not hasattr(self, "_char_idxerr"):
+        if self._char_idxerr is None:
             self._char_idxerr = self._create_char_idxerr_global()
         self._emit_panic(
             b,
@@ -9354,7 +9402,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.rawlist_str_push, [list_ptr, elem[1]]
                 )
             return (kind, list_ptr)
-        elem_size = self._rawlist_elem_size(kind)
+        elem_size = _rawlist_elem_size(kind)
         list_ptr = self.current_builder.call(
             self.rawlist_new,
             [ir.Constant(ir.IntType(64), elem_size)],
@@ -9505,36 +9553,6 @@ class TypedCodegen(SiluToLLVMConverter):
             self._declare_var(name, tv[0])
         self.current_builder.store(tv[1], self.variables[name])
 
-    @staticmethod
-    def _dict_loop_names(target_node: Any, mode: str) -> Tuple[Any, Any]:
-        """(key_name, value_name) for the loop target; None where the
-        mode does not bind that side."""
-        if (
-            isinstance(target_node, (list, tuple))
-            and len(target_node) >= 2
-            and target_node[0] == "tuple_unpack"
-            and len(target_node[1]) == 2
-        ):
-            k_name, v_name = target_node[1]
-            if mode == "keys":
-                return k_name, None
-            if mode == "values":
-                return None, v_name
-            return k_name, v_name
-        if (
-            isinstance(target_node, (list, tuple))
-            and len(target_node) >= 2
-            and target_node[0] == "name"
-        ):
-            name = target_node[1]
-        elif isinstance(target_node, str):
-            name = target_node
-        else:
-            return None, None
-        if mode == "values":
-            return None, name
-        return name, None
-
     def _convert_dict_for_loop(
         self, target_node: Any, recv_node: Any, mode: str, body_stmts: list
     ) -> Tuple[str, Any]:
@@ -9588,7 +9606,7 @@ class TypedCodegen(SiluToLLVMConverter):
         table = b.load(_struct_gep(b, struct_ptr, 4))
         keys = b.load(_struct_gep(b, struct_ptr, 5))
         vals = b.load(_struct_gep(b, struct_ptr, 6))
-        k_name, v_name = self._dict_loop_names(target_node, mode)
+        k_name, v_name = _dict_loop_names(target_node, mode)
 
         cond_block, check_block, body_block, incr_block, end_block = (
             self._dict_loop_blocks()
@@ -9664,7 +9682,7 @@ class TypedCodegen(SiluToLLVMConverter):
         entries = b.load(
             b.gep(struct_ptr, [zero32, ir.Constant(ir.IntType(32), 4)])
         )
-        k_name, v_name = self._dict_loop_names(target_node, mode)
+        k_name, v_name = _dict_loop_names(target_node, mode)
 
         cond_block, check_block, body_block, incr_block, end_block = (
             self._dict_loop_blocks()
@@ -9729,7 +9747,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
             if raw_kind in RAWLIST_KINDS:
                 elem_kind = RAWLIST_KINDS[raw_kind]
-                elem_size = self._rawlist_elem_size(raw_kind)
+                elem_size = _rawlist_elem_size(raw_kind)
                 list_ptr = raw_obj_tv[1]
                 if method_name == "append" and args_node:
                     arg_tv = self._convert_node(args_node[0])
@@ -9801,6 +9819,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         bits = self._rawdict_key_call_tv(
                             raw_kind, raw_obj_tv[1], key_tv,
                             self.rawdict_del, self.rawdict_str_del,
+                        (),
                         )
                     elif len(args_node) == 2:
                         bits = self._rawdict_key_call_tv(
@@ -9832,7 +9851,7 @@ class TypedCodegen(SiluToLLVMConverter):
                             key_ptr = self._coerce(key_tv, I64)[1]
                             key_temp = None
                         present = self.current_builder.call(
-                            self._rawdict_call_fn(
+                            _rawdict_call_fn(
                                 raw_kind, self.rawdict_has,
                                 self.rawdict_str_has,
                             ),
@@ -9847,7 +9866,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
                         self.current_builder.position_at_end(hit_block)
                         bits = self.current_builder.call(
-                            self._rawdict_call_fn(
+                            _rawdict_call_fn(
                                 raw_kind, self.rawdict_get,
                                 self.rawdict_str_get,
                             ),
@@ -9887,7 +9906,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     return self._dict_bits_to_value(bits, value_kind)
                 if method_name == "clear" and not args_node:
                     self.current_builder.call(
-                        self._rawdict_call_fn(
+                        _rawdict_call_fn(
                             raw_kind, self.rawdict_clear,
                             self.rawdict_str_clear,
                         ),
@@ -10214,7 +10233,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
             if func_name == "len":
                 if args_node:
-                    arg_tv = self._borrowed_field_str(args_node[0])
+                    arg_tv = self._borrowed_field_str(args_node[0], None)
                     if arg_tv is None:
                         arg_tv = self._convert_node(args_node[0])
                     if arg_tv[0] in RAWLIST_KINDS:

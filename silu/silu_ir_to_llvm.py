@@ -44,6 +44,8 @@ class SiluToLLVMConverter:
     """Converts Silu IR to LLVM IR."""
 
     def __init__(self):
+        # created lazily by whichever runtime builder runs first
+        self.realloc = None
         # Initialize LLVM (llvmlite >= 0.44 initializes automatically and
         # its explicit initialize() raises; older versions require it)
         try:
@@ -2565,7 +2567,7 @@ class SiluToLLVMConverter:
         self.getchar = ir.Function(
             self.module, ir.FunctionType(i32, []), name="getchar"
         )
-        if not hasattr(self, "realloc"):
+        if self.realloc is None:
             self.realloc = ir.Function(
                 self.module, ir.FunctionType(i8p, [i8p, i64]), name="realloc"
             )
@@ -3858,7 +3860,7 @@ class SiluToLLVMConverter:
         self.current_builder = ir.IRBuilder(entry_block)
 
         # Convert IR (skip function definitions in main)
-        self._convert_node(ir_data, skip_func_defs=True)
+        self._convert_toplevel(ir_data)
 
         # A user main() becomes the program body
         if self._renamed_user_main:
@@ -4030,6 +4032,11 @@ class SiluToLLVMConverter:
 
         self.current_builder.position_at_end(end_block)
         return None
+
+    def _convert_toplevel(self, node: Any):
+        """Entry for the module root; subclasses override to route
+        around their own _convert_node signature."""
+        return self._convert_node(node, skip_func_defs=True)
 
     def _convert_node(
         self, node: Any, skip_func_defs: bool = False
