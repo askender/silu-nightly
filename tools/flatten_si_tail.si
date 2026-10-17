@@ -1,0 +1,166 @@
+
+
+class IRParseError:
+    msg: object
+
+
+class JsonR:
+    src: object
+    pos: object
+
+
+def jr_ws(j):
+    while j.pos < len(j.src):
+        ch = j.src[j.pos]
+        if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+            j.pos += 1
+        else:
+            return None
+    return None
+
+
+def jr_value(j):
+    jr_ws(j)
+    ch = j.src[j.pos]
+    if ch == "[":
+        return jr_array(j)
+    if ch == "{":
+        return jr_object(j)
+    if ch == '"':
+        return jr_string(j)
+    if ch == "t":
+        j.pos += 4
+        return True
+    if ch == "f":
+        j.pos += 5
+        return False
+    if ch == "n":
+        j.pos += 4
+        return None
+    return jr_number(j)
+
+
+def jr_string(j):
+    j.pos += 1
+    out = ""
+    while j.pos < len(j.src):
+        ch = j.src[j.pos]
+        if ch == '"':
+            j.pos += 1
+            return out
+        if ch == "\\":
+            esc = j.src[j.pos + 1]
+            if esc == "n":
+                out += "\n"
+            elif esc == "t":
+                out += "\t"
+            elif esc == "r":
+                out += "\r"
+            elif esc == "u":
+                hexs = j.src[j.pos + 2:j.pos + 6]
+                j.pos += 4
+                cp = 0
+                mul = 4096
+                for hc in hexs:
+                    d = ord(hc)
+                    if d >= 48 and d <= 57:
+                        d = d - 48
+                    elif d >= 97 and d <= 102:
+                        d = d - 87
+                    else:
+                        d = d - 55
+                    cp += d * mul
+                    mul = mul // 16
+                out += chr(cp)
+            else:
+                out += esc
+            j.pos += 2
+        else:
+            out += ch
+            j.pos += 1
+    return out
+
+
+def jr_digits(j):
+    out = ""
+    while j.pos < len(j.src):
+        ch = j.src[j.pos]
+        if ch >= "0" and ch <= "9":
+            out += ch
+            j.pos += 1
+        else:
+            return out
+    return out
+
+
+def jr_number(j):
+    neg = False
+    if j.src[j.pos] == "-":
+        neg = True
+        j.pos += 1
+    text = ""
+    while j.pos < len(j.src):
+        ch = j.src[j.pos]
+        if (ch >= "0" and ch <= "9") or ch == "." or ch == "e" or ch == "E" or ch == "+" or ch == "-":
+            text += ch
+            j.pos += 1
+        else:
+            break
+    if "." not in text and "e" not in text and "E" not in text:
+        iv = 0
+        for dc in text:
+            iv = iv * 10 + (ord(dc) - 48)
+        if neg:
+            iv = -iv
+        return iv
+    fv = float(text)
+    if neg:
+        fv = -fv
+    return fv
+
+
+def jr_array(j):
+    j.pos += 1
+    out = []
+    while j.pos < len(j.src):
+        jr_ws(j)
+        if j.src[j.pos] == "]":
+            j.pos += 1
+            return out
+        out.append(jr_value(j))
+        jr_ws(j)
+        if j.src[j.pos] == ",":
+            j.pos += 1
+    return out
+
+
+def jr_object(j):
+    j.pos += 1
+    out = {}
+    while j.pos < len(j.src):
+        jr_ws(j)
+        if j.src[j.pos] == "}":
+            j.pos += 1
+            return out
+        k = jr_string(j)
+        jr_ws(j)
+        j.pos += 1
+        out[k] = jr_value(j)
+        jr_ws(j)
+        if j.src[j.pos] == ",":
+            j.pos += 1
+    return out
+
+
+def parse_ir_from_json_string(text):
+    j = JsonR(text, 0)
+    return jr_value(j)
+
+
+def main() -> int:
+    src = read_stdin()
+    if len(src) == 0:
+        return 0
+    conv = typed_codegen_new()
+    print(conv.convert(src), end="")
+    return 0

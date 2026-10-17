@@ -5044,13 +5044,8 @@ class TypedCodegen(SiluToLLVMConverter):
         clear the table - called on any statement that could invalidate
         the borrowed windows (writes to the parent string, any call,
         another char view creation shares nothing but stays simple)."""
-        for name, (str_name, _str_tv, index_node) in list(
-            self._char_aliases.items()
-        ):
-            # re-load the parent slot HERE (dominates: this block runs
-            # on every path; the cached creation-time load would sit in
-            # a loop body block and violate dominance when the loop
-            # runs zero times)
+        for name, __ftup in list( self._char_aliases.items() ): # re-load the parent slot HERE (dominates: this block runs # on every path; the cached creation-time load would sit in # a loop body block and violate dominance when the loop # runs zero times)
+            str_name, _str_tv, index_node = __ftup
             str_tv = self._load_var(str_name)
             index = self.current_builder.load(index_node)
             view = self._emit_char_view(str_tv[1], index)
@@ -5171,7 +5166,9 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, result)
 
         if left[0] == F64 or right[0] == F64:
-            (l_kind, l_val), (r_kind, r_val) = self._promote_pair(left, right, F64)
+            __ptup = self._promote_pair(left, right, F64)
+            l_kind, l_val = __ptup[0]
+            r_kind, r_val = __ptup[1]
             if op == "+":
                 return (F64, self.current_builder.fadd(l_val, r_val))
             if op == "-":
@@ -5222,7 +5219,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
 
         # integer path (bools promote to i64)
-        (l_kind, l_val), (r_kind, r_val) = self._promote_pair(left, right, I64)
+        __ptup = self._promote_pair(left, right, I64)
+        l_kind, l_val = __ptup[0]
+        r_kind, r_val = __ptup[1]
         i64 = ir.IntType(64)
         if op == "+":
             if not self.checks:
@@ -5535,7 +5534,9 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, self.current_builder.call(runtime, [l_obj, r_obj]))
 
         target = F64 if left[0] == F64 or right[0] == F64 else I64
-        (l_kind, l_val), (r_kind, r_val) = self._promote_pair(left, right, target)
+        __ptup = self._promote_pair(left, right, target)
+        l_kind, l_val = __ptup[0]
+        r_kind, r_val = __ptup[1]
         if target == F64:
             if op == "!=":
                 return (I1, self.current_builder.fcmp_unordered("!=", l_val, r_val))
@@ -6097,7 +6098,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 func_ret[func_name] = ret_kind
         # functions promoted to a raw ABI by cross-function inference
         # return raw values too
-        for func_name, (_params, ret_kind, _func) in self.static_funcs.items():
+        for func_name, __ftup in self.static_funcs.items():
+            _params, ret_kind, _func = __ftup
             if ret_kind:
                 func_ret[func_name] = ret_kind
 
@@ -6478,7 +6480,8 @@ class TypedCodegen(SiluToLLVMConverter):
         included."""
         cls = self._class_of_node(obj_node)
         fields = self._class_layouts[cls]["fields"]
-        for index, (field_name, kind, _default, _fclass) in enumerate(fields):
+        for index, __ftup in enumerate(fields):
+            field_name, kind, _default, _fclass = __ftup
             if field_name == attr:
                 inst_tv = self._convert_node(obj_node)
                 inst_ptr = inst_tv[1]
@@ -6505,7 +6508,8 @@ class TypedCodegen(SiluToLLVMConverter):
         (OBJ) value coerces through the boundary, which copies."""
         cls = self._class_of_node(obj_node)
         fields = self._class_layouts[cls]["fields"]
-        for index, (field_name, kind, _default, _fclass) in enumerate(fields):
+        for index, __ftup in enumerate(fields):
+            field_name, kind, _default, _fclass = __ftup
             if field_name == attr:
                 inst_tv = self._convert_node(obj_node)
                 value_tv = self._coerce(value_tv, kind)
@@ -6549,7 +6553,8 @@ class TypedCodegen(SiluToLLVMConverter):
             return None
         attr = base_node[2]
         fields = self._class_layouts[cls]["fields"]
-        for index, (fname, kind, _default, _fclass) in enumerate(fields):
+        for index, __ftup in enumerate(fields):
+            fname, kind, _default, _fclass = __ftup
             if fname == attr and kind == RAWSTR:
                 if key_node is not None and self._node_contains_call(key_node):
                     return None
@@ -6571,7 +6576,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 f"but {len(args_node)} given"
             )
         bound: Dict[str, Any] = {}
-        for (field_name, _kind, _d, _fc), arg_node in zip(fields, args_node):
+        for __ftup, arg_node in zip(fields, args_node):
+            field_name, _kind, _d, _fc = __ftup
             bound[field_name] = arg_node
         for kw_name, kw_value_node in kwargs_node or ():
             field_names = set()
@@ -6592,7 +6598,8 @@ class TypedCodegen(SiluToLLVMConverter):
         inst_ptr = self.current_builder.call(
             self.malloc, [ir.const_(ir.IntType(64), 8 * len(fields))]
         )
-        for index, (field_name, kind, default_node, _fc) in enumerate(fields):
+        for index, __ftup in enumerate(fields):
+            field_name, kind, default_node, _fc = __ftup
             value_node = bound.get(field_name, default_node)
             if value_node is None:
                 raise TypeError(
@@ -6961,7 +6968,8 @@ class TypedCodegen(SiluToLLVMConverter):
                     return None
                 # any container field holding instances records its
                 # element class; try each container field name
-                for (cls_name, fname), elem in self._field_elem_class.items():
+                for __ftup, elem in self._field_elem_class.items():
+                    cls_name, fname = __ftup
                     if cls_name == base_cls:
                         return elem
                 return None
@@ -7271,7 +7279,7 @@ class TypedCodegen(SiluToLLVMConverter):
         )
         self._inferred_kinds = self._infer_assign_kinds(
             func_def[3],
-            _non_obj_param_env(func_def[2], param_kinds_dyn, keep_obj=True),
+            _non_obj_param_env(func_def[2], param_kinds_dyn, True),
         )
         for index, param_name in enumerate(func_def[2]):
             if index < len(func.args):

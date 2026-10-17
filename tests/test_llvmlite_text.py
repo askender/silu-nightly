@@ -114,3 +114,46 @@ def test_flatten_si_output_checks(tmp_path):
     )
     assert c.returncode == 0, c.stdout + c.stderr
     assert c.stdout.strip().endswith("ok")
+
+
+def test_si_converter_interpreter_parity():
+    """The full milestone gate: the flattened .si converter (with the
+    llvmlite.si twin) runs under the Silu AST interpreter and its .ll
+    output is byte-identical to the Python+llvmlite converter."""
+    import tempfile
+
+    flat = subprocess.run(
+        [sys.executable, f"{REPO}/tools/flatten_codegen.py", "--si"],
+        capture_output=True, text=True, timeout=600,
+    )
+    assert flat.returncode == 0, flat.stderr
+    with tempfile.TemporaryDirectory() as td:
+        flat_path = os.path.join(td, "typed_codegen_flat.si")
+        with open(flat_path, "w") as h:
+            h.write(flat.stdout)
+        # module resolution: llvmlite.si must sit next to the flat file
+        with open(os.path.join(td, "llvmlite.si"), "w") as h:
+            h.write(open(f"{REPO}/selfhost/llvmlite.si").read())
+        for program in PROGRAMS:
+            ir = subprocess.run(
+                [sys.executable, "-m", "silu", "ir", program,
+                 "--format", "json"],
+                capture_output=True, text=True, cwd=REPO, timeout=600,
+            ).stdout
+            ir_path = os.path.join(td, "p.ir.json")
+            with open(ir_path, "w") as h:
+                h.write(ir)
+            real = subprocess.run(
+                [sys.executable, "-m", "silu", "llvm", ir_path,
+                 "--output", os.path.join(td, "ref.ll")],
+                capture_output=True, text=True, cwd=REPO,
+                timeout=600,
+            )
+            assert real.returncode == 0, real.stderr
+            silu = subprocess.run(
+                [sys.executable, "-m", "silu", "interpret", flat_path],
+                input=ir, capture_output=True, text=True, cwd=REPO,
+                timeout=600,
+            )
+            assert silu.returncode == 0, (program, silu.stderr[-300:])
+            assert silu.stdout == open(os.path.join(td, "ref.ll")).read(), program

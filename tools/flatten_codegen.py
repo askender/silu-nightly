@@ -195,6 +195,70 @@ def si_main():
 
     import ast as A
 
+    # builder calls get their omitted trailing arguments filled (the
+    # .si has no default parameters); receiver-text guard keeps set /
+    # attribute .add sites out. Line/col are valid for `text`.
+    NAME_LAST = {
+        "add", "sub", "mul", "sdiv", "udiv", "srem", "urem", "fadd",
+        "fsub", "fmul", "fdiv", "frem", "shl", "lshr", "ashr", "and_",
+        "or_", "xor", "not_", "icmp_signed", "icmp_unsigned",
+        "fcmp_ordered", "fcmp_unordered", "zext", "sext", "trunc",
+        "bitcast", "ptrtoint", "inttoptr", "sitofp", "fptosi",
+        "fpext", "fptrunc", "load", "gep", "call", "phi", "select",
+        "extract_value", "insert_value",
+    }
+    # full positional arity of llvmlite.si's builder methods (the
+    # trailing parameter is always the result name)
+    ARITY = {m: 3 for m in NAME_LAST}
+    ARITY["load"] = 2
+    ARITY["gep"] = 3
+    ARITY["not_"] = 2
+    ARITY["phi"] = 2
+    ARITY["select"] = 4
+    ARITY["call"] = 3
+    ARITY["icmp_signed"] = 4
+    ARITY["icmp_unsigned"] = 4
+    ARITY["fcmp_ordered"] = 4
+    ARITY["fcmp_unordered"] = 4
+    ARITY["insert_value"] = 4
+    NON_BUILDER_RECV = {"sink", "seen", "useset", "parts", "out",
+                        "probes", "calls", "fill", "parent_names",
+                        "repeated", "field_names", "tags"}
+    _t = A.parse(text)
+    _lines = text.split("\n")
+    _edits = []
+    for _n in A.walk(_t):
+        if not (isinstance(_n, A.Call) and isinstance(_n.func, A.Attribute)):
+            continue
+        _m = _n.func.attr
+        if _m not in ARITY or _n.keywords:
+            continue
+        _recv = _n.func.value
+        if isinstance(_recv, A.Name) and _recv.id in NON_BUILDER_RECV:
+            continue
+        if (isinstance(_recv, A.Attribute)
+                and _recv.attr in ("attributes", "metadata")):
+            continue
+        _missing = ARITY[_m] - len(_n.args)
+        if _missing <= 0:
+            continue
+        _ins = ", ".join(['""'] * _missing)
+        _edits.append((_n.end_lineno, _n.end_col_offset, _ins))
+    for _ln, _col, _ins in sorted(_edits, reverse=True):
+        _l = _lines[_ln - 1]
+        if _l.strip() == ")" or _l.strip() == "),":
+            # closing paren alone on its line: add the filler as a
+            # proper new argument line (comma-separating the previous)
+            _ind = _l[: len(_l) - len(_l.lstrip())]
+            _tail = _l.strip()[1:]
+            _prev = _lines[_ln - 2].rstrip()
+            if not _prev.endswith(",") and not _prev.endswith("("):
+                _lines[_ln - 2] = _prev + ","
+            _lines[_ln - 1] = _ind + _ins + "\n" + _ind + ")" + _tail
+        else:
+            _lines[_ln - 1] = _l[:_col - 1] + ", " + _ins + _l[_col - 1:]
+    text = "\n".join(_lines)
+
     tree = A.parse(text)
 
     class ToSilu(A.NodeTransformer):
@@ -304,6 +368,12 @@ def si_main():
     # a module-level factory constructing with None placeholders
     for n in A.walk(tree):
         if isinstance(n, A.ClassDef) and n.name == "TypedCodegen":
+            # class-body constants act as field defaults; the factory
+            # re-embeds them instead of a None placeholder
+            defaults = {}
+            for st in n.body:
+                if isinstance(st, A.AnnAssign) and st.value is not None:
+                    defaults[st.target.id] = A.unparse(st.value)
             fields = []
             for m in n.body:
                 if isinstance(m, A.FunctionDef):
@@ -325,7 +395,10 @@ def si_main():
             for m in n.body:
                 if isinstance(m, A.FunctionDef) and m.name == "__init__":
                     m.name = "_py_init"
-            args = [A.Constant(value=None) for _ in fields]
+            args = [
+                A.parse(defaults.get(f, "None"), mode="eval").body
+                for f in fields
+            ]
             factory = A.FunctionDef(
                 name="typed_codegen_new",
                 args=A.arguments(
@@ -390,6 +463,58 @@ def si_main():
     out = out.replace("TypedCodegen()", "typed_codegen_new()")
 
     out = "import llvmlite\n\n" + out
+
+    # env switches become compile-time constants in the .si
+    out = out.replace("os.environ.get('SILU_CHECKS', '1') != '0'", "True")
+    out = out.replace("os.environ.get('SILU_SCALARS', '1') != '0'", "True")
+
+    # the LLVM C-API bootstrap becomes baked host constants (the .si
+    # pipeline has no binding; compilation is clang's job)
+    import llvmlite.binding as _llvm
+
+    _llvm.initialize_native_target()
+    _llvm.initialize_native_asmprinter()
+    _tm = _llvm.Target.from_default_triple().create_target_machine()
+    old_init = (
+        "        llvm.initialize()\n"
+        "        llvm.initialize_native_target()\n"
+        "        llvm.initialize_native_asmprinter()\n"
+        "        target = llvm.Target.from_default_triple()\n"
+        "        self.target_machine = target.create_target_machine()\n"
+        "        self.module = llvmlite.module_('silu_module')\n"
+        "        self.module.triple = self.target_machine.triple\n"
+        "        self.module.data_layout = str(self.target_machine.target_data)"
+    )
+    new_init = (
+        "        self.module = llvmlite.module_('silu_module')\n"
+        "        self.module.triple = %r\n"
+        "        self.module.data_layout = %r"
+    ) % (_tm.triple, str(_tm.target_data))
+    assert old_init in out, "binding init block not found"
+    out = out.replace(old_init, new_init, 1)
+
+    # string constants: Silu has bytes literals but no bytearray /
+    # str.encode; the text layer accepts plain str for i8 arrays
+    out = out.replace(
+        "string_bytes = bytearray((string_content + '\\x00').encode('utf-8'))",
+        "string_bytes = string_content + '\\x00'")
+    out = out.replace(
+        "llvmlite.ArrayType(llvmlite.IntType(8), len(string_bytes))",
+        "llvmlite.ArrayType(llvmlite.IntType(8), llvmlite.utf8_len(string_bytes))")
+    out = out.replace(
+        "llvmlite.const_(llvmlite.ArrayType(llvmlite.IntType(8), len(data)), bytearray(data))",
+        "llvmlite.const_(llvmlite.ArrayType(llvmlite.IntType(8), len(data)), data)")
+    out = out.replace(
+        "bytearray(b'IndexError: string index out of range\\x00')",
+        "b'IndexError: string index out of range\\x00'")
+    out = out.replace("len(text.encode('utf-8'))", "llvmlite.utf8_len(text)")
+    out = out.replace("len(value.encode('utf-8'))", "llvmlite.utf8_len(value)")
+
+    # stdin entry + the JSON leaf parser (template file, plain Silu)
+    out += open(REPO + "/tools/flatten_si_tail.si").read()
+
+    # stdin entry + the JSON leaf parser (template file, plain Silu)
+    out += open(REPO + "/tools/flatten_si_tail.si").read()
     sys.stdout.write(out)
 
 

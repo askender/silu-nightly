@@ -62,5 +62,3 @@ def _wrap_builder_methods():
 
 
 _wrap_builder_methods()
-
-T.Function.entry_basic_block = property(lambda f: f.blocks[0])

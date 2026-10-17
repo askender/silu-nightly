@@ -166,6 +166,11 @@ def const_(ty, val):
     if isinstance(val, (bytes, bytearray)):
         c.constant = val
         return c
+    if isinstance(val, str) and ty.kind == "array":
+        # plain-str i8 array constant (the .si path); the reference
+        # printer escapes it UTF-8-aware
+        c.constant = val
+        return c
     if ty.kind == "struct" or ty.kind == "array":
         out = []
         idx = 0
@@ -183,6 +188,54 @@ def const_(ty, val):
 
 
 _PRINTABLE_PUNCT = " !#$%&'()*+,-./:;<=>?@[]^_`{|}~"
+
+
+def _escape_byte_val(b):
+    if ((b >= ord("a") and b <= ord("z"))
+            or (b >= ord("A") and b <= ord("Z"))
+            or (b >= ord("0") and b <= ord("9"))
+            or chr(b) in _PRINTABLE_PUNCT):
+        return chr(b)
+    return "\\" + _hex2(b)
+
+
+def utf8_len(s):
+    if isinstance(s, (bytes, bytearray)):
+        return len(s)
+    n = 0
+    for ch in s:
+        cp = ord(ch)
+        if cp < 0x80:
+            n += 1
+        elif cp < 0x800:
+            n += 2
+        elif cp < 0x10000:
+            n += 3
+        else:
+            n += 4
+    return n
+
+
+def _escape_str(s):
+    # UTF-8 encode + LLVM c"..." escaping, from code points directly
+    out = ""
+    for ch in s:
+        cp = ord(ch)
+        if cp < 0x80:
+            out += _escape_byte_val(cp)
+        elif cp < 0x800:
+            out += _escape_byte_val(0xC0 | (cp >> 6))
+            out += _escape_byte_val(0x80 | (cp & 0x3F))
+        elif cp < 0x10000:
+            out += _escape_byte_val(0xE0 | (cp >> 12))
+            out += _escape_byte_val(0x80 | ((cp >> 6) & 0x3F))
+            out += _escape_byte_val(0x80 | (cp & 0x3F))
+        else:
+            out += _escape_byte_val(0xF0 | (cp >> 18))
+            out += _escape_byte_val(0x80 | ((cp >> 12) & 0x3F))
+            out += _escape_byte_val(0x80 | ((cp >> 6) & 0x3F))
+            out += _escape_byte_val(0x80 | (cp & 0x3F))
+    return out
 
 
 def _escape_bytes(data):
@@ -261,6 +314,8 @@ def const_reference(c):
         return "[" + ", ".join(parts) + "]"
     if isinstance(v, (bytes, bytearray)):
         return 'c"' + _escape_bytes(v) + '"'
+    if isinstance(v, str):
+        return 'c"' + _escape_str(v) + '"'
     ty = c.type
     if ty.kind == "double":
         return _double_bits(v)
@@ -535,16 +590,19 @@ class Function:
     attributes: AttrSet
     linkage: str
     type: object
+    entry_basic_block: object
 
     def append_basic_block(self, name):
         blk = Block(self, scope_register(self.scope, name), [], None, False)
         self.blocks.append(blk)
+        if self.entry_basic_block is None:
+            self.entry_basic_block = blk
         return blk
 
 
 def func_(module, ftype, name):
     f = Function(module, ftype, name, None, [], (), AttrSet([]), "",
-                 PointerType(ftype))
+                 PointerType(ftype), None)
     f.scope = scope_new()
     args = []
     for t in ftype.params:

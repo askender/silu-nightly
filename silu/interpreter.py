@@ -189,6 +189,28 @@ class Environment:
         # evaluates (uncaught they abort the program)
         import builtins as _py_builtins
 
+        self.set("bytes", bytes)
+        self.set("bytearray", bytearray)
+        self.set("setattr", setattr)
+        self.set("getattr", getattr)
+        self.set("hasattr", hasattr)
+        # the language's full builtin surface (mirrors the list the
+        # self-hosted front end treats as global names)
+        self.set("set", set)
+        self.set("sorted", sorted)
+        self.set("zip", zip)
+        self.set("any", any)
+        self.set("all", all)
+        self.set("map", map)
+        self.set("sum", sum)
+        self.set("min", min)
+        self.set("max", max)
+        self.set("abs", abs)
+        self.set("repr", repr)
+        self.set("ord", ord)
+        self.set("chr", chr)
+        self.set("enumerate", enumerate)
+        self.set("tuple", tuple)
         for _exc_name in (
             "Exception", "ValueError", "TypeError", "NameError",
             "AttributeError", "NotImplementedError", "RuntimeError",
@@ -201,7 +223,7 @@ class Environment:
         self.vars.update(
             {
                 "__name__": "__main__",
-                "print": lambda *args: print(*args),
+                "print": lambda *args, **kwargs: print(*args, **kwargs),
                 "type": type,
                 "isinstance": self._isinstance,
                 "int": int,
@@ -247,6 +269,21 @@ class Environment:
             "tuple": tuple,
             "dict": dict,
         }
+
+        # tuple form: isinstance(x, (A, B))
+        if isinstance(cls, tuple):
+            for c in cls:
+                if self._isinstance(obj, c):
+                    return True
+            return False
+
+        # a user class: match the instance's class exactly (Silu has
+        # no inheritance)
+        if isinstance(cls, SiluClass):
+            return (
+                isinstance(obj, SiluInstance)
+                and obj.__silu_class__ is cls
+            )
 
         # If cls is already a type object, use it directly
         if cls in type_map.values():
@@ -731,6 +768,10 @@ class SiluInterpreter(BaseASTProcessor):
             if attr in cls.methods:
                 func = cls.methods[attr]
                 return lambda *args, **kwargs: func(obj, *args, **kwargs)
+            # attributes installed by setattr (the class declares no
+            # field for them, but they are plain object state)
+            if attr in vars(obj):
+                return vars(obj)[attr]
             raise AttributeError(
                 f"'{cls.name}' object has no attribute '{attr}'"
             )
@@ -811,6 +852,9 @@ class SiluInterpreter(BaseASTProcessor):
         else:
             # Regular function call
             return super().visit_Call(node)
+
+    def visit_Set(self, node: ast.Set) -> Any:
+        return {self.visit(e) for e in node.elts}
 
     def visit_Match(self, node: ast.Match) -> Any:
         """Handle match/case statements (structural pattern matching).
