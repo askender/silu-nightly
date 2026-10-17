@@ -582,15 +582,17 @@ class Child(Base):
 """
             )
 
-    def test_printing_instance_rejected(self):
-        with pytest.raises(NotImplementedError, match="cannot be boxed"):
-            _convert(
-                JOINT_STATE
-                + """
+    def test_printing_instance_boxes_address(self):
+        """An instance printed in a dynamic position boxes as its
+        address (opaque identity); compiling succeeds."""
+        llvm_ir = _convert(
+            JOINT_STATE
+            + """
 st = JointState(1.0, 2.0)
 print(st)
 """
-            )
+        )
+        assert "create_int" in llvm_ir
 
     def test_layout_is_flat_slots(self):
         """The constructor mallocs 8 bytes per field - no header."""

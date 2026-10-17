@@ -4491,10 +4491,16 @@ class TypedCodegen(SiluToLLVMConverter):
         if kind == I1:
             return self.current_builder.call(self.create_bool, [value])
         if kind == INSTANCE:
-            raise NotImplementedError(
-                "class instances cannot be boxed yet "
-                "(print a field, not the instance)"
+            # opaque box: the instance pointer as its address (identity
+            # equality; the dynamic layer only passes instances around,
+            # it never inspects them)
+            addr = self.current_builder.ptrtoint(
+                value, ir.IntType(64)
             )
+            return self.current_builder.call(self.create_int, [addr])
+        if kind is None:
+            # untyped dynamic value already in pyobj form
+            return value
         raise ValueError(f"unknown kind {kind}")
 
     def _unbox(self, obj: Any, kind: str) -> Any:
@@ -6522,6 +6528,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 if kind == RAWSTR:
                     # copy-on-read: the field slot stays the sole owner
                     value = self.current_builder.call(self.rawstr_copy, [value])
+                if kind is None:
+                    return (OBJ, value)
                 return (kind, value)
         raise AttributeError(f"'{cls}' object has no attribute '{attr}'")
 
@@ -8107,6 +8115,10 @@ class TypedCodegen(SiluToLLVMConverter):
             ):
                 result = self._is_bool_singleton(right, node[1][1])
             elif left[0] == INSTANCE and right[0] == INSTANCE:
+                result = self.current_builder.icmp_signed("==", left[1], right[1])
+            elif left[0] == OBJ and right[0] == OBJ:
+                # identity on boxed values: pointer equality (boxed
+                # instances carry their address, so this covers them)
                 result = self.current_builder.icmp_signed("==", left[1], right[1])
             elif left[0] == I64 and right[0] == I64:
                 # Python `is` on ints is identity-implementational; Silu
@@ -10036,14 +10048,6 @@ class TypedCodegen(SiluToLLVMConverter):
                 arg_vals = []
                 for arg in args_node[:arg_count]:
                     arg_tv = self._convert_node(arg)
-                    if arg_tv[0] == INSTANCE:
-                        # boxed fallback path: instances still can't box,
-                        # but counts.get/copy-free methods never see them;
-                        # fail loudly rather than corrupting
-                        raise NotImplementedError(
-                            "class instances cannot be boxed yet "
-                            "(print a field, not the instance)"
-                        )
                     arg_vals.append(self._box(arg_tv))
                 while len(arg_vals) < arg_count:
                     arg_vals.append(
