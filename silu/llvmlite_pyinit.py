@@ -62,3 +62,11 @@ def _wrap_builder_methods():
 
 
 _wrap_builder_methods()
+
+# __str__ shims so host code can str() a type like real llvmlite
+def _ti_str(self):
+    return self.text
+
+
+T.TypeInfo.__str__ = _ti_str
+T.TypeInfo.__repr__ = _ti_str

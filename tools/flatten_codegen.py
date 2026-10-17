@@ -31,6 +31,8 @@ DERIVED = f"{REPO}/silu/typed_codegen.py"
 RENAMES = {
     "__init__": "_base_init",
     "_collect_function_defs": "_base_collect_function_defs",
+    "_convert_node": "_base_convert_node",
+    "_convert_statement": "_base_convert_statement",
 }
 
 
@@ -109,6 +111,17 @@ def main():
         paren = sig.index("(")
         block[di] = "    def " + out_name + sig[paren:]
         block = _debase(block)
+        # base-internal calls to overridden names whose ARITY differs
+        # route to the renamed base versions; same-arity overrides
+        # (like _collect_function_defs) must stay virtual so base
+        # methods dispatch into the derived behavior
+        for old_m, new_m in RENAMES.items():
+            if old_m in ("__init__", "_collect_function_defs"):
+                continue
+            block = [
+                l.replace("self." + old_m + "(", "self." + new_m + "(")
+                for l in block
+            ]
         merged.append("")
         merged.extend(block)
     # derived class-level constants (non-function statements) stay
@@ -221,6 +234,11 @@ def si_main():
     ARITY["fcmp_ordered"] = 4
     ARITY["fcmp_unordered"] = 4
     ARITY["insert_value"] = 4
+    ARITY["func_"] = 3
+    ARITY["gvar_"] = 3
+    ARITY["builder_"] = 1
+    ARITY["const_"] = 2
+    ARITY["module_"] = 1
     NON_BUILDER_RECV = {"sink", "seen", "useset", "parts", "out",
                         "probes", "calls", "fill", "parent_names",
                         "repeated", "field_names", "tags"}
@@ -242,7 +260,10 @@ def si_main():
         _missing = ARITY[_m] - len(_n.args)
         if _missing <= 0:
             continue
-        _ins = ", ".join(['""'] * _missing)
+        if _m == "alloca" and _missing == 2:
+            _ins = "None, ''"
+        else:
+            _ins = ", ".join(['""'] * _missing)
         _edits.append((_n.end_lineno, _n.end_col_offset, _ins))
     for _ln, _col, _ins in sorted(_edits, reverse=True):
         _l = _lines[_ln - 1]
@@ -466,6 +487,14 @@ def si_main():
             # module-level factory after the class
             tree.body.append(factory)
 
+    # host-only method: save_to_file uses with/open (Silu has neither;
+    # the .si writes via print)
+    for n in A.walk(tree):
+        if isinstance(n, A.ClassDef) and n.name == "TypedCodegen":
+            n.body = [m for m in n.body
+                      if not (isinstance(m, A.FunctionDef)
+                              and m.name == "save_to_file")]
+
     # drop Python-only module tails: the base file's CLI main() and
     # the __main__ guard (the .si gets its own stdin entry later)
     tree.body = [
@@ -553,6 +582,19 @@ def si_main():
                   r"self._inst_class[\1] = \2", out)
     out = out.replace("cls = self._inst_class.get(id(value))",
                       "cls = self._inst_class.get(value)")
+
+    # host-side getattr-with-default -> explicit attribute reads (the
+    # attributes always exist by body-generation time)
+    out = out.replace("getattr(mfn.ftype, 'return_type', None)",
+                      "mfn.ftype.return_type")
+    out = out.replace('getattr(mfn.ftype, "return_type", None)',
+                      "mfn.ftype.return_type")
+    out = out.replace("getattr(self, '_fn_table', None)",
+                      "self._fn_table")
+    out = out.replace('getattr(self, "_fn_table", None)',
+                      "self._fn_table")
+    out = out.replace("getattr(self, '_fn_table', [])",
+                      "self._fn_table")
 
     # stdin entry + the JSON leaf parser (template file, plain Silu)
     out += open(REPO + "/tools/flatten_si_tail.si").read()

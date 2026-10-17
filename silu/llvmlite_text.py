@@ -166,6 +166,10 @@ def const_(ty, val):
     if isinstance(val, (bytes, bytearray)):
         c.constant = val
         return c
+    if isinstance(val, Function):
+        # a function value stays itself (global initializer entries)
+        c.constant = val
+        return c
     if isinstance(val, str) and ty.kind == "array":
         # plain-str i8 array constant (the .si path); the reference
         # printer escapes it UTF-8-aware
@@ -308,6 +312,15 @@ def const_reference(c):
     if isinstance(v, list):
         parts = []
         for x in v:
+            if isinstance(x, Constant) and isinstance(x.constant, Function):
+                # function pointer in a global initializer: the value
+                # reference carries its own pointer type (no element
+                # type prefix)
+                parts.append(const_reference(x))
+                continue
+            if isinstance(x, Function):
+                parts.append(const_reference(x))
+                continue
             parts.append(x.type.text + " " + const_reference(x))
         if c.type.kind == "struct":
             return "{" + ", ".join(parts) + "}"
@@ -316,6 +329,10 @@ def const_reference(c):
         return 'c"' + _escape_bytes(v) + '"'
     if isinstance(v, str):
         return 'c"' + _escape_str(v) + '"'
+    if isinstance(v, Function):
+        # real llvmlite renders a function value as its own pointer
+        # type (retty (params)*) followed by the @name
+        return v.ftype.text + "* " + _quote_ref("@", v.name)
     ty = c.type
     if ty.kind == "double":
         return _double_bits(v)

@@ -316,6 +316,16 @@ def _rec(node, group):
         args = tuple(_rec(a, group) for a in node[2])
         return ("call", ("name", mangled), args, node[3])
 
+    if (
+        op == "name"
+        and isinstance(node[1], str)
+        and node[1] in group.renames
+    ):
+        # a hoisted function referenced as a VALUE (passed as an
+        # argument): point at the mangled name; the typed backend
+        # resolves funcref values statically
+        return ("funcref", group.renames[node[1]])
+
     return tuple(_rec(x, group) for x in node)
 
 

@@ -2622,6 +2622,7 @@ class TypedCodegen(SiluToLLVMConverter):
         # i1 rawstr_starts_with / rawstr_ends_with(i8* s, i8* p, i64 plen)
         self.rawstr_starts_with = self._emit_affix("rawstr_starts_with", True)
         self.rawstr_ends_with = self._emit_affix("rawstr_ends_with", False)
+        self._create_boxed_affix()
 
         # i1 rawstr_isdigit / rawstr_isalpha / rawstr_isspace(i8* s):
         # Python semantics = non-empty and every byte qualifies. ASCII is
@@ -4416,6 +4417,40 @@ class TypedCodegen(SiluToLLVMConverter):
             self.current_builder.call(self.rawstr_free, [temp])
         return result
 
+    def _create_boxed_affix(self):
+        self.boxed_affix = {}
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i64 = ir.IntType(64)
+        for name, is_prefix, raw_fn in (
+            ("str_starts_with", True, self.rawstr_starts_with),
+            ("str_ends_with", False, self.rawstr_ends_with),
+        ):
+            fn = ir.func_(
+                self.module,
+                ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr], False),
+                name,
+            )
+            entry = fn.append_basic_block("entry")
+            b = ir.builder_(entry)
+            s_arg, p_arg = fn.args
+            s_parts = self._pyobj_string_parts(
+                b, s_arg,
+                ir.const_(ir.IntType(32), 0),
+                ir.const_(ir.IntType(32), 1),
+            )
+            s_len_raw, s_chars = s_parts
+            p_parts = self._pyobj_string_parts(
+                b, p_arg,
+                ir.const_(ir.IntType(32), 0),
+                ir.const_(ir.IntType(32), 1),
+            )
+            p_len_raw, p_chars = p_parts
+            s_len = b.sext(s_len_raw, i64)
+            p_len = b.sext(p_len_raw, i64)
+            result = b.call(raw_fn, [s_chars, p_chars, p_len])
+            b.ret(result)
+            self.boxed_affix[name] = fn
+
     def _create_unbox_runtime(self):
         """unbox helpers for the typed -> dynamic -> typed boundary."""
         i32 = ir.IntType(32)
@@ -4508,12 +4543,28 @@ class TypedCodegen(SiluToLLVMConverter):
             # untyped dynamic value already in pyobj form
             return value
         if kind.startswith("func:"):
-            # a hoisted lambda referenced as a value: box its address
-            # (identity; calls through it resolve statically)
+            # funcref value: tag-7 box indexing the module's function
+            # table when eligible; otherwise its address (identity only)
             fn = value
-            addr = self.current_builder.ptrtoint(
-                fn, ir.IntType(64)
-            )
+            if getattr(self, "_fn_table", None) and fn in self._fn_table:
+                idx = ir.const_(ir.IntType(64), self._fn_table.index(fn))
+                # bind self when the target expects an instance first
+                self_box = ir.const_(
+                    ir.PointerType(self.pyobj.pyobj_type), None
+                )
+                if "self" in self.variables:
+                    self_kind = self.var_kinds.get("self", OBJ)
+                    if self_kind is None:
+                        self_kind = OBJ
+                    self_tv = (
+                        self_kind,
+                        self.current_builder.load(self.variables["self"]),
+                    )
+                    self_box = self._box(self_tv)
+                return self.current_builder.call(
+                    self.pyobj_fnref, [idx, self_box]
+                )
+            addr = self.current_builder.ptrtoint(fn, ir.IntType(64))
             return self.current_builder.call(self.create_int, [addr])
         raise ValueError(f"unknown kind {kind}")
 
@@ -4969,8 +5020,14 @@ class TypedCodegen(SiluToLLVMConverter):
             or name in self._enums
             or name in self._class_layouts
         ):
-            # a bare class/function/enum name is only meaningful at a
-            # call or attribute site; as a value there is nothing to load
+            if name in self.functions or name in self.static_funcs:
+                # a module function referenced as a value: funcref
+                # (boxed into the dispatch table)
+                fn = self.functions.get(name) or self.static_funcs.get(
+                    name, (None, None, None)
+                )[2]
+                if fn is not None and name in self.functions:
+                    return ("func:" + name, fn)
             raise NotImplementedError(
                 f"'{name}' used as a value (call it or access a member)"
             )
@@ -4998,7 +5055,9 @@ class TypedCodegen(SiluToLLVMConverter):
         else:
             builder.position_at_end(entry)
         boxed = builder.load(self.variables[name])
-        out = builder.alloca(ir.IntType(64))
+        out = builder.alloca(
+            ir.IntType(64), None, "out"
+        )
         builder.call(
             self.rawlist_get,
             [boxed, ir.const_(ir.IntType(64), 0),
@@ -5552,14 +5611,7 @@ class TypedCodegen(SiluToLLVMConverter):
         if left[0] == OBJ or right[0] == OBJ:
             l_obj = self._box(left)
             r_obj = self._box(right)
-            runtime = {
-                "==": self.pyobj_eq,
-                "!=": self.pyobj_ne,
-                "<": self.pyobj_lt,
-                "<=": self.pyobj_le,
-                ">": self.pyobj_gt,
-                ">=": self.pyobj_ge,
-            }[op]
+            runtime = self.pyobj_cmp[op]
             return (OBJ, self.current_builder.call(runtime, [l_obj, r_obj]))
 
         target = F64 if left[0] == F64 or right[0] == F64 else I64
@@ -6520,6 +6572,92 @@ class TypedCodegen(SiluToLLVMConverter):
             raw, ir.PointerType(LLVM_KIND_TYPES[kind])
         )
 
+    def _fn_call_dispatch(self, arity):
+        """pyobj_fn_callN(box, a1..aN): switch on the table index and
+        call the indexed function with uniform PObj* ABI. Emitted
+        lazily per arity."""
+        if not hasattr(self, "_fn_dispatch_cache"):
+            self._fn_dispatch_cache = {}
+        if arity in self._fn_dispatch_cache:
+            return self._fn_dispatch_cache[arity]
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i64 = ir.IntType(64)
+        fn = ir.func_(
+            self.module,
+            ir.FunctionType(
+                pyobj_ptr,
+                [pyobj_ptr] + [pyobj_ptr] * arity,
+            ),
+            "pyobj_fn_call%d" % arity,
+        )
+        entry = fn.append_basic_block("entry")
+        b = ir.builder_(entry)
+        box = fn.args[0]
+        idx = b.call(self.pyobj_fn_index, [box])
+        self._fn_dispatch_cache[arity] = fn
+        self._fn_table = getattr(self, "_fn_table", [])
+        prev = entry
+        for t_idx, target in enumerate(list(self._fn_table)):
+            target_args = list(target.args)
+            target_n = len(target_args)
+            self_first = (
+                target_n > 0 and str(target_args[0].type) == "i8*"
+            )
+            want = target_n - 1 if self_first else target_n
+            if want != arity or want < 0:
+                continue  # different arity: not a candidate
+            check = fn.append_basic_block("fc_chk")
+            body = fn.append_basic_block("fc_body")
+            b.position_at_end(prev)
+            b.branch(check)
+            b.position_at_end(check)
+            hit = b.icmp_signed(
+                "==", idx, ir.const_(i64, t_idx)
+            )
+            nxt = fn.append_basic_block("fc_nxt")
+            b.cbranch(hit, body, nxt)
+            b.position_at_end(body)
+            target_tys = [str(a.type) for a in target.args]
+            self_first = bool(target_tys) and target_tys[0] == "i8*"
+            param_tys = target_tys[1:] if self_first else target_tys
+            call_args = []
+            for a_i, a_arg in enumerate(fn.args[1:]):
+                # align the boxed argument with the target's param:
+                # i8* params receive the unboxed rawstr
+                if a_i < len(param_tys) and param_tys[a_i] == "i8*":
+                    call_args.append(
+                        b.call(self.pystr_to_rawstr, [a_arg])
+                    )
+                else:
+                    call_args.append(a_arg)
+            if self_first:
+                bound = b.call(self.pyobj_fn_self, [box])
+                inst = b.call(self.pyobj_instance_ptr, [bound])
+                b.ret(b.call(target, [inst] + call_args, ""))
+            else:
+                b.ret(b.call(target, call_args, ""))
+            prev = nxt
+        b.position_at_end(prev)
+        null_obj = ir.const_(pyobj_ptr, None)
+        b.ret(null_obj)
+        return fn
+
+    def _emit_fn_table_init(self):
+        """Global table of function pointers + an init function the
+        entry point calls before main."""
+        if not getattr(self, "_fn_table", None):
+            return
+        i8p = ir.PointerType(ir.IntType(8))
+        i64 = ir.IntType(64)
+        table_ty = ir.ArrayType(i8p, len(self._fn_table))
+        gv = ir.gvar_(self.module, table_ty, "silu_fn_table")
+        gv.linkage = "internal"
+        elems = []
+        for t_fn in self._fn_table:
+            elems.append(t_fn)
+        gv.initializer = ir.const_(table_ty, elems)
+        self.silu_fn_table = gv
+
     def _dyn_member_classes(self, attr, methods):
         """Classes having attr as a field (or method name), sorted for
         deterministic emission."""
@@ -6684,7 +6822,11 @@ class TypedCodegen(SiluToLLVMConverter):
                 arg_vals.append(self._box(atv))
             result = b.call(mfn, arg_vals, "")
             b.branch(merge)
-            ret_ty = getattr(mfn.ftype, "return_type", None)
+            ret_ty = getattr(
+                mfn.ftype, "return_type", None
+            )
+            if ret_ty is None and hasattr(mfn.ftype, "ret"):
+                ret_ty = mfn.ftype.ret
             if ret_ty is not None and str(ret_ty) != "void":
                 # treat every dynamic method result as a boxed value:
                 # instance returns (the dominant case) box with their
@@ -6753,6 +6895,15 @@ class TypedCodegen(SiluToLLVMConverter):
                 if kind == INSTANCE and _fclass:
                     self._inst_class[id(value)] = _fclass
                 return (kind, value)
+        mangled = self._class_layouts[cls]["methods"].get(attr)
+        if mangled is not None:
+            # a method referenced as a value: funcref to the compiled
+            # function (bound dispatch is static at the call site)
+            fn = self.functions.get(mangled) or self.static_funcs.get(
+                mangled, (None, None, None)
+            )[2]
+            if fn is not None:
+                return ("func:" + mangled, fn)
         raise AttributeError(f"'{cls}' object has no attribute '{attr}'")
 
     def _emit_field_write(self, obj_node: Any, attr: str, value_tv: Tuple[str, Any]):
@@ -7359,6 +7510,35 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.functions[func_name] = func
 
     def _generate_function_bodies(self):
+        # eligibility must be structural (not str()-based): under the
+        # Silu interpreter the twin's TypeInfo instances str() to their
+        # repr, and the text comparison would never match
+        def _is_pyobj_ptr(t):
+            if t is self.pyobj.pyobj_type:
+                return True
+            if t == self.pyobj.pyobj_type:
+                return True
+            return False
+
+        def _is_i8_ptr(t):
+            if isinstance(t, str):
+                return t == "i8*"
+            return getattr(t, "text", None) == "i8*"
+
+        self._fn_table = []
+        for name, fn in self.functions.items():
+            ret_ty = getattr(fn.ftype, "return_type", None)
+            if ret_ty is None:
+                ret_ty = fn.ftype.ret
+            if not _is_pyobj_ptr(ret_ty):
+                continue
+            all_ok = True
+            for targ in fn.args:
+                tt = targ.type
+                if not (_is_pyobj_ptr(tt) or _is_i8_ptr(tt)):
+                    all_ok = False
+            if all_ok:
+                self._fn_table.append(fn)
         for func_name, func_def in self.function_defs.items():
             if func_name in self.static_funcs:
                 param_kinds, ret_kind, func = self.static_funcs[func_name]
@@ -9871,6 +10051,28 @@ class TypedCodegen(SiluToLLVMConverter):
             else:
                 self._declare_var(var_name, OBJ)
                 self.current_builder.store(item, self.variables[var_name])
+        elif (
+            isinstance(target_node, list)
+            and len(target_node) >= 2
+            and target_node[0] == "tuple_unpack"
+        ):
+            # iterating pairs: bind each name from the boxed element
+            item = self.current_builder.call(
+                self.list_get,
+                [list_obj, self.current_builder.call(self.create_int, [index])],
+            )
+            for t_idx, t_name in enumerate(target_node[1]):
+                if not isinstance(t_name, str):
+                    continue
+                idx_obj = self.current_builder.call(
+                    self.create_int,
+                    [ir.const_(ir.IntType(64), t_idx)],
+                )
+                part = self.current_builder.call(
+                    self.pyobj_subscript, [item, idx_obj]
+                )
+                self._declare_var(t_name, OBJ)
+                self.current_builder.store(part, self.variables[t_name])
 
         for stmt in body_stmts:
             self._convert_statement(stmt)
@@ -10294,6 +10496,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 "isalpha": (self.str_isalpha, 0, True),
                 "isspace": (self.str_isspace, 0, True),
                 "find": (self.str_find, 1, True),
+                "startswith": (self.boxed_affix["str_starts_with"], 1, False),
+                "endswith": (self.boxed_affix["str_ends_with"], 1, False),
                 "rfind": (self.str_rfind, 1, True),
                 "get": (self.dict_get_or, 2, True),
                 "setdefault": (self.dict_setdefault, 2, True),
@@ -10666,6 +10870,26 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                 return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
+            if func_name == "set" and not args_node:
+                return self._convert_node(["list", []])
+            if func_name == "set" and args_node:
+                return self._convert_node(args_node[0])
+            if func_name == "all" and len(args_node) == 1:
+                # iterate boxed elements, AND their truthiness
+                return self._convert_node(
+                    ["call", ["name", "_builtin_all"],
+                     [args_node[0]], []]
+                )
+            if func_name == "sorted" and len(args_node) == 1:
+                return self._convert_node(
+                    ["call", ["name", "_builtin_sorted"],
+                     [args_node[0]], []]
+                )
+            if func_name == "zip" and len(args_node) == 2:
+                return self._convert_node(
+                    ["call", ["name", "_builtin_zip"],
+                     [args_node[0], args_node[1]], []]
+                )
             if func_name == "sum":
                 if args_node:
                     boxed = self._box(self._convert_node(args_node[0]))
@@ -10767,6 +10991,27 @@ class TypedCodegen(SiluToLLVMConverter):
                     f"call to '{func_name}' with {len(args_node)} args "
                     f"(expected {len(func.args)})"
                 )
+
+        if (
+            isinstance(func_node, (list, tuple))
+            and len(func_node) >= 2
+            and func_node[0] == "name"
+            and func_node[1] in self.variables
+            and self.var_kinds.get(func_node[1]) == OBJ
+            and len(args_node) >= 1
+        ):
+            # indirect call through a funcref local: dispatch via the
+            # function table (arity from the call site)
+            callee_name = func_node[1]
+            fn_box = self.current_builder.load(self.variables[callee_name])
+            arg_boxes = []
+            for an in args_node:
+                arg_boxes.append(self._box(self._convert_node(an)))
+            result = self.current_builder.call(
+                self._fn_call_dispatch(len(arg_boxes)),
+                [fn_box] + arg_boxes,
+            )
+            return (OBJ, result)
 
         if (
             isinstance(func_node, (list, tuple))

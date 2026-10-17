@@ -1195,9 +1195,73 @@ class SiluToLLVMConverter:
         cid = b.load(b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 0)]))
         b.ret(cid)
 
+    def _create_fnref_runtime(self):
+        """Indirect calls: tag-7 funcref boxes carry a table index; a
+        global table of function pointers is filled by silu_fn_init
+        (emitted by the converter once all functions exist), and
+        pyobj_fn_call dispatches on the index with compile-time-known
+        arity."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i8p = ir.PointerType(ir.IntType(8))
+        i64 = ir.IntType(64)
+        i32 = ir.IntType(32)
+
+        self.pyobj_fnref = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [i64, pyobj_ptr], False),
+            "pyobj_fnref",
+        )
+        b = ir.builder_(self.pyobj_fnref.append_basic_block("entry"))
+        idx_arg, self_arg = self.pyobj_fnref.args
+        box_raw = b.call(self.malloc, [ir.const_(i64, 16)])
+        box = b.bitcast(box_raw, ir.PointerType(self.pyobj.pyobj_type))
+        b.store(
+            ir.const_(i32, 7),
+            b.gep(box, [ir.const_(i32, 0), ir.const_(i32, 0)]),
+        )
+        cell_ty = ir.LiteralStructType([i64, pyobj_ptr])
+        self.fnref_cell_ty = cell_ty
+        cell = b.call(self.malloc, [ir.const_(i64, 16)])
+        cellp = b.bitcast(cell, ir.PointerType(cell_ty))
+        b.store(
+            idx_arg,
+            b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 0)]),
+        )
+        b.store(
+            self_arg,
+            b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 1)]),
+        )
+        b.store(
+            cell,
+            b.gep(box, [ir.const_(i32, 0), ir.const_(i32, 1)]),
+        )
+        b.ret(box)
+
+        # PObj* pyobj_fn_self(PObj* o) - the bound self (null when the
+        # funcref is a plain function)
+        self.pyobj_fn_self = ir.func_(
+            self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr], False),
+            "pyobj_fn_self",
+        )
+        b = ir.builder_(self.pyobj_fn_self.append_basic_block("entry"))
+        (o_arg,) = self.pyobj_fn_self.args
+        data = b.load(b.gep(o_arg, [ir.const_(i32, 0), ir.const_(i32, 1)]))
+        cellp = b.bitcast(data, ir.PointerType(cell_ty))
+        b.ret(b.load(b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 1)])))
+
+        self.pyobj_fn_index = ir.func_(
+            self.module, ir.FunctionType(i64, [pyobj_ptr], False),
+            "pyobj_fn_index",
+        )
+        b = ir.builder_(self.pyobj_fn_index.append_basic_block("entry"))
+        (o_arg,) = self.pyobj_fn_index.args
+        data = b.load(b.gep(o_arg, [ir.const_(i32, 0), ir.const_(i32, 1)]))
+        b.ret(b.load(b.bitcast(data, ir.PointerType(i64))))
+
     def _create_pyobj_print(self):
         """Create PyObject print function."""
         self._create_instance_runtime()
+        self._create_fnref_runtime()
         self._create_float_repr_runtime()
 
         print_ty = ir.FunctionType(
@@ -1747,6 +1811,13 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(error_block)
         builder.ret(ir.const_(pyobj_ptr, None))
+
+    def _create_boxed_str_affix(self):
+        """i1 str_starts_with / str_ends_with(PObj* s, PObj* p) - the
+        boxed twins of the rawstr affix probes (emitted by the typed
+        subclass; here we only declare wrappers when they exist)."""
+        # emitted lazily by the typed subclass; nothing to do in base
+        return None
 
     def _create_list_and_str_method_runtime(self):
         """Runtime for list methods and string methods/equality."""
@@ -2656,7 +2727,7 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(list_body)
         elem = builder.load(builder.gep(items, [idx]))
-        eq_pyobj = builder.call(self.pyobj_eq, [elem, item_arg])
+        eq_pyobj = builder.call(self.pyobj_cmp["=="], [elem, item_arg])
         eq_val = self._load_number_as_i64(builder, eq_pyobj)
         is_eq = builder.icmp_signed("!=", eq_val, zero64)
         builder.cbranch(is_eq, list_hit, list_step)
@@ -3873,14 +3944,15 @@ class SiluToLLVMConverter:
             "gt": ">",
             "ge": ">=",
         }
+        # a plain dict (Silu classes reject setattr-created fields);
+        # readers go through self.pyobj_cmp
+        self.pyobj_cmp = {}
         for name, pred in predicates.items():
-            setattr(
-                self, f"pyobj_{name}", self._create_bool_result_function(name, pred)
-            )
+            self.pyobj_cmp[pred] = self._create_bool_result_function(name, pred)
 
     def _create_less_than_comparison(self, left: ir.Value, right: ir.Value) -> ir.Value:
         """Less-than over int/float operands, used by loop conditions."""
-        return self.current_builder.call(self.pyobj_lt, [left, right])
+        return self.current_builder.call(self.pyobj_cmp["<"], [left, right])
 
     def _create_unary_minus(self, operand: ir.Value) -> ir.Value:
         """Unary minus over int/bool/float PyObjects."""
@@ -4058,6 +4130,9 @@ class SiluToLLVMConverter:
 
         # Generate function bodies
         self._generate_function_bodies()
+        # funcref table (only the typed subclass fills _fn_table)
+        if getattr(self, "_fn_table", None):
+            self._emit_fn_table_init()
 
         return ir.module_str(self.module)
 
@@ -4422,14 +4497,7 @@ class SiluToLLVMConverter:
             return None
 
         elif op in ("==", "!=", "<", "<=", ">", ">="):
-            func = {
-                "==": self.pyobj_eq,
-                "!=": self.pyobj_ne,
-                "<": self.pyobj_lt,
-                "<=": self.pyobj_le,
-                ">": self.pyobj_gt,
-                ">=": self.pyobj_ge,
-            }[op]
+            func = self.pyobj_cmp[op]
             if len(node) >= 3:
                 left = self._convert_node(node[1], False)
                 right = self._convert_node(node[2], False)
@@ -4787,7 +4855,7 @@ class SiluToLLVMConverter:
                 # Initialize loop variable to start value
                 self.current_builder.position_at_end(loop_init)
                 counter_ptr = self.current_builder.alloca(
-                    ir.PointerType(self.pyobj.pyobj_type)
+                    ir.PointerType(self.pyobj.pyobj_type), None, "counter"
                 )
                 self.current_builder.store(start_val, counter_ptr)
                 self.current_builder.branch(loop_cond)
