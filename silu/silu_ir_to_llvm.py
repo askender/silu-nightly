@@ -257,7 +257,7 @@ class SiluToLLVMConverter:
         line_block = self.silu_panic.append_basic_block("with_line")
         plain_block = self.silu_panic.append_basic_block("no_line")
         builder = ir.builder_(entry)
-        (panic_msg,) = self.silu_panic.args
+        panic_msg = self.silu_panic.args[0]
         fmt_s = self._create_global_string_with_builder("%s", builder)
         builder.call(self.printf, [fmt_s, panic_msg])
         cur_line = builder.load(self.line_global)
@@ -1133,8 +1133,71 @@ class SiluToLLVMConverter:
         return builder.icmp_signed("==", tag, ir.const_(ir.IntType(32), 2))
 
 
+    def _create_instance_runtime(self):
+        """Boxed class instances ride tag 6 with data pointing at a
+        {i64 class_id, i8* instance} side cell. Dynamic attribute and
+        method dispatch switch on the class id; the converter emits
+        those switches from its layout table."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i8p = ir.PointerType(ir.IntType(8))
+        i64 = ir.IntType(64)
+        i32 = ir.IntType(32)
+        cell_ty = ir.LiteralStructType([i64, i8p])
+        self.inst_cell_ty = cell_ty
+
+        # PObj* pyobj_make_instance(i64 cid, i8* inst)
+        self.pyobj_make_instance = ir.func_(
+            self.module, ir.FunctionType(pyobj_ptr, [i64, i8p], False),
+            "pyobj_make_instance",
+        )
+        b = ir.builder_(self.pyobj_make_instance.append_basic_block("entry"))
+        cid_arg, inst_arg = self.pyobj_make_instance.args
+        cell = b.call(self.malloc, [ir.const_(i64, 16)])
+        cellp = b.bitcast(cell, ir.PointerType(cell_ty))
+        b.store(cid_arg, b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 0)]))
+        b.store(
+            b.bitcast(inst_arg, i8p),
+            b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 1)]),
+        )
+        box_raw = b.call(self.malloc, [ir.const_(i64, 16)])
+        box = b.bitcast(box_raw, ir.PointerType(self.pyobj.pyobj_type))
+        b.store(
+            ir.const_(i32, 6),
+            b.gep(box, [ir.const_(i32, 0), ir.const_(i32, 0)]),
+        )
+        b.store(
+            b.bitcast(cell, i8p),
+            b.gep(box, [ir.const_(i32, 0), ir.const_(i32, 1)]),
+        )
+        b.ret(box)
+
+        # i8* pyobj_instance_ptr(PObj* o)
+        self.pyobj_instance_ptr = ir.func_(
+            self.module, ir.FunctionType(i8p, [pyobj_ptr], False),
+            "pyobj_instance_ptr",
+        )
+        b = ir.builder_(self.pyobj_instance_ptr.append_basic_block("entry"))
+        (o_arg,) = self.pyobj_instance_ptr.args
+        data = b.load(b.gep(o_arg, [ir.const_(i32, 0), ir.const_(i32, 1)]))
+        cellp = b.bitcast(data, ir.PointerType(cell_ty))
+        inst = b.load(b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 1)]))
+        b.ret(inst)
+
+        # i64 pyobj_instance_cid(PObj* o)
+        self.pyobj_instance_cid = ir.func_(
+            self.module, ir.FunctionType(i64, [pyobj_ptr], False),
+            "pyobj_instance_cid",
+        )
+        b = ir.builder_(self.pyobj_instance_cid.append_basic_block("entry"))
+        (o_arg,) = self.pyobj_instance_cid.args
+        data = b.load(b.gep(o_arg, [ir.const_(i32, 0), ir.const_(i32, 1)]))
+        cellp = b.bitcast(data, ir.PointerType(cell_ty))
+        cid = b.load(b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 0)]))
+        b.ret(cid)
+
     def _create_pyobj_print(self):
         """Create PyObject print function."""
+        self._create_instance_runtime()
         self._create_float_repr_runtime()
 
         print_ty = ir.FunctionType(

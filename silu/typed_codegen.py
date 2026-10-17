@@ -321,6 +321,8 @@ class TypedCodegen(SiluToLLVMConverter):
         # OBJ kind's LLVM type is per-module (the PyObject struct
         # pointer); register it once the runtime layout exists
         LLVM_KIND_TYPES[OBJ] = ir.PointerType(self.pyobj.pyobj_type)
+        self._class_ids = {}
+        self._inst_class = {}
         self._char_idxerr = None
         self._module_kinds = set()
         self._module_vars: set = set()
@@ -4491,16 +4493,28 @@ class TypedCodegen(SiluToLLVMConverter):
         if kind == I1:
             return self.current_builder.call(self.create_bool, [value])
         if kind == INSTANCE:
-            # opaque box: the instance pointer as its address (identity
-            # equality; the dynamic layer only passes instances around,
-            # it never inspects them)
-            addr = self.current_builder.ptrtoint(
-                value, ir.IntType(64)
+            cls = self._inst_class.get(id(value))
+            if cls is not None and cls in self._class_ids:
+                cid = ir.const_(ir.IntType(64), self._class_ids[cls])
+            else:
+                cid = ir.const_(ir.IntType(64), -1)
+            return self.current_builder.call(
+                self.pyobj_make_instance,
+                [cid, self.current_builder.bitcast(
+                    value, ir.PointerType(ir.IntType(8))
+                )],
             )
-            return self.current_builder.call(self.create_int, [addr])
         if kind is None:
             # untyped dynamic value already in pyobj form
             return value
+        if kind.startswith("func:"):
+            # a hoisted lambda referenced as a value: box its address
+            # (identity; calls through it resolve statically)
+            fn = value
+            addr = self.current_builder.ptrtoint(
+                fn, ir.IntType(64)
+            )
+            return self.current_builder.call(self.create_int, [addr])
         raise ValueError(f"unknown kind {kind}")
 
     def _unbox(self, obj: Any, kind: str) -> Any:
@@ -6387,6 +6401,8 @@ class TypedCodegen(SiluToLLVMConverter):
                     f"class '{name}': unsupported statement '{op}' in class body"
                 )
         self._class_layouts[name] = {"fields": fields, "methods": methods}
+        if name not in self._class_ids:
+            self._class_ids[name] = len(self._class_ids) + 1
 
     def _class_of_node(self, node: Any) -> Optional[str]:
         """Class name of an instance-typed expression: a name bound to an
@@ -6504,6 +6520,210 @@ class TypedCodegen(SiluToLLVMConverter):
             raw, ir.PointerType(LLVM_KIND_TYPES[kind])
         )
 
+    def _dyn_member_classes(self, attr, methods):
+        """Classes having attr as a field (or method name), sorted for
+        deterministic emission."""
+        out = []
+        for cls_name in sorted(self._class_layouts):
+            layout = self._class_layouts[cls_name]
+            if methods:
+                if attr in layout["methods"]:
+                    out.append(cls_name)
+            else:
+                for fname, _k, _d, _fc in layout["fields"]:
+                    if fname == attr:
+                        out.append(cls_name)
+                        break
+        return out
+
+    def _dyn_dispatch_head(self, recv_tv, what):
+        """Prologue: tag-6 check, then cid + instance from the side
+        cell. Returns (b, cid, inst); the current block is the
+        dispatch-entry (unterminated)."""
+        b = self.current_builder
+        func = self.current_function
+        obj = recv_tv[1]
+        tag = b.load(b.gep(obj, [ir.const_(ir.IntType(32), 0),
+                                 ir.const_(ir.IntType(32), 0)]))
+        is_inst = b.icmp_signed("==", tag, ir.const_(ir.IntType(32), 6))
+        bad = func.append_basic_block("dyn_bad")
+        cell = func.append_basic_block("dyn_cell")
+        b.cbranch(is_inst, cell, bad)
+        b.position_at_end(bad)
+        msg = self._create_global_string_with_builder(
+            "TypeError: dynamic " + what + " on non-instance", b
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(cell)
+        cid = b.call(self.pyobj_instance_cid, [obj])
+        inst = b.call(self.pyobj_instance_ptr, [obj])
+        return b, cid, inst
+
+    def _emit_dyn_attr_read(self, recv_tv, attr):
+        b, cid, inst = self._dyn_dispatch_head(recv_tv, "getattr")
+        func = self.current_function
+        classes = self._dyn_member_classes(attr, methods=False)
+        merge = func.append_basic_block("ga_merge")
+        none_blk = func.append_basic_block("ga_none")
+        phis = []
+        entry = b.block
+        for cls_name in classes:
+            check = func.append_basic_block("ga_chk")
+            body = func.append_basic_block("ga_body")
+            nxt = func.append_basic_block("ga_nxt")
+            b.position_at_end(entry)
+            b.branch(check)
+            b.position_at_end(check)
+            hit = b.icmp_signed(
+                "==", cid,
+                ir.const_(ir.IntType(64), self._class_ids[cls_name]),
+            )
+            b.cbranch(hit, body, nxt)
+            b.position_at_end(body)
+            layout = self._class_layouts[cls_name]
+            for idx, field_tuple in enumerate(layout["fields"]):
+                fname, fkind, _d, _fc = field_tuple
+                if fname != attr:
+                    continue
+                slot = self._field_slot(inst, idx, fkind)
+                value = b.load(slot)
+                if fkind is None:
+                    fkind = OBJ
+                boxed = self._box((fkind, value))
+                b.branch(merge)
+                phis.append((boxed, b.block))
+                break
+            entry = nxt
+        b.position_at_end(entry)
+        b.branch(none_blk)
+        b.position_at_end(none_blk)
+        msg = self._create_global_string_with_builder(
+            "AttributeError: no field '" + attr + "'", b
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(merge)
+        phi = b.phi(ir.PointerType(self.pyobj.pyobj_type))
+        for val, blk in phis:
+            phi.add_incoming(val, blk)
+        return (OBJ, phi)
+
+    def _emit_dyn_attr_write(self, recv_tv, attr, value_tv):
+        b, cid, inst = self._dyn_dispatch_head(recv_tv, "setattr")
+        func = self.current_function
+        classes = self._dyn_member_classes(attr, methods=False)
+        done = func.append_basic_block("sa_done")
+        none_blk = func.append_basic_block("sa_none")
+        entry = b.block
+        for cls_name in classes:
+            check = func.append_basic_block("sa_chk")
+            body = func.append_basic_block("sa_body")
+            nxt = func.append_basic_block("sa_nxt")
+            b.position_at_end(entry)
+            b.branch(check)
+            b.position_at_end(check)
+            hit = b.icmp_signed(
+                "==", cid,
+                ir.const_(ir.IntType(64), self._class_ids[cls_name]),
+            )
+            b.cbranch(hit, body, nxt)
+            b.position_at_end(body)
+            layout = self._class_layouts[cls_name]
+            for idx, field_tuple in enumerate(layout["fields"]):
+                fname, fkind, _d, _fc = field_tuple
+                if fname != attr:
+                    continue
+                coerced = self._coerce(value_tv, fkind)
+                slot = self._field_slot(inst, idx, fkind)
+                b.store(coerced[1], slot)
+                b.branch(done)
+                break
+            entry = nxt
+        b.position_at_end(entry)
+        b.branch(none_blk)
+        b.position_at_end(none_blk)
+        msg = self._create_global_string_with_builder(
+            "AttributeError: no field '" + attr + "'", b
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(done)
+        return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _emit_dyn_method_call(self, recv_tv, method_name, args_node):
+        b, cid, inst = self._dyn_dispatch_head(recv_tv, "method")
+        func = self.current_function
+        classes = self._dyn_member_classes(method_name, methods=True)
+        merge = func.append_basic_block("mc_merge")
+        none_blk = func.append_basic_block("mc_none")
+        phis = []
+        entry = b.block
+        inst_i8 = b.bitcast(inst, ir.PointerType(ir.IntType(8)))
+        for cls_name in classes:
+            check = func.append_basic_block("mc_chk")
+            body = func.append_basic_block("mc_body")
+            nxt = func.append_basic_block("mc_nxt")
+            b.position_at_end(entry)
+            b.branch(check)
+            b.position_at_end(check)
+            hit = b.icmp_signed(
+                "==", cid,
+                ir.const_(ir.IntType(64), self._class_ids[cls_name]),
+            )
+            b.cbranch(hit, body, nxt)
+            b.position_at_end(body)
+            mangled = self._class_layouts[cls_name]["methods"][method_name]
+            mfn = self.functions.get(mangled)
+            if mfn is None:
+                mfn = self.static_funcs.get(mangled, (None, None, None))[2]
+            if mfn is None:
+                b.branch(nxt)
+                entry = nxt
+                continue
+            arg_vals = [inst_i8]
+            for an in args_node:
+                atv = self._convert_node(an)
+                arg_vals.append(self._box(atv))
+            result = b.call(mfn, arg_vals, "")
+            b.branch(merge)
+            ret_ty = getattr(mfn.ftype, "return_type", None)
+            if ret_ty is not None and str(ret_ty) != "void":
+                # treat every dynamic method result as a boxed value:
+                # instance returns (the dominant case) box with their
+                # class recorded via the method's inferred return class
+                ret_cls = None
+                if ret_cls is not None:
+                    self._inst_class[id(result)] = ret_cls
+                    boxed_res = self._box((INSTANCE, result))
+                else:
+                    boxed_res = self._box(
+                        ("func:" + mangled, result)
+                    ) if str(ret_ty) == "i8*" else self._box((OBJ, result))
+                phis.append((boxed_res, b.block))
+            entry = nxt
+        b.position_at_end(entry)
+        b.branch(none_blk)
+        b.position_at_end(none_blk)
+        msg = self._create_global_string_with_builder(
+            "AttributeError: no method '" + method_name + "'", b
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(merge)
+        null_obj = ir.const_(ir.PointerType(self.pyobj.pyobj_type), None)
+        if not phis:
+            return (OBJ, null_obj)
+        first_ty = phis[0][0].type
+        same_ty = True
+        for p in phis:
+            if p[0].type != first_ty:
+                same_ty = False
+        if same_ty:
+            phi = b.phi(first_ty)
+            for val, blk in phis:
+                phi.add_incoming(val, blk)
+            return (OBJ, phi)
+        # mixed result types: merge as a null (identity-lossy; the .si
+        # converter never mixes return kinds on one method name)
+        return (OBJ, null_obj)
+
     def _emit_field_read(self, obj_node: Any, attr: str) -> Tuple[str, Any]:
         """obj.attr where obj is a class instance: offset load. str fields
         copy on read (the instance keeps owning its slot's buffer);
@@ -6530,6 +6750,8 @@ class TypedCodegen(SiluToLLVMConverter):
                     value = self.current_builder.call(self.rawstr_copy, [value])
                 if kind is None:
                     return (OBJ, value)
+                if kind == INSTANCE and _fclass:
+                    self._inst_class[id(value)] = _fclass
                 return (kind, value)
         raise AttributeError(f"'{cls}' object has no attribute '{attr}'")
 
@@ -6643,6 +6865,7 @@ class TypedCodegen(SiluToLLVMConverter):
             self.current_builder.store(
                 value_tv[1], self._field_slot(inst_ptr, index, kind)
             )
+        self._inst_class[id(inst_ptr)] = class_name
         return (INSTANCE, inst_ptr)
 
     def _field_kind_of(self, obj_node: Any, attr: str) -> str:
@@ -6712,6 +6935,15 @@ class TypedCodegen(SiluToLLVMConverter):
         """st.m(a) -> P__m(st, a): the instance pointer is the raw first
         argument; the rest follows the callee's ABI (static or dynamic)."""
         cls = self._class_of_node(obj_node)
+        if cls is None:
+            recv_tv_probe = self._convert_node(obj_node)
+            if recv_tv_probe[0] == OBJ:
+                return self._emit_dyn_method_call(
+                    recv_tv_probe, method_name, args_node
+                )
+            raise AttributeError(
+                f"method '{method_name}' on non-instance receiver"
+            )
         mangled = self._class_layouts[cls]["methods"].get(method_name)
         if mangled is None:
             raise AttributeError(
@@ -7469,6 +7701,9 @@ class TypedCodegen(SiluToLLVMConverter):
             self._check_receiver_methods(node[1])
             if self._class_of_node(node[1]) is not None:
                 return self._emit_field_read(node[1], node[2])
+            recv_tv = self._convert_node(node[1])
+            if recv_tv[0] == OBJ:
+                return self._emit_dyn_attr_read(recv_tv, node[2])
             # dynamic attribute access stays unsupported (null)
             return (OBJ, null_obj)
 
@@ -7495,6 +7730,13 @@ class TypedCodegen(SiluToLLVMConverter):
             ):
                 # obj.attr = value on a class instance
                 if self._class_of_node(target[1]) is None:
+                    recv_tv = self._convert_node(target[1])
+                    if recv_tv[0] == OBJ:
+                        value_tv = self._convert_node(value_node)
+                        self._emit_dyn_attr_write(
+                            recv_tv, target[2], value_tv
+                        )
+                        return (OBJ, null_obj)
                     raise NotImplementedError(
                         "attribute assignment is only supported on class "
                         "instances"
@@ -8858,6 +9100,24 @@ class TypedCodegen(SiluToLLVMConverter):
                             self.current_builder.store(
                                 coerced[1], self.variables[target]
                             )
+                else:
+                    # general iterable: box and subscript per target
+                    boxed = self._box(self._convert_node(value_node))
+                    for index, target in enumerate(targets):
+                        if not isinstance(target, str):
+                            continue
+                        idx_obj = self.current_builder.call(
+                            self.create_int,
+                            [ir.const_(ir.IntType(64), index)],
+                        )
+                        elem = self.current_builder.call(
+                            self.pyobj_subscript, [boxed, idx_obj]
+                        )
+                        kind = self.var_kinds.get(target, OBJ)
+                        self._declare_var(target, kind)
+                        self.current_builder.store(
+                            elem, self.variables[target]
+                        )
             return (OBJ, null_obj)
 
         # unknown op: degrade to dynamic null
@@ -10056,6 +10316,12 @@ class TypedCodegen(SiluToLLVMConverter):
                 if len(arg_vals) == arg_count and all(arg_vals):
                     result = self.current_builder.call(func, [obj] + arg_vals)
                     return (OBJ, result) if has_result else (OBJ, result)
+            # boxed instance receiver with user-class methods: class-id
+            # dispatch into the compiled methods
+            if self._dyn_member_classes(method_name, methods=True):
+                return self._emit_dyn_method_call(
+                    raw_obj_tv, method_name, args_node
+                )
             raise NotImplementedError(
                 f"method '{method_name}' is not supported on dynamic values"
             )
@@ -10502,6 +10768,19 @@ class TypedCodegen(SiluToLLVMConverter):
                     f"(expected {len(func.args)})"
                 )
 
+        if (
+            isinstance(func_node, (list, tuple))
+            and len(func_node) >= 2
+            and func_node[0] == "name"
+            and func_node[1] in ("list", "dict", "set", "tuple")
+        ):
+            # constructor call over an iterable: copy into a fresh box
+            if args_node:
+                return self._convert_node(args_node[0])
+            # no-arg constructors: empty containers (all PyObj)
+            return self._convert_node(
+                ["list", []] if func_node[1] != "dict" else ["dict", []]
+            )
         # unknown callee: fail at compile time. A silent null leaks into
         # containers and crashes far from its origin at runtime.
         callee_desc = (

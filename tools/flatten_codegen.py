@@ -546,8 +546,13 @@ def si_main():
     out = out.replace("len(text.encode('utf-8'))", "llvmlite.utf8_len(text)")
     out = out.replace("len(value.encode('utf-8'))", "llvmlite.utf8_len(value)")
 
-    # stdin entry + the JSON leaf parser (template file, plain Silu)
-    out += open(REPO + "/tools/flatten_si_tail.si").read()
+    # host-only instance tracking (id-keyed dicts) leaves the .si
+    import re as _re
+
+    out = _re.sub(r"self\._inst_class\[id\(([^)]*)\)\] = ([^\n]+)",
+                  r"self._inst_class[\1] = \2", out)
+    out = out.replace("cls = self._inst_class.get(id(value))",
+                      "cls = self._inst_class.get(value)")
 
     # stdin entry + the JSON leaf parser (template file, plain Silu)
     out += open(REPO + "/tools/flatten_si_tail.si").read()

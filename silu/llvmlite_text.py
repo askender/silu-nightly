@@ -882,6 +882,10 @@ class IRBuilder:
         return self._ins(i)
 
     def _cast(self, opname, value, ty, name):
+        if value.type is ty or value.type == ty:
+            # llvmlite returns the operand unchanged when the target
+            # type already matches
+            return value
         return self._ins(_mk_instr(self.block, ty, opname, name,
                                    [value], "cast"))
 
