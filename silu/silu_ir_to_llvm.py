@@ -1184,15 +1184,26 @@ class SiluToLLVMConverter:
         b.ret(inst)
 
         # i64 pyobj_instance_cid(PObj* o)
+        # Tag-guarded: a non-instance box's payload must never be
+        # dereferenced as a side cell; such boxes answer cid -1.
+        no_cid_gv = ir.gvar_(
+            self.module, i64, "silu_no_cid",
+        )
+        no_cid_gv.initializer = ir.const_(i64, -1)
         self.pyobj_instance_cid = ir.func_(
             self.module, ir.FunctionType(i64, [pyobj_ptr], False),
             "pyobj_instance_cid",
         )
         b = ir.builder_(self.pyobj_instance_cid.append_basic_block("entry"))
         (o_arg,) = self.pyobj_instance_cid.args
+        tag = b.load(b.gep(o_arg, [ir.const_(i32, 0), ir.const_(i32, 0)]))
+        is6 = b.icmp_signed("==", tag, ir.const_(i32, 6))
         data = b.load(b.gep(o_arg, [ir.const_(i32, 0), ir.const_(i32, 1)]))
-        cellp = b.bitcast(data, ir.PointerType(cell_ty))
-        cid = b.load(b.gep(cellp, [ir.const_(i32, 0), ir.const_(i32, 0)]))
+        cell_field = b.gep(
+            b.bitcast(data, ir.PointerType(cell_ty)),
+            [ir.const_(i32, 0), ir.const_(i32, 0)],
+        )
+        cid = b.load(b.select(is6, cell_field, no_cid_gv))
         b.ret(cid)
 
     def _create_fnref_runtime(self):
@@ -3513,6 +3524,145 @@ class SiluToLLVMConverter:
                 self.create_str, [out_buf, builder.trunc(count, i32)]
             )
         )
+
+        # PObj* pyobj_list_slice(PObj* lst, i64 lo, hi, step, has_lo, has_hi)
+        # the str slice twin over list boxes (elements copied by
+        # reference, matching Python's shallow list slicing)
+        self.pyobj_list_slice = ir.func_(
+            self.module,
+            ir.FunctionType(
+                pyobj_ptr, [pyobj_ptr, i64, i64, i64, ir.IntType(1), ir.IntType(1)], False
+            ), 'pyobj_list_slice',
+
+        )
+        entry = self.pyobj_list_slice.append_basic_block("entry")
+        lst_case = self.pyobj_list_slice.append_basic_block("lst_case")
+        zero_step = self.pyobj_list_slice.append_basic_block("ls_zero_step")
+        step_ok = self.pyobj_list_slice.append_basic_block("ls_step_ok")
+        copy_cond = self.pyobj_list_slice.append_basic_block("ls_cond")
+        copy_body = self.pyobj_list_slice.append_basic_block("ls_body")
+        copy_done = self.pyobj_list_slice.append_basic_block("ls_done")
+        builder = ir.builder_(entry)
+        lst_arg, lo_arg, hi_arg, step_arg, has_lo, has_hi = (
+            self.pyobj_list_slice.args
+        )
+        lst_tag = builder.load(builder.gep(lst_arg, [zero32, zero32]))
+        not_list = builder.icmp_signed("!=", lst_tag, ir.const_(i32, 4))
+        tag_error = self.pyobj_list_slice.append_basic_block("ls_tag_error")
+        builder.cbranch(not_list, tag_error, lst_case)
+
+        builder.position_at_end(tag_error)
+        tag_msg = self._create_global_string_with_builder(
+            "TypeError: only list slicing is supported", builder
+        )
+        self._emit_panic(builder, tag_msg)
+
+        builder.position_at_end(lst_case)
+        lst_struct = self._load_list_struct(builder, lst_arg)
+        n = builder.load(builder.gep(lst_struct, [zero32, zero32]))
+        items = builder.load(
+            builder.gep(lst_struct, [zero32, ir.const_(i32, 2)])
+        )
+        step_zero = builder.icmp_signed("==", step_arg, zero64)
+        builder.cbranch(step_zero, zero_step, step_ok)
+
+        builder.position_at_end(zero_step)
+        step_msg = self._create_global_string_with_builder(
+            "ValueError: slice step cannot be zero", builder
+        )
+        self._emit_panic(builder, step_msg)
+
+        builder.position_at_end(step_ok)
+        neg_step = builder.icmp_signed("<", step_arg, zero64)
+        n_m1 = builder.sub(n, one64)
+        lo_eff = self._slice_clamp_bound(
+            builder, lo_arg, has_lo,
+            builder.select(neg_step, n_m1, zero64),
+            zero64,
+            builder.select(neg_step, n_m1, n),
+            n, zero64,
+        )
+        hi_eff = self._slice_clamp_bound(
+            builder, hi_arg, has_hi,
+            builder.select(neg_step, ir.const_(i64, -1), n),
+            builder.select(neg_step, ir.const_(i64, -1), zero64),
+            builder.select(neg_step, n_m1, n),
+            n, zero64,
+        )
+        fwd_span = builder.sub(hi_eff, lo_eff)
+        fwd_count = builder.sdiv(builder.sub(fwd_span, one64), step_arg)
+        fwd = builder.select(
+            builder.icmp_signed(">", fwd_span, zero64),
+            builder.add(fwd_count, one64),
+            zero64,
+        )
+        neg_step_size = builder.sub(zero64, step_arg)
+        bwd_span = builder.sub(lo_eff, hi_eff)
+        bwd_count = builder.sdiv(builder.sub(bwd_span, one64), neg_step_size)
+        bwd = builder.select(
+            builder.icmp_signed(">", bwd_span, zero64),
+            builder.add(bwd_count, one64),
+            zero64,
+        )
+        count = builder.select(neg_step, bwd, fwd)
+        out = builder.call(self.create_list, [])
+        idx_ptr = builder.alloca(i64, None, 'ls_i')
+        builder.store(zero64, idx_ptr)
+        builder.branch(copy_cond)
+
+        builder.position_at_end(copy_cond)
+        idx = builder.load(idx_ptr)
+        more = builder.icmp_signed("<", idx, count)
+        builder.cbranch(more, copy_body, copy_done)
+
+        builder.position_at_end(copy_body)
+        fwd_src = builder.add(lo_eff, builder.mul(idx, step_arg))
+        bwd_src = builder.sub(lo_eff, builder.mul(idx, neg_step_size))
+        src_index = builder.select(neg_step, bwd_src, fwd_src)
+        elem = builder.load(builder.gep(items, [src_index]))
+        builder.call(self.list_append, [out, elem])
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(copy_cond)
+
+        builder.position_at_end(copy_done)
+        builder.ret(out)
+
+        # PObj* pyobj_slice_any(PObj* obj, ...) - tag dispatch to the
+        # str/list slice twins (the dynamic subscript slice entry)
+        self.pyobj_slice_any = ir.func_(
+            self.module,
+            ir.FunctionType(
+                pyobj_ptr, [pyobj_ptr, i64, i64, i64, ir.IntType(1), ir.IntType(1)], False
+            ), 'pyobj_slice_any',
+
+        )
+        entry = self.pyobj_slice_any.append_basic_block("entry")
+        is_str_blk = self.pyobj_slice_any.append_basic_block("sa_str")
+        lst_chk_blk = self.pyobj_slice_any.append_basic_block("sa_lst_chk")
+        do_list_blk = self.pyobj_slice_any.append_basic_block("sa_do_list")
+        sa_error = self.pyobj_slice_any.append_basic_block("sa_error")
+        builder = ir.builder_(entry)
+        obj_arg = self.pyobj_slice_any.args[0]
+        slice_args = list(self.pyobj_slice_any.args)
+        obj_tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        is_str = builder.icmp_signed("==", obj_tag, ir.const_(i32, 2))
+        builder.cbranch(is_str, is_str_blk, lst_chk_blk)
+        builder.position_at_end(is_str_blk)
+        builder.ret(
+            builder.call(self.pyobj_str_slice, slice_args)
+        )
+        builder.position_at_end(lst_chk_blk)
+        is_list = builder.icmp_signed("==", obj_tag, ir.const_(i32, 4))
+        builder.cbranch(is_list, do_list_blk, sa_error)
+        builder.position_at_end(do_list_blk)
+        builder.ret(
+            builder.call(self.pyobj_list_slice, slice_args)
+        )
+        builder.position_at_end(sa_error)
+        err_msg = self._create_global_string_with_builder(
+            "TypeError: object is not sliceable", builder
+        )
+        self._emit_panic(builder, err_msg)
 
         # {i32,i8*}* pyobj_subscript(PyObject* obj, PyObject* key)
         # tag dispatch: 4 -> list_get, 5 -> dict_get_or(key, null)

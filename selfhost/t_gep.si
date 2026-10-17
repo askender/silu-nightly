@@ -1,0 +1,64 @@
+import llvmlite
+
+i64 = llvmlite.IntType(64)
+i32 = llvmlite.IntType(32)
+ptr_ty = llvmlite.PointerType(i64)
+mod = llvmlite.module_("t")
+ft = llvmlite.FunctionType(i64, [i64], False)
+f = llvmlite.func_(mod, ft, "f")
+blk = f.append_basic_block("e")
+b = llvmlite.builder_(blk)
+c0 = llvmlite.const_(i32, 0)
+c2 = llvmlite.const_(i32, 2)
+nullp = llvmlite.const_(ptr_ty, None)
+g = b.gep(nullp, [c0, c2], "")
+l = b.load(g, "")
+print("ok")
+
+def _builtin_sorted(xs):
+    out = []
+    for x in xs:
+        out.append(x)
+    i = 0
+    while i < len(out):
+        j = i + 1
+        while j < len(out):
+            if out[j] < out[i]:
+                t = out[i]
+                out[i] = out[j]
+                out[j] = t
+            j += 1
+        i += 1
+    return out
+c3 = llvmlite.const_(i32, 3)
+l2 = b.load(b.gep(nullp, [c0, c3], ""), "")
+print("gep2 ok")
+def local_gep(bb, target):
+    z0 = llvmlite.const_(i32, 0)
+    z2 = llvmlite.const_(i32, 2)
+    g2 = bb.gep(target, [z0, z2], "")
+    return bb.load(g2, "")
+
+class Holder:
+    val: object
+
+def get_h(v):
+    h = Holder(v)
+    return h
+
+h1 = get_h(nullp)
+r = local_gep(b, h1.val)
+print("local gep ok")
+blk2 = f.append_basic_block("b2")
+c1 = b.icmp_signed(">", llvmlite.const_(i64, 1), llvmlite.const_(i64, 0), "")
+b.cbranch(c1, blk, blk2)
+b.position_at_end(blk2)
+z0b = llvmlite.const_(i32, 0)
+z2b = llvmlite.const_(i32, 2)
+g3 = b.gep(nullp, [z0b, z2b], "")
+print("cbranch gep ok")
+lst = llvmlite.LiteralStructType([i64, i64, llvmlite.PointerType(llvmlite.PointerType(i64))])
+lp = llvmlite.PointerType(lst)
+nulllp = llvmlite.const_(lp, None)
+g4 = b.gep(nulllp, [c0, c2], "")
+print("struct gep ok")

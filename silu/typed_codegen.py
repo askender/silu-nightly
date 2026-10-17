@@ -324,6 +324,32 @@ LLVM_KIND_TYPES = {
 }
 
 
+def _inst_kind(cls):
+    """INSTANCE kind carrying its class. Box dispatch reads the cid
+    from the kind, so class identity survives the value's whole
+    compile-time lifetime - loads, call results and parameters - not
+    just the construction site."""
+    return INSTANCE + ":" + cls
+
+
+def _is_inst(kind):
+    return kind == INSTANCE or (
+        isinstance(kind, str) and kind.startswith(INSTANCE + ":")
+    )
+
+
+def _kind_cls(kind):
+    """The class of an instance kind, None for plain/other kinds."""
+    if isinstance(kind, str) and kind.startswith(INSTANCE + ":"):
+        return kind[len(INSTANCE) + 1:]
+    return None
+
+
+def _kind_llvm_key(kind):
+    """LLVM_KIND_TYPES key for a possibly classed instance kind."""
+    return INSTANCE if _is_inst(kind) else kind
+
+
 class TypedCodegen(SiluToLLVMConverter):
     """LLVM backend with unboxed scalars driven by source annotations."""
 
@@ -333,8 +359,8 @@ class TypedCodegen(SiluToLLVMConverter):
         # pointer); register it once the runtime layout exists
         LLVM_KIND_TYPES[OBJ] = ir.PointerType(self.pyobj.pyobj_type)
         self._class_ids = {}
-        self._inst_class = {}
         self._fn_dispatch_cache = {}
+        self._unbox_inst_cache = None
         self._char_idxerr = None
         self._module_kinds = set()
         self._module_vars: set = set()
@@ -4465,9 +4491,11 @@ class TypedCodegen(SiluToLLVMConverter):
             self.boxed_affix[name] = fn
 
     def _create_boxed_str_join(self):
-        """PObj* str_join_boxed(PObj* sep, PObj* list) - the boxed
-        twin of rawlist_str_join."""
+        """PObj* str_join_boxed(PObj* sep, PObj* list) - two passes
+        (size, then copy) over the pyobj list; elements are pystr
+        boxes, never rawstr structs."""
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i64 = ir.IntType(64)
         i8p = ir.PointerType(ir.IntType(8))
         fn = ir.func_(
             self.module,
@@ -4477,21 +4505,63 @@ class TypedCodegen(SiluToLLVMConverter):
         entry = fn.append_basic_block("entry")
         b = ir.builder_(entry)
         sep_arg, list_arg = fn.args
-        sep_parts = self._pyobj_string_parts(
-            b, sep_arg,
-            ir.const_(ir.IntType(32), 0),
-            ir.const_(ir.IntType(32), 1),
+        zero32 = ir.const_(ir.IntType(32), 0)
+        one32 = ir.const_(ir.IntType(32), 1)
+        one64 = ir.const_(i64, 1)
+        sep_len_raw, sep_chars = self._pyobj_string_parts(
+            b, sep_arg, zero32, one32
         )
-        sep_len_raw, sep_chars = sep_parts
-        sep_len = b.sext(sep_len_raw, ir.IntType(64))
-        struct_ptr = self._load_list_struct(b, list_arg)
-        raw = b.call(
-            self.rawlist_str_join,
-            [
-                b.bitcast(struct_ptr, ir.PointerType(ir.IntType(8))),
-                sep_chars,
-            ],
+        sep_len = b.sext(sep_len_raw, i64)
+        struct_ptr, count, items = self._list_parts(b, fn, list_arg, "sjoin")
+        total_ptr = b.alloca(i64, None, "sjoin_total")
+        b.store(ir.const_(i64, 0), total_ptr)
+        i_ptr, cond, body, alloc_blk = self._for_i64_loop(
+            i64, b, fn, "sjoin_sz", ir.const_(i64, 0), count
         )
+        b.position_at_end(body)
+        i = b.load(i_ptr)
+        item = b.load(b.gep(items, [i]))
+        ilen_raw, _chars = self._pyobj_string_parts(b, item, zero32, one32)
+        ilen = b.sext(ilen_raw, i64)
+        not_last = b.icmp_signed("<", b.add(i, one64), count)
+        add_len = b.select(not_last, b.add(ilen, sep_len), ilen)
+        b.store(b.add(b.load(total_ptr), add_len), total_ptr)
+        self._close_i64_loop(b, i_ptr, cond, one64)
+        b.position_at_end(alloc_blk)
+        total = b.load(total_ptr)
+        buf = b.call(self.malloc, [total])
+        out_ptr = b.alloca(i8p, None, "sjoin_out")
+        b.store(buf, out_ptr)
+        i2_ptr, cond2, body2, done_blk = self._for_i64_loop(
+            i64, b, fn, "sjoin_cp", ir.const_(i64, 0), count
+        )
+        b.position_at_end(body2)
+        i2 = b.load(i2_ptr)
+        not_first = b.icmp_signed(">", i2, ir.const_(i64, 0))
+        out = b.load(out_ptr)
+        write_at = b.select(not_first, b.gep(out, [sep_len]), out)
+        sep_blk = fn.append_basic_block("sjoin_sep")
+        item_blk = fn.append_basic_block("sjoin_item")
+        b.cbranch(not_first, sep_blk, item_blk)
+        b.position_at_end(sep_blk)
+        b.call(
+            self.memcpy,
+            [out, sep_chars, sep_len, ir.const_(ir.IntType(1), 0)],
+        )
+        b.branch(item_blk)
+        b.position_at_end(item_blk)
+        item2 = b.load(b.gep(items, [i2]))
+        ilen2_raw, chars2 = self._pyobj_string_parts(b, item2, zero32, one32)
+        ilen2 = b.sext(ilen2_raw, i64)
+        b.call(
+            self.memcpy,
+            [write_at, chars2, ilen2, ir.const_(ir.IntType(1), 0)],
+        )
+        b.store(b.gep(write_at, [ilen2]), out_ptr)
+        self._close_i64_loop(b, i2_ptr, cond2, one64)
+        b.position_at_end(done_blk)
+        # out_ptr has advanced past the data; the buffer base is `buf`
+        raw = b.call(self.rawstr_new_copy, [buf, total])
         b.ret(b.call(self.rawstr_to_pystr, [raw]))
         self.str_join_boxed = fn
 
@@ -4571,8 +4641,8 @@ class TypedCodegen(SiluToLLVMConverter):
             return self.current_builder.call(self.create_float, [value])
         if kind == I1:
             return self.current_builder.call(self.create_bool, [value])
-        if kind == INSTANCE:
-            cls = self._inst_class.get(id(value))
+        if _is_inst(kind):
+            cls = _kind_cls(kind)
             if cls is not None and cls in self._class_ids:
                 cid = ir.const_(ir.IntType(64), self._class_ids[cls])
             else:
@@ -4614,12 +4684,45 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def _unbox(self, obj: Any, kind: str) -> Any:
         """PyObject* -> raw value of `kind` (panics on type mismatch)."""
-        if kind == INSTANCE:
-            # the None literal coercing to an instance is the null
-            # pointer - same model `x is None` already uses
-            return self.current_builder.bitcast(
-                obj, LLVM_KIND_TYPES[INSTANCE]
-            )
+        if _is_inst(kind):
+            # a tag-6 instance box unwraps to its instance pointer; a
+            # null (the None literal coercing to an instance) and any
+            # already-raw pointer pass through unchanged
+            b = self.current_builder
+            if self._unbox_inst_cache is None:
+                pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+                i8p = ir.PointerType(ir.IntType(8))
+                unwrap = ir.func_(
+                    self.module,
+                    ir.FunctionType(i8p, [pyobj_ptr], False),
+                    "pyobj_unwrap_instance",
+                )
+                self._unbox_inst_cache = unwrap
+                entry = unwrap.append_basic_block("entry")
+                cell_blk = unwrap.append_basic_block("ui_cell")
+                inst_blk = unwrap.append_basic_block("ui_inst")
+                raw_blk = unwrap.append_basic_block("ui_raw")
+                ub = ir.builder_(entry)
+                arg = unwrap.args[0]
+                is_null = ub.icmp_signed(
+                    "==", arg, ir.const_(pyobj_ptr, None)
+                )
+                ub.cbranch(is_null, raw_blk, cell_blk)
+                ub.position_at_end(cell_blk)
+                tag = ub.load(
+                    ub.gep(
+                        arg,
+                        [ir.const_(ir.IntType(32), 0),
+                         ir.const_(ir.IntType(32), 0)],
+                    )
+                )
+                is6 = ub.icmp_signed("==", tag, ir.const_(ir.IntType(32), 6))
+                ub.cbranch(is6, inst_blk, raw_blk)
+                ub.position_at_end(inst_blk)
+                ub.ret(ub.call(self.pyobj_instance_ptr, [arg]))
+                ub.position_at_end(raw_blk)
+                ub.ret(ub.bitcast(arg, i8p))
+            return b.call(self._unbox_inst_cache, [obj])
         if kind == RAWLIST_S:
             return self.current_builder.call(
                 self.pylist_to_rawlist_str, [obj]
@@ -4657,6 +4760,9 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, boxed)
         if target == OBJ:
             return (OBJ, self._box(tv))
+        if _is_inst(kind) and _is_inst(target):
+            # same representation; the classed side keeps its class
+            return tv
         if kind == RAWCHAR_VIEW:
             # a borrowed window coerces to an owned string (copy) or to
             # its i64 sequence length; anything else is a type error
@@ -4676,7 +4782,7 @@ class TypedCodegen(SiluToLLVMConverter):
             return (target, self._unbox(value, target))
         if kind == I1 and target == I64:
             return (I64, self.current_builder.zext(value, ir.IntType(64)))
-        if kind == I64 and target == INSTANCE:
+        if kind == I64 and _is_inst(target):
             # list[Token] element read: the stored word is the pointer
             return (
                 INSTANCE,
@@ -4684,7 +4790,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     value, LLVM_KIND_TYPES[INSTANCE]
                 ),
             )
-        if kind == INSTANCE and target == I64:
+        if _is_inst(kind) and target == I64:
             # list[Token] append path: the pointer rides as a word
             return (
                 I64,
@@ -4966,6 +5072,12 @@ class TypedCodegen(SiluToLLVMConverter):
     # ================== variables ==================
 
     def _declare_var(self, name: str, kind: str):
+        if kind == INSTANCE:
+            # a known class (bound before the declare by the caller)
+            # rides in the kind: every load then carries it to _box
+            cls = self._var_class.get(name)
+            if cls:
+                kind = _inst_kind(cls)
         current_kind = self.var_kinds.get(name)
         if name in self.variables:
             # inside a function, declaring a name that is a module-level
@@ -5000,16 +5112,18 @@ class TypedCodegen(SiluToLLVMConverter):
                 gv.initializer = ir.const_(
                     ir.PointerType(self.pyobj.pyobj_type), None
                 )
-            elif kind in RAW_STORAGE_KINDS:
+            elif kind in RAW_STORAGE_KINDS or _is_inst(kind):
                 gv = ir.gvar_(
                     self.module, ir.PointerType(ir.IntType(8)), name
                 )
                 gv.initializer = ir.const_(ir.PointerType(ir.IntType(8)), None)
             else:
                 gv = ir.gvar_(
-                    self.module, LLVM_KIND_TYPES[kind], name
+                    self.module, LLVM_KIND_TYPES[_kind_llvm_key(kind)], name
                 )
-                gv.initializer = ir.const_(LLVM_KIND_TYPES[kind], 0)
+                gv.initializer = ir.const_(
+                    LLVM_KIND_TYPES[_kind_llvm_key(kind)], 0
+                )
             self.variables[name] = gv
         else:
             # locals are always allocated in the entry block: an alloca
@@ -5019,8 +5133,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 ir.PointerType(self.pyobj.pyobj_type)
                 if kind == OBJ
                 else ir.PointerType(ir.IntType(8))
-                if kind in RAW_STORAGE_KINDS
-                else LLVM_KIND_TYPES[kind]
+                if kind in RAW_STORAGE_KINDS or _is_inst(kind)
+                else LLVM_KIND_TYPES[_kind_llvm_key(kind)]
             )
             # one builder, save/restore: two builders over one block
             # track insertion indices independently and corrupt order
@@ -6756,11 +6870,10 @@ class TypedCodegen(SiluToLLVMConverter):
         return b, cid, inst
 
     def _emit_dyn_attr_read(self, recv_tv, attr):
-        b, cid, inst = self._dyn_dispatch_head(recv_tv, "getattr")
+        b, cid, inst = self._dyn_dispatch_head(recv_tv, "getattr (attr " + attr + ")")
         func = self.current_function
         classes = self._dyn_member_classes(attr, False)
         merge = func.append_basic_block("ga_merge")
-        none_blk = func.append_basic_block("ga_none")
         phis = []
         entry = b.block
         for cls_name in classes:
@@ -6785,12 +6898,21 @@ class TypedCodegen(SiluToLLVMConverter):
                 value = b.load(slot)
                 if fkind is None:
                     fkind = OBJ
-                boxed = self._box((fkind, value))
+                if _is_inst(fkind) and _fc:
+                    # instance fields hold raw pointers; the declared
+                    # field class stamps the box's cid
+                    boxed = self._box((_inst_kind(_fc), value))
+                else:
+                    boxed = self._box((fkind, value))
                 b.branch(merge)
                 phis.append((boxed, b.block))
                 break
             entry = nxt
+        # no class matched: the receiver box lost its class (a cid=-1
+        # stamp) - fail loudly with the attr so the boxing site is
+        # findable from the .si line in the panic
         b.position_at_end(entry)
+        none_blk = func.append_basic_block("ga_none")
         b.branch(none_blk)
         b.position_at_end(none_blk)
         msg = self._create_global_string_with_builder(
@@ -6798,6 +6920,12 @@ class TypedCodegen(SiluToLLVMConverter):
         )
         self._emit_panic(b, msg)
         b.position_at_end(merge)
+        if not phis:
+            # no class carries the attr: the merge block is dead
+            return (
+                OBJ,
+                ir.const_(ir.PointerType(self.pyobj.pyobj_type), None),
+            )
         phi = b.phi(ir.PointerType(self.pyobj.pyobj_type))
         for val, blk in phis:
             phi.add_incoming(val, blk)
@@ -6879,21 +7007,25 @@ class TypedCodegen(SiluToLLVMConverter):
                 atv = self._convert_node(an)
                 arg_vals.append(self._box(atv))
             result = b.call(mfn, arg_vals, "")
-            b.branch(merge)
             ret_ty = _type_ret(mfn.ftype)
             if ret_ty is not None and str(ret_ty) != "void":
                 # treat every dynamic method result as a boxed value:
-                # instance returns (the dominant case) box with their
-                # class recorded via the method's inferred return class
-                ret_cls = None
-                if ret_cls is not None:
-                    self._inst_class[id(result)] = ret_cls
-                    boxed_res = self._box((INSTANCE, result))
-                else:
+                # a raw-ABI instance return (i8*) boxes with its class
+                # from the inferred return-class table; a PObj* return
+                # is already a box and passes through untouched. The
+                # boxing must precede the merge branch - _box emits
+                # instructions into the open body block.
+                if str(ret_ty) == "i8*":
+                    ret_cls = self._call_ret_class.get(mangled)
                     boxed_res = self._box(
-                        ("func:" + mangled, result)
-                    ) if str(ret_ty) == "i8*" else self._box((OBJ, result))
+                        (_inst_kind(ret_cls) if ret_cls else INSTANCE, result)
+                    )
+                else:
+                    boxed_res = self._box((OBJ, result))
+                b.branch(merge)
                 phis.append((boxed_res, b.block))
+            else:
+                b.branch(merge)
             entry = nxt
         b.position_at_end(entry)
         b.branch(none_blk)
@@ -6947,7 +7079,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 if kind is None:
                     return (OBJ, value)
                 if kind == INSTANCE and _fclass:
-                    self._inst_class[id(value)] = _fclass
+                    return (_inst_kind(_fclass), value)
                 return (kind, value)
         mangled = self._class_layouts[cls]["methods"].get(attr)
         if mangled is not None:
@@ -7070,8 +7202,7 @@ class TypedCodegen(SiluToLLVMConverter):
             self.current_builder.store(
                 value_tv[1], self._field_slot(inst_ptr, index, kind)
             )
-        self._inst_class[id(inst_ptr)] = class_name
-        return (INSTANCE, inst_ptr)
+        return (_inst_kind(class_name), inst_ptr)
 
     def _field_kind_of(self, obj_node: Any, attr: str) -> str:
         """The declared kind of a field (raises AttributeError if absent)."""
@@ -7170,7 +7301,11 @@ class TypedCodegen(SiluToLLVMConverter):
                         self._convert_node(arg_node), param_kinds[index + 1]
                     )[1]
                 )
-            return (ret_kind, self.current_builder.call(func, raw_args))
+            call = self.current_builder.call(func, raw_args)
+            if ret_kind == INSTANCE:
+                cls = self._call_ret_class.get(mangled)
+                return (_inst_kind(cls) if cls else INSTANCE, call)
+            return (ret_kind, call)
         func = self.functions[mangled]
         callee_def = self.function_defs[mangled]
         callee_kinds = (
@@ -7405,10 +7540,19 @@ class TypedCodegen(SiluToLLVMConverter):
         constructor of one same class - their call results then resolve
         class chains like elem(node, 1).s."""
 
-        def ctor_class_of(expr, depth, param_class):
+        def ctor_class_of(expr, depth, param_class, local_class=None):
             param_class = param_class or {}
+            local_class = local_class or {}
             if not isinstance(expr, (list, tuple)) or depth > 8:
                 return None
+            if (
+                isinstance(expr, (list, tuple))
+                and len(expr) >= 2
+                and expr[0] == "name"
+                and isinstance(expr[1], str)
+                and expr[1] in local_class
+            ):
+                return local_class[expr[1]]
             if (
                 isinstance(expr, (list, tuple))
                 and len(expr) >= 2
@@ -7427,7 +7571,7 @@ class TypedCodegen(SiluToLLVMConverter):
             ):
                 return expr[1][1]
             if len(expr) >= 3 and expr[0] == "subscript":
-                base_cls = ctor_class_of(expr[1], depth + 1, None)
+                base_cls = ctor_class_of(expr[1], depth + 1, None, local_class)
                 if base_cls is None:
                     # a list[Token] variable base
                     if (
@@ -7445,7 +7589,7 @@ class TypedCodegen(SiluToLLVMConverter):
                         return elem
                 return None
             if len(expr) >= 3 and expr[0] == "attribute":
-                base_cls = ctor_class_of(expr[1], depth + 1, None)
+                base_cls = ctor_class_of(expr[1], depth + 1, None, local_class)
                 if base_cls is None:
                     return None
                 for fname, fkind, _d, fclass in self._class_layouts[base_cls][
@@ -7503,10 +7647,40 @@ class TypedCodegen(SiluToLLVMConverter):
                     and ann[1] in self._class_layouts
                 ):
                     param_class[pname] = ann[1]
+            # locals bound to a constructor (`sc = Scope(...)`) give
+            # `return sc` the same class treatment as a direct return
+            # of the constructor call
+            local_binds: Dict[str, str] = {}
+
+            def collect_binds(stmts, sink):
+                for stmt in stmts if isinstance(stmts, (list, tuple)) else []:
+                    if not isinstance(stmt, (list, tuple)) or not stmt:
+                        continue
+                    if (
+                        stmt[0] == "assign"
+                        and isinstance(stmt[1], str)
+                        and isinstance(stmt[2], (list, tuple))
+                        and len(stmt[2]) >= 2
+                        and stmt[2][0] == "call"
+                        and isinstance(stmt[2][1], (list, tuple))
+                        and len(stmt[2][1]) >= 2
+                        and stmt[2][1][0] == "name"
+                        and stmt[2][1][1] in self._class_layouts
+                    ):
+                        sink[stmt[1]] = stmt[2][1][1]
+                    elif stmt[0] == "if" and len(stmt) >= 4:
+                        collect_binds(stmt[2], sink)
+                        collect_binds(stmt[3], sink)
+                    elif stmt[0] == "while" and len(stmt) >= 3:
+                        collect_binds(stmt[2], sink)
+                    elif stmt[0] == "for" and len(stmt) >= 4:
+                        collect_binds(stmt[3], sink)
+
+            collect_binds(func_def[3] if len(func_def) > 3 else [], local_binds)
             ctor: Optional[str] = None
             ok = True
             for expr in returns:
-                cls = ctor_class_of(expr, 0, param_class)
+                cls = ctor_class_of(expr, 0, param_class, local_binds)
                 if cls is None:
                     ok = False
                     break
@@ -7534,8 +7708,10 @@ class TypedCodegen(SiluToLLVMConverter):
             if ret_kind is not None and _all_non_obj(param_kinds):
                 param_types = []
                 for k in param_kinds:
-                    param_types.append(LLVM_KIND_TYPES[k])
-                func_ty = ir.FunctionType(LLVM_KIND_TYPES[ret_kind], param_types, False)
+                    param_types.append(LLVM_KIND_TYPES[_kind_llvm_key(k)])
+                func_ty = ir.FunctionType(
+                    LLVM_KIND_TYPES[_kind_llvm_key(ret_kind)], param_types, False
+                )
                 func = ir.func_(self.module, func_ty, func_name)
                 # module-private + inline hint: the recursive-descent
                 # clusters (parsers etc.) only pay off inlined
@@ -7660,6 +7836,26 @@ class TypedCodegen(SiluToLLVMConverter):
             # _declare_var allocates a fresh function-local slot
             self.variables.pop(param_name, None)
             self.var_kinds.pop(param_name, None)
+            if kind == INSTANCE:
+                # instance params carry their class (self via the
+                # method table, others via written annotations) so a
+                # later box stamps the right class id
+                ann = (
+                    param_annotations[index]
+                    if index < len(param_annotations) else None
+                )
+                pcls = None
+                if index == 0:
+                    pcls = self._method_class.get(func.name)
+                if pcls is None and (
+                    isinstance(ann, list)
+                    and len(ann) >= 2
+                    and ann[0] == "name"
+                    and ann[1] in self._class_layouts
+                ):
+                    pcls = ann[1]
+                if pcls:
+                    self._var_class[param_name] = pcls
             self._declare_var(param_name, kind)
             self.current_builder.store(func.args[index], self.variables[param_name])
 
@@ -7794,6 +7990,11 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                     self.current_builder.store(func.args[index], param_alloca)
                     self.variables[param_name] = param_alloca
+                    if kind == INSTANCE:
+                        # _var_class (bound above) classes the slot so
+                        # every load re-stamps the box's cid
+                        pcls = self._var_class.get(param_name)
+                        kind = _inst_kind(pcls) if pcls else INSTANCE
                     self.var_kinds[param_name] = kind
                     continue
                 param_alloca = self.current_builder.alloca(
@@ -8020,20 +8221,22 @@ class TypedCodegen(SiluToLLVMConverter):
                         value_node[2] if len(value_node) > 2 else [],
                         value_node[3] if len(value_node) > 3 else [],
                     )
-                    self._declare_var(target, INSTANCE)
                     self._var_class[target] = ctor_class
+                    self._declare_var(target, INSTANCE)
                     self.current_builder.store(inst[1], self.variables[target])
                     return inst
                 if (
                     isinstance(value_node, list)
                     and len(value_node) >= 2
                     and value_node[0] == "name"
-                    and self.var_kinds.get(value_node[1]) == INSTANCE
+                    and _is_inst(self.var_kinds.get(value_node[1]))
                 ):
                     # a = b: instances alias (Python reference semantics)
                     value = self._convert_node(value_node)
+                    src_cls = _kind_cls(self.var_kinds.get(value_node[1]))
+                    if src_cls:
+                        self._var_class[target] = src_cls
                     self._declare_var(target, INSTANCE)
-                    self._var_class[target] = self._var_class[value_node[1]]
                     self.current_builder.store(value[1], self.variables[target])
                     return value
                 if (
@@ -8044,8 +8247,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 ):
                     # a = b.inner: aliasing an instance field
                     value = self._convert_node(value_node)
-                    self._declare_var(target, INSTANCE)
                     self._var_class[target] = self._class_of_node(value_node)
+                    self._declare_var(target, INSTANCE)
                     self.current_builder.store(value[1], self.variables[target])
                     return value
             if op == "ann_assign":
@@ -8244,12 +8447,13 @@ class TypedCodegen(SiluToLLVMConverter):
                 return (annotation_kind, raw_ptr)
             value = self._convert_node(value_node)
             if isinstance(target, str) and value[1] is not None:
-                if value[0] == INSTANCE and annotation_kind in (None, OBJ):
+                if _is_inst(value[0]) and annotation_kind in (None, OBJ):
                     # an unannotated name bound to an instance: declare it
                     # INSTANCE and record the class (t = self.cur())
                     ctor = self._constructor_call_class(value_node)
                     cls = (
                         ctor
+                        or _kind_cls(value[0])
                         or self._call_ret_class.get(
                             value_node[1][1]
                             if (
@@ -8264,9 +8468,9 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
                         or self._class_of_node(value_node)
                     )
-                    self._declare_var(target, INSTANCE)
-                    if cls is not None:
+                    if cls:
                         self._var_class[target] = cls
+                    self._declare_var(target, INSTANCE)
                     self.current_builder.store(value[1], self.variables[target])
                     return value
                 if annotation_kind == RAWSTR and value[0] == RAWSTR:
@@ -8554,7 +8758,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 return self._to_i1_cond(tv)
 
             def is_null(tv):
-                if tv[0] == INSTANCE:
+                if _is_inst(tv[0]):
                     return self.current_builder.icmp_signed(
                         "==",
                         tv[1],
@@ -8594,18 +8798,18 @@ class TypedCodegen(SiluToLLVMConverter):
                 and isinstance(node[1][1], bool)
             ):
                 result = self._is_bool_singleton(right, node[1][1])
-            elif left[0] == INSTANCE and right[0] == INSTANCE:
+            elif _is_inst(left[0]) and _is_inst(right[0]):
                 result = self.current_builder.icmp_signed("==", left[1], right[1])
-            elif (left[0] in (OBJ, None, INSTANCE)
-                    and right[0] in (OBJ, None, INSTANCE)):
+            elif ((left[0] in (OBJ, None) or _is_inst(left[0]))
+                    and (right[0] in (OBJ, None) or _is_inst(right[0]))):
                 # identity on boxed/instance values: compare the
                 # underlying pointers (instances ARE their pointers;
                 # boxes carry addresses)
                 lhs = left[1]
                 rhs = right[1]
-                if left[0] == INSTANCE:
+                if _is_inst(left[0]):
                     lhs = self._box(left)
-                if right[0] == INSTANCE:
+                if _is_inst(right[0]):
                     rhs = self._box(right)
                 result = self.current_builder.icmp_signed("==", lhs, rhs)
             elif left[0] == I64 and right[0] == I64:
@@ -8659,7 +8863,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 else (F64 if F64 in (then_val[0], else_val[0]) else OBJ)
             )
             phi_type = (
-                LLVM_KIND_TYPES[common]
+                LLVM_KIND_TYPES[_kind_llvm_key(common)]
                 if common != OBJ
                 else ir.PointerType(self.pyobj.pyobj_type)
             )
@@ -8938,6 +9142,49 @@ class TypedCodegen(SiluToLLVMConverter):
                             val_bits, ir.DoubleType()
                         )
                     return (value_kind, val_bits)
+                if (
+                    isinstance(node[2], (list, tuple))
+                    and len(node[2]) >= 4
+                    and node[2][0] == "slice"
+                    and (obj_tv[0] == OBJ or obj_tv[0] is None)
+                ):
+                    # xs[lo:hi:step] on a dynamic container: the tag
+                    # dispatch helper (str twin keeps its fast path
+                    # above; rawstr/rawlist have their own)
+                    lower_node, upper_node, step_node = (
+                        node[2][1], node[2][2], node[2][3],
+                    )
+                    i64t = ir.IntType(64)
+                    has_lo = ir.const_(ir.IntType(1), lower_node is not None)
+                    has_hi = ir.const_(ir.IntType(1), upper_node is not None)
+                    lo = (
+                        ir.const_(i64t, 0)
+                        if lower_node is None
+                        else self._coerce(
+                            self._convert_node(lower_node), I64
+                        )[1]
+                    )
+                    hi = (
+                        ir.const_(i64t, 0)
+                        if upper_node is None
+                        else self._coerce(
+                            self._convert_node(upper_node), I64
+                        )[1]
+                    )
+                    step = (
+                        ir.const_(i64t, 1)
+                        if step_node is None
+                        else self._coerce(
+                            self._convert_node(step_node), I64
+                        )[1]
+                    )
+                    return (
+                        OBJ,
+                        self.current_builder.call(
+                            self.pyobj_slice_any,
+                            [self._box(obj_tv), lo, hi, step, has_lo, has_hi],
+                        ),
+                    )
                 key_tv = self._convert_node(node[2])
                 if obj_tv[0] == RAWLIST_S:
                     # element read hands the caller its own copy (slots
@@ -9713,10 +9960,12 @@ class TypedCodegen(SiluToLLVMConverter):
                 self._store_rawstr(var_name, copy)
             elif elem_kind == INSTANCE:
                 # list[Instance]: the word is the pointer - inttoptr
-                self._declare_var(var_name, INSTANCE)
-                self._var_class[var_name] = self._list_elem_class.get(
+                elem_cls = self._list_elem_class.get(
                     self._current_for_iter_name or "", ""
                 ) or self._var_class.get(var_name)
+                if elem_cls:
+                    self._var_class[var_name] = elem_cls
+                self._declare_var(var_name, INSTANCE)
                 self.current_builder.store(
                     self.current_builder.inttoptr(
                         element, LLVM_KIND_TYPES[INSTANCE]
@@ -10367,7 +10616,7 @@ class TypedCodegen(SiluToLLVMConverter):
             method_name = func_node[2]
             raw_obj_tv = self._convert_node(func_node[1])
             raw_kind = raw_obj_tv[0]
-            if raw_kind == INSTANCE:
+            if _is_inst(raw_kind):
                 return self._emit_method_call(
                     func_node[1], method_name, args_node
                 )
@@ -10377,7 +10626,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 list_ptr = raw_obj_tv[1]
                 if method_name == "append" and args_node:
                     arg_tv = self._convert_node(args_node[0])
-                    if arg_tv[0] == INSTANCE:
+                    if _is_inst(arg_tv[0]):
                         # instance elements ride the list as raw pointers
                         self.current_builder.call(
                             self.rawlist_push,
@@ -10662,7 +10911,11 @@ class TypedCodegen(SiluToLLVMConverter):
                         raw_args.append(self._box(arg_tv))
                     else:
                         raw_args.append(self._coerce(arg_tv, kind)[1])
-                return (ret_kind, self.current_builder.call(fn, raw_args))
+                call = self.current_builder.call(fn, raw_args)
+                if ret_kind == INSTANCE:
+                    cls = self._call_ret_class.get(mangled)
+                    return (_inst_kind(cls) if cls else INSTANCE, call)
+                return (ret_kind, call)
 
             if func_name == "print":
                 kwargs = node[3] if len(node) > 3 else []
@@ -11043,7 +11296,12 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                     raw_args.append(self._coerce(self._convert_node(arg_node), kind)[1])
                 if len(raw_args) == len(param_kinds):
-                    return (ret_kind, self.current_builder.call(func, raw_args))
+                    call = self.current_builder.call(func, raw_args)
+                    if ret_kind == INSTANCE:
+                        # instance returns carry their class into the box
+                        cls = self._call_ret_class.get(func_name)
+                        return (_inst_kind(cls) if cls else INSTANCE, call)
+                    return (ret_kind, call)
                 return (
                     ret_kind,
                     ir.const_(
