@@ -7513,6 +7513,9 @@ class TypedCodegen(SiluToLLVMConverter):
         # eligibility must be structural (not str()-based): under the
         # Silu interpreter the twin's TypeInfo instances str() to their
         # repr, and the text comparison would never match
+        self._twin_is_pyobj = self.pyobj.pyobj_type
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+
         def _is_pyobj_ptr(t):
             if t is self.pyobj.pyobj_type:
                 return True

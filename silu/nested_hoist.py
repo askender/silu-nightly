@@ -33,6 +33,7 @@ _BUILTIN_NAMES = {
     "min", "max", "abs", "input", "enumerate", "isinstance",
     "read_stdin", "read_file", "ord", "chr", "repr", "tuple", "list",
     "dict", "set", "type", "sorted", "zip", "map", "sum", "any", "all",
+    "getattr", "setattr", "hasattr", "bytes", "bytearray", "id",
 }
 
 
