@@ -242,13 +242,13 @@ class TestSiluInterpreter:
         with pytest.raises(ZeroDivisionError, match=error_msg):
             interpreter.visit_BinOp(node)
 
-    def test_visit_binop_unsupported(self):
+    def test_visit_binop_bitwise(self):
         interpreter = SiluInterpreter()
-        left = ast.Constant(value=5)
-        right = ast.Constant(value=3)
-        node = ast.BinOp(left=left, op=ast.LShift(), right=right)
-        with pytest.raises(NotImplementedError, match="Unsupported operator: LShift"):
-            interpreter.visit_BinOp(node)
+        node = ast.BinOp(
+            left=ast.Constant(value=5), op=ast.BitOr(),
+            right=ast.Constant(value=3),
+        )
+        assert interpreter.visit_BinOp(node) == 7
 
     @pytest.mark.parametrize(
         "op,operand,expected",
@@ -327,10 +327,10 @@ class TestSiluInterpreter:
     def test_visit_compare_errors(self):
         interpreter = SiluInterpreter()
         left = ast.Constant(value=5)
-        ops = [ast.BitAnd()]  # Unsupported operator
+        ops = [ast.BitAnd()]  # bitwise is not a comparison operator
         comparators = [ast.Constant(value=3)]
         node = ast.Compare(left=left, ops=ops, comparators=comparators)
-        with pytest.raises(NotImplementedError, match="Unsupported operator: BitAnd"):
+        with pytest.raises(NotImplementedError):
             interpreter.visit_Compare(node)
 
         # Test division by zero in comparison

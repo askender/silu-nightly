@@ -84,6 +84,53 @@ def _calls_one_of(node, names):
     return any(_calls_one_of(c, names) for c in node if isinstance(c, (list, tuple)))
 
 
+def _collect_locals(node, out):
+    """Names assigned within a function body: assign/ann_assign/
+    aug_assign targets (bare strings), for-loop targets, and nested
+    def names. These are the function's own locals, never captures."""
+    if not isinstance(node, (list, tuple)):
+        return
+    if len(node) >= 2 and isinstance(node[0], str):
+        op = node[0]
+        if op in ("assign", "ann_assign", "aug_assign") and isinstance(node[1], str):
+            out.add(node[1])
+        elif op == "tuple_assign" and len(node) >= 2:
+            for target in node[1]:
+                if isinstance(target, str):
+                    out.add(target)
+                elif (
+                    isinstance(target, (list, tuple))
+                    and len(target) >= 2
+                    and target[0] == "name"
+                    and isinstance(target[1], str)
+                ):
+                    out.add(target[1])
+        elif op in ("for", "c_for") and len(node) >= 4:
+            target = node[1]
+            if isinstance(target, str):
+                out.add(target)
+            elif (
+                isinstance(target, (list, tuple))
+                and len(target) == 2
+                and target[0] == "name"
+                and isinstance(target[1], str)
+            ):
+                out.add(target[1])
+            elif (
+                isinstance(target, (list, tuple))
+                and len(target) >= 2
+                and target[0] == "tuple_unpack"
+            ):
+                for name in target[1]:
+                    out.add(name)
+        elif op == "func_def":
+            out.add(node[1])
+            return
+    for c in node:
+        if isinstance(c, (list, tuple)):
+            _collect_locals(c, out)
+
+
 def _free_names(node, out):
     if not isinstance(node, (list, tuple)):
         return
@@ -191,10 +238,12 @@ def _hoist_def(func_def, cls_name, is_method, global_names, extra):
             )
         else:
             h = h[0:3] + (body2,) + h[4:]
-        # capture check: free names must be globals, params, self, or
-        # sibling hoisted names within the same group (calls already
-        # renamed to mangled names)
-        bound = set(h[2]) | {"self"} | {g[1] for g in group.hoisted}
+        # capture check: free names must be globals, params, the
+        # function's own locals, self, or sibling hoisted names within
+        # the same group (calls already renamed to mangled names)
+        own_locals = set()
+        _collect_locals(h[3], own_locals)
+        bound = set(h[2]) | own_locals | {"self"} | {g[1] for g in group.hoisted}
         free = set()
         _free_names(h[3], free)
         bad = free - bound - global_names

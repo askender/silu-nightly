@@ -318,6 +318,9 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def __init__(self):
         super().__init__()
+        # OBJ kind's LLVM type is per-module (the PyObject struct
+        # pointer); register it once the runtime layout exists
+        LLVM_KIND_TYPES[OBJ] = ir.PointerType(self.pyobj.pyobj_type)
         self._char_idxerr = None
         self._module_kinds = set()
         self._module_vars: set = set()
@@ -718,21 +721,9 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
 
-        def panic_string(data: bytes, label: str) -> ir.GlobalVariable:
-            gv = ir.gvar_(
-                self.module,
-                ir.ArrayType(ir.IntType(8), len(data)), label,
-
-            )
-            gv.global_constant = True
-            gv.initializer = ir.const_(
-                ir.ArrayType(ir.IntType(8), len(data)), bytearray(data)
-            )
-            return gv
-
-        self._key_error_msg = panic_string(b"KeyError: key not found\0", "str_keyerr")
+        self._key_error_msg = self._panic_string(b"KeyError: key not found\0", "str_keyerr")
         key_error_msg = self._key_error_msg
-        str_index_error_msg = panic_string(
+        str_index_error_msg = self._panic_string(
             b"IndexError: string index out of range\0", "str_idxerr"
         )
 
@@ -1245,7 +1236,7 @@ class TypedCodegen(SiluToLLVMConverter):
 
 
 
-        type_error_msg = panic_string(
+        type_error_msg = self._panic_string(
             b"TypeError: expected str\0", "str_typeerr"
         )
 
@@ -4532,6 +4523,8 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def _coerce(self, tv: Tuple[str, Any], target: str) -> Tuple[str, Any]:
         """Convert a TypedValue to the target kind."""
+        if target is None:
+            target = OBJ  # `object`-annotated dynamic slot
         kind, value = tv
         if kind == target:
             if kind == RAWSTR:
@@ -4779,7 +4772,7 @@ class TypedCodegen(SiluToLLVMConverter):
             tags.update(self._ISINSTANCE_TAGS.get(name, ()))
         if not tags:
             raise NotImplementedError(
-                f"isinstance type must be builtin names, got {names!r}"
+                "isinstance type must be builtin names, got " + repr(names)
             )
 
         kind = self._convert_node(value_node)
@@ -5017,14 +5010,15 @@ class TypedCodegen(SiluToLLVMConverter):
         for entry in self._char_aliases.values():
             parent_names.add(entry[0])
 
-        def contains_call(node):
-            if isinstance(node, (list, tuple)):
-                if len(node) >= 2 and node[0] == "call":
+        def contains_call(cc_node):
+            if isinstance(cc_node, (list, tuple)):
+                if len(cc_node) >= 2 and cc_node[0] == "call":
                     return True
-                for child in node[1:]:
-                    if contains_call(child):
-                        return True
-                return False
+                cc_found = False
+                for cc_child in cc_node[1:]:
+                    if contains_call(cc_child):
+                        cc_found = True
+                return cc_found
             return False
 
         if op == "call" or (
@@ -5161,6 +5155,11 @@ class TypedCodegen(SiluToLLVMConverter):
                 "/": self.pyobj_truediv,
                 "//": self.pyobj_floordiv,
                 "%": self.pyobj_mod,
+                "|": self.pyobj_bitor,
+                "&": self.pyobj_bitand,
+                "^": self.pyobj_bitxor,
+                "<<": self.pyobj_shl,
+                ">>": self.pyobj_shr,
             }[op]
             result = self.current_builder.call(runtime, [l_obj, r_obj])
             return (OBJ, result)
@@ -5223,6 +5222,16 @@ class TypedCodegen(SiluToLLVMConverter):
         l_kind, l_val = __ptup[0]
         r_kind, r_val = __ptup[1]
         i64 = ir.IntType(64)
+        if op == "|":
+            return (I64, self.current_builder.or_(l_val, r_val, ""))
+        if op == "&":
+            return (I64, self.current_builder.and_(l_val, r_val, ""))
+        if op == "^":
+            return (I64, self.current_builder.xor(l_val, r_val, ""))
+        if op == "<<":
+            return (I64, self.current_builder.shl(l_val, r_val, ""))
+        if op == ">>":
+            return (I64, self.current_builder.ashr(l_val, r_val, ""))
         if op == "+":
             if not self.checks:
                 return (I64, self.current_builder.add(l_val, r_val))
@@ -5276,10 +5285,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 result = ir.const_(i64, 1)
                 base = left[1]
                 while exp > 0:
-                    if exp & 1:
+                    if exp % 2 == 1:
                         pair = builder.call(self.smul_overflow, [result, base])
                         result = self._overflow_checked(pair, "mul")
-                    exp >>= 1
+                    exp = exp // 2
                     if exp:
                         pair = builder.call(self.smul_overflow, [base, base])
                         base = self._overflow_checked(pair, "mul")
@@ -5862,6 +5871,10 @@ class TypedCodegen(SiluToLLVMConverter):
             and node[0] == "name"
             and isinstance(node[1], str)
         ):
+            if node[1] in ("object", "dict", "list", "tuple", "set"):
+                # generic dynamic slot (the flatten script's `object`,
+                # or a bare container name in the llvmlite twin)
+                return None
             if ANNOTATION_KINDS.get(node[1]) is not None:
                 return ANNOTATION_KINDS[node[1]]
             if node[1] == "str":
@@ -6280,7 +6293,14 @@ class TypedCodegen(SiluToLLVMConverter):
             if op == "ann_assign" and len(stmt) >= 4:
                 field_name, default_node, annotation = stmt[1], stmt[2], stmt[3]
                 kind = self._annotation_kind(annotation)
-                if kind is None:
+                is_generic = (
+                    isinstance(annotation, list)
+                    and len(annotation) >= 2
+                    and annotation[0] == "name"
+                    and annotation[1]
+                    in ("object", "dict", "list", "tuple", "set")
+                )
+                if kind is None and not is_generic:
                     raise NotImplementedError(
                         f"class '{name}': unsupported field type for "
                         f"'{field_name}'"
@@ -6354,6 +6374,8 @@ class TypedCodegen(SiluToLLVMConverter):
                     f"class '{name}': fields must be annotated "
                     "(class variables are not supported)"
                 )
+            elif op == "pass":
+                pass
             else:
                 raise TypeError(
                     f"class '{name}': unsupported statement '{op}' in class body"
@@ -6465,6 +6487,10 @@ class TypedCodegen(SiluToLLVMConverter):
 
     def _field_slot(self, inst_ptr: Any, index: int, kind: str):
         """Address of field `index` in an instance block (8-byte slots)."""
+        if kind is None:
+            kind = OBJ
+        if kind not in LLVM_KIND_TYPES:
+            kind = OBJ
         raw = self.current_builder.gep(
             inst_ptr, [ir.const_(ir.IntType(64), index * 8)]
         )
@@ -6969,8 +6995,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 # any container field holding instances records its
                 # element class; try each container field name
                 for __ftup, elem in self._field_elem_class.items():
-                    cls_name, fname = __ftup
-                    if cls_name == base_cls:
+                    ctor_cls, ctor_fname = __ftup
+                    if ctor_cls == base_cls:
                         return elem
                 return None
             if len(expr) >= 3 and expr[0] == "attribute":
@@ -7995,7 +8021,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 self._convert_node(node[1]), self._convert_node(node[2])
             )
 
-        if op in ("+", "-", "*", "/", "//", "%") and len(node) >= 3:
+        if (
+            op in ("+", "-", "*", "/", "//", "%", "|", "&", "^", "<<", ">>")
+            and len(node) >= 3
+        ):
             left = self._convert_node(node[1])
             right = self._convert_node(node[2])
             if op == "+" and left[0] != RAWSTR and right[0] != RAWSTR:

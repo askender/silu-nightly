@@ -224,16 +224,16 @@ def _escape_str(s):
         if cp < 0x80:
             out += _escape_byte_val(cp)
         elif cp < 0x800:
-            out += _escape_byte_val(0xC0 | (cp >> 6))
+            out += _escape_byte_val(0xC0 | (cp // 64))
             out += _escape_byte_val(0x80 | (cp & 0x3F))
         elif cp < 0x10000:
-            out += _escape_byte_val(0xE0 | (cp >> 12))
-            out += _escape_byte_val(0x80 | ((cp >> 6) & 0x3F))
+            out += _escape_byte_val(0xE0 | (cp // 4096))
+            out += _escape_byte_val(0x80 | ((cp // 64) & 0x3F))
             out += _escape_byte_val(0x80 | (cp & 0x3F))
         else:
-            out += _escape_byte_val(0xF0 | (cp >> 18))
-            out += _escape_byte_val(0x80 | ((cp >> 12) & 0x3F))
-            out += _escape_byte_val(0x80 | ((cp >> 6) & 0x3F))
+            out += _escape_byte_val(0xF0 | (cp // 262144))
+            out += _escape_byte_val(0x80 | ((cp // 4096) & 0x3F))
+            out += _escape_byte_val(0x80 | ((cp // 64) & 0x3F))
             out += _escape_byte_val(0x80 | (cp & 0x3F))
     return out
 

@@ -795,9 +795,30 @@ class Parser:
         return left
 
     def parse_bitor(self) -> object:
-        left = self.parse_add()
+        left = self.parse_bitxor()
         while self.accept("|"):
-            left = ["|", left, self.parse_add()]
+            left = ["|", left, self.parse_bitxor()]
+        return left
+
+    def parse_bitxor(self) -> object:
+        left = self.parse_bitand()
+        while self.accept("^"):
+            left = ["^", left, self.parse_bitand()]
+        return left
+
+    def parse_bitand(self) -> object:
+        left = self.parse_shift()
+        while self.accept("&"):
+            left = ["&", left, self.parse_shift()]
+        return left
+
+    def parse_shift(self) -> object:
+        left = self.parse_add()
+        while self.cur().kind == TokKind.OP and (
+            self.cur().text == "<<" or self.cur().text == ">>"
+        ):
+            op = self.nxt().text
+            left = [op, left, self.parse_add()]
         return left
 
     def parse_add(self) -> object:

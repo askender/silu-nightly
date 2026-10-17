@@ -157,3 +157,35 @@ def test_si_converter_interpreter_parity():
             )
             assert silu.returncode == 0, (program, silu.stderr[-300:])
             assert silu.stdout == open(os.path.join(td, "ref.ll")).read(), program
+
+
+BITWISE_PROGRAMS = [
+    ("print(0xC0 | 5)\nprint(0xFF & 0x0F)\n", "197\n15\n"),
+    ("print(5 ^ 3)\nprint(1 << 10)\nprint(1024 >> 3)\n", "6\n1024\n128\n"),
+    (
+        "def mix(a, b):\n"
+        "    return (a | b) & (a ^ b)\n\n"
+        "print(mix(12, 10))\n",
+        str((12 | 10) & (12 ^ 10)) + "\n",
+    ),
+]
+
+
+@pytest.mark.parametrize("src,want", BITWISE_PROGRAMS)
+def test_bitwise_typed_build(src, want, tmp_path):
+    p = tmp_path / "b.si"
+    p.write_text(src)
+    b = subprocess.run(
+        [sys.executable, "-m", "silu", "build", str(p),
+         "-o", str(tmp_path / "b")],
+        capture_output=True, text=True, cwd=REPO, timeout=300,
+    )
+    assert b.returncode == 0, b.stderr
+    r = subprocess.run([str(tmp_path / "b")], capture_output=True, text=True)
+    assert r.stdout == want
+
+
+@pytest.mark.parametrize("src,want", BITWISE_PROGRAMS)
+def test_bitwise_cpython(src, want):
+    r = subprocess.run([sys.executable, "-c", src], capture_output=True, text=True)
+    assert r.stdout == want

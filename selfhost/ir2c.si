@@ -678,6 +678,11 @@ class Gen:
                 return te("str_add(" + a.text + ", " + b.text + ")", "str")
             if t == "%" and a.ty == "str":
                 return te("str_mod(" + a.text + ", " + b.text + ")", "str")
+            if t == "|" or t == "&" or t == "^" or t == "<<" or t == ">>":
+                cop: str = t
+                if t == "<<":
+                    cop = "<<"
+                return te("(" + a.text + " " + cop + " " + b.text + ")", "int")
             if t == "**":
                 if a.ty == "float" or b.ty == "float":
                     fa: str = a.text

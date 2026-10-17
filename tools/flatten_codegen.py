@@ -288,9 +288,45 @@ def si_main():
             # kw_defaults holds None for unset keyword defaults, which
             # generic_visit would choke on
             node.args.kw_defaults = []
+            prefix = node.name
             self.generic_visit(node)
             node.body = self._strip_doc(node.body)
             node.returns = None
+            # rewrite self-capturing lambdas into nested defs
+            new_body = []
+            lam_defs = []
+
+            class LamRewriter(A.NodeTransformer):
+                def __init__(s):
+                    s.n = 0
+
+                def visit_Lambda(s, lam):
+                    src_txt = A.unparse(lam)
+                    if "self." not in src_txt and "self " not in src_txt \
+                            and "self)" not in src_txt and "self," not in src_txt:
+                        return lam
+                    s.n += 1
+                    name = f"__lam_{prefix}_{s.n}"
+                    params = [a.arg for a in lam.args.args]
+                    lam_defs.append(A.FunctionDef(
+                        name=name,
+                        args=A.arguments(
+                            posonlyargs=[],
+                            args=[A.arg(arg=p) for p in params],
+                            vararg=None, kwonlyargs=[],
+                            kw_defaults=[], kwarg=None, defaults=[],
+                        ),
+                        body=[A.Return(value=lam.body)],
+                        decorator_list=[], returns=None, type_params=[],
+                    ))
+                    return A.copy_location(
+                        A.Name(id=name, ctx=A.Load()), lam)
+
+            rw = LamRewriter()
+            for st in node.body:
+                new_body.append(rw.visit(st))
+            if lam_defs:
+                node.body = lam_defs + new_body
             for a in node.args.args + node.args.kwonlyargs:
                 a.annotation = None
             if node.args.vararg:

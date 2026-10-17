@@ -782,6 +782,28 @@ class SiluToLLVMConverter:
             True,
             False,
         )
+        # bitwise ops on int/bool PyObjects (float operands fall to the
+        # error path - bitwise on floats is a type error)
+        self.pyobj_bitor = self._create_numeric_binary_function(
+            "bitor", lambda b, l, r: b.or_(l, r, ""), False,
+            None, False, False,
+        )
+        self.pyobj_bitand = self._create_numeric_binary_function(
+            "bitand", lambda b, l, r: b.and_(l, r, ""), False,
+            None, False, False,
+        )
+        self.pyobj_bitxor = self._create_numeric_binary_function(
+            "bitxor", lambda b, l, r: b.xor(l, r, ""), False,
+            None, False, False,
+        )
+        self.pyobj_shl = self._create_numeric_binary_function(
+            "shl", lambda b, l, r: b.shl(l, r, ""), False,
+            None, False, False,
+        )
+        self.pyobj_shr = self._create_numeric_binary_function(
+            "shr", lambda b, l, r: b.ashr(l, r, ""), False,
+            None, False, False,
+        )
 
         # Create print function for PyObjects
         self._create_pyobj_print()
@@ -832,6 +854,18 @@ class SiluToLLVMConverter:
         return builder.select(adjust, builder.fadd(remainder, right_val), remainder)
 
 
+
+    def _panic_string(self, data, label):
+        gv = ir.gvar_(
+            self.module,
+            ir.ArrayType(ir.IntType(8), len(data)), label,
+
+        )
+        gv.global_constant = True
+        gv.initializer = ir.const_(
+            ir.ArrayType(ir.IntType(8), len(data)), bytearray(data)
+        )
+        return gv
 
     def _pyobj_string_parts(self, builder, obj, zero32, one32):
         data_ptr = builder.gep(obj, [zero32, one32])
@@ -3550,30 +3584,39 @@ class SiluToLLVMConverter:
 
         if int_apply is None:
             builder.branch(float_op_block)
+        elif float_apply is False:
+            # int-only operation (bitwise): float operands are a type
+            # error, routed straight to the error block
+            builder.cbranch(either_float, error_block, int_op_block)
         else:
             builder.cbranch(either_float, float_op_block, int_op_block)
 
         builder.position_at_end(float_op_block)
-        left_f64 = self._load_number_as_f64(builder, left)
-        right_f64 = self._load_number_as_f64(builder, right)
-        if zero_check:
-            float_is_zero = builder.fcmp_ordered(
-                "==", right_f64, ir.const_(ir.DoubleType(), 0.0)
-            )
-            fbad_block = func.append_basic_block("float_zero")
-            fok_block = func.append_basic_block("float_ok")
-            builder.cbranch(float_is_zero, fbad_block, fok_block)
+        if float_apply is False:
+            # int-only op: the float_op block stays unreachable (the
+            # num_check routes floats to the error block); terminate it
+            # to keep the block well-formed
+            builder.unreachable()
+        else:
+            left_f64 = self._load_number_as_f64(builder, left)
+            right_f64 = self._load_number_as_f64(builder, right)
+            if zero_check:
+                float_is_zero = builder.fcmp_ordered(
+                    "==", right_f64, ir.const_(ir.DoubleType(), 0.0)
+                )
+                fbad_block = func.append_basic_block("float_zero")
+                fok_block = func.append_basic_block("float_ok")
+                builder.cbranch(float_is_zero, fbad_block, fok_block)
 
-            builder.position_at_end(fbad_block)
-            fmsg = self._create_global_string_with_builder(
-                "ZeroDivisionError: division by zero", builder
-            )
-            self._emit_panic(builder, fmsg)
-            builder.position_at_end(fok_block)
+                builder.position_at_end(fbad_block)
+                fmsg = self._create_global_string_with_builder(
+                    "ZeroDivisionError: division by zero", builder
+                )
+                self._emit_panic(builder, fmsg)
+                builder.position_at_end(fok_block)
 
-        float_result = float_apply(builder, left_f64, right_f64)
-        builder.ret(builder.call(self.create_float, [float_result]))
-
+            float_result = float_apply(builder, left_f64, right_f64)
+            builder.ret(builder.call(self.create_float, [float_result]))
         if int_apply is not None:
             builder.position_at_end(int_op_block)
             left_i64 = self._load_number_as_i64(builder, left)

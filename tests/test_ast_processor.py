@@ -280,13 +280,15 @@ class TestBaseASTProcessor:
         assert processor._get_operator(ast.Gt()) == ">"
         assert processor._get_operator(ast.GtE()) == ">="
 
-    def test_get_operator_unsupported(self):
-        """Test getting unsupported operators."""
+    def test_get_operator_bitwise(self):
+        """Bitwise operators map to their IR spellings."""
         processor = MockASTProcessor()
 
-        # Test unsupported operator
-        with pytest.raises(NotImplementedError, match="Unsupported operator: LShift"):
-            processor._get_operator(ast.LShift())
+        assert processor._get_operator(ast.BitOr()) == "|"
+        assert processor._get_operator(ast.BitAnd()) == "&"
+        assert processor._get_operator(ast.BitXor()) == "^"
+        assert processor._get_operator(ast.LShift()) == "<<"
+        assert processor._get_operator(ast.RShift()) == ">>"
 
     def test_visit_call_builtin(self):
         """Test visiting a function call node with built-in function."""

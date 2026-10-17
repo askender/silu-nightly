@@ -459,6 +459,11 @@ class SiluInterpreter(BaseASTProcessor):
             "/": lambda left, r: left / r,
             "//": lambda left, r: left // r,
             "%": lambda left, r: left % r,
+            "|": lambda left, r: left | r,
+            "&": lambda left, r: left & r,
+            "^": lambda left, r: left ^ r,
+            "<<": lambda left, r: left << r,
+            ">>": lambda left, r: left >> r,
             "**": lambda left, r: left**r,
         }
         comp_ops = {
@@ -647,6 +652,8 @@ class SiluInterpreter(BaseASTProcessor):
                         "(class variables are not supported)"
                     )
                 elif isinstance(stmt, ast.Pass):
+                    pass
+                elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
                     pass
                 else:
                     raise TypeError(

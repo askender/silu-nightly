@@ -28,6 +28,12 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
         ast.FloorDiv: "//",
         ast.Mod: "%",
         ast.Pow: "**",
+        # Bitwise operators
+        ast.BitOr: "|",
+        ast.BitAnd: "&",
+        ast.BitXor: "^",
+        ast.LShift: "<<",
+        ast.RShift: ">>",
         # Unary operators
         ast.UAdd: "+",
         ast.USub: "-",
