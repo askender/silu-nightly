@@ -2055,7 +2055,23 @@ class SiluToLLVMConverter:
         builder.ret(same_chars)
 
         builder.position_at_end(list_check_block)
-        builder.cbranch(is_list_tag, list_body_block, false_block)
+        # tag-6 instance boxes: identity on the carried instance
+        is_inst_tag = builder.icmp_signed("==", tag_a, ir.const_(i32, 6))
+        inst_body_block = self.pyobj_deep_eq.append_basic_block("inst_body")
+        inst_gate_block = self.pyobj_deep_eq.append_basic_block("inst_gate")
+        builder.cbranch(is_list_tag, list_body_block, inst_gate_block)
+
+        builder.position_at_end(inst_gate_block)
+        builder.cbranch(is_inst_tag, inst_body_block, false_block)
+
+        builder.position_at_end(inst_body_block)
+        builder.ret(
+            builder.icmp_signed(
+                "==",
+                builder.call(self.pyobj_instance_ptr, [arg_a]),
+                builder.call(self.pyobj_instance_ptr, [arg_b]),
+            )
+        )
 
         builder.position_at_end(list_body_block)
         struct_a = self._load_list_struct(builder, arg_a)
@@ -2410,10 +2426,19 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(dispatch)
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        inst_case = self.pyobj_hash.append_basic_block("hash_inst")
         switch = builder.switch(tag, int_case)
         switch.add_case(ir.const_(i32, 1), float_case)
         switch.add_case(ir.const_(i32, 2), str_case)
         switch.add_case(ir.const_(i32, 5), zero_case)
+        switch.add_case(ir.const_(i32, 6), inst_case)
+
+        builder.position_at_end(inst_case)
+        builder.ret(
+            builder.ptrtoint(
+                builder.call(self.pyobj_instance_ptr, [obj_arg]), i64
+            )
+        )
 
         builder.position_at_end(int_case)
         builder.ret(self._load_number_as_i64(builder, obj_arg))
@@ -4017,6 +4042,34 @@ class SiluToLLVMConverter:
         # byte order equals Python code point order) with the length
         # difference breaking ties, matching rawstr_cmp
         builder.position_at_end(str_check_block)
+        # tag-6 instance boxes compare by the INSTANCE they carry (the
+        # cell holds {cid, inst}; two boxes of one instance are equal)
+        both_inst = builder.and_(
+            builder.icmp_signed("==", left_tag, ir.const_(i32, 6)),
+            builder.icmp_signed("==", right_tag, ir.const_(i32, 6)),
+        )
+        inst_check_block = func.append_basic_block("inst_check")
+        str_gate_block = func.append_basic_block("str_gate")
+        builder.cbranch(both_inst, inst_check_block, str_gate_block)
+
+        builder.position_at_end(inst_check_block)
+        inst_eq = builder.icmp_signed(
+            "==",
+            builder.call(self.pyobj_instance_ptr, [left]),
+            builder.call(self.pyobj_instance_ptr, [right]),
+        )
+        inst_op_block = func.append_basic_block("inst_op")
+        builder.cbranch(inst_eq, inst_op_block, error_block)
+
+        builder.position_at_end(inst_op_block)
+        if pred == "==":
+            builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 1)]))
+        elif pred == "!=":
+            builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 1)]))
+        else:
+            builder.branch(error_block)
+
+        builder.position_at_end(str_gate_block)
         both_str = builder.and_(
             builder.icmp_signed("==", left_tag, str_tag),
             builder.icmp_signed("==", right_tag, str_tag),
