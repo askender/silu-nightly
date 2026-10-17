@@ -1258,6 +1258,77 @@ class SiluToLLVMConverter:
         data = b.load(b.gep(o_arg, [ir.const_(i32, 0), ir.const_(i32, 1)]))
         b.ret(b.load(b.bitcast(data, ir.PointerType(i64))))
 
+    def _create_generic_iter_runtime(self):
+        """Generic `for x in obj`: pyobj_iter_keys(obj) materializes a
+        list of elements - list items, live dict keys, or chars - and
+        the existing list walk iterates it."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i64 = ir.IntType(64)
+        i32 = ir.IntType(32)
+        zero32 = ir.const_(i32, 0)
+        null_obj = ir.const_(pyobj_ptr, None)
+
+        self.pyobj_iter_keys = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr], False),
+            "pyobj_iter_keys",
+        )
+        fn = self.pyobj_iter_keys
+        entry = fn.append_basic_block("entry")
+        list_blk = fn.append_basic_block("as_list")
+        dict_blk = fn.append_basic_block("as_dict")
+        other_blk = fn.append_basic_block("as_other")
+        b = ir.builder_(entry)
+        (obj_arg,) = fn.args
+        tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 4)),
+            list_blk,
+            dict_blk,
+        )
+        b.position_at_end(list_blk)
+        b.ret(obj_arg)
+
+        b.position_at_end(dict_blk)
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 5)),
+            fn.append_basic_block("dict_walk"),
+            other_blk,
+        )
+        b.position_at_end(fn.blocks[-1])
+        di_struct, di_count, di_used, di_mask, di_itable, di_entries = (
+            self._load_dict_parts(b, obj_arg, zero32, ir.const_(i32, 1))
+        )
+        out_list = b.call(self.create_list, [])
+        pos_ptr = b.alloca(i64, None, "ik_pos")
+        b.store(ir.const_(i64, 0), pos_ptr)
+        cond_blk = fn.append_basic_block("ik_cond")
+        body_blk = fn.append_basic_block("ik_body")
+        live_blk = fn.append_basic_block("ik_live")
+        step_blk = fn.append_basic_block("ik_step")
+        done_blk = fn.append_basic_block("ik_done")
+        b.branch(cond_blk)
+        b.position_at_end(cond_blk)
+        pos = b.load(pos_ptr)
+        b.cbranch(b.icmp_signed("<", pos, di_used), body_blk, done_blk)
+        b.position_at_end(body_blk)
+        entry_ptr = b.gep(di_entries, [zero32, pos])
+        key_obj = b.load(b.gep(entry_ptr, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("!=", key_obj, null_obj), live_blk, step_blk
+        )
+        b.position_at_end(live_blk)
+        b.call(self.list_append, [out_list, key_obj])
+        b.branch(step_blk)
+        b.position_at_end(step_blk)
+        b.store(b.add(pos, ir.const_(i64, 1)), pos_ptr)
+        b.branch(cond_blk)
+        b.position_at_end(done_blk)
+        b.ret(out_list)
+
+        b.position_at_end(other_blk)
+        b.ret(b.call(self.create_list, []))
+
     def _create_pyobj_print(self):
         """Create PyObject print function."""
         self._create_instance_runtime()
@@ -2269,6 +2340,40 @@ class SiluToLLVMConverter:
             True,
             i32, i64, one32, one64, zero32, zero64,
         )
+        # PObj* list_index(PObj* list, PObj* item) - first match or -1
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        self.list_index = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            "list_index",
+
+        )
+        li_b = ir.builder_(self.list_index.append_basic_block("entry"))
+        li_list, li_item = self.list_index.args
+        li_struct, li_len, li_items = self._list_parts(
+            li_b, self.list_index, li_list, "idx"
+        )
+        li_found = li_b.alloca(ir.IntType(64), None, "idx_found")
+        li_b.store(ir.const_(ir.IntType(64), -1), li_found)
+        li_idx, li_cond, li_body, li_done = self._for_i64_loop(
+            ir.IntType(64), li_b, self.list_index, "lidx",
+            ir.const_(ir.IntType(64), 0), li_len,
+        )
+        li_cand = li_b.load(li_b.gep(li_items, [li_b.load(li_idx)]))
+        li_match = li_b.call(self.pyobj_deep_eq, [li_cand, li_item])
+        li_hit = self.list_index.append_basic_block("lidx_hit")
+        li_next = self.list_index.append_basic_block("lidx_next")
+        li_b.cbranch(li_match, li_hit, li_next)
+        li_b.position_at_end(li_hit)
+        li_b.store(li_b.load(li_idx), li_found)
+        li_b.branch(li_done)
+        li_b.position_at_end(li_next)
+        self._close_i64_loop(
+            li_b, li_idx, li_cond, ir.const_(ir.IntType(64), 1)
+        )
+        li_b.position_at_end(li_done)
+        li_b.ret(li_b.call(self.create_int, [li_b.load(li_found)]))
+        self._create_generic_iter_runtime()
 
     def _create_dict_runtime(self):
         """Runtime for dict PyObjects (tag 5): a CPython-style compact dict.
@@ -3106,6 +3211,43 @@ class SiluToLLVMConverter:
         builder.position_at_end(insert_block)
         builder.call(self.dict_set, [dict_arg, key_arg, default_arg])
         builder.ret(default_arg)
+
+        # PObj* dict_items_rt(PObj* d) - list of [key, value] pair boxes
+        self.dict_items_rt = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), 'dict_items_rt',
+
+        )
+        b = ir.builder_(self.dict_items_rt.append_basic_block("entry"))
+        (di_arg,) = self.dict_items_rt.args
+        di_struct, di_count, di_used, di_mask, di_itable, di_entries = (
+            self._load_dict_parts(
+                b, di_arg,
+                ir.const_(ir.IntType(32), 0),
+                ir.const_(ir.IntType(32), 1),
+            )
+        )
+        di_out = b.call(self.create_list, [])
+        di_ptr, di_cond, di_body, di_done = self._for_i64_loop(i64, 
+            b, self.dict_items_rt, "ditems", zero64, di_used
+        )
+        di_entry_ptr = b.gep(di_entries, [zero32, b.load(di_ptr)])
+        di_key = b.load(b.gep(di_entry_ptr, [zero32, zero32]))
+        di_val = b.load(b.gep(di_entry_ptr, [zero32, one32]))
+        di_is_live = b.icmp_signed("!=", di_key, ir.const_(pyobj_ptr, None))
+        di_live_blk = self.dict_items_rt.append_basic_block("ditems_live")
+        di_step_blk = self.dict_items_rt.append_basic_block("ditems_step")
+        b.cbranch(di_is_live, di_live_blk, di_step_blk)
+        b.position_at_end(di_live_blk)
+        di_pair = b.call(self.create_list, [])
+        b.call(self.list_append, [di_pair, di_key])
+        b.call(self.list_append, [di_pair, di_val])
+        b.call(self.list_append, [di_out, di_pair])
+        b.branch(di_step_blk)
+        b.position_at_end(di_step_blk)
+        self._close_i64_loop(b, di_ptr, di_cond, one64)
+        b.position_at_end(di_done)
+        b.ret(di_out)
 
         # void dict_update(PyObject* dst, PyObject* src)
         # src may be a dict (copy live entries) or a list of [k, v] pairs

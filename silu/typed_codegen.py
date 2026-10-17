@@ -264,6 +264,17 @@ F64 = "f64"
 I1 = "i1"
 OBJ = "obj"
 
+def _type_text(t):
+    txt = getattr(t, "text", None)
+    if txt is not None:
+        return txt
+    return str(t)
+
+
+def _type_ret(ftype):
+    return getattr(ftype, "return_type", None)
+
+
 ANNOTATION_KINDS = {"int": I64, "float": F64, "bool": I1}
 RAWLIST_I = "rawlist_i64"  # list[int]: Vec<i64>-style raw element array
 RAWLIST_F = "rawlist_f64"  # list[float]
@@ -323,6 +334,7 @@ class TypedCodegen(SiluToLLVMConverter):
         LLVM_KIND_TYPES[OBJ] = ir.PointerType(self.pyobj.pyobj_type)
         self._class_ids = {}
         self._inst_class = {}
+        self._fn_dispatch_cache = {}
         self._char_idxerr = None
         self._module_kinds = set()
         self._module_vars: set = set()
@@ -3885,6 +3897,7 @@ class TypedCodegen(SiluToLLVMConverter):
         elem_bits = builder.load(builder.bitcast(elem_arg, ir.PointerType(i64)))
         builder.store(elem_bits, slot)
         builder.ret_void()
+        self._create_boxed_str_join()
 
     def _emit_rawdict_probe(self, name, ret_type, arg_types, on_hit, on_miss):
         """Shared tombstone-skipping probe for rawdict helpers.
@@ -4451,6 +4464,37 @@ class TypedCodegen(SiluToLLVMConverter):
             b.ret(result)
             self.boxed_affix[name] = fn
 
+    def _create_boxed_str_join(self):
+        """PObj* str_join_boxed(PObj* sep, PObj* list) - the boxed
+        twin of rawlist_str_join."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i8p = ir.PointerType(ir.IntType(8))
+        fn = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            "str_join_boxed",
+        )
+        entry = fn.append_basic_block("entry")
+        b = ir.builder_(entry)
+        sep_arg, list_arg = fn.args
+        sep_parts = self._pyobj_string_parts(
+            b, sep_arg,
+            ir.const_(ir.IntType(32), 0),
+            ir.const_(ir.IntType(32), 1),
+        )
+        sep_len_raw, sep_chars = sep_parts
+        sep_len = b.sext(sep_len_raw, ir.IntType(64))
+        struct_ptr = self._load_list_struct(b, list_arg)
+        raw = b.call(
+            self.rawlist_str_join,
+            [
+                b.bitcast(struct_ptr, ir.PointerType(ir.IntType(8))),
+                sep_chars,
+            ],
+        )
+        b.ret(b.call(self.rawstr_to_pystr, [raw]))
+        self.str_join_boxed = fn
+
     def _create_unbox_runtime(self):
         """unbox helpers for the typed -> dynamic -> typed boundary."""
         i32 = ir.IntType(32)
@@ -4812,6 +4856,9 @@ class TypedCodegen(SiluToLLVMConverter):
         "list": (4,),
         "tuple": (4,),
         "dict": (5,),
+        # byte literals ride the str tag in the boxed world
+        "bytes": (2,),
+        "bytearray": (2,),
     }
 
     def _emit_isinstance(self, value_node, type_node) -> Any:
@@ -4839,11 +4886,14 @@ class TypedCodegen(SiluToLLVMConverter):
                 ):
                     names.append(element[1])
         tags: set = set()
+        class_names = []
         for name in names:
             tags.update(self._ISINSTANCE_TAGS.get(name, ()))
-        if not tags:
+            if name in self._class_layouts:
+                class_names.append(name)
+        if not tags and not class_names:
             raise NotImplementedError(
-                "isinstance type must be builtin names, got " + repr(names)
+                "isinstance type must be builtin names, got " + str(names)
             )
 
         kind = self._convert_node(value_node)
@@ -4887,6 +4937,15 @@ class TypedCodegen(SiluToLLVMConverter):
                     "==", tag_val, ir.const_(ir.IntType(32), tag)
                 )
                 result = builder.or_(result, matches)
+            for cls_name in class_names:
+                # user class: compare the instance box's class id
+                cid = builder.call(self.pyobj_instance_cid, [boxed])
+                is_inst = builder.icmp_signed(
+                    "==",
+                    cid,
+                    ir.const_(ir.IntType(64), self._class_ids[cls_name]),
+                )
+                result = builder.or_(result, is_inst)
             builder.branch(merge_block)
             builder.position_at_end(merge_block)
             phi = builder.phi(ir.IntType(1))
@@ -6576,8 +6635,6 @@ class TypedCodegen(SiluToLLVMConverter):
         """pyobj_fn_callN(box, a1..aN): switch on the table index and
         call the indexed function with uniform PObj* ABI. Emitted
         lazily per arity."""
-        if not hasattr(self, "_fn_dispatch_cache"):
-            self._fn_dispatch_cache = {}
         if arity in self._fn_dispatch_cache:
             return self._fn_dispatch_cache[arity]
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
@@ -6587,6 +6644,7 @@ class TypedCodegen(SiluToLLVMConverter):
             ir.FunctionType(
                 pyobj_ptr,
                 [pyobj_ptr] + [pyobj_ptr] * arity,
+                False,
             ),
             "pyobj_fn_call%d" % arity,
         )
@@ -6618,7 +6676,7 @@ class TypedCodegen(SiluToLLVMConverter):
             b.cbranch(hit, body, nxt)
             b.position_at_end(body)
             target_tys = [str(a.type) for a in target.args]
-            self_first = bool(target_tys) and target_tys[0] == "i8*"
+            self_first = len(target_tys) > 0 and target_tys[0] == "i8*"
             param_tys = target_tys[1:] if self_first else target_tys
             call_args = []
             for a_i, a_arg in enumerate(fn.args[1:]):
@@ -6700,7 +6758,7 @@ class TypedCodegen(SiluToLLVMConverter):
     def _emit_dyn_attr_read(self, recv_tv, attr):
         b, cid, inst = self._dyn_dispatch_head(recv_tv, "getattr")
         func = self.current_function
-        classes = self._dyn_member_classes(attr, methods=False)
+        classes = self._dyn_member_classes(attr, False)
         merge = func.append_basic_block("ga_merge")
         none_blk = func.append_basic_block("ga_none")
         phis = []
@@ -6748,7 +6806,7 @@ class TypedCodegen(SiluToLLVMConverter):
     def _emit_dyn_attr_write(self, recv_tv, attr, value_tv):
         b, cid, inst = self._dyn_dispatch_head(recv_tv, "setattr")
         func = self.current_function
-        classes = self._dyn_member_classes(attr, methods=False)
+        classes = self._dyn_member_classes(attr, False)
         done = func.append_basic_block("sa_done")
         none_blk = func.append_basic_block("sa_none")
         entry = b.block
@@ -6789,7 +6847,7 @@ class TypedCodegen(SiluToLLVMConverter):
     def _emit_dyn_method_call(self, recv_tv, method_name, args_node):
         b, cid, inst = self._dyn_dispatch_head(recv_tv, "method")
         func = self.current_function
-        classes = self._dyn_member_classes(method_name, methods=True)
+        classes = self._dyn_member_classes(method_name, True)
         merge = func.append_basic_block("mc_merge")
         none_blk = func.append_basic_block("mc_none")
         phis = []
@@ -6822,11 +6880,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 arg_vals.append(self._box(atv))
             result = b.call(mfn, arg_vals, "")
             b.branch(merge)
-            ret_ty = getattr(
-                mfn.ftype, "return_type", None
-            )
-            if ret_ty is None and hasattr(mfn.ftype, "ret"):
-                ret_ty = mfn.ftype.ret
+            ret_ty = _type_ret(mfn.ftype)
             if ret_ty is not None and str(ret_ty) != "void":
                 # treat every dynamic method result as a boxed value:
                 # instance returns (the dominant case) box with their
@@ -7290,7 +7344,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 returns: list = []
                 find_returns(body, returns)
                 inferred_ret: Optional[str] = None
-                ok = bool(returns)
+                ok = len(returns) > 0
                 for rexpr in returns:
                     if rexpr is None:
                         ok = False  # bare return yields None
@@ -7526,11 +7580,11 @@ class TypedCodegen(SiluToLLVMConverter):
         def _is_i8_ptr(t):
             if isinstance(t, str):
                 return t == "i8*"
-            return getattr(t, "text", None) == "i8*"
+            return _type_text(t) == "i8*"
 
         self._fn_table = []
         for name, fn in self.functions.items():
-            ret_ty = getattr(fn.ftype, "return_type", None)
+            ret_ty = _type_ret(fn.ftype)
             if ret_ty is None:
                 ret_ty = fn.ftype.ret
             if not _is_pyobj_ptr(ret_ty):
@@ -8096,7 +8150,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 if count_const is not None:
                     expanded: list = []
                     for _ in range(count_const):
-                        expanded.extend(elem_nodes)
+                        for en in elem_nodes:
+                            expanded.append(en)
                     raw = self._build_raw_list(expanded, annotation_kind)
                     self._declare_var(target, annotation_kind)
                     self.current_builder.store(raw[1], self.variables[target])
@@ -8541,10 +8596,18 @@ class TypedCodegen(SiluToLLVMConverter):
                 result = self._is_bool_singleton(right, node[1][1])
             elif left[0] == INSTANCE and right[0] == INSTANCE:
                 result = self.current_builder.icmp_signed("==", left[1], right[1])
-            elif left[0] == OBJ and right[0] == OBJ:
-                # identity on boxed values: pointer equality (boxed
-                # instances carry their address, so this covers them)
-                result = self.current_builder.icmp_signed("==", left[1], right[1])
+            elif (left[0] in (OBJ, None, INSTANCE)
+                    and right[0] in (OBJ, None, INSTANCE)):
+                # identity on boxed/instance values: compare the
+                # underlying pointers (instances ARE their pointers;
+                # boxes carry addresses)
+                lhs = left[1]
+                rhs = right[1]
+                if left[0] == INSTANCE:
+                    lhs = self._box(left)
+                if right[0] == INSTANCE:
+                    rhs = self._box(right)
+                result = self.current_builder.icmp_signed("==", lhs, rhs)
             elif left[0] == I64 and right[0] == I64:
                 # Python `is` on ints is identity-implementational; Silu
                 # treats it as value equality for machine ints (the only
@@ -8600,7 +8663,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 if common != OBJ
                 else ir.PointerType(self.pyobj.pyobj_type)
             )
-            slot = self._entry_alloca(phi_type, name="iexpr_val")
+            slot = self._entry_alloca(phi_type, "iexpr_val")
             # store each live arm's coerced value in a continuation block
             # chained off the arm's real predecessor, then load in merge
             if not then_terminated:
@@ -9297,9 +9360,12 @@ class TypedCodegen(SiluToLLVMConverter):
                             self.pyobj_subscript, [boxed, idx_obj]
                         )
                         kind = self.var_kinds.get(target, OBJ)
+                        if kind is None:
+                            kind = OBJ
+                        coerced = self._coerce((OBJ, elem), kind)
                         self._declare_var(target, kind)
                         self.current_builder.store(
-                            elem, self.variables[target]
+                            coerced[1], self.variables[target]
                         )
             return (OBJ, null_obj)
 
@@ -10017,6 +10083,9 @@ class TypedCodegen(SiluToLLVMConverter):
         list_obj = self._box(iter_tv)
         if list_obj is None:
             return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+        # generic `for x in obj`: lists walk directly, dicts/strings
+        # materialize their elements (keys / chars) first
+        list_obj = self.current_builder.call(self.pyobj_iter_keys, [list_obj])
 
         cond_block = self.current_function.append_basic_block("iter_cond")
         body_block = self.current_function.append_basic_block("iter_body")
@@ -10491,6 +10560,13 @@ class TypedCodegen(SiluToLLVMConverter):
                 "reverse": (self.list_reverse, 0, True),
                 "insert": (self.list_insert, 2, True),
                 "count": (self.list_count, 1, True),
+                "index": (self.list_index, 1, True),
+                "add": (self.list_append, 1, False),
+                "items": (self.dict_items_rt, 0, True),
+                "join": (self.str_join_boxed, 1, True),
+                "keys": (self.dict_items_rt, 0, True),
+                "update": (self.dict_update, 1, False),
+                "setdefault": (self.dict_setdefault, 2, True),
                 "copy": (self.list_copy, 0, True),
                 "clear": (self.pyobj_clear, 0, False),
                 "upper": (self.str_upper, 0, True),
@@ -10522,10 +10598,29 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                 if len(arg_vals) == arg_count and all(arg_vals):
                     result = self.current_builder.call(func, [obj] + arg_vals)
+                    # box scalar results: several map entries (startswith,
+                    # isdigit...) return i1/i64 raw, and the consumer
+                    # treats the tv as a dynamic value
+                    ret_ty = _type_ret(func.ftype)
+                    if ret_ty is None:
+                        ret_ty = func.ftype.ret
+                    if ret_ty is not None and ret_ty != self.pyobj.pyobj_type:
+                        if str(ret_ty) == "i1" or _type_text(ret_ty) == "i1":
+                            result = self.current_builder.call(
+                                self.create_bool, [result]
+                            )
+                        elif str(ret_ty) == "i64" or _type_text(ret_ty) == "i64":
+                            result = self.current_builder.call(
+                                self.create_int, [result]
+                            )
+                        elif str(ret_ty) == "double" or _type_text(ret_ty) == "double":
+                            result = self.current_builder.call(
+                                self.create_float, [result]
+                            )
                     return (OBJ, result) if has_result else (OBJ, result)
             # boxed instance receiver with user-class methods: class-id
             # dispatch into the compiled methods
-            if self._dyn_member_classes(method_name, methods=True):
+            if self._dyn_member_classes(method_name, True):
                 return self._emit_dyn_method_call(
                     raw_obj_tv, method_name, args_node
                 )
@@ -10873,6 +10968,12 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                 return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
+            if func_name == "bool" and len(args_node) == 1:
+                return self._convert_node(
+                    ["call", ["name", "_builtin_bool"], [args_node[0]], []]
+                )
+            if func_name == "repr" and len(args_node) == 1:
+                return self._convert_node(args_node[0])
             if func_name == "set" and not args_node:
                 return self._convert_node(["list", []])
             if func_name == "set" and args_node:

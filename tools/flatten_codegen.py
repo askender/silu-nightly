@@ -527,7 +527,63 @@ def si_main():
     out = A.unparse(tree)
     out = out.replace("TypedCodegen()", "typed_codegen_new()")
 
-    out = "import llvmlite\n\n" + out
+    import re as _re2
+
+    # twin + converter both call sorted/zip/any/all/set at module level;
+    # rewrite whole-word call sites to the plain-Silu shims and prepend
+    # the shim definitions
+    for _b in ("sorted", "zip", "any", "all", "repr", "bool"):
+        out = _re2.sub(r"(?<![\w.])" + _b + r"\(", "_builtin_" + _b + "(", out)
+    shims = """def _builtin_all(xs) -> bool:
+    for x in xs:
+        if not x:
+            return False
+    return True
+
+
+def _builtin_sorted(xs):
+    out = []
+    for x in xs:
+        out.append(x)
+    i = 0
+    while i < len(out):
+        j = i + 1
+        while j < len(out):
+            if out[j] < out[i]:
+                t = out[i]
+                out[i] = out[j]
+                out[j] = t
+            j += 1
+        i += 1
+    return out
+
+
+def _builtin_zip(a, b):
+    out = []
+    n = len(a)
+    if len(b) < n:
+        n = len(b)
+    i = 0
+    while i < n:
+        out.append((a[i], b[i]))
+        i += 1
+    return out
+
+
+def _builtin_repr(x):
+    if isinstance(x, str):
+        return "'" + x + "'"
+    return str(x)
+
+
+def _builtin_bool(x) -> bool:
+    if x:
+        return True
+    return False
+
+
+"""
+    out = "import llvmlite\n\n" + shims + out
 
     # env switches become compile-time constants in the .si
     out = out.replace("os.environ.get('SILU_CHECKS', '1') != '0'", "True")
@@ -575,6 +631,13 @@ def si_main():
     out = out.replace("len(text.encode('utf-8'))", "llvmlite.utf8_len(text)")
     out = out.replace("len(value.encode('utf-8'))", "llvmlite.utf8_len(value)")
 
+    # twin type checks: the twin's IntType is a factory function, not a
+    # class - isinstance against it becomes a structural .kind check
+    out = out.replace(
+        "isinstance(value.type, llvmlite.IntType)",
+        "(value.type.kind == 'int')",
+    )
+
     # host-only instance tracking (id-keyed dicts) leaves the .si
     import re as _re
 
@@ -582,6 +645,26 @@ def si_main():
                   r"self._inst_class[\1] = \2", out)
     out = out.replace("cls = self._inst_class.get(id(value))",
                       "cls = self._inst_class.get(value)")
+    # the type shims: Silu has no getattr-with-default; the twin's
+    # TypeInfo always carries text/ret, real code paths guard None
+    out = out.replace(
+        "    txt = getattr(t, 'text', None)\n"
+        "    if txt is not None:\n"
+        "        return txt\n"
+        "    return str(t)",
+        "    return t.text")
+    out = out.replace(
+        '    txt = getattr(t, "text", None)\n'
+        '    if txt is not None:\n'
+        '        return txt\n'
+        '    return str(t)',
+        "    return t.text")
+    out = out.replace(
+        "    return getattr(ftype, 'return_type', None)",
+        "    return ftype.ret")
+    out = out.replace(
+        '    return getattr(ftype, "return_type", None)',
+        "    return ftype.ret")
 
     # host-side getattr-with-default -> explicit attribute reads (the
     # attributes always exist by body-generation time)
