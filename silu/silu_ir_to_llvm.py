@@ -4208,15 +4208,16 @@ class SiluToLLVMConverter:
             builder.call(self.pyobj_instance_ptr, [left]),
             builder.call(self.pyobj_instance_ptr, [right]),
         )
-        inst_op_block = func.append_basic_block("inst_op")
-        builder.cbranch(inst_eq, inst_op_block, error_block)
-
-        builder.position_at_end(inst_op_block)
-        if pred == "==":
-            builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 1)]))
-        elif pred == "!=":
-            builder.ret(builder.call(self.create_bool, [ir.const_(ir.IntType(1), 1)]))
+        # == and != answer both identity outcomes (distinct instances
+        # are simply unequal); only ordering is undefined on instances
+        if pred in ("==", "!="):
+            if pred == "!=":
+                inst_eq = builder.not_(inst_eq)
+            builder.ret(builder.call(self.create_bool, [inst_eq]))
         else:
+            inst_op_block = func.append_basic_block("inst_op")
+            builder.cbranch(inst_eq, inst_op_block, error_block)
+            builder.position_at_end(inst_op_block)
             builder.branch(error_block)
 
         builder.position_at_end(str_gate_block)
