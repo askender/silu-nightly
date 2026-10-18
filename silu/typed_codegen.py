@@ -6846,10 +6846,11 @@ class TypedCodegen(SiluToLLVMConverter):
                         break
         return out
 
-    def _dyn_dispatch_head(self, recv_tv, what):
+    def _dyn_dispatch_head(self, recv_tv, what, non_inst_blk):
         """Prologue: tag-6 check, then cid + instance from the side
         cell. Returns (b, cid, inst); the current block is the
-        dispatch-entry (unterminated)."""
+        dispatch-entry (unterminated). A non-instance receiver jumps
+        to non_inst_blk when given (builtin fallback), else panics."""
         b = self.current_builder
         func = self.current_function
         obj = recv_tv[1]
@@ -6860,17 +6861,20 @@ class TypedCodegen(SiluToLLVMConverter):
         cell = func.append_basic_block("dyn_cell")
         b.cbranch(is_inst, cell, bad)
         b.position_at_end(bad)
-        msg = self._create_global_string_with_builder(
-            "TypeError: dynamic " + what + " on non-instance", b
-        )
-        self._emit_panic(b, msg)
+        if non_inst_blk is not None:
+            b.branch(non_inst_blk)
+        else:
+            msg = self._create_global_string_with_builder(
+                "TypeError: dynamic " + what + " on non-instance", b
+            )
+            self._emit_panic(b, msg)
         b.position_at_end(cell)
         cid = b.call(self.pyobj_instance_cid, [obj])
         inst = b.call(self.pyobj_instance_ptr, [obj])
         return b, cid, inst
 
     def _emit_dyn_attr_read(self, recv_tv, attr):
-        b, cid, inst = self._dyn_dispatch_head(recv_tv, "getattr (attr " + attr + ")")
+        b, cid, inst = self._dyn_dispatch_head(recv_tv, "getattr (attr " + attr + ")", None)
         func = self.current_function
         classes = self._dyn_member_classes(attr, False)
         merge = func.append_basic_block("ga_merge")
@@ -6932,7 +6936,7 @@ class TypedCodegen(SiluToLLVMConverter):
         return (OBJ, phi)
 
     def _emit_dyn_attr_write(self, recv_tv, attr, value_tv):
-        b, cid, inst = self._dyn_dispatch_head(recv_tv, "setattr")
+        b, cid, inst = self._dyn_dispatch_head(recv_tv, "setattr (attr " + attr + ")", None)
         func = self.current_function
         classes = self._dyn_member_classes(attr, False)
         done = func.append_basic_block("sa_done")
@@ -6972,12 +6976,20 @@ class TypedCodegen(SiluToLLVMConverter):
         b.position_at_end(done)
         return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
-    def _emit_dyn_method_call(self, recv_tv, method_name, args_node):
-        b, cid, inst = self._dyn_dispatch_head(recv_tv, "method")
+    def _emit_dyn_method_call(self, recv_tv, method_name, args_node,
+                              fallback):
+        """Class-id dispatch into compiled methods. `fallback` is an
+        optional callable emitting the builtin shim when the receiver
+        is not an instance or no class matches (set.add vs
+        IRBuilder.add share the method name)."""
         func = self.current_function
-        classes = self._dyn_member_classes(method_name, True)
         merge = func.append_basic_block("mc_merge")
         none_blk = func.append_basic_block("mc_none")
+        b, cid, inst = self._dyn_dispatch_head(
+            recv_tv, "method",
+            none_blk if fallback is not None else None,
+        )
+        classes = self._dyn_member_classes(method_name, True)
         phis = []
         entry = b.block
         inst_i8 = b.bitcast(inst, ir.PointerType(ir.IntType(8)))
@@ -6999,6 +7011,13 @@ class TypedCodegen(SiluToLLVMConverter):
             if mfn is None:
                 mfn = self.static_funcs.get(mangled, (None, None, None))[2]
             if mfn is None:
+                b.branch(nxt)
+                entry = nxt
+                continue
+            if len(mfn.args) != len(args_node) + 1:
+                # arity differs from this call site (set.add(x) vs
+                # IRBuilder.add(l, r, n)): the class cannot be the
+                # receiver's method here, skip its dispatch arm
                 b.branch(nxt)
                 entry = nxt
                 continue
@@ -7030,10 +7049,36 @@ class TypedCodegen(SiluToLLVMConverter):
         b.position_at_end(entry)
         b.branch(none_blk)
         b.position_at_end(none_blk)
-        msg = self._create_global_string_with_builder(
-            "AttributeError: no method '" + method_name + "'", b
-        )
-        self._emit_panic(b, msg)
+        if fallback is not None:
+            # (method_map entry, receiver box): the builtin shim arm
+            shim_entry, shim_obj = fallback
+            shim_func, arg_count, _has_result = shim_entry
+            arg_vals = []
+            for arg in args_node[:arg_count]:
+                arg_tv = self._convert_node(arg)
+                arg_vals.append(self._box(arg_tv))
+            while len(arg_vals) < arg_count:
+                arg_vals.append(
+                    ir.const_(ir.PointerType(self.pyobj.pyobj_type), None)
+                )
+            result = b.call(shim_func, [shim_obj] + arg_vals)
+            ret_ty = _type_ret(shim_func.ftype)
+            if ret_ty is None:
+                ret_ty = shim_func.ftype.ret
+            if ret_ty is not None and ret_ty != self.pyobj.pyobj_type:
+                if str(ret_ty) == "i1" or _type_text(ret_ty) == "i1":
+                    result = b.call(self.create_bool, [result])
+                elif str(ret_ty) == "i64" or _type_text(ret_ty) == "i64":
+                    result = b.call(self.create_int, [result])
+                elif str(ret_ty) == "double" or _type_text(ret_ty) == "double":
+                    result = b.call(self.create_float, [result])
+            b.branch(merge)
+            phis.append((result, b.block))
+        else:
+            msg = self._create_global_string_with_builder(
+                "AttributeError: no method '" + method_name + "'", b
+            )
+            self._emit_panic(b, msg)
         b.position_at_end(merge)
         null_obj = ir.const_(ir.PointerType(self.pyobj.pyobj_type), None)
         if not phis:
@@ -7275,7 +7320,7 @@ class TypedCodegen(SiluToLLVMConverter):
             recv_tv_probe = self._convert_node(obj_node)
             if recv_tv_probe[0] == OBJ:
                 return self._emit_dyn_method_call(
-                    recv_tv_probe, method_name, args_node
+                    recv_tv_probe, method_name, args_node, None
                 )
             raise AttributeError(
                 f"method '{method_name}' on non-instance receiver"
@@ -10835,7 +10880,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 "__delitem__": (self.dict_pop, 1, False),
             }
             entry = method_map.get(method_name)
-            if obj is not None and entry:
+            user_method = self._dyn_member_classes(method_name, True)
+            if obj is not None and entry and not user_method:
                 func, arg_count, has_result = entry
                 arg_vals = []
                 for arg in args_node[:arg_count]:
@@ -10868,10 +10914,12 @@ class TypedCodegen(SiluToLLVMConverter):
                             )
                     return (OBJ, result) if has_result else (OBJ, result)
             # boxed instance receiver with user-class methods: class-id
-            # dispatch into the compiled methods
-            if self._dyn_member_classes(method_name, True):
+            # dispatch into the compiled methods; a same-named builtin
+            # shim is the fallback arm for non-instance receivers
+            if user_method:
                 return self._emit_dyn_method_call(
-                    raw_obj_tv, method_name, args_node
+                    raw_obj_tv, method_name, args_node,
+                    (entry, obj) if entry else None,
                 )
             raise NotImplementedError(
                 f"method '{method_name}' is not supported on dynamic values"

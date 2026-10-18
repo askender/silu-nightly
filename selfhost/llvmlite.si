@@ -100,6 +100,11 @@ def VoidType():
 
 
 def PointerType(pointee):
+    # a null pointee is llvmlite's untyped pointer; its cache key must
+    # not collide with a real type's text (Silu reads None.text as ""
+    # through the field shims, so the naive key would be just "*")
+    if pointee is None:
+        return _mk_type("ptr", 0, 0, False, None, [], None, [], "null*")
     return _mk_type("ptr", 0, 0, False, pointee, [], None, [], pointee.text + "*")
 
 
@@ -753,7 +758,10 @@ def _mk_instr(block, ty, opname, name, operands, style):
 def _gep_result_type(ptr, indices):
     # indices[0] offsets within the pointee (no type descent);
     # later indices descend into structs (constant field index) and
-    # arrays; a scalar pointee keeps its type
+    # arrays; a scalar pointee keeps its type. A null pointee (the
+    # untyped pointer) stays untyped - no nested null pointer.
+    if ptr.type.element is None:
+        return PointerType(None)
     cur = ptr.type.element
     for idx in indices[1:]:
         if cur.kind == "struct":
