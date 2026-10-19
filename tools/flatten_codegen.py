@@ -27,6 +27,7 @@ sys.argv = [a for a in sys.argv if a != "--si"]
 REPO = __file__.rsplit("/tools/", 1)[0]
 BASE = f"{REPO}/silu/silu_ir_to_llvm.py"
 DERIVED = f"{REPO}/silu/typed_codegen.py"
+HELPERS = f"{REPO}/silu/typed_helpers.py"
 
 RENAMES = {
     "__init__": "_base_init",
@@ -68,9 +69,42 @@ def _debase(ls):
     return out
 
 
+def _helpers_block():
+    """typed_helpers.py's content minus its imports and __all__ (those
+    are Python-module concerns; the flattened file already carries the
+    imports and must not re-export)."""
+    hsrc = open(HELPERS).read()
+    tree = ast.parse(hsrc)
+    lines = hsrc.split("\n")
+    skip = set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for ln in range(node.lineno - 1, node.end_lineno):
+                skip.add(ln)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == "__all__":
+                    for ln in range(node.lineno - 1, node.end_lineno):
+                        skip.add(ln)
+    out = []
+    for i, l in enumerate(lines):
+        if i in skip:
+            continue
+        out.append(l)
+    # drop the comment-only header (leading comment/blank lines)
+    while out and (out[0].strip().startswith("#") or not out[0].strip()):
+        out.pop(0)
+    return "\n".join(out)
+
+
 def main():
     base_src = open(BASE).read()
     derived_src = open(DERIVED).read()
+    # typed_codegen.py's leaf helpers live in silu/typed_helpers.py;
+    # inline them so the flattened module stays self-contained
+    marker = "from silu.typed_helpers import *"
+    if marker in derived_src:
+        derived_src = derived_src.replace(marker, _helpers_block())
     base_tree = ast.parse(base_src)
     derived_tree = ast.parse(derived_src)
 

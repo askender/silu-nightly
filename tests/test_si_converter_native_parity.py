@@ -49,6 +49,7 @@ def native_converter(tmp_path_factory):
     key_src = ""
     for path in (
         "silu/typed_codegen.py",
+        "silu/typed_helpers.py",
         "silu/silu_ir_to_llvm.py",
         "silu/llvmlite_text.py",
         "selfhost/llvmlite.si",

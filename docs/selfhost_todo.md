@@ -68,6 +68,13 @@
     字节不变）——注意 flatten 工具读死两个源文件
     （silu_ir_to_llvm.py + typed_codegen.py），拆分要先改
     flatten 的合并逻辑
+    - 第一步已完成（2026-10-20）：叶子助手+常量抽到
+      silu/typed_helpers.py（48 个名字，显式 __all__），
+      flatten 学会在 derived 源读入后内联该文件（AST 跳过
+      import 与 __all__）；flatten --si 输出与拆分前**逐字节
+      一致**（拆分的不变量照妖镜）。剩余：把 11.5k 行的
+      TypedCodegen 单类拆成 mixin 模块——那需要 flatten 支持
+      N 类合并，是下一轮的大块
 
 ## 工作流（每个缺陷的标准循环）
 
