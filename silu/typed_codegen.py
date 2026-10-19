@@ -9587,14 +9587,13 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, tuple_obj)
 
         if op == "set":
-            # a set literal rides as a list box: the dynamic plane only
-            # ever consumes these through membership and iteration
+            # a set literal rides as a list box with construction-time
+            # dedup (Python semantics); the dynamic plane only ever
+            # consumes these through membership and iteration
             set_obj = self.current_builder.call(self.create_list, [])
             for elem_node in node[1] if len(node) > 1 else []:
-                elem = self._convert_node(elem_node)
-                self.current_builder.call(
-                    self.list_append, [set_obj, self._box(elem)]
-                )
+                elem = self._box(self._convert_node(elem_node))
+                self.current_builder.call(self.pyobj_set_add, [set_obj, elem])
             return (OBJ, set_obj)
 
         if op == "subscript":
@@ -11305,7 +11304,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 "insert": (self.list_insert, 2, True),
                 "count": (self.list_count, 1, True),
                 "index": (self.list_index, 1, True),
-                "add": (self.list_append, 1, False),
+                "add": (self.pyobj_set_add, 1, False),
                 "items": (self.dict_items_rt, 0, True),
                 "join": (self.str_join_boxed, 1, True),
                 "keys": (self.dict_keys_rt, 0, True),

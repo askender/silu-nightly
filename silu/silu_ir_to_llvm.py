@@ -2072,7 +2072,15 @@ class SiluToLLVMConverter:
         tag_a = builder.load(builder.gep(arg_a, [zero32, zero32]))
         tag_b = builder.load(builder.gep(arg_b, [zero32, zero32]))
         same_kind = builder.icmp_signed("==", tag_a, tag_b)
-        builder.cbranch(same_kind, dispatch_block, false_block)
+        # numeric tags interoperate (1 == 1.0 == True in Python), so a
+        # numeric pair reaches the numeric path even across tags
+        both_numeric_eq = builder.and_(
+            _is_numeric_tag(builder, tag_a), _is_numeric_tag(builder, tag_b)
+        )
+        builder.cbranch(
+            builder.or_(same_kind, both_numeric_eq), dispatch_block,
+            false_block,
+        )
 
         builder.position_at_end(dispatch_block)
         is_num_tag = _is_numeric_tag(builder, tag_a)
@@ -2189,7 +2197,133 @@ class SiluToLLVMConverter:
         builder.position_at_end(false_block)
         builder.ret(ir.const_(ir.IntType(1), 0))
 
-        # PyObject* list_reverse(PyObject* list)
+        # i64 pyobj_list_cmp(PObj* a, PObj* b) - Python lexicographic
+        # order for the tag-4 branch of ordering comparisons: the first
+        # unequal element pair decides (nested lists recurse), a prefix
+        # compares smaller. Unorderable element pairs panic TypeError.
+        self.pyobj_list_cmp = ir.func_(
+            self.module,
+            ir.FunctionType(i64, [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_list_cmp',
+        )
+        lc_entry = self.pyobj_list_cmp.append_basic_block("entry")
+        b = ir.builder_(lc_entry)
+        lc_a, lc_b = self.pyobj_list_cmp.args
+        lc_sa = self._load_list_struct(b, lc_a)
+        lc_sb = self._load_list_struct(b, lc_b)
+        lc_len_a = b.load(b.gep(lc_sa, [zero32, zero32]))
+        lc_len_b = b.load(b.gep(lc_sb, [zero32, zero32]))
+        lc_items_a = b.load(b.gep(lc_sa, [zero32, ir.const_(i32, 2)]))
+        lc_items_b = b.load(b.gep(lc_sb, [zero32, ir.const_(i32, 2)]))
+        lc_idx = b.alloca(i64, None, 'lc_i')
+        b.store(zero64, lc_idx)
+        lc_cond = self.pyobj_list_cmp.append_basic_block("lc_cond")
+        lc_body = self.pyobj_list_cmp.append_basic_block("lc_body")
+        lc_step = self.pyobj_list_cmp.append_basic_block("lc_step")
+        lc_after = self.pyobj_list_cmp.append_basic_block("lc_after")
+        b.branch(lc_cond)
+
+        b.position_at_end(lc_cond)
+        lc_i = b.load(lc_idx)
+        lc_min = b.select(
+            b.icmp_signed("<", lc_len_a, lc_len_b), lc_len_a, lc_len_b
+        )
+        b.cbranch(b.icmp_signed("<", lc_i, lc_min), lc_body, lc_after)
+
+        b.position_at_end(lc_body)
+        lc_ea = b.load(b.gep(lc_items_a, [lc_i]))
+        lc_eb = b.load(b.gep(lc_items_b, [lc_i]))
+        lc_eq = b.call(self.pyobj_deep_eq, [lc_ea, lc_eb])
+        lc_neq = self.pyobj_list_cmp.append_basic_block("lc_neq")
+        b.cbranch(lc_eq, lc_step, lc_neq)
+
+        # order the unequal pair: nested lists recurse; numerics compare
+        # as f64 (int/float mix like Python); strings by memcmp order;
+        # anything else is a Python TypeError
+        b.position_at_end(lc_neq)
+        lc_ta = b.load(b.gep(lc_ea, [zero32, zero32]))
+        lc_tb = b.load(b.gep(lc_eb, [zero32, zero32]))
+        lc_both_list = b.and_(
+            b.icmp_signed("==", lc_ta, ir.const_(i32, 4)),
+            b.icmp_signed("==", lc_tb, ir.const_(i32, 4)),
+        )
+        lc_both_num = b.and_(
+            _is_numeric_tag(b, lc_ta), _is_numeric_tag(b, lc_tb)
+        )
+        lc_both_str = b.and_(
+            b.icmp_signed("==", lc_ta, ir.const_(i32, 2)),
+            b.icmp_signed("==", lc_tb, ir.const_(i32, 2)),
+        )
+        lc_as_list = self.pyobj_list_cmp.append_basic_block("lc_as_list")
+        lc_not_list = self.pyobj_list_cmp.append_basic_block("lc_not_list")
+        b.cbranch(lc_both_list, lc_as_list, lc_not_list)
+        b.position_at_end(lc_as_list)
+        b.ret(b.call(self.pyobj_list_cmp, [lc_ea, lc_eb]))
+
+        b.position_at_end(lc_not_list)
+        lc_as_num = self.pyobj_list_cmp.append_basic_block("lc_as_num")
+        lc_not_num = self.pyobj_list_cmp.append_basic_block("lc_not_num")
+        b.cbranch(lc_both_num, lc_as_num, lc_not_num)
+        b.position_at_end(lc_as_num)
+        lc_fa = self._load_number_as_f64(b, lc_ea)
+        lc_fb = self._load_number_as_f64(b, lc_eb)
+        b.ret(
+            b.select(
+                b.fcmp_ordered("<", lc_fa, lc_fb),
+                ir.const_(i64, -1),
+                one64,
+            )
+        )
+
+        b.position_at_end(lc_not_num)
+        lc_as_str = self.pyobj_list_cmp.append_basic_block("lc_as_str")
+        lc_bad = self.pyobj_list_cmp.append_basic_block("lc_bad")
+        b.cbranch(lc_both_str, lc_as_str, lc_bad)
+        b.position_at_end(lc_as_str)
+        la, ca = self._pyobj_string_parts(b, lc_ea, zero32, one32)
+        lb, cb = self._pyobj_string_parts(b, lc_eb, zero32, one32)
+        lc_prefix = b.select(b.icmp_signed("<", la, lb), la, lb)
+        lc_order = b.sext(
+            b.call(self.memcmp, [ca, cb, b.sext(lc_prefix, i64)]), i64
+        )
+        lc_str_eq = b.icmp_signed("==", lc_order, zero64)
+        lc_final = b.select(
+            lc_str_eq,
+            b.sub(b.sext(la, i64), b.sext(lb, i64)),
+            lc_order,
+        )
+        b.ret(
+            b.select(
+                b.icmp_signed("<", lc_final, zero64),
+                ir.const_(i64, -1),
+                one64,
+            )
+        )
+
+        b.position_at_end(lc_bad)
+        lc_msg = self._create_global_string_with_builder(
+            "TypeError: '<' not supported between these operands", b
+        )
+        self._emit_panic(b, lc_msg)
+
+        b.position_at_end(lc_step)
+        b.store(b.add(lc_i, one64), lc_idx)
+        b.branch(lc_cond)
+
+        # prefix rule: shorter-is-prefix compares smaller
+        b.position_at_end(lc_after)
+        b.ret(
+            b.select(
+                b.icmp_signed("<", lc_len_a, lc_len_b),
+                ir.const_(i64, -1),
+                b.select(
+                    b.icmp_signed(">", lc_len_a, lc_len_b),
+                    one64,
+                    zero64,
+                ),
+            )
+        )
+
         self.list_reverse = ir.func_(
             self.module, ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), 'list_reverse'
         )
@@ -2998,6 +3132,27 @@ class SiluToLLVMConverter:
             "TypeError: argument of type is not iterable", builder
         )
         self._emit_panic(builder, err_msg)
+
+        # PObj* pyobj_set_add(PObj* set, PObj* item) - idempotent add,
+        # returning the set (same ABI shape as list_append: void here
+        # once broke the converter binary in ways not worth chasing)
+        self.pyobj_set_add = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_set_add',
+        )
+        sa_entry = self.pyobj_set_add.append_basic_block("entry")
+        sa_add = self.pyobj_set_add.append_basic_block("sa_add")
+        sa_done = self.pyobj_set_add.append_basic_block("sa_done")
+        b = ir.builder_(sa_entry)
+        sa_set, sa_item = self.pyobj_set_add.args
+        sa_present = b.call(self.pyobj_contains, [sa_set, sa_item])
+        b.cbranch(sa_present, sa_done, sa_add)
+        b.position_at_end(sa_add)
+        b.call(self.list_append, [sa_set, sa_item])
+        b.branch(sa_done)
+        b.position_at_end(sa_done)
+        b.ret(sa_set)
 
         # PyObject* pyobj_str_conv(PyObject* obj) - str(x) for scalars:
         # int via %lld, float via float_repr (shortest round-trip),
@@ -4320,30 +4475,31 @@ class SiluToLLVMConverter:
             builder.icmp_signed("==", right_tag, str_tag),
         )
         str_op_block = func.append_basic_block("str_op")
-        # tag-4 boxes (list/tuple): structural equality for ==/!=, the
-        # same semantics Python applies (the flat converter's own
-        # `node[:2] == ["const", None]` checks depend on it); ordering
-        # on lists stays unsupported like any other non-str tag
-        if pred in ("==", "!="):
-            list_gate_block = func.append_basic_block("list_gate")
-        else:
-            list_gate_block = error_block
+        # tag-4 boxes (list/tuple): structural equality for ==/!= and
+        # lexicographic order for </<=/>/>=, matching Python
+        list_gate_block = func.append_basic_block("list_gate")
         builder.cbranch(both_str, str_op_block, list_gate_block)
 
-        if pred in ("==", "!="):
-            builder.position_at_end(list_gate_block)
-            both_list = builder.and_(
-                builder.icmp_signed("==", left_tag, ir.const_(i32, 4)),
-                builder.icmp_signed("==", right_tag, ir.const_(i32, 4)),
-            )
-            list_op_block = func.append_basic_block("list_op")
-            builder.cbranch(both_list, list_op_block, error_block)
+        builder.position_at_end(list_gate_block)
+        both_list = builder.and_(
+            builder.icmp_signed("==", left_tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", right_tag, ir.const_(i32, 4)),
+        )
+        list_op_block = func.append_basic_block("list_op")
+        builder.cbranch(both_list, list_op_block, error_block)
 
-            builder.position_at_end(list_op_block)
+        builder.position_at_end(list_op_block)
+        if pred in ("==", "!="):
             list_eq = builder.call(self.pyobj_deep_eq, [left, right])
             if pred == "!=":
                 list_eq = builder.not_(list_eq)
             builder.ret(builder.call(self.create_bool, [list_eq]))
+        else:
+            list_order = builder.call(self.pyobj_list_cmp, [left, right])
+            list_result = builder.icmp_signed(
+                pred, list_order, ir.const_(i64, 0)
+            )
+            builder.ret(builder.call(self.create_bool, [list_result]))
 
         builder.position_at_end(str_op_block)
 
