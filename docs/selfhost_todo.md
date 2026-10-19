@@ -45,23 +45,29 @@
 
 10. ~~**超大整数字面量**~~ —— ✅ 已解决（编译期范围检查，两平面
     一致响亮拒绝；原生侧本就有 JSON 解析溢出 panic）
-11. **真 bytes 类型**：与 str 分离（独立 tag 或显式 latin1
-    标记贯穿运行时，而非仅 Constant.latin1）
-12. （按需）真实集合语义：当前 set 按列表盒承载，仅支持
-    成员测试/迭代
-13. （按需）列表词法序：[1] < [2] 目前响亮 panic（TypeError），
-    Python 语义是词法序——如需要再实现
+11. ~~**列表词法序**~~ —— ✅ pyobj_list_cmp（Python 语义：元素对
+    定序/嵌套递归/前缀规则/不可比 panic）+ 数值跨 tag 相等
+    （1 == 1.0 == True，deep_eq 的 tag 门修正）
+12. ~~**真实集合语义**~~ —— ✅ 字面量去重 + add 幂等
+    （pyobj_set_add；注意：方法表运行时函数必须返 PObj，void 会让
+    原生转换器启动即崩）
+13. **真 bytes 类型**：与 str 分离（独立 tag 或显式 latin1
+    标记贯穿运行时，而非仅 Constant.latin1）——**按需**：当前
+    共享 tag 在所有门禁下正确（str-before-bytes 排序已修），无
+    消费者驱动；做的时候要覆盖 repr(b'...')/索引得 int/迭代得
+    int/与 str 不等/len=字节数
 
 ## P3：性能与工程
 
-13. **测试提速**（现状全量 ~10 分钟 + 原生门禁 ~4 分钟）：
-    - 三个 ~85s 解释器门禁（跑 16 程序 × flat 转换器）加缓存
-      或并行；ir2c build 测试合并 clang 调用（每次 ~5.5s）
-    - 原生门禁的转换器构建（~3min）可考虑缓存到 .pytest_cache
-      （按源文件哈希失效）
-14. **ir2c.si 结构收敛**（funcref/boxing 补丁收进类型层）
-15. **typed_codegen.py 拆分重构**（老 P1，不变量：全部 .ll
-    字节不变）
+14. ~~**测试提速**~~ —— ✅ 全量 13m50s → 2m25s（pytest-xdist
+    `-n 8`，环境已装）；原生门禁的转换器构建加内容哈希缓存
+    （23.9s→7.1s，$TMPDIR/silu_native_conv_<sha>，原子发布）。
+    剩余可选项：三个解释器门禁的程序循环内部并行
+15. **ir2c.si 结构收敛**（funcref/boxing 补丁收进类型层）
+16. **typed_codegen.py 拆分重构**（老 P1，不变量：全部 .ll
+    字节不变）——注意 flatten 工具读死两个源文件
+    （silu_ir_to_llvm.py + typed_codegen.py），拆分要先改
+    flatten 的合并逻辑
 
 ## 工作流（每个缺陷的标准循环）
 

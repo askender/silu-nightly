@@ -37,9 +37,33 @@ def _run(cmd, **kw):
 
 @pytest.fixture(scope="module")
 def native_converter(tmp_path_factory):
-    """Flatten the converter and build it natively (once per module)."""
+    """Flatten the converter and build it natively (once per module).
+
+    The build is cached across runs in $TMPDIR, keyed on the content of
+    the converter sources + the twin + the flatten tool - the ~25s
+    flatten/ir/llvm/clang chain only reruns when one of them changes."""
     if shutil.which("clang") is None:
         pytest.skip("clang not available")
+    import hashlib
+
+    key_src = ""
+    for path in (
+        "silu/typed_codegen.py",
+        "silu/silu_ir_to_llvm.py",
+        "silu/llvmlite_text.py",
+        "selfhost/llvmlite.si",
+        "tools/flatten_codegen.py",
+        "tools/flatten_si_tail.si",
+    ):
+        with open(os.path.join(REPO, path), "rb") as handle:
+            key_src += handle.read().decode("utf-8", "replace")
+    digest = hashlib.sha256(key_src.encode("utf-8")).hexdigest()[:16]
+    cached = os.path.join(
+        os.environ.get("TMPDIR", "/tmp"), f"silu_native_conv_{digest}"
+    )
+    if os.path.exists(cached) and os.access(cached, os.X_OK):
+        return cached
+
     tmp = tmp_path_factory.mktemp("native_parity")
     flat_si = tmp / "typed_codegen_flat.si"
     gen = subprocess.run(
@@ -76,7 +100,11 @@ def native_converter(tmp_path_factory):
         text=True,
     )
     assert build.returncode == 0, build.stderr
-    return str(binary)
+    # atomic cache publish: a partial copy must never poison the cache
+    tmp_cache = cached + "." + str(os.getpid()) + ".tmp"
+    shutil.copy(str(binary), tmp_cache)
+    os.replace(tmp_cache, cached)
+    return cached
 
 
 @pytest.mark.parametrize("program", PROGRAMS, ids=[os.path.basename(p) for p in PROGRAMS])
