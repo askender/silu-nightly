@@ -737,9 +737,13 @@ class SiluToLLVMConverter:
         )
         builder.ret(concat_obj)
 
-        # Error case - return null for now
+        # type mismatch on +: Python raises TypeError; a silent null
+        # here used to surface far away as a null dereference
         builder.position_at_end(error_block)
-        builder.ret(ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+        add_err = self._create_global_string_with_builder(
+            "TypeError: unsupported operand types for +", builder
+        )
+        self._emit_panic(builder, add_err)
 
         # Arithmetic over int/bool/float operands with Python promotion rules
         self._create_str_repeat_runtime()
@@ -4192,7 +4196,14 @@ class SiluToLLVMConverter:
             builder.ret(builder.call(self.create_int, [int_result]))
 
         builder.position_at_end(error_block)
-        builder.ret(ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+        # type mismatch on an arithmetic op: Python raises TypeError;
+        # a silent null here used to surface far away as a null
+        # dereference
+        nerr = self._create_global_string_with_builder(
+            "TypeError: unsupported operand types for " + func_name,
+            builder,
+        )
+        self._emit_panic(builder, nerr)
         return func
 
     def _create_bool_result_function(self, func_name: str, pred: str) -> ir.Function:
@@ -4398,7 +4409,13 @@ class SiluToLLVMConverter:
                 )
             )
         else:
-            builder.ret(ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+            # ordering on mismatched/unsupported types: Python raises
+            # TypeError; a silent null here used to read as "false"
+            oerr = self._create_global_string_with_builder(
+                "TypeError: '" + pred + "' not supported between these "
+                "operands", builder,
+            )
+            self._emit_panic(builder, oerr)
         return func
 
     def _create_comparison_operations(self):

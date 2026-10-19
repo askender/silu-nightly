@@ -29,13 +29,16 @@
    分发臂按 `_dyn_func_kinds` 逐参装换；收录改按 kind 过滤（方法
    self 豁免）；静态函数经 PObj-ABI thunk 入表；专项测试
    tests/test_funcref.py 7 项
-8. **pyobj_\* 静默 null 系统化改 panic**（根源三收尾）
-   - "Error case - return null for now" 全量清单化；改完 .ll
-     会变（两侧一致），全部门禁重跑
-   - 本轮已做一部分：pyobj_eq 异型 tag 不再返 null（==/!= 返
-     False/True）；剩余的是排序（< 等）与算术错误路径
-9. **enumerate 反糖的回归测试**：`continue`/`break` 在枚举循环体里
-   的计数器语义（本轮修复的的直接回归锁；现在只有门禁间接覆盖）
+8. ~~**pyobj_\* 静默 null 系统化改 panic**~~（根源三收尾）—— ✅
+   已解决：运行时错误路径全量盘点仅 3 处（pyobj_add 异型、算术异型、
+   排序异型），全部改 panic（TypeError 消息）。==/!= 异型此前已返
+   False/True。注意遗留：列表排序（[1]<[2] 的词法序）目前 panic
+   而非 Python 语义——属 P2 语言缺口。legacy 动态后端的
+   `_convert_node` 里还有一处 arity-mismatch 返 null（死路径，
+   SILU_CODEGEN=dynamic 才到，无测试覆盖）
+9. ~~**enumerate 反糖的回归测试**~~ —— ✅ tests/test_enumerate.py
+   （4 项：基本/continue/break/计数器作下标，run_ir vs run_mcjit
+   对照）
 
 ## P2：语言覆盖缺口（公共子集约束的反向清单）
 
