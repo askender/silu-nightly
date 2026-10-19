@@ -440,6 +440,8 @@ class TypedCodegen(SiluToLLVMConverter):
 
         self._create_unbox_runtime()
         self._create_identity_eq_runtime()
+        self._create_pop_dispatch_runtime()
+        self._create_copy_dispatch_runtime()
         self._create_raw_list_runtime()
 
         # PyObject* pyobj_pow(PyObject* base, PyObject* exp) via libc pow
@@ -536,6 +538,149 @@ class TypedCodegen(SiluToLLVMConverter):
         phi.add_incoming(inst_eq, both_blk)
         b.ret(phi)
         self.pyobj_identity_eq = fn
+
+    def _create_pop_dispatch_runtime(self):
+        """PObj* pyobj_pop_dispatch(PObj* obj, PObj* key) - `pop` with
+        one uniform ABI across containers: a list receiver pops by
+        index (null key = the last element), anything else forwards to
+        dict_pop. The method map's single signature cannot know the
+        receiver's tag at compile time."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        fn = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_pop_dispatch',
+        )
+        entry = fn.append_basic_block("entry")
+        list_blk = fn.append_basic_block("list_case")
+        dict_blk = fn.append_basic_block("dict_case")
+        b = ir.builder_(entry)
+        obj_arg, key_arg = fn.args
+        zero32 = ir.const_(i32, 0)
+        null_obj = ir.const_(pyobj_ptr, None)
+        tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 4)), list_blk, dict_blk
+        )
+
+        b.position_at_end(dict_blk)
+        b.ret(b.call(self.dict_pop, [obj_arg, key_arg]))
+
+        # list: resolve the index (null key -> last), bounds-check,
+        # read the element, shift the tail left, shrink
+        b.position_at_end(list_blk)
+        empty_blk = fn.append_basic_block("pop_empty")
+        idx_blk = fn.append_basic_block("pop_idx")
+        bounds_blk = fn.append_basic_block("pop_bounds")
+        bad_blk = fn.append_basic_block("pop_bad")
+        ok_blk = fn.append_basic_block("pop_ok")
+        shift_cond = fn.append_basic_block("pop_shift_cond")
+        shift_blk = fn.append_basic_block("pop_shift")
+        done_blk = fn.append_basic_block("pop_done")
+        struct_ptr = b.bitcast(
+            b.load(b.gep(obj_arg, [zero32, ir.const_(i32, 1)])),
+            ir.PointerType(self.list_struct_type),
+        )
+        length = b.load(b.gep(struct_ptr, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", key_arg, null_obj), idx_blk, bounds_blk
+        )
+
+        b.position_at_end(idx_blk)
+        last = b.sub(length, ir.const_(i64, 1))
+        b.branch(bad_blk)
+
+        b.position_at_end(bounds_blk)
+        raw = b.call(self.unbox_int, [key_arg])
+        adjusted = b.select(
+            b.icmp_signed("<", raw, ir.const_(i64, 0)),
+            b.add(raw, length),
+            raw,
+        )
+        b.branch(bad_blk)
+
+        # phi the index over the two resolution paths
+        b.position_at_end(bad_blk)
+        idx = b.phi(i64)
+        idx.add_incoming(last, idx_blk)
+        idx.add_incoming(adjusted, bounds_blk)
+        in_range = b.and_(
+            b.icmp_signed(">=", idx, ir.const_(i64, 0)),
+            b.icmp_signed("<", idx, length),
+        )
+        empty = b.icmp_signed("==", length, ir.const_(i64, 0))
+        b.cbranch(
+            b.or_(empty, b.not_(in_range)), empty_blk, ok_blk
+        )
+
+        b.position_at_end(empty_blk)
+        msg = self._create_global_string_with_builder(
+            "IndexError: pop from empty list", b
+        )
+        self._emit_panic(b, msg)
+
+        b.position_at_end(ok_blk)
+        items = b.load(b.gep(struct_ptr, [zero32, ir.const_(i32, 2)]))
+        value = b.load(b.gep(items, [idx]))
+        b.store(
+            b.sub(length, ir.const_(i64, 1)), b.gep(struct_ptr, [zero32, zero32])
+        )
+        # shift: i = idx; while i < len-1: items[i] = items[i+1]; i += 1
+        i_ptr = b.alloca(i64, None, "pop_i")
+        b.store(idx, i_ptr)
+        b.branch(shift_cond)
+
+        b.position_at_end(shift_cond)
+        cur = b.load(i_ptr)
+        b.cbranch(
+            b.icmp_signed("<", cur, b.sub(length, ir.const_(i64, 1))),
+            shift_blk,
+            done_blk,
+        )
+
+        b.position_at_end(shift_blk)
+        cur2 = b.load(i_ptr)
+        moved = b.load(b.gep(items, [b.add(cur2, ir.const_(i64, 1))]))
+        b.store(moved, b.gep(items, [cur2]))
+        b.store(b.add(cur2, ir.const_(i64, 1)), i_ptr)
+        b.branch(shift_cond)
+
+        b.position_at_end(done_blk)
+        b.ret(value)
+        self.pyobj_pop_dispatch = fn
+
+    def _create_copy_dispatch_runtime(self):
+        """PObj* pyobj_copy_dispatch(PObj* obj) - `.copy()` with one
+        ABI: lists go to list_copy, dicts build a fresh dict and pour
+        the source in. The method map cannot know the receiver's tag at
+        compile time (dict.copy routed to list_copy read the dict
+        struct as a list header and crashed in memmove)."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i32 = ir.IntType(32)
+        fn = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr], False),
+            'pyobj_copy_dispatch',
+        )
+        entry = fn.append_basic_block("entry")
+        dict_blk = fn.append_basic_block("dict_case")
+        b = ir.builder_(entry)
+        obj_arg = fn.args[0]
+        zero32 = ir.const_(i32, 0)
+        tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 5)), dict_blk,
+            fn.append_basic_block("list_case"),
+        )
+        b.position_at_end(fn.blocks[-1])
+        b.ret(b.call(self.list_copy, [obj_arg]))
+        b.position_at_end(dict_blk)
+        fresh = b.call(self.create_dict, [])
+        b.call(self.dict_update, [fresh, obj_arg])
+        b.ret(fresh)
+        self.pyobj_copy_dispatch = fn
 
     def _create_raw_list_runtime(self):
         """Lists with unboxed elements: list[int] -> i64, list[float] -> double.
@@ -5869,12 +6014,24 @@ class TypedCodegen(SiluToLLVMConverter):
                     RAWSTR,
                     self._rawstr_stack_view(r_data, r_seq),
                 )
-        if left[0] == RAWSTR or right[0] == RAWSTR:
+        def _is_str_const(n):
+            return isinstance(n, (list, tuple)) and len(n) >= 2 and \
+                n[0] == "const" and isinstance(n[1], str)
+
+        if (
+            (left[0] == RAWSTR or right[0] == RAWSTR)
+            and (left[0] != OBJ or _is_str_const(left_node))
+            and (right[0] != OBJ or _is_str_const(right_node))
+        ):
             # raw string comparisons: memcmp semantics, which on UTF-8
             # bytes equals Python's code point ordering; coerced
             # temporaries are dropped after the call. A string constant
             # compares straight out of its global - no allocation.
             # s[i] <op> "<const>" never materializes the character.
+            # Any other dynamic (OBJ) side - a variable, a None - goes
+            # to pyobj_cmp instead: coercing a null or non-string box
+            # into rawstr would crash, and pyobj_eq already answers
+            # None == "x" as False.
             fused = self._rawstr_at_eq_fusion(
                 op, left, right, left_node, right_node
             )
@@ -9317,6 +9474,17 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
             return (OBJ, tuple_obj)
 
+        if op == "set":
+            # a set literal rides as a list box: the dynamic plane only
+            # ever consumes these through membership and iteration
+            set_obj = self.current_builder.call(self.create_list, [])
+            for elem_node in node[1] if len(node) > 1 else []:
+                elem = self._convert_node(elem_node)
+                self.current_builder.call(
+                    self.list_append, [set_obj, self._box(elem)]
+                )
+            return (OBJ, set_obj)
+
         if op == "subscript":
             if len(node) >= 3:
                 # scalar cursor read: pos[0] on a promoted name is a
@@ -11028,7 +11196,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 "keys": (self.dict_items_rt, 0, True),
                 "update": (self.dict_update, 1, False),
                 "setdefault": (self.dict_setdefault, 2, True),
-                "copy": (self.list_copy, 0, True),
+                "copy": (self.pyobj_copy_dispatch, 0, True),
                 "clear": (self.pyobj_clear, 0, False),
                 "upper": (self.str_upper, 0, True),
                 "lower": (self.str_lower, 0, True),
@@ -11041,7 +11209,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 "rfind": (self.str_rfind, 1, True),
                 "get": (self.dict_get_or, 2, True),
                 "setdefault": (self.dict_setdefault, 2, True),
-                "pop": (self.dict_pop, 1, True),
+                "pop": (self.pyobj_pop_dispatch, 1, True),
                 "__getitem__": (self.dict_get_or, 2, True),
                 "__setitem__": (self.dict_set, 2, False),
                 "__delitem__": (self.dict_pop, 1, False),
