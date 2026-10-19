@@ -1289,6 +1289,8 @@ class SiluToLLVMConverter:
         list_blk = fn.append_basic_block("as_list")
         dict_blk = fn.append_basic_block("as_dict")
         other_blk = fn.append_basic_block("as_other")
+        str_blk = fn.append_basic_block("as_str")
+        empty_blk = fn.append_basic_block("as_empty")
         b = ir.builder_(entry)
         (obj_arg,) = fn.args
         tag = b.load(b.gep(obj_arg, [zero32, zero32]))
@@ -1338,7 +1340,55 @@ class SiluToLLVMConverter:
         b.ret(out_list)
 
         b.position_at_end(other_blk)
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 2)),
+            str_blk,
+            empty_blk,
+        )
+        b.position_at_end(empty_blk)
         b.ret(b.call(self.create_list, []))
+
+        b.position_at_end(str_blk)
+        str_len, str_chars = self._pyobj_string_parts(
+            b, obj_arg, zero32, ir.const_(i32, 1)
+        )
+        str_len64 = b.sext(str_len, i64)
+        str_out = b.call(self.create_list, [])
+        str_pos = b.alloca(i64, None, "ik_str_pos")
+        b.store(ir.const_(i64, 0), str_pos)
+        str_cond = fn.append_basic_block("ik_str_cond")
+        str_body = fn.append_basic_block("ik_str_body")
+        str_done = fn.append_basic_block("ik_str_done")
+        b.branch(str_cond)
+        b.position_at_end(str_cond)
+        pos_now = b.load(str_pos)
+        b.cbranch(b.icmp_signed("<", pos_now, str_len64), str_body, str_done)
+        b.position_at_end(str_body)
+        lead = b.load(b.gep(str_chars, [pos_now]))
+        two = b.icmp_signed(
+            "==", b.and_(lead, ir.const_(ir.IntType(8), 0xE0)),
+            ir.const_(ir.IntType(8), 0xC0),
+        )
+        three = b.icmp_signed(
+            "==", b.and_(lead, ir.const_(ir.IntType(8), 0xF0)),
+            ir.const_(ir.IntType(8), 0xE0),
+        )
+        four = b.icmp_signed(
+            "==", b.and_(lead, ir.const_(ir.IntType(8), 0xF8)),
+            ir.const_(ir.IntType(8), 0xF0),
+        )
+        seq = b.select(four, ir.const_(i64, 4), ir.const_(i64, 1))
+        seq = b.select(three, ir.const_(i64, 3), seq)
+        seq = b.select(two, ir.const_(i64, 2), seq)
+        char_obj = b.call(
+            self.create_str,
+            [b.gep(str_chars, [pos_now]), b.trunc(seq, i32)],
+        )
+        b.call(self.list_append, [str_out, char_obj])
+        b.store(b.add(pos_now, seq), str_pos)
+        b.branch(str_cond)
+        b.position_at_end(str_done)
+        b.ret(str_out)
 
     def _create_pyobj_print(self):
         """Create PyObject print function."""
@@ -2418,7 +2468,6 @@ class SiluToLLVMConverter:
         one64 = ir.const_(i64, 1)
         pyobj_null = ir.const_(pyobj_ptr, None)
 
-        dict_field = _dict_field
 
         # i64 pyobj_hash(PyObject* obj)
         self.pyobj_hash = ir.func_(
@@ -2457,8 +2506,12 @@ class SiluToLLVMConverter:
         builder.position_at_end(float_case)
         data = builder.load(builder.gep(obj_arg, [zero32, one32]))
         bits = builder.load(builder.bitcast(data, ir.PointerType(i64)))
-        # -0.0 must hash like 0.0 (they compare equal)
-        neg_zero = builder.icmp_signed("==", bits, ir.const_(i64, 0x8000000000000000))
+        # -0.0 must hash like 0.0 (they compare equal); the signed form
+        # keeps the literal inside i64 (the .si plane wraps out-of-range
+        # hex to the same bits but renders them differently)
+        neg_zero = builder.icmp_signed(
+            "==", bits, ir.const_(i64, -9223372036854775808)
+        )
         builder.ret(builder.select(neg_zero, zero64, bits))
 
         builder.position_at_end(str_case)
@@ -2469,7 +2522,10 @@ class SiluToLLVMConverter:
         # FNV-1a over the bytes
         hash_ptr = builder.alloca(i64, None, 'fnv_h')
         idx_ptr = builder.alloca(i64, None, 'fnv_i')
-        builder.store(ir.const_(i64, 0xCBF29CE484222325), hash_ptr)
+        # FNV-1a offset basis in signed form (0xCBF29CE484222325
+        # exceeds i64::MAX; the .si plane would wrap and render it
+        # differently than Python's arbitrary-precision literal)
+        builder.store(ir.const_(i64, -3750763034362895579), hash_ptr)
         builder.store(zero64, idx_ptr)
         cond = self.pyobj_hash.append_basic_block("fnv_cond")
         body = self.pyobj_hash.append_basic_block("fnv_body")
@@ -2645,10 +2701,10 @@ class SiluToLLVMConverter:
         builder.branch(scan_cond)
 
         builder.position_at_end(scan_done)
-        builder.store(new_mask, dict_field(builder, struct_ptr, 2))
-        builder.store(new_table, dict_field(builder, struct_ptr, 3))
-        builder.store(new_entries, dict_field(builder, struct_ptr, 4))
-        builder.store(builder.load(j_ptr), dict_field(builder, struct_ptr, 1))
+        builder.store(new_mask, _dict_field(builder, struct_ptr, 2))
+        builder.store(new_table, _dict_field(builder, struct_ptr, 3))
+        builder.store(new_entries, _dict_field(builder, struct_ptr, 4))
+        builder.store(builder.load(j_ptr), _dict_field(builder, struct_ptr, 1))
         builder.ret_void()
 
         # PyObject* create_dict()
@@ -2764,8 +2820,8 @@ class SiluToLLVMConverter:
         entry_ptr = builder.gep(entries, [zero32, used])
         builder.store(key_arg, builder.gep(entry_ptr, [zero32, zero32]))
         builder.store(value_arg, builder.gep(entry_ptr, [zero32, one32]))
-        builder.store(builder.add(used, one64), dict_field(builder, struct_ptr, 1))
-        builder.store(builder.add(count, one64), dict_field(builder, struct_ptr, 0))
+        builder.store(builder.add(used, one64), _dict_field(builder, struct_ptr, 1))
+        builder.store(builder.add(count, one64), _dict_field(builder, struct_ptr, 0))
         builder.ret_void()
 
         # PyObject* dict_pop(PyObject* d, PyObject* key)
@@ -2796,7 +2852,7 @@ class SiluToLLVMConverter:
             ir.const_(i64, -1),
             builder.gep(itable, [builder.load(out_slot)]),
         )
-        builder.store(builder.sub(count, one64), dict_field(builder, struct_ptr, 0))
+        builder.store(builder.sub(count, one64), _dict_field(builder, struct_ptr, 0))
         builder.ret(removed_value)
 
         builder.position_at_end(missing_block)
@@ -3204,8 +3260,8 @@ class SiluToLLVMConverter:
         builder = ir.builder_(entry)
         (dict_arg,) = self.dict_clear_entries.args
         struct_ptr, _, _, mask, itable, _ = self._load_dict_parts(builder, dict_arg, zero32, one32)
-        builder.store(zero64, dict_field(builder, struct_ptr, 0))
-        builder.store(zero64, dict_field(builder, struct_ptr, 1))
+        builder.store(zero64, _dict_field(builder, struct_ptr, 0))
+        builder.store(zero64, _dict_field(builder, struct_ptr, 1))
         wipe_idx = builder.alloca(i64, None, 'wipe_i')
         builder.store(zero64, wipe_idx)
         builder.branch(wipe_cond)
@@ -4322,12 +4378,13 @@ class SiluToLLVMConverter:
         merge_block = self.current_function.append_basic_block("unary_minus_merge")
         builder.cbranch(is_float, float_block, int_check_block)
 
-        # Float negation
+        # Float negation - fmul by -1.0 keeps -0.0's sign bit
+        # (0.0 - 0.0 evaluates to +0.0)
         builder.position_at_end(float_block)
         f64_val = self._load_number_as_f64(builder, operand)
         float_result = builder.call(
             self.create_float,
-            [builder.fsub(ir.const_(ir.DoubleType(), 0.0), f64_val)],
+            [builder.fmul(f64_val, ir.const_(ir.DoubleType(), -1.0))],
         )
         builder.branch(merge_block)
 

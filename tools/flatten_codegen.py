@@ -624,7 +624,10 @@ def _builtin_bool(x) -> bool:
         "llvmlite.ArrayType(llvmlite.IntType(8), llvmlite.utf8_len(string_bytes))")
     out = out.replace(
         "llvmlite.const_(llvmlite.ArrayType(llvmlite.IntType(8), len(data)), bytearray(data))",
-        "llvmlite.const_(llvmlite.ArrayType(llvmlite.IntType(8), len(data)), data)")
+        "llvmlite.const_latin1_(llvmlite.ArrayType(llvmlite.IntType(8), len(data)), data)")
+    out = out.replace(
+        "llvmlite.ArrayType(llvmlite.IntType(8), len(data))",
+        "llvmlite.ArrayType(llvmlite.IntType(8), llvmlite.latin1_len(data))")
     out = out.replace(
         "bytearray(b'IndexError: string index out of range\\x00')",
         "b'IndexError: string index out of range\\x00'")

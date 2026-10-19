@@ -152,10 +152,11 @@ class Constant:
     type: object
     constant: object
     is_undef: bool
+    latin1: bool
 
 
 def const_(ty, val):
-    c = Constant(ty, False, False)
+    c = Constant(ty, False, False, False)
     if val is Undefined:
         c.is_undef = True
         c.constant = None
@@ -193,6 +194,21 @@ def const_(ty, val):
         c.constant = out
         return c
     c.constant = val
+    return c
+
+
+def latin1_len(data):
+    # const_b stores bytes as Latin-1-decoded text; iteration counts
+    # original bytes for both real bytes and the native string box.
+    n = 0
+    for b in data:
+        n += 1
+    return n
+
+
+def const_latin1_(ty, val):
+    c = const_(ty, val)
+    c.latin1 = True
     return c
 
 
@@ -260,6 +276,17 @@ def _escape_bytes(data):
     return out
 
 
+def _escape_latin1(data):
+    out = ""
+    for b in data:
+        if isinstance(b, int):
+            cp = b
+        else:
+            cp = ord(b)
+        out += _escape_byte_val(cp)
+    return out
+
+
 def _double_bits(value):
     # IEEE-754 double bits as 16 hex digits, without struct.pack:
     # decompose sign/exponent/mantissa by scaling (normal range).
@@ -291,18 +318,26 @@ def _double_bits(value):
         else:
             mant_bits = mant_bits * 2
         i += 1
-    total = sign_bit
-    total = total * 2048 + exp
-    total = total * 4503599627370496 + mant_bits
-    # llvmlite formats the bit pattern with '{:#16x}': the hex text
-    # (no leading zeros) right-aligned in 16 columns
-    digits = ""
-    n = total
-    while n >= 16:
-        digits = _hex_digit(n % 16) + digits
-        n = n // 16
-    digits = _hex_digit(n) + digits
-    s = "0x" + digits
+    # The sign bit makes the full word exceed signed i64.  Render the
+    # high 16 and low 48 bits separately, then apply llvmlite's minimum
+    # width without ever forming the overflowing product.
+    high = sign_bit * 32768 + exp * 16 + mant_bits // 281474976710656
+    low = mant_bits % 281474976710656
+    full = ""
+    i = 0
+    while i < 16:
+        if i < 4:
+            shift = (3 - i) * 4
+            digit = (high // (1 << shift)) % 16
+        else:
+            shift = (15 - i) * 4
+            digit = (low // (1 << shift)) % 16
+        full += _hex_digit(digit)
+        i += 1
+    start = 0
+    while start < 15 and full[start] == "0":
+        start += 1
+    s = "0x" + full[start:]
     while len(s) < 16:
         s = " " + s
     return s
@@ -314,6 +349,8 @@ def const_reference(c):
     v = c.constant
     if v is None:
         return "null"
+    if c.latin1:
+        return 'c"' + _escape_latin1(v) + '"'
     if isinstance(v, list):
         parts = []
         for x in v:
@@ -330,10 +367,13 @@ def const_reference(c):
         if c.type.kind == "struct":
             return "{" + ", ".join(parts) + "}"
         return "[" + ", ".join(parts) + "]"
-    if isinstance(v, (bytes, bytearray)):
-        return 'c"' + _escape_bytes(v) + '"'
+    # the str check must precede the bytes check: Silu boxes bytes and
+    # str with the same tag, so a Silu string would otherwise take the
+    # bytes path (byte iteration) and render garbage
     if isinstance(v, str):
         return 'c"' + _escape_str(v) + '"'
+    if isinstance(v, (bytes, bytearray)):
+        return 'c"' + _escape_bytes(v) + '"'
     if isinstance(v, Function):
         # real llvmlite renders a function value as its own pointer
         # type (retty (params)*) followed by the @name
