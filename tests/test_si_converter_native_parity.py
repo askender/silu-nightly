@@ -1,7 +1,7 @@
 """Native parity gate: the self-hosted converter (typed_codegen.py +
 silu_ir_to_llvm.py flattened to typed_codegen_flat.si, compiled by clang
--O0) must emit byte-identical .ll to the Python converter for every
-benchmark program.
+-O2, the same pipeline `silu build` uses) must emit byte-identical .ll
+to the Python converter for every benchmark program.
 
 This is the only gate that crosses the object-model boundary: the
 interpreter-based parity gates all execute the .si converter under
@@ -9,9 +9,6 @@ CPython, where Python's object semantics mask native-plane divergence
 (heap corruption, layout shifts, tag confusion). Here the converter runs
 as a native binary, so its own dict/list/str/box machinery is exercised
 exactly as compiled.
-
-Known non-goal: the converter binary is built at -O0; clang -O2
-miscompiles it (tracked separately in docs/selfhost_todo.md).
 """
 
 import glob
@@ -68,10 +65,13 @@ def native_converter(tmp_path_factory):
     )
     assert result.returncode == 0, result.stderr
     binary = tmp / "flat_conv"
-    # -O0 on purpose: the -O2 miscompile of the converter is a known
-    # open issue; the parity property holds at -O0
+    # -O2, the same optimization level `silu build` uses: the converter
+    # must be sound under real optimization (the historical "O2
+    # miscompiles the converter" symptom was a heap-overflow bug in the
+    # generated runtime - list_insert leaving capacity stale - not a
+    # clang issue)
     build = subprocess.run(
-        ["clang", "-O0", str(conv_ll), "-o", str(binary)],
+        ["clang", "-O2", str(conv_ll), "-o", str(binary)],
         capture_output=True,
         text=True,
     )

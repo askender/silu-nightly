@@ -21,13 +21,10 @@
 
 ## P1：正确性收尾（当前优先）
 
-6. **O2 误编译**：O0 全绿、O2 崩、ASan(O1) 无堆损坏报告
-   - 路线：对 flat .ll 做 `-O1/-O2` 差分 + 按函数关优化定位
-     （`opt -O2 -print-after-all` 或逐 attribute）；嫌疑是生成
-     IR 里某处 UB 约定（gep/load 指针类型）；拿到最小 .ll 复现
-     后再判断是自身 UB 还是 clang bug
-   - **注意**：门禁测试用的是 -O0；`silu build` 默认 -O2（cli.py），
-     这意味着 `silu build` 出来的转换器目前仍不可靠
+6. ~~**O2 误编译**~~ —— ✅ 已解决（2026-10-19 傍晚）：所谓 O2 误编译
+   实为 list_insert 的堆越界写（O0/O2 只是布局不同）。原生门禁
+   16/16 在 O2 下同样字节一致；`silu build`（默认 -O2）产出的
+   转换器现已可靠。门禁测试已切到 -O2 锁定该性质。
 7. **混合 ABI funcref 分发**（根源四通用修复）
    - `pyobj_fn_callN` 分发臂按目标 `_dyn_func_kinds` 逐参
      装换（对照直呼路径 11471-11488 的 coercе 逻辑）
