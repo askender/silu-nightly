@@ -8536,6 +8536,14 @@ class TypedCodegen(SiluToLLVMConverter):
             if kind == I1:
                 return (I1, ir.const_(ir.IntType(1), value))
             if kind == I64:
+                # i64 is the shared integer domain: a literal outside
+                # it would silently wrap bitwise (Python's bigint masks
+                # this on the interpreter side). Bounds as literals -
+                # 2**63 would itself overflow i64 on the native plane
+                if value < -9223372036854775808 or value > 9223372036854775807:
+                    raise ValueError(
+                        f"integer literal out of i64 range: {value}"
+                    )
                 return (I64, ir.const_(ir.IntType(64), value))
             if kind == F64:
                 return (F64, ir.const_(ir.DoubleType(), value))
