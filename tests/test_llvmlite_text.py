@@ -134,18 +134,20 @@ def test_si_converter_interpreter_parity():
         # module resolution: llvmlite.si must sit next to the flat file
         with open(os.path.join(td, "llvmlite.si"), "w") as h:
             h.write(open(f"{REPO}/selfhost/llvmlite.si").read())
-        for program in PROGRAMS:
+
+        def one(program, index):
             ir = subprocess.run(
                 [sys.executable, "-m", "silu", "ir", program,
                  "--format", "json"],
                 capture_output=True, text=True, cwd=REPO, timeout=600,
             ).stdout
-            ir_path = os.path.join(td, "p.ir.json")
+            ir_path = os.path.join(td, f"p{index}.ir.json")
+            ref_path = os.path.join(td, f"ref{index}.ll")
             with open(ir_path, "w") as h:
                 h.write(ir)
             real = subprocess.run(
                 [sys.executable, "-m", "silu", "llvm", ir_path,
-                 "--output", os.path.join(td, "ref.ll")],
+                 "--output", ref_path],
                 capture_output=True, text=True, cwd=REPO,
                 timeout=600,
             )
@@ -156,7 +158,18 @@ def test_si_converter_interpreter_parity():
                 timeout=600,
             )
             assert silu.returncode == 0, (program, silu.stderr[-300:])
-            assert silu.stdout == open(os.path.join(td, "ref.ll")).read(), program
+            assert silu.stdout == open(ref_path).read(), program
+
+        # the per-program work is independent subprocesses; parallelize
+        # (16 sequential AST-interpreter conversions cost ~90s)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [
+                pool.submit(one, program, index)
+                for index, program in enumerate(PROGRAMS)
+            ]
+            for future in futures:
+                future.result()
 
 
 BITWISE_PROGRAMS = [
