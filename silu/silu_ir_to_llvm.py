@@ -327,9 +327,11 @@ class SiluToLLVMConverter:
         self._create_overflow_intrinsics()
         self._create_pyobj_constructors()
         self._create_pyobj_operations()
-        self._create_comparison_operations()
         self._create_list_runtime()
+        # comparisons go after the list/str runtime: ==/!= route
+        # tag-4 boxes into pyobj_deep_eq, which is defined there
         self._create_list_and_str_method_runtime()
+        self._create_comparison_operations()
         self._create_dict_runtime()
 
     def _create_pyobj_constructors(self):
@@ -2259,6 +2261,10 @@ class SiluToLLVMConverter:
         self._close_i64_loop(builder, idx_ptr, cond, one64)
         builder.position_at_end(done)
         builder.store(new_length, builder.gep(struct_ptr, [zero32, zero32]))
+        # the fresh buffer holds exactly new_length items: capacity must
+        # follow, or the next append thinks no grow is needed and writes
+        # one slot past the buffer
+        builder.store(new_length, builder.gep(struct_ptr, [zero32, one32]))
         builder.store(new_items, builder.gep(struct_ptr, [zero32, ir.const_(i32, 2)]))
         builder.ret(list_arg)
 
@@ -2451,6 +2457,50 @@ class SiluToLLVMConverter:
         li_b.position_at_end(li_done)
         li_b.ret(li_b.call(self.create_int, [li_b.load(li_found)]))
         self._create_generic_iter_runtime()
+
+    def _create_dict_projection_rt(self, name: str, mode: int):
+        """PObj* name(PObj* d): walk live entries into a fresh list.
+        mode 0 = [k, v] pair boxes (items), 1 = keys, 2 = values."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i64 = ir.IntType(64)
+        zero32 = ir.const_(ir.IntType(32), 0)
+        one32 = ir.const_(ir.IntType(32), 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        fn = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), name,
+        )
+        b = ir.builder_(fn.append_basic_block("entry"))
+        (d_arg,) = fn.args
+        _s, _c, used, _m, _t, entries = self._load_dict_parts(
+            b, d_arg, zero32, one32
+        )
+        out = b.call(self.create_list, [])
+        idx_ptr, cond, body, done = self._for_i64_loop(
+            i64, b, fn, name, zero64, used
+        )
+        entry_ptr = b.gep(entries, [zero32, b.load(idx_ptr)])
+        key = b.load(b.gep(entry_ptr, [zero32, zero32]))
+        val = b.load(b.gep(entry_ptr, [zero32, one32]))
+        is_live = b.icmp_signed("!=", key, ir.const_(pyobj_ptr, None))
+        live_blk = fn.append_basic_block(name + "_live")
+        step_blk = fn.append_basic_block(name + "_step")
+        b.cbranch(is_live, live_blk, step_blk)
+        b.position_at_end(live_blk)
+        if mode == 0:
+            pair = b.call(self.create_list, [])
+            b.call(self.list_append, [pair, key])
+            b.call(self.list_append, [pair, val])
+            b.call(self.list_append, [out, pair])
+        else:
+            b.call(self.list_append, [out, key if mode == 1 else val])
+        b.branch(step_blk)
+        b.position_at_end(step_blk)
+        self._close_i64_loop(b, idx_ptr, cond, one64)
+        b.position_at_end(done)
+        b.ret(out)
+        return fn
 
     def _create_dict_runtime(self):
         """Runtime for dict PyObjects (tag 5): a CPython-style compact dict.
@@ -3304,42 +3354,19 @@ class SiluToLLVMConverter:
         builder.call(self.dict_set, [dict_arg, key_arg, default_arg])
         builder.ret(default_arg)
 
-        # PObj* dict_items_rt(PObj* d) - list of [key, value] pair boxes
-        self.dict_items_rt = ir.func_(
-            self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr], False), 'dict_items_rt',
-
+        # dict projections: items -> [k,v] pair boxes, keys -> key
+        # boxes, values -> value boxes (Python semantics; routing keys()
+        # to the pairs view breaks every `k in d.keys()` scan, which
+        # compares the key against a pair box and gets a null back)
+        self.dict_items_rt = self._create_dict_projection_rt(
+            'dict_items_rt', 0
         )
-        b = ir.builder_(self.dict_items_rt.append_basic_block("entry"))
-        (di_arg,) = self.dict_items_rt.args
-        di_struct, di_count, di_used, di_mask, di_itable, di_entries = (
-            self._load_dict_parts(
-                b, di_arg,
-                ir.const_(ir.IntType(32), 0),
-                ir.const_(ir.IntType(32), 1),
-            )
+        self.dict_keys_rt = self._create_dict_projection_rt(
+            'dict_keys_rt', 1
         )
-        di_out = b.call(self.create_list, [])
-        di_ptr, di_cond, di_body, di_done = self._for_i64_loop(i64, 
-            b, self.dict_items_rt, "ditems", zero64, di_used
+        self.dict_values_rt = self._create_dict_projection_rt(
+            'dict_values_rt', 2
         )
-        di_entry_ptr = b.gep(di_entries, [zero32, b.load(di_ptr)])
-        di_key = b.load(b.gep(di_entry_ptr, [zero32, zero32]))
-        di_val = b.load(b.gep(di_entry_ptr, [zero32, one32]))
-        di_is_live = b.icmp_signed("!=", di_key, ir.const_(pyobj_ptr, None))
-        di_live_blk = self.dict_items_rt.append_basic_block("ditems_live")
-        di_step_blk = self.dict_items_rt.append_basic_block("ditems_step")
-        b.cbranch(di_is_live, di_live_blk, di_step_blk)
-        b.position_at_end(di_live_blk)
-        di_pair = b.call(self.create_list, [])
-        b.call(self.list_append, [di_pair, di_key])
-        b.call(self.list_append, [di_pair, di_val])
-        b.call(self.list_append, [di_out, di_pair])
-        b.branch(di_step_blk)
-        b.position_at_end(di_step_blk)
-        self._close_i64_loop(b, di_ptr, di_cond, one64)
-        b.position_at_end(di_done)
-        b.ret(di_out)
 
         # void dict_update(PyObject* dst, PyObject* src)
         # src may be a dict (copy live entries) or a list of [k, v] pairs
@@ -4282,7 +4309,30 @@ class SiluToLLVMConverter:
             builder.icmp_signed("==", right_tag, str_tag),
         )
         str_op_block = func.append_basic_block("str_op")
-        builder.cbranch(both_str, str_op_block, error_block)
+        # tag-4 boxes (list/tuple): structural equality for ==/!=, the
+        # same semantics Python applies (the flat converter's own
+        # `node[:2] == ["const", None]` checks depend on it); ordering
+        # on lists stays unsupported like any other non-str tag
+        if pred in ("==", "!="):
+            list_gate_block = func.append_basic_block("list_gate")
+        else:
+            list_gate_block = error_block
+        builder.cbranch(both_str, str_op_block, list_gate_block)
+
+        if pred in ("==", "!="):
+            builder.position_at_end(list_gate_block)
+            both_list = builder.and_(
+                builder.icmp_signed("==", left_tag, ir.const_(i32, 4)),
+                builder.icmp_signed("==", right_tag, ir.const_(i32, 4)),
+            )
+            list_op_block = func.append_basic_block("list_op")
+            builder.cbranch(both_list, list_op_block, error_block)
+
+            builder.position_at_end(list_op_block)
+            list_eq = builder.call(self.pyobj_deep_eq, [left, right])
+            if pred == "!=":
+                list_eq = builder.not_(list_eq)
+            builder.ret(builder.call(self.create_bool, [list_eq]))
 
         builder.position_at_end(str_op_block)
 
@@ -4332,7 +4382,23 @@ class SiluToLLVMConverter:
         builder.ret(builder.call(self.create_bool, [int_result]))
 
         builder.position_at_end(error_block)
-        builder.ret(ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+        if pred == "==":
+            # mismatched non-null types are simply unequal in Python;
+            # returning null here crashes the caller's unbox (the
+            # contains scan hit exactly this on a [k, v] pair element)
+            builder.ret(
+                builder.call(
+                    self.create_bool, [ir.const_(ir.IntType(1), 0)]
+                )
+            )
+        elif pred == "!=":
+            builder.ret(
+                builder.call(
+                    self.create_bool, [ir.const_(ir.IntType(1), 1)]
+                )
+            )
+        else:
+            builder.ret(ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
         return func
 
     def _create_comparison_operations(self):

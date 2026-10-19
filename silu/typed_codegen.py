@@ -10159,11 +10159,14 @@ class TypedCodegen(SiluToLLVMConverter):
             self._convert_statement(
                 ["assign", counter_name, ["const", 0], None]
             )
+            # the counter must advance BEFORE the body: a `continue` in
+            # the body would skip a trailing increment and pin every
+            # iteration at index 0 (Python's enumerate advances on
+            # continue too)
             desugared_body = [
-                ["assign", idx_name, ["name", counter_name], None]
-            ] + list(body_stmts) + [
-                ["aug_assign", ["name", counter_name], "+=", ["const", 1]]
-            ]
+                ["assign", idx_name, ["name", counter_name], None],
+                ["aug_assign", ["name", counter_name], "+=", ["const", 1]],
+            ] + list(body_stmts)
             return self._convert_for(
                 ["for", ["name", val_name], seq_node, desugared_body,
                  node[4] if len(node) > 4 else []]
@@ -11193,7 +11196,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 "add": (self.list_append, 1, False),
                 "items": (self.dict_items_rt, 0, True),
                 "join": (self.str_join_boxed, 1, True),
-                "keys": (self.dict_items_rt, 0, True),
+                "keys": (self.dict_keys_rt, 0, True),
+                "values": (self.dict_values_rt, 0, True),
                 "update": (self.dict_update, 1, False),
                 "setdefault": (self.dict_setdefault, 2, True),
                 "copy": (self.pyobj_copy_dispatch, 0, True),
