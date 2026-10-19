@@ -1,10 +1,11 @@
 # 自举收尾 TODO 与计划（v0.15.0 → v0.16.0，2026-10-19）
 
-> compact 后的单一入口。当前状态：**16/16 原生门禁全通**（2026-10-19
-> 傍晚，见 `progress_2026_10_16.md` 末节）——原生自举转换器对全部
-> 16 个基准程序产出与 Python 转换器逐字节一致的 .ll。语义差异根源
-> 框架见 `selfhost_semantic_divergence.md`（六根源 + 盲区分析 +
-> 求同原则）。本文件只管"接下来做什么、按什么顺序"。
+> compact 后的单一入口。当前状态：**P0（门禁收尾）与 P1（正确性
+> 收尾）全部完成**：原生自举转换器对全部 16 个基准程序在 -O0 与
+> -O2 下均产出与 Python 转换器逐字节一致的 .ll；funcref 全形态
+> （动态/混合 ABI/静态 thunk）工作；运行时静默 null 清零。
+> 语义差异根源框架见 `selfhost_semantic_divergence.md`。
+> 本文件只管"接下来做什么、按什么顺序"。
 
 ## P0：16 程序原生门禁收尾 —— ✅ 已完成
 
@@ -95,10 +96,15 @@ twin 相对行号（≤1057 是 llvmlite.si 的行）；flat 文件被
 （Python 转换器与 flat .si 同源），门禁的 ref.ll 每次重新生成，
 不存在陈旧参考的问题。
 
-## 状态快照（16/16 时）
+## 状态快照（P1 收尾完成时）
 
-- 基准：tag v0.15.0（0b9dc99）时是 9/16
-- 本段修复：list_insert capacity / pyobj_eq 列表相等+异型 False /
-  dict keys-values 路由 / enumerate 计数器位置 / 运行时创建顺序
-- 门禁：16/16 原生字节一致；llvmlite_text 27/27；全量 pytest 见提交
-- 新门禁：tests/test_si_converter_native_parity.py（跨对象模型）
+- 提交链：0b9dc99（v0.15.0）→ d282e19（16/16 原生门禁）→
+  43e2836（门禁切 -O2）→ 6e49545（funcref 通用分发）→
+  72608dc（静默 null 改 panic + enumerate 回归）
+- 门禁：原生 16/16（-O0 与 -O2 双侧）；llvmlite_text 27/27；
+  全量 pytest 1092+ passed；twin 字节锁
+- 新门禁：tests/test_si_converter_native_parity.py（跨对象模型）、
+  tests/test_funcref.py（7 项执行）、tests/test_enumerate.py
+  （4 项回归）
+- 剩余：P2 语言缺口（超大整数字面量 / 真 bytes / 真 set / 列表
+  词法序）与 P3 性能工程，见下文
