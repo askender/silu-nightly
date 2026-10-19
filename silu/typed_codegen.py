@@ -362,6 +362,8 @@ class TypedCodegen(SiluToLLVMConverter):
         self._fn_dispatch_cache = {}
         self._fn_table: list = []
         self._fn_table_used = False
+        # static functions referenced as values: name -> PObj-ABI thunk
+        self._static_thunks: Dict[str, Any] = {}
         self._unbox_inst_cache = None
         self._char_idxerr = None
         self._module_kinds = set()
@@ -5477,12 +5479,14 @@ class TypedCodegen(SiluToLLVMConverter):
         ):
             if name in self.functions or name in self.static_funcs:
                 # a module function referenced as a value: funcref
-                # (boxed into the dispatch table)
-                fn = self.functions.get(name) or self.static_funcs.get(
-                    name, (None, None, None)
-                )[2]
-                if fn is not None and name in self.functions:
+                # (boxed into the dispatch table); static functions ride
+                # as their PObj-ABI thunk
+                fn = self.functions.get(name)
+                if fn is not None:
                     return ("func:" + name, fn)
+                thunk = self._static_thunks.get(name)
+                if thunk is not None:
+                    return ("func:" + name, thunk)
             raise NotImplementedError(
                 f"'{name}' used as a value (call it or access a member)"
             )
@@ -7039,6 +7043,62 @@ class TypedCodegen(SiluToLLVMConverter):
             raw, ir.PointerType(LLVM_KIND_TYPES[kind])
         )
 
+    def _walk_value_refs(self, node, in_callee, refs):
+        """Recurse an IR tree collecting static-function names referenced
+        as values (anywhere but the callee slot of a call)."""
+        if not isinstance(node, (list, tuple)) or not node:
+            return
+        if (
+            node[0] == "name"
+            and len(node) >= 2
+            and isinstance(node[1], str)
+        ):
+            if not in_callee and node[1] in self.static_funcs:
+                refs.add(node[1])
+            return
+        for i in range(len(node)):
+            child = node[i]
+            if isinstance(child, (list, tuple)):
+                self._walk_value_refs(
+                    child, node[0] == "call" and i == 1, refs
+                )
+
+    def _static_value_references(self):
+        """Static functions referenced as values need a PObj-ABI thunk
+        to ride the funcref table."""
+        refs = set()
+        self._walk_value_refs(self._module_stmt_list, False, refs)
+        for _fd in self.function_defs.values():
+            self._walk_value_refs(
+                _fd[3] if len(_fd) > 3 else [], False, refs
+            )
+        return refs
+
+    def _emit_fnref_thunk(self, name, param_kinds, ret_kind, target):
+        """PObj-ABI wrapper around a raw-ABI static function: unbox each
+        argument per its kind, call, box the result."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        thunk = ir.func_(
+            self.module,
+            ir.FunctionType(
+                pyobj_ptr, [pyobj_ptr] * len(param_kinds), False
+            ),
+            "silu_fnref_thunk_" + name,
+        )
+        b = ir.builder_(thunk.append_basic_block("entry"))
+        saved_builder = self.current_builder
+        self.current_builder = b
+        call_args = []
+        for _i, _pk in enumerate(param_kinds):
+            if _pk == OBJ:
+                call_args.append(thunk.args[_i])
+            else:
+                call_args.append(self._unbox(thunk.args[_i], _pk))
+        raw = b.call(target, call_args, "")
+        b.ret(self._box((ret_kind, raw)))
+        self.current_builder = saved_builder
+        return thunk
+
     def _fn_call_dispatch(self, arity):
         """pyobj_fn_callN(box, a1..aN): switch on the table index and
         call the indexed function with uniform PObj* ABI. Emitted
@@ -7085,12 +7145,26 @@ class TypedCodegen(SiluToLLVMConverter):
             b.position_at_end(body)
             target_tys = [str(a.type) for a in target.args]
             self_first = len(target_tys) > 0 and target_tys[0] == "i8*"
-            param_tys = target_tys[1:] if self_first else target_tys
+            # per-param conversion from the uniform boxes follows the
+            # target's KIND table (rawstr/rawlist share the i8* ABI, so
+            # the LLVM type alone cannot pick the unbox); params with no
+            # kind entry stay boxed
+            p_kinds = self._dyn_func_kinds.get(target.name)
+            if p_kinds is None:
+                p_kinds = []
             call_args = []
             for a_i, a_arg in enumerate(fn.args[1:]):
-                # align the boxed argument with the target's param:
-                # i8* params receive the unboxed rawstr
-                if a_i < len(param_tys) and param_tys[a_i] == "i8*":
+                k_idx = a_i + 1 if self_first else a_i
+                p_kind = (
+                    p_kinds[k_idx] if 0 <= k_idx < len(p_kinds) else OBJ
+                )
+                if p_kind == I64:
+                    call_args.append(b.call(self.unbox_int, [a_arg]))
+                elif p_kind == F64:
+                    call_args.append(b.call(self.unbox_float, [a_arg]))
+                elif p_kind == I1:
+                    call_args.append(b.call(self.unbox_bool, [a_arg]))
+                elif p_kind == RAWSTR:
                     call_args.append(
                         b.call(self.pystr_to_rawstr, [a_arg])
                     )
@@ -8081,6 +8155,23 @@ class TypedCodegen(SiluToLLVMConverter):
                 # regular inliner decides)
                 func.linkage = "internal"
                 self.functions[func_name] = func
+        # PObj-ABI thunks for static functions referenced as values:
+        # the funcref table only dispatches box-compatible functions,
+        # so a raw-ABI target rides as a thunk that unboxes/re-boxes.
+        # Created before the table so thunk indices are stable.
+        for _vname in sorted(self._static_value_references()):
+            if _vname in self.static_funcs:
+                _pk, _rk, _fn = self.static_funcs[_vname]
+                _ok = True
+                for _k in _pk:
+                    if _k not in (OBJ, I64, F64, I1, RAWSTR):
+                        _ok = False
+                if _rk not in (OBJ, I64, F64, I1, RAWSTR):
+                    _ok = False
+                if _ok:
+                    self._static_thunks[_vname] = self._emit_fnref_thunk(
+                        _vname, _pk, _rk, _fn
+                    )
         # funcref dispatch table: every dynamic-ABI function with an
         # all-PObj* signature.  Built here, at declaration time, so the
         # indices in funcref boxes (module-level statements convert
@@ -8088,23 +8179,36 @@ class TypedCodegen(SiluToLLVMConverter):
         # always agree.
         self._fn_table = []
         pyobj_ptr_ty = ir.PointerType(self.pyobj.pyobj_type)
+        # eligibility by KIND (rawstr/rawlist/instance share the i8* ABI,
+        # so the LLVM type alone cannot pick the dispatch-arm unbox):
+        # boxed and scalar params are dispatchable, container/instance
+        # params are not
+        _FNREF_OK_KINDS = (OBJ, I64, F64, I1, RAWSTR)
         for _name, fn in self.functions.items():
             ret_ty = _type_ret(fn.ftype)
             if ret_ty is None:
                 ret_ty = fn.ftype.ret
             if not (ret_ty is pyobj_ptr_ty or ret_ty == pyobj_ptr_ty):
                 continue
+            p_kinds = self._dyn_func_kinds.get(_name, None)
+            if p_kinds is None:
+                p_kinds = [OBJ] * len(fn.args)
+            # a method's raw self pointer (i8* first arg, INSTANCE kind)
+            # rides the funcref box, never a call argument - it must not
+            # disqualify the entry
+            _skip0 = len(fn.args) > 0 and _type_text(fn.args[0].type) == "i8*"
             all_ok = True
-            for targ in fn.args:
-                tt = targ.type
-                if not (
-                    tt is pyobj_ptr_ty
-                    or tt == pyobj_ptr_ty
-                    or _type_text(tt) == "i8*"
-                ):
+            for _ki, k in enumerate(p_kinds):
+                if _ki == 0 and _skip0:
+                    continue
+                if k not in _FNREF_OK_KINDS:
                     all_ok = False
             if all_ok:
                 self._fn_table.append(fn)
+        # thunks are all-PObj by construction (no comprehension in the
+        # flat subset, so no list concat here)
+        for _tn, _tf in self._static_thunks.items():
+            self._fn_table.append(_tf)
 
     def _generate_function_bodies(self):
         # eligibility must be structural (not str()-based): under the

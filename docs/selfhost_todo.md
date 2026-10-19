@@ -25,10 +25,10 @@
    实为 list_insert 的堆越界写（O0/O2 只是布局不同）。原生门禁
    16/16 在 O2 下同样字节一致；`silu build`（默认 -O2）产出的
    转换器现已可靠。门禁测试已切到 -O2 锁定该性质。
-7. **混合 ABI funcref 分发**（根源四通用修复）
-   - `pyobj_fn_callN` 分发臂按目标 `_dyn_func_kinds` 逐参
-     装换（对照直呼路径 11471-11488 的 coercе 逻辑）
-   - 补 funcref 表的专项测试（表恒空时 27 项全绿——测试盲区）
+7. ~~**混合 ABI funcref 分发**~~（根源四通用修复）—— ✅ 已解决：
+   分发臂按 `_dyn_func_kinds` 逐参装换；收录改按 kind 过滤（方法
+   self 豁免）；静态函数经 PObj-ABI thunk 入表；专项测试
+   tests/test_funcref.py 7 项
 8. **pyobj_\* 静默 null 系统化改 panic**（根源三收尾）
    - "Error case - return null for now" 全量清单化；改完 .ll
      会变（两侧一致），全部门禁重跑
