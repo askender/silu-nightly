@@ -273,7 +273,7 @@ def si_main():
     ARITY["builder_"] = 1
     ARITY["const_"] = 2
     ARITY["module_"] = 1
-    NON_BUILDER_RECV = {"sink", "seen", "useset", "parts", "out",
+    NON_BUILDER_RECV = {"sink", "_rebound", "seen", "useset", "parts", "out",
                         "probes", "calls", "fill", "parent_names",
                         "repeated", "field_names", "tags"}
     _t = A.parse(text)

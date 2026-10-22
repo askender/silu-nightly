@@ -6616,6 +6616,55 @@ class TypedCodegen(SiluToLLVMConverter):
         if name not in self._class_ids:
             self._class_ids[name] = len(self._class_ids) + 1
 
+    def _collect_rebound_names(self, stmts: list, sink: set):
+        """Names assigned/declared/iterated anywhere in this body: a
+        function-local binding shadows any same-named module global, so
+        name-keyed side tables (_var_class, _list_elem_class) must not
+        answer for it from the module scope."""
+        for stmt in stmts if isinstance(stmts, list) else []:
+            if not isinstance(stmt, (list, tuple)) or not stmt:
+                continue
+            op = stmt[0]
+            if op in ("assign", "ann_assign", "aug_assign"):
+                target = stmt[1]
+                if isinstance(target, str):
+                    sink.add(target)
+                elif (
+                    isinstance(target, (list, tuple))
+                    and len(target) >= 2
+                    and target[0] == "name"
+                ):
+                    sink.add(target[1])
+                if op == "for" and len(stmt) >= 4:
+                    self._collect_rebound_names(stmt[3], sink)
+            elif op == "for" and len(stmt) >= 4:
+                t = stmt[1]
+                if isinstance(t, str):
+                    sink.add(t)
+                elif (
+                    isinstance(t, (list, tuple))
+                    and len(t) >= 2
+                    and t[0] == "name"
+                ):
+                    sink.add(t[1])
+                elif (
+                    isinstance(t, (list, tuple))
+                    and len(t) >= 2
+                    and t[0] == "tuple_unpack"
+                ):
+                    for part in t[1]:
+                        if isinstance(part, str):
+                            sink.add(part)
+                self._collect_rebound_names(stmt[3], sink)
+            elif op == "if" and len(stmt) >= 4:
+                self._collect_rebound_names(stmt[2], sink)
+                self._collect_rebound_names(stmt[3], sink)
+            elif op == "while" and len(stmt) >= 3:
+                self._collect_rebound_names(stmt[2], sink)
+            elif op == "func_def":
+                if len(stmt) >= 2 and isinstance(stmt[1], str):
+                    sink.add(stmt[1])
+
     def _class_of_node(self, node: Any) -> Optional[str]:
         """Class name of an instance-typed expression: a name bound to an
         instance, or a chain through instance fields (a.inner.x) and
@@ -6625,7 +6674,15 @@ class TypedCodegen(SiluToLLVMConverter):
             and len(node) >= 2
             and node[0] == "name"
         ):
-            return self._var_class.get(node[1])
+            cls = self._var_class.get(node[1])
+            if cls is not None:
+                return cls
+            # factory calls (x = const_(...)) declare the instance KIND;
+            # the kind carries the class even without a _var_class entry
+            kind = self.var_kinds.get(node[1])
+            if _is_inst(kind):
+                return _kind_cls(kind)
+            return None
         if (
             isinstance(node, (list, tuple))
             and len(node) >= 3
@@ -7968,6 +8025,22 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = dict(self.variables)
         self.var_kinds = dict(self.var_kinds)
         self._var_class = dict(self._var_class)
+        # a name this body rebinds is function-local: drop any module-
+        # scope class hints for it (they answered for the global, and
+        # the shadowed local may hold a different class entirely)
+        _rebound: set = set()
+        for _pn in func_def[2] if len(func_def) > 2 else ():
+            _rebound.add(_pn)
+        self._collect_rebound_names(func_def[3] if len(func_def) > 3 else [], _rebound)
+        for _rn in _rebound:
+            self._var_class.pop(_rn, None)
+            self._list_elem_class.pop(_rn, None)
+            # an inherited instance-kind is just as wrong as a class
+            # hint: the local rebinds the name (a fresh declare_var
+            # reinstates the local kind on its first assignment)
+            _rk = self.var_kinds.get(_rn, None)
+            if _rk is not None and _is_inst(_rk):
+                self.var_kinds.pop(_rn, None)
 
         for index, param_name in enumerate(func_def[2]):
             kind = param_kinds[index]
@@ -8091,6 +8164,22 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = dict(self.variables)
         self.var_kinds = dict(self.var_kinds)
         self._var_class = dict(self._var_class)
+        # a name this body rebinds is function-local: drop any module-
+        # scope class hints for it (they answered for the global, and
+        # the shadowed local may hold a different class entirely)
+        _rebound: set = set()
+        for _pn in func_def[2] if len(func_def) > 2 else ():
+            _rebound.add(_pn)
+        self._collect_rebound_names(func_def[3] if len(func_def) > 3 else [], _rebound)
+        for _rn in _rebound:
+            self._var_class.pop(_rn, None)
+            self._list_elem_class.pop(_rn, None)
+            # an inherited instance-kind is just as wrong as a class
+            # hint: the local rebinds the name (a fresh declare_var
+            # reinstates the local kind on its first assignment)
+            _rk = self.var_kinds.get(_rn, None)
+            if _rk is not None and _is_inst(_rk):
+                self.var_kinds.pop(_rn, None)
 
         # methods: bind the self parameter's class for attribute access
         method_class = self._method_class.get(func_def[1])
