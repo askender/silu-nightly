@@ -754,6 +754,7 @@ class SiluToLLVMConverter:
             None,
             False,
             True,
+            None,
         )
         self.pyobj_mul = self._create_numeric_binary_function(
             "mul",
@@ -762,6 +763,7 @@ class SiluToLLVMConverter:
             lambda b, s, n: b.call(self.str_repeat, [s, n]),
             False,
             True,
+            lambda b, l, n: b.call(self.list_repeat, [l, n]),
         )
         # Python true division always returns a float
         self.pyobj_truediv = self._create_numeric_binary_function(
@@ -771,6 +773,7 @@ class SiluToLLVMConverter:
             None,
             True,
             False,
+            None,
         )
         self.pyobj_floordiv = self._create_numeric_binary_function(
             "floordiv",
@@ -779,6 +782,7 @@ class SiluToLLVMConverter:
             None,
             True,
             False,
+            None,
         )
         self.pyobj_mod = self._create_numeric_binary_function(
             "mod",
@@ -787,28 +791,34 @@ class SiluToLLVMConverter:
             None,
             True,
             False,
+            None,
         )
         # bitwise ops on int/bool PyObjects (float operands fall to the
         # error path - bitwise on floats is a type error)
         self.pyobj_bitor = self._create_numeric_binary_function(
             "bitor", lambda b, l, r: b.or_(l, r, ""), False,
             None, False, False,
+            None,
         )
         self.pyobj_bitand = self._create_numeric_binary_function(
             "bitand", lambda b, l, r: b.and_(l, r, ""), False,
             None, False, False,
+            None,
         )
         self.pyobj_bitxor = self._create_numeric_binary_function(
             "bitxor", lambda b, l, r: b.xor(l, r, ""), False,
             None, False, False,
+            None,
         )
         self.pyobj_shl = self._create_numeric_binary_function(
             "shl", lambda b, l, r: b.shl(l, r, ""), False,
             None, False, False,
+            None,
         )
         self.pyobj_shr = self._create_numeric_binary_function(
             "shr", lambda b, l, r: b.ashr(l, r, ""), False,
             None, False, False,
+            None,
         )
 
         # Create print function for PyObjects
@@ -4101,6 +4111,64 @@ class SiluToLLVMConverter:
         builder.store(ir.const_(ir.IntType(8), 0), builder.gep(buf, [total]))
         builder.ret(builder.call(self.create_str, [buf, builder.trunc(total, i32)]))
 
+        # PyObject* list_repeat(PyObject* list, PyObject* count) -
+        # [x, y] * n. Self-contained box building: this runs before the
+        # list runtime exists, so the struct/box are assembled inline.
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        self.list_repeat = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            'list_repeat',
+        )
+        b = ir.builder_(self.list_repeat.append_basic_block("entry"))
+        l_arg, c_arg = self.list_repeat.args
+        l_struct = b.bitcast(
+            b.load(b.gep(l_arg, [zero32, one32])),
+            ir.PointerType(self.list_struct_type),
+        )
+        l_len = b.load(b.gep(l_struct, [zero32, zero32]))
+        l_items = b.load(b.gep(l_struct, [zero32, ir.const_(ir.IntType(32), 2)]))
+        count = self._load_number_as_i64(b, c_arg)
+        count = b.select(
+            b.icmp_signed("<", count, zero64), zero64, count
+        )
+        total = b.mul(l_len, count)
+        items_buf = b.call(self.malloc, [b.mul(total, ir.const_(i64, 8))])
+        # copy the source items `count` times
+        ri_ptr = b.alloca(i64, None, 'lrep_i')
+        b.store(zero64, ri_ptr)
+        rcond = self.list_repeat.append_basic_block("lrep_cond")
+        rbody = self.list_repeat.append_basic_block("lrep_body")
+        rdone = self.list_repeat.append_basic_block("lrep_done")
+        b.branch(rcond)
+        b.position_at_end(rcond)
+        b.cbranch(
+            b.icmp_signed("<", b.load(ri_ptr), count), rbody, rdone
+        )
+        b.position_at_end(rbody)
+        r_off = b.mul(b.load(ri_ptr), l_len)
+        r_dest = b.gep(b.bitcast(items_buf, ir.PointerType(pyobj_ptr)), [r_off])
+        b.call(
+            self.memcpy,
+            [b.bitcast(r_dest, ir.PointerType(ir.IntType(8))),
+             b.bitcast(l_items, ir.PointerType(ir.IntType(8))),
+             b.mul(l_len, ir.const_(i64, 8)), ir.const_(ir.IntType(1), 0)],
+        )
+        b.store(b.add(b.load(ri_ptr), one64), ri_ptr)
+        b.branch(rcond)
+        b.position_at_end(rdone)
+        box_raw = b.call(self.malloc, [ir.const_(i64, 16)])
+        box = b.bitcast(box_raw, ir.PointerType(self.pyobj.pyobj_type))
+        b.store(ir.const_(ir.IntType(32), 4), b.gep(box, [zero32, zero32]))
+        st_raw = b.call(self.malloc, [ir.const_(i64, 24)])
+        st = b.bitcast(st_raw, ir.PointerType(self.list_struct_type))
+        b.store(total, b.gep(st, [zero32, zero32]))
+        b.store(total, b.gep(st, [zero32, one32]))
+        b.store(b.bitcast(items_buf, ir.PointerType(pyobj_ptr)),
+                b.gep(st, [zero32, ir.const_(ir.IntType(32), 2)]))
+        b.store(st_raw, b.gep(box, [zero32, one32]))
+        b.ret(box)
+
     def _load_list_struct(self, builder, obj):
         """Load the list struct pointer from a list PyObject (tag 4)."""
         data = builder.load(
@@ -4194,6 +4262,7 @@ class SiluToLLVMConverter:
         str_int_apply,
         zero_check,
         overflow_check,
+        list_int_apply,
     ) -> ir.Function:
         """Create a pyobj arithmetic function over int/bool/float operands.
 
@@ -4203,7 +4272,8 @@ class SiluToLLVMConverter:
         PyObject. With int_apply None the operation always promotes to
         float (Python true division always returns float).
         str_int_apply(builder, str_obj, int_obj) handles str*int mixes
-        (string repetition) when provided.
+        (string repetition) when provided. list_int_apply likewise
+        handles list*int mixes (sequence repetition) when provided.
         zero_check aborts on zero right operand (Python/Rust division).
         overflow_check aborts on i64 overflow (Rust debug panic semantics).
         """
@@ -4265,6 +4335,30 @@ class SiluToLLVMConverter:
             builder.ret(str_result)
 
             builder.position_at_end(str_gate_block)
+            if list_int_apply is not None:
+                # list*int / int*list repetition, same shape as the
+                # str gate
+                list_mix = builder.or_(
+                    builder.and_(
+                        builder.icmp_signed("==", left_tag, ir.const_(ir.IntType(32), 4)),
+                        self._tag_is_intish(builder, right_tag),
+                    ),
+                    builder.and_(
+                        builder.icmp_signed("==", right_tag, ir.const_(ir.IntType(32), 4)),
+                        self._tag_is_intish(builder, left_tag),
+                    ),
+                )
+                list_op_block = func.append_basic_block("list_op")
+                after_list_block = func.append_basic_block("list_gate")
+                builder.cbranch(list_mix, list_op_block, after_list_block)
+                builder.position_at_end(list_op_block)
+                left_is_list = builder.icmp_signed(
+                    "==", left_tag, ir.const_(ir.IntType(32), 4)
+                )
+                list_obj = builder.select(left_is_list, left, right)
+                int_obj = builder.select(left_is_list, right, left)
+                builder.ret(list_int_apply(builder, list_obj, int_obj))
+                builder.position_at_end(after_list_block)
             builder.cbranch(both_numeric, num_check_block, error_block)
         else:
             builder.cbranch(both_numeric, num_check_block, error_block)

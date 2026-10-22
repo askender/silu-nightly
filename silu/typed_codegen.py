@@ -6802,7 +6802,9 @@ class TypedCodegen(SiluToLLVMConverter):
                 [pyobj_ptr] + [pyobj_ptr] * arity,
                 False,
             ),
-            "pyobj_fn_call%d" % arity,
+            # str concat, not %-formatting: the dynamic plane has no
+            # printf-style % operator
+            "pyobj_fn_call" + str(arity),
         )
         entry = fn.append_basic_block("entry")
         b = ir.builder_(entry)

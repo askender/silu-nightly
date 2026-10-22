@@ -267,6 +267,21 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         """Visit a unary operation node."""
+        # fold ONLY the pathological literal: -9223372036854775808.
+        # CPython parses it as USub(Constant(9223372036854775808)) and
+        # the positive magnitude cannot be held in i64, so leaving it
+        # unfolded would serialize an out-of-range literal the native
+        # converter cannot parse. Every other -literal keeps the
+        # ["-", operand] shape (the IR contract the front-end tests
+        # and silu_fe.si rely on).
+        if (
+            isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+            and isinstance(node.operand.value, int)
+            and not isinstance(node.operand.value, bool)
+            and node.operand.value == 9223372036854775808
+        ):
+            return self.process_constant(-node.operand.value)
         operand = self.visit(node.operand)
         op = self._get_operator(node.op)
         return self.process_operation(op, operand)

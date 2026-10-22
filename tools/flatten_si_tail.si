@@ -108,10 +108,20 @@ def jr_number(j):
             break
     if "." not in text and "e" not in text and "E" not in text:
         iv = 0
-        for dc in text:
-            iv = iv * 10 + (ord(dc) - 48)
         if neg:
-            iv = -iv
+            # accumulate NEGATIVELY: i64::MIN's magnitude (one past
+            # MAX) cannot be held positive, but MIN itself is in range
+            for dc in text:
+                d = ord(dc) - 48
+                if iv < -922337203685477580 or (iv == -922337203685477580 and d > 8):
+                    raise ValueError("integer literal out of i64 range in JSON")
+                iv = iv * 10 - d
+            return iv
+        for dc in text:
+            d = ord(dc) - 48
+            if iv > 922337203685477580 or (iv == 922337203685477580 and d > 7):
+                raise ValueError("integer literal out of i64 range in JSON")
+            iv = iv * 10 + d
         return iv
     fv = float(text)
     if neg:
