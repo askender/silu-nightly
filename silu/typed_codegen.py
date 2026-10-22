@@ -4933,6 +4933,8 @@ class TypedCodegen(SiluToLLVMConverter):
         "list": (4,),
         "tuple": (4,),
         "dict": (5,),
+        # sets ride their own tag-8 box
+        "set": (8,),
         # byte literals ride the str tag in the boxed world
         "bytes": (2,),
         "bytearray": (2,),
