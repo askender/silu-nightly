@@ -5,6 +5,25 @@
 > pytest 绿、v0.18.0（a009116）。历史脉络见
 > `progress_2026_10_16.md`、`selfhost_semantic_divergence.md`。
 
+## 状态速览（2026-10-22 深夜更新，先读这段）
+
+- 不动点阻塞推进：#1-#7 **全部攻破**（详见 progress 末两节），
+  自转换（11MB IR）在 -O2 原生转换器下 **8.6 秒完整跑完**，
+  现卡在 **#8：最后渲染阶段，自产 silu_panic 里出现 null
+  gep/call 操作数**（渲染期 _op_ref 读 .name 于 null 盒）。
+- #8 已确证：发射期 printf/line_global/exit_func 均非空
+  （源码级 TEMP print 验证）；null 在指令构造与渲染之间的
+  某处引入。有效配方：twin 级 NULL-OPERAND / NULL-PTR-CALLEE
+  （扫 i.operands/i.pointer/i.callee/i.indices/i.incomings）+
+  block_str 打宿主函数名（b.function.name）——已定位到
+  silu_panic 的 .3=gep(null)/.4=call(null)。下一步嫌疑：
+  ① gep/call 的 `i.pointer = ptr` / `i.callee = fn` 动态写
+  与渲染期动态读的槽位漂移（写读两处的 _dyn_member_classes
+  分别 dump 对比）；② gvar_ 的 str_N 命名在自转换规模下
+  的 module.globals 计数异常；③ 用 m1/m2 式 20 行探针复刻
+  "gep(gvar)+call(printf)" 的最小链。
+- 修完 #8 → 若 cmp 通过即固化 test_selfhost_fixed_point.py。
+
 ## 一、判定：**转换器级自举已完成；全管线自举还差两件事**
 
 ### 已完成（证据充分的）
