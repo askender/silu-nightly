@@ -1311,7 +1311,10 @@ class SiluToLLVMConverter:
         (obj_arg,) = fn.args
         tag = b.load(b.gep(obj_arg, [zero32, zero32]))
         b.cbranch(
-            b.icmp_signed("==", tag, ir.const_(i32, 4)),
+            b.or_(
+                b.icmp_signed("==", tag, ir.const_(i32, 4)),
+                b.icmp_signed("==", tag, ir.const_(i32, 8)),
+            ),
             list_blk,
             dict_blk,
         )
@@ -1492,6 +1495,7 @@ class SiluToLLVMConverter:
         switch.add_case(ir.const_(ir.IntType(32), 2), str_block)  # str
         switch.add_case(ir.const_(ir.IntType(32), 3), bool_block)  # bool
         switch.add_case(ir.const_(ir.IntType(32), 4), list_block)  # list
+        switch.add_case(ir.const_(ir.IntType(32), 8), list_block)  # set
         switch.add_case(ir.const_(ir.IntType(32), 5), dict_block)  # dict
 
         # Print list as [a, b, c] with recursive element printing
@@ -1927,7 +1931,11 @@ class SiluToLLVMConverter:
         builder = ir.builder_(entry)
         obj_arg = self.pyobj_len.args[0]
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
-        is_list = builder.icmp_signed("==", tag, ir.const_(i32, 4))
+        # tag 8 (set) shares the list struct: len/set ops read it alike
+        is_list = builder.or_(
+            builder.icmp_signed("==", tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", tag, ir.const_(i32, 8)),
+        )
         builder.cbranch(is_list, list_block, str_check_block)
 
         builder.position_at_end(list_block)
@@ -2008,6 +2016,7 @@ class SiluToLLVMConverter:
         switch.add_case(ir.const_(i32, 2), str_case)
         switch.add_case(ir.const_(i32, 3), int_case)
         switch.add_case(ir.const_(i32, 4), list_case)
+        switch.add_case(ir.const_(i32, 8), list_case)
         switch.add_case(ir.const_(i32, 5), dict_case)
 
         builder.position_at_end(int_case)
@@ -3089,7 +3098,10 @@ class SiluToLLVMConverter:
         builder.cbranch(is_str, str_case, list_check_block)
 
         builder.position_at_end(list_check_block)
-        is_list = builder.icmp_signed("==", container_tag, ir.const_(i32, 4))
+        is_list = builder.or_(
+            builder.icmp_signed("==", container_tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", container_tag, ir.const_(i32, 8)),
+        )
         builder.cbranch(is_list, list_case, type_error)
 
         builder.position_at_end(dict_case)
@@ -3143,6 +3155,31 @@ class SiluToLLVMConverter:
         )
         self._emit_panic(builder, err_msg)
 
+        # PObj* create_set() - a tag-8 box wrapping the same {len, cap,
+        # items} struct as a list: len/contains/iterate/print read it
+        # through the list paths, while ==/</<=... carry set semantics
+        self.create_set = ir.func_(
+            self.module, ir.FunctionType(pyobj_ptr, [], False), 'create_set'
+        )
+        cs_b = ir.builder_(self.create_set.append_basic_block("entry"))
+        cs_box_raw = cs_b.call(self.malloc, [ir.const_(i64, 16)])
+        cs_box = cs_b.bitcast(cs_box_raw, pyobj_ptr)
+        cs_b.store(ir.const_(i32, 8), cs_b.gep(cs_box, [zero32, zero32]))
+        cs_st_raw = cs_b.call(self.malloc, [ir.const_(i64, 24)])
+        cs_st = cs_b.bitcast(
+            cs_st_raw, ir.PointerType(self.list_struct_type)
+        )
+        cs_b.store(ir.const_(i64, 0), cs_b.gep(cs_st, [zero32, zero32]))
+        cs_b.store(ir.const_(i64, 0), cs_b.gep(cs_st, [zero32, one32]))
+        cs_b.store(
+            ir.const_(
+                ir.PointerType(ir.PointerType(self.pyobj.pyobj_type)), None
+            ),
+            cs_b.gep(cs_st, [zero32, ir.const_(i32, 2)]),
+        )
+        cs_b.store(cs_st_raw, cs_b.gep(cs_box, [zero32, one32]))
+        cs_b.ret(cs_box)
+
         # PObj* pyobj_set_add(PObj* set, PObj* item) - idempotent add,
         # returning the set (same ABI shape as list_append: void here
         # once broke the converter binary in ways not worth chasing)
@@ -3163,6 +3200,7 @@ class SiluToLLVMConverter:
         b.branch(sa_done)
         b.position_at_end(sa_done)
         b.ret(sa_set)
+
 
         # PyObject* pyobj_str_conv(PyObject* obj) - str(x) for scalars:
         # int via %lld, float via float_repr (shortest round-trip),
@@ -3590,6 +3628,57 @@ class SiluToLLVMConverter:
 
         builder.position_at_end(pair_loop_done)
         builder.ret_void()
+
+        # PObj* pyobj_update_dispatch(PObj* dst, PObj* src) - .update()
+        # with one ABI: a set receiver (tag 4) absorbs src's elements
+        # idempotently (set.update); anything else forwards to
+        # dict_update. Routing a set to dict_update used to write dict
+        # fields into the list struct, corrupting it silently.
+        self.pyobj_update_dispatch = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_update_dispatch',
+        )
+        ud_entry = self.pyobj_update_dispatch.append_basic_block("entry")
+        ud_set = self.pyobj_update_dispatch.append_basic_block("ud_set")
+        ud_dict = self.pyobj_update_dispatch.append_basic_block("ud_dict")
+        b = ir.builder_(ud_entry)
+        ud_dst, ud_src = self.pyobj_update_dispatch.args
+        ud_tag = b.load(b.gep(ud_dst, [zero32, zero32]))
+        b.cbranch(
+            b.or_(
+                b.icmp_signed("==", ud_tag, ir.const_(i32, 4)),
+                b.icmp_signed("==", ud_tag, ir.const_(i32, 8)),
+            ),
+            ud_set, ud_dict,
+        )
+        b.position_at_end(ud_dict)
+        b.call(self.dict_update, [ud_dst, ud_src])
+        b.ret(ud_dst)
+        b.position_at_end(ud_set)
+        ud_keys = b.call(self.pyobj_iter_keys, [ud_src])
+        ud_total = b.call(self.list_length, [ud_keys])
+        ud_i = b.alloca(ir.IntType(64), None, "ud_i")
+        b.store(ir.const_(i64, 0), ud_i)
+        ud_cond = self.pyobj_update_dispatch.append_basic_block("ud_cond")
+        ud_body = self.pyobj_update_dispatch.append_basic_block("ud_body")
+        ud_done = self.pyobj_update_dispatch.append_basic_block("ud_done")
+        b.branch(ud_cond)
+        b.position_at_end(ud_cond)
+        ud_cur = b.load(ud_i)
+        b.cbranch(
+            b.icmp_signed("<", ud_cur, ud_total), ud_body, ud_done
+        )
+        b.position_at_end(ud_body)
+        ud_elem = b.call(
+            self.list_get,
+            [ud_keys, b.call(self.create_int, [b.load(ud_i)])],
+        )
+        b.call(self.pyobj_set_add, [ud_dst, ud_elem])
+        b.store(b.add(b.load(ud_i), ir.const_(i64, 1)), ud_i)
+        b.branch(ud_cond)
+        b.position_at_end(ud_done)
+        b.ret(ud_dst)
 
         # dict source: copy all live entries
         builder.position_at_end(src_tag_check)
@@ -4579,8 +4668,15 @@ class SiluToLLVMConverter:
             builder.icmp_signed("==", left_tag, ir.const_(i32, 4)),
             builder.icmp_signed("==", right_tag, ir.const_(i32, 4)),
         )
+        # sets are their own tag: 8x8 pairs take set semantics
+        both_set = builder.and_(
+            builder.icmp_signed("==", left_tag, ir.const_(i32, 8)),
+            builder.icmp_signed("==", right_tag, ir.const_(i32, 8)),
+        )
         list_op_block = func.append_basic_block("list_op")
-        builder.cbranch(both_list, list_op_block, error_block)
+        set_op_block = func.append_basic_block("set_op")
+        after_seq_block = func.append_basic_block("seq_gate")
+        builder.cbranch(both_list, list_op_block, after_seq_block)
 
         builder.position_at_end(list_op_block)
         if pred in ("==", "!="):
@@ -4589,11 +4685,38 @@ class SiluToLLVMConverter:
                 list_eq = builder.not_(list_eq)
             builder.ret(builder.call(self.create_bool, [list_eq]))
         else:
+            # Python lists order lexicographically
             list_order = builder.call(self.pyobj_list_cmp, [left, right])
             list_result = builder.icmp_signed(
                 pred, list_order, ir.const_(i64, 0)
             )
             builder.ret(builder.call(self.create_bool, [list_result]))
+
+        builder.position_at_end(after_seq_block)
+        builder.cbranch(both_set, set_op_block, error_block)
+
+        builder.position_at_end(set_op_block)
+        # set semantics: ==/!= by content (order-free, via mutual
+        # subset), </<= (proper) subset, >/>= (proper) superset
+        a_in_b = builder.call(self.pyobj_set_subset, [left, right])
+        b_in_a = builder.call(self.pyobj_set_subset, [right, left])
+        if pred == "==":
+            set_result = builder.and_(a_in_b, b_in_a)
+        elif pred == "!=":
+            set_result = builder.not_(builder.and_(a_in_b, b_in_a))
+        elif pred == "<=":
+            set_result = a_in_b
+        elif pred == "<":
+            set_result = builder.and_(
+                a_in_b, builder.not_(b_in_a)
+            )
+        elif pred == ">=":
+            set_result = b_in_a
+        else:  # ">"
+            set_result = builder.and_(
+                b_in_a, builder.not_(a_in_b)
+            )
+        builder.ret(builder.call(self.create_bool, [set_result]))
 
         builder.position_at_end(str_op_block)
 
@@ -4681,9 +4804,67 @@ class SiluToLLVMConverter:
         }
         # a plain dict (Silu classes reject setattr-created fields);
         # readers go through self.pyobj_cmp
+        # i1 pyobj_set_subset(PObj* a, PObj* b) - every element of a is
+        # in b (sets are tag-8 boxes over the list struct). Created here
+        # so pyobj_eq (first in the loop above) already exists.
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        zero32 = ir.const_(i32, 0)
+        self.pyobj_set_subset = ir.func_(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_set_subset',
+        )
+        b = ir.builder_(self.pyobj_set_subset.append_basic_block("ss_entry"))
+        ss_cond = self.pyobj_set_subset.append_basic_block("ss_cond")
+        ss_body = self.pyobj_set_subset.append_basic_block("ss_body")
+        ss_ic = self.pyobj_set_subset.append_basic_block("ss_ic")
+        ss_ib = self.pyobj_set_subset.append_basic_block("ss_ib")
+        ss_istep = self.pyobj_set_subset.append_basic_block("ss_istep")
+        ss_ostep = self.pyobj_set_subset.append_basic_block("ss_ostep")
+        ss_miss = self.pyobj_set_subset.append_basic_block("ss_miss")
+        ss_done = self.pyobj_set_subset.append_basic_block("ss_done")
+        ss_a, ss_b = self.pyobj_set_subset.args
+        a_struct = self._load_list_struct(b, ss_a)
+        a_len = b.load(b.gep(a_struct, [zero32, zero32]))
+        a_items = b.load(b.gep(a_struct, [zero32, ir.const_(i32, 2)]))
+        b_struct = self._load_list_struct(b, ss_b)
+        b_len = b.load(b.gep(b_struct, [zero32, zero32]))
+        b_items = b.load(b.gep(b_struct, [zero32, ir.const_(i32, 2)]))
+        i_ptr = b.alloca(i64, None, "ss_i")
+        j_ptr = b.alloca(i64, None, "ss_j")
+        b.store(ir.const_(i64, 0), i_ptr)
+        b.branch(ss_cond)
+        b.position_at_end(ss_cond)
+        i_cur = b.load(i_ptr)
+        b.cbranch(b.icmp_signed("<", i_cur, a_len), ss_body, ss_done)
+        b.position_at_end(ss_body)
+        a_elem = b.load(b.gep(a_items, [i_cur]))
+        b.store(ir.const_(i64, 0), j_ptr)
+        b.branch(ss_ic)
+        b.position_at_end(ss_ic)
+        j_cur = b.load(j_ptr)
+        b.cbranch(b.icmp_signed("<", j_cur, b_len), ss_ib, ss_miss)
+        b.position_at_end(ss_ib)
+        b_elem = b.load(b.gep(b_items, [j_cur]))
+        eq_i1 = b.call(self.pyobj_deep_eq, [a_elem, b_elem])
+        b.cbranch(eq_i1, ss_ostep, ss_istep)
+        b.position_at_end(ss_istep)
+        b.store(b.add(j_cur, ir.const_(i64, 1)), j_ptr)
+        b.branch(ss_ic)
+        b.position_at_end(ss_ostep)
+        b.store(b.add(i_cur, ir.const_(i64, 1)), i_ptr)
+        b.branch(ss_cond)
+        b.position_at_end(ss_miss)
+        b.ret(ir.const_(ir.IntType(1), 0))
+        b.position_at_end(ss_done)
+        b.ret(ir.const_(ir.IntType(1), 1))
+
         self.pyobj_cmp = {}
         for name, pred in predicates.items():
             self.pyobj_cmp[pred] = self._create_bool_result_function(name, pred)
+
 
     def _create_less_than_comparison(self, left: ir.Value, right: ir.Value) -> ir.Value:
         """Less-than over int/float operands, used by loop conditions."""

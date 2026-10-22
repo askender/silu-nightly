@@ -6832,7 +6832,12 @@ class TypedCodegen(SiluToLLVMConverter):
             nxt = fn.append_basic_block("fc_nxt")
             b.cbranch(hit, body, nxt)
             b.position_at_end(body)
-            target_tys = [str(a.type) for a in target.args]
+            # explicit loop, not a comprehension: comprehensions are
+            # outside the dual-valid subset (the native plane degrades
+            # them to a null assignment)
+            target_tys = []
+            for a in target.args:
+                target_tys.append(str(a.type))
             self_first = len(target_tys) > 0 and target_tys[0] == "i8*"
             # per-param conversion from the uniform boxes follows the
             # target's KIND table (rawstr/rawlist share the i8* ABI, so
@@ -9276,10 +9281,9 @@ class TypedCodegen(SiluToLLVMConverter):
             return (OBJ, tuple_obj)
 
         if op == "set":
-            # a set literal rides as a list box with construction-time
-            # dedup (Python semantics); the dynamic plane only ever
-            # consumes these through membership and iteration
-            set_obj = self.current_builder.call(self.create_list, [])
+            # a tag-8 set box (list struct, set semantics): literal
+            # construction dedups (Python semantics)
+            set_obj = self.current_builder.call(self.create_set, [])
             for elem_node in node[1] if len(node) > 1 else []:
                 elem = self._box(self._convert_node(elem_node))
                 self.current_builder.call(self.pyobj_set_add, [set_obj, elem])
@@ -10998,7 +11002,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 "join": (self.str_join_boxed, 1, True),
                 "keys": (self.dict_keys_rt, 0, True),
                 "values": (self.dict_values_rt, 0, True),
-                "update": (self.dict_update, 1, False),
+                "update": (self.pyobj_update_dispatch, 1, False),
                 "setdefault": (self.dict_setdefault, 2, True),
                 "copy": (self.pyobj_copy_dispatch, 0, True),
                 "clear": (self.pyobj_clear, 0, False),
@@ -11418,10 +11422,8 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
             if func_name == "repr" and len(args_node) == 1:
                 return self._convert_node(args_node[0])
-            if func_name == "set" and not args_node:
-                return self._convert_node(["list", []])
-            if func_name == "set" and args_node:
-                return self._convert_node(args_node[0])
+            # set(...) falls through to the general constructor branch
+            # (tag-8 box, construction dedup, real copy)
             if func_name == "all" and len(args_node) == 1:
                 # iterate boxed elements, AND their truthiness
                 return self._convert_node(
@@ -11579,7 +11581,12 @@ class TypedCodegen(SiluToLLVMConverter):
             b = self.current_builder
             if args_node:
                 src = self._box(self._convert_node(args_node[0]))
-                out = b.call(self.create_list, [])
+                is_set_ctor = func_node[1] == "set"
+                out = (
+                    b.call(self.create_set, [])
+                    if is_set_ctor
+                    else b.call(self.create_list, [])
+                )
                 keys = b.call(self.pyobj_iter_keys, [src])
                 idx_ptr = b.alloca(ir.IntType(64), None, "ctor_i")
                 b.store(ir.const_(ir.IntType(64), 0), idx_ptr)
@@ -11600,16 +11607,21 @@ class TypedCodegen(SiluToLLVMConverter):
                 if func_node[1] == "dict":
                     val = b.call(self.pyobj_subscript, [src, key])
                     b.call(self.dict_set, [out, key, val])
+                elif is_set_ctor:
+                    b.call(self.pyobj_set_add, [out, key])
                 else:
                     b.call(self.list_append, [out, key])
                 b.store(b.add(cur, ir.const_(ir.IntType(64), 1)), idx_ptr)
                 b.branch(cond)
                 b.position_at_end(done)
                 return (OBJ, out)
-            # no-arg constructors: empty containers (all PyObj)
-            return self._convert_node(
-                ["list", []] if func_node[1] != "dict" else ["dict", []]
-            )
+            # no-arg constructors: empty containers (all PyObj; sets
+            # keep their tag-8 box)
+            if func_node[1] == "dict":
+                return self._convert_node(["dict", []])
+            if func_node[1] == "set":
+                return (OBJ, self.current_builder.call(self.create_set, []))
+            return self._convert_node(["list", []])
         # unknown callee: fail at compile time. A silent null leaks into
         # containers and crashes far from its origin at runtime.
         callee_desc = (

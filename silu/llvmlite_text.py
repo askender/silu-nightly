@@ -416,10 +416,12 @@ class Block:
 
 
 def block_str(b):
-    out = _label_text(b.name) + ":\n"
+    # parts + single join (see function_str for why)
+    parts = []
+    parts.append(_label_text(b.name) + ":\n")
     for i in b.instructions:
-        out += "  " + instr_str(i) + "\n"
-    return out
+        parts.append("  " + instr_str(i) + "\n")
+    return "".join(parts)
 
 
 def _label_text(name):
@@ -701,17 +703,21 @@ def function_str(f):
     if f.linkage != "":
         prefix_parts.append(f.linkage)
     prefix_parts.append(ret)
-    out = (" ".join(prefix_parts) + " " + _quote_ref("@", f.name)
-           + "(" + args_txt + vararg + ")")
+    # parts + single join: string += accumulation is quadratic in the
+    # native plane (every + allocates and copies both sides; CPython's
+    # in-place realloc hides the cost on the Python side)
+    out_parts = []
+    out_parts.append(" ".join(prefix_parts) + " " + _quote_ref("@", f.name)
+                     + "(" + args_txt + vararg + ")")
     if len(f.attributes.items) > 0:
-        out += " " + " ".join(sorted(f.attributes.items))
-    out += "\n"
+        out_parts.append(" " + " ".join(sorted(f.attributes.items)))
+    out_parts.append("\n")
     if f.blocks:
-        out += "{\n"
+        out_parts.append("{\n")
         for b in f.blocks:
-            out += block_str(b)
-        out += "}\n"
-    return out
+            out_parts.append(block_str(b))
+        out_parts.append("}\n")
+    return "".join(out_parts)
 
 
 class Module:
