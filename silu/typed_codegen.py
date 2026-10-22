@@ -9896,6 +9896,34 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
             return (OBJ, null_obj)
 
+        if op == "chained_compare" and len(node) >= 2:
+            # a <= b < c: pairwise compares over one shared middle
+            # operand (evaluated once), ANDed. Unhandled it silently
+            # degraded to null - every chained compare became False
+            pairs = node[1]
+            first = pairs[0]
+            # the middle operand (first's right side) is shared with the
+            # next pair's left: convert it once, then roll it forward
+            mid_tv = self._convert_node(first[2])
+            result_tv = self._typed_compare(
+                first[0], self._convert_node(first[1]), mid_tv,
+                first[1], first[2],
+            )
+            for pair in pairs[1:]:
+                rhs_tv = self._convert_node(pair[2])
+                nxt_tv = self._typed_compare(
+                    pair[0], mid_tv, rhs_tv, pair[1], pair[2],
+                )
+                result_tv = (
+                    I1,
+                    self.current_builder.and_(
+                        self._coerce(result_tv, I1)[1],
+                        self._coerce(nxt_tv, I1)[1],
+                    ),
+                )
+                mid_tv = rhs_tv
+            return result_tv
+
         if op == "multi_assign" and len(node) >= 2:
             # chained assignment (a = b = expr) flattens to plain
             # sequential assigns; leaving it unhandled silently
