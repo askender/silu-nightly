@@ -5324,7 +5324,8 @@ class TypedCodegen(SiluToLLVMConverter):
     # statement ops whose returned TypedValue aliases slot storage -
     # their results must never be freed as temporaries
     _STORAGE_ALIASING_STMT_OPS = {
-        "assign", "ann_assign", "aug_assign", "tuple_assign",
+        "assign", "multi_assign", "ann_assign", "aug_assign",
+        "tuple_assign",
         "subscript_assign", "subscript_aug_assign", "delete", "return",
         "for", "while", "if", "if_expr", "func_def", "class_def",
         "line", "break", "continue", "pass", "assert", "raise", "try",
@@ -6875,7 +6876,10 @@ class TypedCodegen(SiluToLLVMConverter):
             target_args = list(target.args)
             target_n = len(target_args)
             self_first = (
-                target_n > 0 and str(target_args[0].type) == "i8*"
+                # _type_text, not str(): the twin's Type str() is its
+                # repr in the Silu plane, so self-first methods would
+                # never match and every dispatch arity would shift by 1
+                target_n > 0 and _type_text(target_args[0].type) == "i8*"
             )
             want = target_n - 1 if self_first else target_n
             if want != arity or want < 0:
@@ -6896,7 +6900,8 @@ class TypedCodegen(SiluToLLVMConverter):
             # them to a null assignment)
             target_tys = []
             for a in target.args:
-                target_tys.append(str(a.type))
+                # _type_text for the same dual-plane reason as above
+                target_tys.append(_type_text(a.type))
             self_first = len(target_tys) > 0 and target_tys[0] == "i8*"
             # per-param conversion from the uniform boxes follows the
             # target's KIND table (rawstr/rawlist share the i8* ABI, so
@@ -9889,6 +9894,15 @@ class TypedCodegen(SiluToLLVMConverter):
                         self.current_builder.store(
                             coerced[1], self.variables[target]
                         )
+            return (OBJ, null_obj)
+
+        if op == "multi_assign" and len(node) >= 2:
+            # chained assignment (a = b = expr) flattens to plain
+            # sequential assigns; leaving it unhandled silently
+            # skipped every store - the slots kept uninitialized stack
+            # garbage, which is where the 'corruption' family lived
+            for sub_stmt in node[1]:
+                self._convert_statement(sub_stmt)
             return (OBJ, null_obj)
 
         # unknown op: degrade to dynamic null

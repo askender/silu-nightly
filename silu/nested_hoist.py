@@ -148,6 +148,42 @@ def _free_names(node, out):
             _free_names(c, out)
 
 
+def _collect_assigned_names(stmts, sink):
+    """Names the function body itself binds (assignments, for targets,
+    ann/aug assigns). A nested def's name can be shadowed by such a
+    local - uses after the rebinding read the local slot, not the
+    hoisted function."""
+    for st in stmts if isinstance(stmts, (list, tuple)) else []:
+        if not isinstance(st, (list, tuple)) or not st:
+            continue
+        op = st[0]
+        if op in ("assign", "ann_assign", "aug_assign"):
+            if isinstance(st[1], str):
+                sink.add(st[1])
+            elif (
+                isinstance(st[1], (list, tuple))
+                and len(st[1]) >= 2
+                and st[1][0] == "name"
+            ):
+                sink.add(st[1][1])
+        elif op == "for" and len(st) >= 2:
+            t = st[1]
+            if isinstance(t, str):
+                sink.add(t)
+            elif (
+                isinstance(t, (list, tuple))
+                and len(t) >= 2
+                and t[0] == "name"
+            ):
+                sink.add(t[1])
+            _collect_locals(st[3] if len(st) > 3 else [], sink)
+        elif op == "if" and len(st) >= 4:
+            _collect_locals(st[2], sink)
+            _collect_locals(st[3], sink)
+        elif op == "while" and len(st) >= 3:
+            _collect_locals(st[2], sink)
+
+
 class _Group:
     """One outer function's hoisting context."""
 
@@ -206,6 +242,8 @@ def _hoist_def(func_def, cls_name, is_method, global_names, extra):
         func_def[1], func_def[2], func_def[3], func_def[4],
         func_def[5] if len(func_def) > 5 else None,
     )
+    group.locals = set()
+    _collect_assigned_names(body, group.locals)
     new_body = _rec(body, group)
 
     # transitive self-need fixpoint over the whole group
@@ -324,7 +362,11 @@ def _rec(node, group):
     ):
         # a hoisted function referenced as a VALUE (passed as an
         # argument): point at the mangled name; the typed backend
-        # resolves funcref values statically
+        # resolves funcref values statically. A name the body ALSO
+        # assigns is a local that shadows the function - uses read
+        # the local slot, never the funcref
+        if node[1] in getattr(group, "locals", ()):
+            return node
         return ("funcref", group.renames[node[1]])
 
     return tuple(_rec(x, group) for x in node)
