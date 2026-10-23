@@ -28,6 +28,7 @@ REPO = __file__.rsplit("/tools/", 1)[0]
 BASE = f"{REPO}/silu/silu_ir_to_llvm.py"
 DERIVED = f"{REPO}/silu/typed_codegen.py"
 HELPERS = f"{REPO}/silu/typed_helpers.py"
+RUNTIME_MIXIN = f"{REPO}/silu/pyobj_runtime.py"
 
 RENAMES = {
     "__init__": "_base_init",
@@ -122,7 +123,20 @@ def _helpers_block():
 
 def main():
     base_src = open(BASE).read()
+    # the mixin import is dropped: flatten inlines the mixin's methods,
+    # and the multi-line parenthesized import would otherwise break the
+    # line-based import collector
+    import re as _re_imp
+    base_src = _re_imp.sub(
+        r"from \.pyobj_runtime import \([^)]*\)\n\n*", "", base_src
+    )
     derived_src = open(DERIVED).read()
+    mixin_src = open(RUNTIME_MIXIN).read()
+    mixin_tree = ast.parse(mixin_src)
+    mixin_lines = mixin_src.split("\n")
+    mixin_methods, _unused_cls = method_blocks(
+        mixin_tree, "PyobjRuntimeMixin"
+    )
     # typed_codegen.py's leaf helpers live in silu/typed_helpers.py;
     # inline them so the flattened module stays self-contained
     marker = "from silu.typed_helpers import *"
@@ -155,6 +169,25 @@ def main():
     header = derived_lines[derived_cls_start]  # class TypedCodegen(...):
     header = header.replace("(SiluToLLVMConverter)", "")
 
+    def emit_mixin():
+        # the runtime-emission mixin methods occupy exactly the slot
+        # they held in the pre-split single file: right after the
+        # base's _init_runtime_functions, before convert() and the
+        # rest - keeping the flattened output byte-identical
+        for name, s_, e_ in mixin_methods:
+            if name in derived_names:
+                continue  # derived overrides win, same rule as base
+            block = mixin_lines[s_:e_]
+            di = 0
+            while not block[di].lstrip().startswith("def "):
+                di += 1
+            sig = block[di].strip()
+            paren = sig.index("(")
+            block[di] = "    def " + name + sig[paren:]
+            block = _debase(block)
+            merged.append("")
+            merged.extend(block)
+
     merged = [header]
     for name, s, e in base_methods:
         out_name = RENAMES.get(name, name)
@@ -181,6 +214,8 @@ def main():
             ]
         merged.append("")
         merged.extend(block)
+        if out_name == "_init_runtime_functions":
+            emit_mixin()
     # derived class-level constants (non-function statements) stay
     for item in derived_cls.body:
         if isinstance(item, ast.Assign):
