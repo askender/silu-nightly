@@ -108,3 +108,25 @@
   三分支路径覆盖（SymbolicExecutor.function_analyses）。变异
   验证：历史 bug 形态（needs_grow = len < cap 迟一步增长）被
   Z3 当场反例击中（len0=cap0=0）。
+
+## 编译提速：运行时 .o 缓存（2026-10-23 深夜）
+
+可以更快——已实现。`SILU_RUNTIME_CACHE=1 silu build`（opt-in）：
+
+- 原理：每个程序的 .ll 都内嵌同一个 ~350KB pyobj 运行时
+  （178 个函数，__init__ 期创建、先于一切用户项——**前缀不变量**
+  已验证并作为拆分守卫）。缓存路径把它编译成 ~/.cache/silu-
+  runtime/<sha>.o（冷缓存一次性 0.66s），此后每次编译 clang 只见
+  3-30KB 用户部分 + 一次链接。
+- 用户 .ll 自动补齐外部声明（函数 declare / 全局 external，从
+  运行时定义行推导类型；libc/intrinsics 的 header declares 随
+  用户带走；internal 链接不能跨界 → 运行时对象提升默认可见性，
+  仅符号表变化）。
+- 实测（6 基准，warm）：**0.72s → 0.32s/程序（2.2×）**，总量
+  4.20s → 1.90s；输出与直编**逐字节一致**（6/6），运行速度
+  持平（2-4ms）。冷缓存首次 0.66s。
+- 剩余成本剖析：Python 进程启动+FE ~0.15s（含解释器启动）、
+  convert 0.05s、split 0.07s（内含运行时文本重生成）、
+  clang 用户+链接 ~0.10s。下一步空间：split 复用磁盘缓存的
+  运行时文本（省 0.05s）、FE 与 convert 常驻进程（省 0.1s+）。
+- 默认关闭（字节门禁走直编路径不受影响）；门禁抽查 27+17 全绿。

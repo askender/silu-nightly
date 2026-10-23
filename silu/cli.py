@@ -316,6 +316,17 @@ def _compile_to_binary(source_file: str, out_path: str) -> None:
         converter = TypedCodegen()
     llvm_ir = converter.convert(ir_json)
 
+    if os.environ.get("SILU_RUNTIME_CACHE", "") == "1" and \
+            codegen_mode != "dynamic":
+        # opt-in fast path: the ~350KB pyobj runtime compiles once
+        # into a cached .o; per program clang only sees the user part
+        from silu import runtime_cache
+
+        runtime_cache.build_with_cache(
+            None, out_path, full_text=llvm_ir
+        )
+        return
+
     with tempfile.TemporaryDirectory() as tmpdir:
         ll_path = os.path.join(tmpdir, "program.ll")
         with open(ll_path, "w", encoding="utf-8") as handle:
