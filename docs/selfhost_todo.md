@@ -92,3 +92,19 @@
   管道下 printf 全缓冲，诊断走 panic/exit（会 flush）或 ASan
   构建（干净退出会 flush）。
 - 以名字为键的编译期状态必须随函数作用域 save/restore。
+
+## 2026-10-23 晚推进记录（①②③全部落地）
+
+- ① 作用域 CI 审计（e316330）：tests/test_scope_audit.py 四项
+  AST 静态检查；双变异验证（删 restore / 删 rebound-drop 均被抓）。
+- ② 模块化步骤 A（d962815，v1.2.0）：silu_ir_to_llvm.py 6,149 →
+  1,519 行，4,674 行运行时发射方法群入 silu/pyobj_runtime.py
+  （PyobjRuntimeMixin）。flatten 读第三源并在历史槽位拼接——
+  **字节门禁自己抓了两个放置 bug 后才绿**（mixin 排全部基类之后
+  → 类字段序漂移；多行 import 穿透行式收集器）。
+- ③ 符号执行不变量（本提交）：tests/test_symbolic_invariants.py
+  8 项——append/insert 的 len≤cap 全量证明（Z3 unsat）、容量
+  单调、负下标 clamp、界内读 total / 界外读必 panic、insert
+  三分支路径覆盖（SymbolicExecutor.function_analyses）。变异
+  验证：历史 bug 形态（needs_grow = len < cap 迟一步增长）被
+  Z3 当场反例击中（len0=cap0=0）。
