@@ -37,6 +37,29 @@ RENAMES = {
 }
 
 
+def _reject_silent_divergence(tree, src_name):
+    """Silu has no default parameter values: a Python default in the
+    converter source is silently DROPPED by the .si emission and only
+    explodes at runtime (the list_int_apply lesson). Fail at flatten
+    time instead."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for arg in list(node.args.posonlyargs) + list(node.args.args):
+                if arg.annotation is None and arg.arg not in ("self",):
+                    pass
+            defaults = list(node.args.defaults) + [
+                d for d in node.args.kw_defaults if d is not None
+            ]
+            if defaults:
+                raise SystemExit(
+                    f"flatten: {src_name}: function '{node.name}' has "
+                    "default parameter values - Silu does not support "
+                    "them and the .si emission would silently drop the "
+                    "default (runtime arity errors). Pass every "
+                    "argument explicitly."
+                )
+
+
 def method_blocks(tree, class_name):
     """[(name, start_line, end_line)] for the class' methods."""
     cls = next(
@@ -239,6 +262,9 @@ def si_main():
     with contextlib.redirect_stdout(buf):
         main()
     text = buf.getvalue()
+
+    # dual-valid contract enforcement (see _reject_silent_divergence)
+    _reject_silent_divergence(ast.parse(text), "flattened converter")
 
     import ast as A
 

@@ -6261,13 +6261,25 @@ class TypedCodegen(SiluToLLVMConverter):
             and isinstance(node[1], list)
             and node[1][0] == "name"
         ):
+            # a slice yields a new container, not an element: keep the
+            # target dynamic (unboxing a sliced list read its length
+            # field as an int - the ys = xs[1:] == 3 bug)
+            if (
+                isinstance(node[2], (list, tuple))
+                and len(node) >= 3
+                and isinstance(node[2], (list, tuple))
+                and len(node[2]) >= 1
+                and node[2]
+                and node[2][0] == "slice"
+            ):
+                return None
             base_kind = self._resolve_kind(node[1], annotations, candidates, func_ret)
             if base_kind == RAWLIST_I:
                 return I64
             if base_kind == RAWLIST_F:
                 return F64
             if base_kind == RAWSTR:
-                return RAWSTR  # s[i] / s[a:b] both yield str
+                return RAWSTR  # s[i] yields str; slices stay None
         return None
 
 
@@ -7715,7 +7727,7 @@ class TypedCodegen(SiluToLLVMConverter):
         constructor of one same class - their call results then resolve
         class chains like elem(node, 1).s."""
 
-        def ctor_class_of(expr, depth, param_class, local_class=None):
+        def ctor_class_of(expr, depth, param_class, local_class):
             param_class = param_class or {}
             local_class = local_class or {}
             if not isinstance(expr, (list, tuple)) or depth > 8:
@@ -7998,10 +8010,12 @@ class TypedCodegen(SiluToLLVMConverter):
         old_ret = self.current_ret_kind
         old_inferred = self._inferred_kinds
         old_var_class = self._var_class
+        old_funcref_var = self._funcref_var
 
         self.current_function = func
         self.current_builder = ir.builder_(entry_block)
         self.current_ret_kind = ret_kind
+        self._funcref_var = {}
         old_cursor_kinds = self.cursor_kinds
         old_cursor_slots = self._cursor_slots
         param_annotations = func_def[4] if len(func_def) > 4 else ()
@@ -8136,6 +8150,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
         self._var_class = old_var_class
+        self._funcref_var = old_funcref_var
         self.cursor_kinds = old_cursor_kinds
         self._cursor_slots = old_cursor_slots
         self._scope_depth = self._scope_depth - 1
@@ -8150,10 +8165,12 @@ class TypedCodegen(SiluToLLVMConverter):
         old_ret = self.current_ret_kind
         old_inferred = self._inferred_kinds
         old_var_class = self._var_class
+        old_funcref_var = self._funcref_var
 
         self.current_function = func
         self.current_builder = ir.builder_(entry_block)
         self.current_ret_kind = None
+        self._funcref_var = {}
         old_cursor_kinds = self.cursor_kinds
         old_cursor_slots = self._cursor_slots
         self.cursor_kinds = self._infer_cursors(
@@ -8237,10 +8254,15 @@ class TypedCodegen(SiluToLLVMConverter):
                 self.variables[param_name] = param_alloca
                 self.var_kinds[param_name] = OBJ
 
-        for stmt in func_def[3]:
-            self._convert_statement(stmt)
-            if self.current_builder.block.is_terminated:
-                break
+        try:
+            for stmt in func_def[3]:
+                self._convert_statement(stmt)
+                if self.current_builder.block.is_terminated:
+                    break
+        except NotImplementedError as _e:
+            raise NotImplementedError(
+                f"in function '{func_def[1]}': {_e}"
+            ) from None
 
         if not self.current_builder.block.is_terminated:
             self._emit_local_rawstr_drops()
@@ -8254,6 +8276,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
         self._var_class = old_var_class
+        self._funcref_var = old_funcref_var
         self.cursor_kinds = old_cursor_kinds
         self._cursor_slots = old_cursor_slots
         self._scope_depth = self._scope_depth - 1
@@ -9465,7 +9488,66 @@ class TypedCodegen(SiluToLLVMConverter):
                             [self._box(obj_tv), lo, hi, step, has_lo, has_hi],
                         ),
                     )
-                key_tv = self._convert_node(node[2])
+                if (
+                    isinstance(node[2], (list, tuple))
+                    and len(node[2]) >= 4
+                    and node[2][0] == "slice"
+                ):
+                    # a slice reached the typed paths (rawstr keeps its
+                    # dedicated emitter below; rawlist boxes through the
+                    # generic helper). Converting the slice node itself
+                    # is meaningless - it is structure, not a value
+                    if obj_tv[0] in RAWLIST_KINDS:
+                        _sl = node[2]
+                        _i64t = ir.IntType(64)
+                        _lo_n, _hi_n, _st_n = _sl[1], _sl[2], _sl[3]
+                        _has_lo = ir.const_(
+                            ir.IntType(1), _lo_n is not None
+                        )
+                        _has_hi = ir.const_(
+                            ir.IntType(1), _hi_n is not None
+                        )
+                        _lo = (
+                            ir.const_(_i64t, 0)
+                            if _lo_n is None
+                            else self._coerce(
+                                self._convert_node(_lo_n), I64
+                            )[1]
+                        )
+                        _hi = (
+                            ir.const_(_i64t, 0)
+                            if _hi_n is None
+                            else self._coerce(
+                                self._convert_node(_hi_n), I64
+                            )[1]
+                        )
+                        _st = (
+                            ir.const_(_i64t, 1)
+                            if _st_n is None
+                            else self._coerce(
+                                self._convert_node(_st_n), I64
+                            )[1]
+                        )
+                        return (
+                            OBJ,
+                            self.current_builder.call(
+                                self.pyobj_slice_any,
+                                [
+                                    self._box(obj_tv), _lo, _hi, _st,
+                                    _has_lo, _has_hi,
+                                ],
+                            ),
+                        )
+                    if obj_tv[0] != RAWSTR:
+                        raise NotImplementedError(
+                            "slice on kind '" + str(obj_tv[0])
+                            + "' is not supported"
+                        )
+                    # RAWSTR: fall through, the dedicated slice path
+                    # below reads node[2] itself
+                    key_tv = (I64, ir.const_(ir.IntType(64), 0))
+                else:
+                    key_tv = self._convert_node(node[2])
                 if obj_tv[0] == RAWLIST_S:
                     # element read hands the caller its own copy (slots
                     # are shared; the reading slot owns the copy)
@@ -9896,6 +9978,88 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
             return (OBJ, null_obj)
 
+        if op == "list_comp" and len(node) >= 3:
+            # [elt for t in iter (if cond)*]: desugar to build-append
+            # loops (same shape as the enumerate desugar). elt is
+            # node[1]; node[2] is a list of generators, each
+            # [target, iter_node, conds]
+            b = self.current_builder
+            func = self.current_function
+            out = b.call(self.create_list, [], "")
+            for gen in node[2]:
+                target, iter_node, conds = gen[0], gen[1], gen[2] or ()
+                is_range = (
+                    isinstance(iter_node, (list, tuple))
+                    and len(iter_node) >= 3
+                    and iter_node[0] == "call"
+                    and isinstance(iter_node[1], (list, tuple))
+                    and len(iter_node[1]) >= 2
+                    and iter_node[1][0] == "name"
+                    and iter_node[1][1] == "range"
+                )
+                idx_ptr = b.alloca(ir.IntType(64), None, "lc_i")
+                b.store(ir.const_(ir.IntType(64), 0), idx_ptr)
+                if is_range:
+                    # range boxes as a plain int (its count): iterate
+                    # the index directly, the element IS the index
+                    rargs = iter_node[2] if len(iter_node) > 2 else []
+                    stop_tv = self._convert_node(
+                        rargs[-1] if rargs else ["const", 0]
+                    )
+                    total = self._coerce(stop_tv, I64)[1]
+                    keys = None
+                else:
+                    boxed_iter = self._box(self._convert_node(iter_node))
+                    keys = b.call(self.pyobj_iter_keys, [boxed_iter])
+                    total = b.call(self.list_length, [keys])
+                cond_blk = func.append_basic_block("lc_cond")
+                body_blk = func.append_basic_block("lc_body")
+                done_blk = func.append_basic_block("lc_done")
+                b.branch(cond_blk)
+                b.position_at_end(cond_blk)
+                cur = b.load(idx_ptr)
+                b.cbranch(
+                    b.icmp_signed("<", cur, total), body_blk, done_blk
+                )
+                b.position_at_end(body_blk)
+                if keys is not None:
+                    elem = b.call(
+                        self.list_get,
+                        [keys, b.call(self.create_int, [cur])],
+                    )
+                else:
+                    elem = b.call(self.create_int, [cur])
+                # bind the loop target (a plain name per the generator)
+                if (
+                    isinstance(target, (list, tuple))
+                    and len(target) >= 2
+                    and target[0] == "name"
+                ):
+                    tname = target[1]
+                    self._declare_var(tname, OBJ)
+                    b.store(elem, self.variables[tname])
+                # evaluate conditions; any False skips the append
+                keep_blk = b.block
+                skip_blk = func.append_basic_block("lc_skip")
+                ok_blk = func.append_basic_block("lc_emit")
+                for cond_node in conds:
+                    cblk = self._convert_node(cond_node)
+                    cbranch_blk = self.current_builder.block
+                    self.current_builder.cbranch(
+                        self._to_i1_cond(cblk), ok_blk, skip_blk
+                    )
+                if not keep_blk.is_terminated and self.current_builder.block is keep_blk:
+                    self.current_builder.branch(ok_blk)
+                b.position_at_end(ok_blk)
+                elem_val = self._convert_node(node[1])
+                b.call(self.list_append, [out, self._box(elem_val)])
+                b.branch(skip_blk)
+                b.position_at_end(skip_blk)
+                b.store(b.add(b.load(idx_ptr), ir.const_(ir.IntType(64), 1)), idx_ptr)
+                b.branch(cond_blk)
+                b.position_at_end(done_blk)
+            return (OBJ, out)
+
         if op == "chained_compare" and len(node) >= 2:
             # a <= b < c: pairwise compares over one shared middle
             # operand (evaluated once), ANDed. Unhandled it silently
@@ -9933,8 +10097,26 @@ class TypedCodegen(SiluToLLVMConverter):
                 self._convert_statement(sub_stmt)
             return (OBJ, null_obj)
 
-        # unknown op: degrade to dynamic null
-        return (OBJ, null_obj)
+        if op in ("import", "from_import", "pass", "line"):
+            # import markers: expansion happened upstream; pass/line
+            # carry no code. Explicit no-ops, NOT silent degradation
+            return (OBJ, null_obj)
+
+        if op in ("import", "from_import"):
+            # imports were expanded/inlined upstream (expand_imports_
+            # tree); the marker statement carries no code to generate.
+            # Explicit no-op, NOT silent degradation - the blanket
+            # unknown-op null is what hid the multi_assign family
+            return (OBJ, null_obj)
+
+        # unknown op: fail loudly. Silent null degradation was the
+        # root of the multi_assign/chained_compare/comprehension bug
+        # family - unhandled IR nodes compiled to wrong semantics
+        # instead of stopping the build
+        raise NotImplementedError(
+            "unsupported IR node: '" + str(op) + "' "
+            "(the IR generator emits nodes every backend must handle)"
+        )
 
     def _convert_match(self, node: list):
         """match statement over a statically-typed scalar/str subject.

@@ -74,6 +74,7 @@ class IRInterpreter:
             "read_stdin": self._builtin_read_stdin,
             "list": list,
             "tuple": tuple,
+            "set": set,
             "dict": dict,
             "enumerate": enumerate,
             "SystemExit": SystemExit,
@@ -1342,6 +1343,10 @@ class IRInterpreter:
     def _execute_tuple(self, elements: Tuple) -> Tuple[Any, ...]:
         """Execute tuple literal."""
         return tuple(self.execute(elem) for elem in elements)
+
+    def _execute_set(self, elements: Tuple) -> set:
+        """Execute set literal (dedup, Python semantics)."""
+        return set(self.execute(elem) for elem in elements)
 
     def _execute_dict(self, items: Tuple) -> Dict[Any, Any]:
         """Execute dictionary literal."""
