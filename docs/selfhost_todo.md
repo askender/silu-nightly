@@ -1,119 +1,94 @@
-# 自举完成度判定与收官计划（2026-10-22，compact 入口）
+# 自举后路线图（v1.1.0 起，2026-10-23）
 
-> 本文回答"编译器自举是否彻底完成"，并给出接下来最值得做的
-> 事。前置状态：16/16 原生门禁（-O0 与 -O2 字节一致）、全量
-> pytest 绿、v0.18.0（a009116）。历史脉络见
-> `progress_2026_10_16.md`、`selfhost_semantic_divergence.md`。
+> compact 后单一入口。当前状态：**彻底自举已完成**（v1.0.0，
+> 9bb26b6）：原生自产转换器转换自身 IR 输出与自己构建时的 .ll
+> **逐字节一致**（tests/test_selfhost_fixed_point.py）；四个根源
+> 家族的防御已落地（v1.1.0，ca2aba3：unknown-op panic、flatten
+> 默认参守卫、funcref 表作用域化、15 项边界套件），全量 pytest
+> 1112 绿。历史脉络：`progress_2026_10_16.md` 的 16/16 与不动点
+> 各节、`selfhost_semantic_divergence.md`（六根源框架）。
 
-## 状态速览（2026-10-22 深夜更新，先读这段）
+## 一、剩余 TODO（按价值排序）
 
-- 不动点阻塞推进：#1-#7 **全部攻破**（详见 progress 末两节），
-  自转换（11MB IR）在 -O2 原生转换器下 **8.6 秒完整跑完**，
-  现卡在 **#8：最后渲染阶段，自产 silu_panic 里出现 null
-  gep/call 操作数**（渲染期 _op_ref 读 .name 于 null 盒）。
-- #8 已确证：发射期 printf/line_global/exit_func 均非空
-  （源码级 TEMP print 验证）；null 在指令构造与渲染之间的
-  某处引入。有效配方：twin 级 NULL-OPERAND / NULL-PTR-CALLEE
-  （扫 i.operands/i.pointer/i.callee/i.indices/i.incomings）+
-  block_str 打宿主函数名（b.function.name）——已定位到
-  silu_panic 的 .3=gep(null)/.4=call(null)。下一步嫌疑：
-  ① gep/call 的 `i.pointer = ptr` / `i.callee = fn` 动态写
-  与渲染期动态读的槽位漂移（写读两处的 _dyn_member_classes
-  分别 dump 对比）；② gvar_ 的 str_N 命名在自转换规模下
-  的 module.globals 计数异常；③ 用 m1/m2 式 20 行探针复刻
-  "gep(gvar)+call(printf)" 的最小链。
-- 修完 #8 → 若 cmp 通过即固化 test_selfhost_fixed_point.py。
+### P1：质量纵深（自举完成后的正确性余量）
 
-## 一、判定：**转换器级自举已完成；全管线自举还差两件事**
+1. **作用域规范 CI 审计**（根源 C 防复发，半天）
+   - 脚本扫 typed_codegen.py：每个 `X = dict(self.X)` 作用域拷贝
+     必须有配对 `self.X = old_X` restore；每个以名字为键的表
+     （var_kinds/_var_class/_funcref_var/_list_elem_class）逐个
+     核对。做成 pytest（源码静态检查，秒级）。
+   - 顺带：`_STORAGE_ALIASING_STMT_OPS` 与实际处理节点集的对账
+     ——unknown-op panic 落地后，这张表可以直接由 panic 覆盖
+     审计生成。
 
-### 已完成（证据充分的）
-1. **转换器级自举闭环**：`silu build selfhost/typed_codegen_flat.si`
-   （clang -O2，真实 build 路径）产出的原生转换器，对全部 16 个
-   基准+selfhost 程序输出与 Python 转换器**逐字节一致**的 .ll
-   （tests/test_si_converter_native_parity.py，16 项）。
-2. **语义对齐**：funcref 全形态（动态/混合 ABI/静态 thunk）、
-   列表词法序、数值跨 tag 相等、真 set、i64 域字面量检查、运行时
-   错误响亮 panic——六根源框架里能在运行时层修的都已修。
-3. **工程**：全量测试 2m25s（xdist -n8）、原生门禁构建缓存、
-   typed_helpers 拆分第一步（flatten --si 输出字节不变）。
+2. **符号执行验证运行时不变量**（根源 D 的形式化方向，1-2 天 PoC）
+   - repo 已有 symbolic 基础设施（tests/test_symbolic_executor_
+     core.py、test_enhanced_symbolic.py）。目标不变量（历史 bug
+     全在其中）：`list_insert/list_append 后 len <= cap`、
+     `list_get 下标界检查对负数/clamp 成立`、
+     `dict_find_probe 探测必终止（表有空槽）`。
+   - 路线：对 pyobj 运行时函数的 .ll 做符号执行（或对 .si 源
+     用现有 executor），断言不变量。拿到一个可跑的 PoC 再扩。
 
-### 未完成（本会话新发现 + 既有边界）
+3. **门禁提速余项**（全量 ~2.3 分钟已可接受，可选）
+   - 三个 ~20-85s 解释器门禁内部并行化（照 test_si_converter_
+     interpreter_parity 的 ThreadPoolExecutor 模式）。
 
-**A. 不动点自举（self-application）——"彻底"的真正判据。**
-原生转换器转换**它自己的源码**（flat.ir.json），必须逐字节复现
-它自己被构建时用的那份 .ll（类比 GCC stage1→stage2 比对）。
-此前所有门禁都在转换**别的**程序，自应用是最后盲区。本会话
-把它从"从未跑过"推到"第 5 个阻塞点"：
+### P2：模块化重构（用户已点名，见下节专述）
 
-| # | 阻塞点 | 状态 |
-|---|--------|------|
-| 1 | `jr_number`（JSON 解析）i64 累加溢出：`9223372036854775808`（INT64_MIN 的正量级）直接 panic | ✅ 修：负数路径负向累加（MIN 可表示），越界响亮 ValueError |
-| 2 | IR 生成器不折叠 `-<数值字面量>`：源里的 `-9223372036854775808` 序列化成 `["-",["const",+9223...]]`，正值超域 | ✅ 修：ast_processor 的 visit_UnaryOp **仅折叠** `-9223372036854775808` 这一个病态字面量（全量折叠会破坏 IR 形状契约——test_visit_unaryop 与 silu_fe 奇偶校验依赖 `["-",operand]` 形状，首版全折叠挂了 4 个测试后收窄） |
-| 3 | **list × int 重复**无运行时：转换器自身的 `[pyobj_ptr] * arity`（_fn_call_dispatch）落 pyobj_mul 错误路径 | ✅ 修：新 `list_repeat` 运行时（自包含建盒，不依赖 list 运行时创建顺序）+ pyobj_mul 的 list 臂；首版 gep 在 i8* 上按元素数步进的 bug 已修（字节×8） |
-| 4 | `"pyobj_fn_call%d" % arity`：% 字符串格式化不在动态平面 | ✅ 修：改 `"pyobj_fn_call" + str(arity)`（全程唯一一处 %） |
-| 5 | **Block 盒（cid 8）的 `.function` 动态属性分发失败**（no field 'function'，自转换中途） | ❌ 未解——见下面的诊断现场 |
+4. **typed_codegen.py / silu_ir_to_llvm.py 渐进拆分**——
+   不变量：**所有 .ll 字节不变**（含不动点）。
 
-**#5 诊断现场（下一轮直接从这里继续）**：
-- 症状：`AttributeError: no field 'function' (line 832)`
-  （llvmlite.si:832 = `position_at_start` 里 `block.function`）。
-- 已确证：接收盒 cid=8，且原生转换器自己的注册表里 **cid 8
-  就是 Block**（Value1 Type2 Scope3 TypeInfo4 _Undefined5
-  Constant6 Argument7 **Block8** Instr9 ... JsonR18，两平面一致）。
-  Block 布局含 `function: object` 字段——cid 相同、字段存在，
-  分发却落到 ga_none。矛盾未解。
-- 已排除：推断签名分歧（两侧 _inferred_sigs 逐项一致）、类布局
-  分歧（逐字段一致）、堆越界（16 程序门禁 + 此前 ASan 经验，
-  但注意 ASan 绿不能排除合法地址错值）。
-- 嫌疑方向（按优先级）：
-  1. ga 分发臂的**编译期常量**与运行时盒 cid 的对照在某一处
-     断裂——例如 `_emit_dyn_attr_read` 发射时 `self._class_ids`
-     还没填到 Block（注册顺序 vs 发射顺序的时序窗口），嵌入的
-     icmp 常量是旧值/错位值；对照 Python 平面为何不崩（Python
-     平面同一代码路径走 CPython dict，天然正确——根源一）。
-  2. `_dyn_member_classes("function")` 在原生实例里返回的臂序与
-     Python 侧不同（sorted() 的输入依赖 _class_layouts 填充时点）。
-  3. 该 ga 读的接收者实际不是 Block：cid 读出的 8 来自边车残值
-     （盒复用/别名路径），需要打 tag（确认 tag==6）+ 边车两槽
-     （cid+inst 指针）双打。
-- 快速复挂诊断三件套（都在本会话用过，源码级 TEMP-DIAG，用完
-  即删）：
-  1. `_register_class` 里打印 `CID n name`（类注册序）；
-  2. `_emit_dyn_attr_read` 的 ga_none 前打印 cid；
-  3. silu_ir_to_llvm 的 exit_func 包 backtrace 包装器
-     （`backtrace`+`backtrace_symbols_fd`，非零退出才打；注意
-     缓冲用 malloc+bitcast，twin 的 alloca 不吃裸 int size）。
-- **修完后固化**：`tests/test_selfhost_fixed_point.py`——
-  flatten → ir → llvm → clang -O2 → 用产出的 bin 转换同一份
-  ir.json → cmp 自身的 .ll。这是终极门禁（"转换器能再造自己"），
-  每个阻塞点修完都值得重跑一次直到绿。
+### P3：语言覆盖（按需）
 
-**B. 前端自举（全管线）**：`silu ir`（Python 的 IR 生成器）仍在
-管线里；`tools/flatten_codegen.py` 是 Python（引导期工具，可
-接受）。完整"源码→二进制无 Python"需要原生前端
-（selfhost/silu_fe.si 已有 M4 覆盖，但主管线未接）。**建议**：
-不动点通过后再评估；那之前它只是锦上添花。
+5. **真 bytes 类型**：与 str 分离（独立 tag 或 latin1 标记贯穿
+   运行时）。当前共享 tag 在全门禁下正确，无消费者驱动。
+6. **真 set 的哈希实现**：当前 set 是去重列表盒，contains 是
+   O(n) 扫描——对转换器自身（_module_vars 等小集合）够用，
+   大集合性能场景再做。
+7. **前端自举评估**（`silu ir` 仍为 Python）：silu_fe.si 已能
+   编译原生且 IR 与 Python 前端逐字节一致（m4 门禁）——把它
+   接入主管线是工程活，不动点已闭环，此项为锦上添花。
 
-## 二、接下来最值得做的（按序）
+## 二、模块化专述（怎么拆才安全）
 
-1. **不动点收口（#5 起步）**——价值最高：它是"彻底自举"的
-   最后一块，且每个阻塞点都是真实语义缺陷（本会话 4 个修复里
-   3 个是通用 Python 语义缺口：list*int、%-format 无、大字面量
-   序列化）。方法论不变：探针先行 → 六根源归因 → 原生对齐优先
-   → 门禁 → 提交。注意自转换是终极模糊测试——#5 之后可能还有
-   #6、#7，逐个消灭直到 cmp 通过。
-2. **固化 test_selfhost_fixed_point.py**（随 1 一起）。
-3. **门禁提速余项**（可选）：ir2c build 测试合并 clang 调用。
-4. **typed_codegen mixin 拆分**（需 flatten 支持 N 类合并；
-   第一步 typed_helpers 已示范"拆分前后 flatten 输出字节一致"
-   的验收法）。
-5. **真 bytes 类型**（按需；做时覆盖 repr/索引/迭代/与 str 不等/
-   len=字节数——当前两平面在 bytes 上全面分歧，探针已存
-   /tmp/t_bytes2.si）。
+现状：typed_codegen.py 11,949 行 + silu_ir_to_llvm.py 6,149 行
++ typed_helpers.py 377 行；flatten 读两个源文件合并成单类 .si。
 
-## 三、本会话提交物（若 compact 后核对）
+**已验证的方法**（typed_helpers.py 拆分，v0.18.0）：抽出叶子
+模块 → flatten 在 derived 源里内联该文件 → **flatten --si 输出
+与拆分前逐字节一致**作为验收。照妖镜就是不动点门禁本身。
 
-- 三项真修复（jr_number 溢出 / IR -字面量折叠 / list_repeat +
-  %-format 改写）+ 门禁 16/16 重跑绿 —— 待提交（见工作树）。
-- 陷阱新增：**Silu 无默认参数**——给 flatten 后代码加参数必须
-  显式传全（list_int_apply 的教训：Python 默认值在 .si 里静默
-  丢失，运行时才炸）；自包含运行时函数不要依赖后创建的属性。
+推荐分四步，每步独立提交、独立验收（字节一致 + 全门禁）：
+
+- **步骤 A（半天）**：`silu_ir_to_llvm.py` 的运行时创建方法群
+  （_create_* 共 ~30 个方法、约 3,500 行）抽到
+  `silu/pyobj_runtime.py`。flatten 已会内联第三文件
+  （typed_helpers 机制复用）；PyImport 替换点在 si_main。
+- **步骤 B（半天）**：typed_codegen.py 的动态平面方法群
+  （_emit_dyn_* / _fn_call_dispatch / 方法表，~1,500 行）抽到
+  `silu/typed_dynamic.py`。
+- **步骤 C（1 天）**：表达式转换群（_typed_binop/_typed_compare/
+  _typed_contains/_rawstr_*，~3,000 行）抽到
+  `silu/typed_expr.py`。
+- **步骤 D（可选，风险最高）**：单类真正的 mixin 化需要 flatten
+  支持 N 类合并——先不做；A-C 的"方法分文件、单类不变"已能把
+  单文件压到 ~4,000 行以下，阅读/导航收益已兑现大半。
+
+每步的验收命令固定为：
+`tools/flatten_codegen.py --si > /tmp/a.si` 与上一步输出 diff
+为零 → 全量 pytest → 不动点门禁。
+
+## 三、陷阱清单（累积，新增随时补）
+
+- dual-valid 子集：无推导式（转换器源；程序源现已支持
+  list_comp）、无默认参数（flatten 硬错误）、无 f-string 转换
+  说明符（`{x!r}` 会炸 IR 生成）、无 try/finally、无闭包捕获
+  （nested_hoist 拒绝）。
+- flatten 的构建器元数补全按接收者白名单（NON_BUILDER_RECV）
+  ——新代码用 `.add(` 等同名方法必须核白名单。
+- `str(x.type)` 必须 `_type_text`（twin 的 str() 是 repr）。
+- /tmp 探针前 `cp selfhost/llvmlite.si /tmp/llvmlite.si`；
+  管道下 printf 全缓冲，诊断走 panic/exit（会 flush）或 ASan
+  构建（干净退出会 flush）。
+- 以名字为键的编译期状态必须随函数作用域 save/restore。
