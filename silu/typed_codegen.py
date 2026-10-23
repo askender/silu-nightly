@@ -11439,9 +11439,84 @@ class TypedCodegen(SiluToLLVMConverter):
                         if index > 0:
                             sep = self._create_global_string(" ")
                             self.current_builder.call(self.printf, [sep])
-                        boxed = self._box(self._convert_node(arg_node))
-                        if boxed is not None:
-                            self.current_builder.call(self.pyobj_print, [boxed])
+                        # print specialisation: a statically-typed scalar
+                        # or string renders straight through printf /
+                        # float_repr - no box, no pyobj_print (the only
+                        # pyobj reference fully static programs had)
+                        if (
+                            isinstance(arg_node, (list, tuple))
+                            and len(arg_node) >= 2
+                            and arg_node[0] == "const"
+                            and isinstance(arg_node[1], str)
+                        ):
+                            # a string LITERAL prints straight out of its
+                            # global - no create_str box at all
+                            data = self._create_global_string(arg_node[1])
+                            fmt = self._create_global_string("%.*s")
+                            self.current_builder.call(
+                                self.printf,
+                                [fmt,
+                                 ir.const_(
+                                     ir.IntType(64),
+                                     _twin_utf8_len(arg_node[1]),
+                                 ),
+                                 data],
+                            )
+                            continue
+                        arg_tv = self._convert_node(arg_node)
+                        b = self.current_builder
+                        printed = False
+                        if arg_tv[0] == I64:
+                            fmt = self._create_global_string("%lld")
+                            b.call(self.printf, [fmt, arg_tv[1]])
+                            printed = True
+                        elif arg_tv[0] == F64:
+                            # floats render through float_repr (shortest
+                            # round-trip + ".0" fixup) - the same runtime
+                            # call the boxed path uses, byte-identical
+                            rep = b.call(self.float_repr, [arg_tv[1]])
+                            fmt = self._create_global_string("%s")
+                            b.call(self.printf, [fmt, rep])
+                            printed = True
+                        elif arg_tv[0] == I1:
+                            if (
+                                isinstance(arg_node, (list, tuple))
+                                and len(arg_node) >= 2
+                                and arg_node[0] == "const"
+                                and isinstance(arg_node[1], bool)
+                            ):
+                                fmt = self._create_global_string(
+                                    "True" if arg_node[1] else "False"
+                                )
+                                b.call(self.printf, [fmt])
+                            else:
+                                t_str = self._create_global_string("True")
+                                f_str = self._create_global_string("False")
+                                chosen = b.select(arg_tv[1], t_str, f_str)
+                                fmt = self._create_global_string("%s")
+                                b.call(self.printf, [fmt, chosen])
+                            printed = True
+                        elif arg_tv[0] == RAWSTR:
+                            # {len, cap, data, cp}: print by (byte len,
+                            # data) exactly like the boxed %.*s path
+                            sc = b.bitcast(
+                                arg_tv[1],
+                                ir.PointerType(self.rawstr_struct_type), "",
+                            )
+                            i0 = ir.const_(ir.IntType(32), 0)
+                            i2 = ir.const_(ir.IntType(32), 2)
+                            len_slot = b.gep(sc, [i0, i0], "")
+                            slen = b.load(len_slot, "")
+                            dat_slot = b.gep(sc, [i0, i2], "")
+                            sdata = b.load(dat_slot, "")
+                            fmt = self._create_global_string("%.*s")
+                            sl64 = b.sext(slen, ir.IntType(64), "")
+                            b.call(self.printf, [fmt, sl64, sdata])
+                            printed = True
+                        if not printed:
+                            boxed = self._box(arg_tv)
+                            if boxed is not None:
+                                b.call(self.pyobj_print, [boxed])
                 if end_str:
                     end_fmt = self._create_global_string(end_str)
                     self.current_builder.call(self.printf, [end_fmt])

@@ -197,7 +197,8 @@ class TestTypedCodegen:
         # the fadd itself is raw; create_float only appears once, at the
         # print boundary (boxing the result for display)
         assert "fadd double" in main
-        assert main.count('call {i32, i8*}* @"create_float"') == 1
+        # print specialisation: no create_float box at the boundary
+        assert main.count('call {i32, i8*}* @"create_float"') == 0
 
     def test_mixed_list_still_dynamic(self):
         """Plain list annotations keep PyObject storage (mixed types)."""
@@ -478,7 +479,8 @@ class TestInferredScalarKinds:
         assert '@"zr2" = global double' in llvm_ir
         assert '@"zi2" = global double' in llvm_ir
         # the only boxing is the print() display boundary
-        assert main.count('call {i32, i8*}* @"create_float"') == 1
+        # print specialisation: no create_float box at the boundary
+        assert main.count('call {i32, i8*}* @"create_float"') == 0
 
     def test_kind_conflict_keeps_dynamic(self):
         """x = 7 then x = x / 2 rebinds to float: the name must stay on

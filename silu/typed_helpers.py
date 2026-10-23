@@ -57,6 +57,7 @@ __all__ = [
     "_is_inst",
     "_kind_cls",
     "_kind_llvm_key",
+    "_twin_utf8_len",
 ]
 
 
@@ -375,3 +376,22 @@ def _kind_llvm_key(kind):
     """LLVM_KIND_TYPES key for a possibly classed instance kind."""
     return INSTANCE if _is_inst(kind) else kind
 
+
+
+def _twin_utf8_len(s):
+    """UTF-8 byte length, computed in the dual-valid subset (no str
+    .encode, no twin-module attribute): 1 byte for ASCII, the UTF-8
+    leading-byte ranges give 2/3/4 otherwise - the same table the
+    twin's utf8_len uses."""
+    n = 0
+    for ch in s:
+        o = ord(ch)
+        if o < 0x80:
+            n += 1
+        elif o < 0x800:
+            n += 2
+        elif o < 0x10000:
+            n += 3
+        else:
+            n += 4
+    return n
