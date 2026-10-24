@@ -402,7 +402,10 @@ class Parser:
         pairs = []
         while True:
             n = self.expect_kind(TokKind.NAME).text
-            pairs.append([n, None])
+            asn = None
+            if self.accept("as"):
+                asn = self.expect_kind(TokKind.NAME).text
+            pairs.append([n, asn])
             if not self.accept(","):
                 break
         self.expect_nl()
@@ -1096,6 +1099,9 @@ def fe_expand_imports(mod: object, seen: list[str], stack: list[str], alias_name
                             for m, en in enumerate(sub_exports):
                                 if not hg_in_list(dyn_get(alias_exports, ai), en):
                                     dyn_get(alias_exports, ai).append(en)
+                    asn: object = dyn_get(pr, 1)
+                    if asn is not None and asn != nm:
+                        fe_register_alias(asn, nm, alias_names, alias_exports)
                 else:
                     kept.append(pr)
             if dyn_len(kept) > 0:
@@ -1280,6 +1286,9 @@ def fe_hoist_nested(mod: object, seen: list[str], stack: list[str], alias_names:
                         more2 = fe_load_splice(path, nm, seen, stack, alias_names, alias_exports)
                         for k2, s2 in enumerate(more2):
                             spliced.append(s2)
+                        asn2: object = dyn_get(pr, 1)
+                        if asn2 is not None and asn2 != nm:
+                            fe_register_alias(asn2, nm, alias_names, alias_exports)
                     else:
                         all_ok = False
                 # partial (mixed .si + foreign) keeps the node as-is:
@@ -1309,6 +1318,22 @@ def fe_hoist_nested(mod: object, seen: list[str], stack: list[str], alias_names:
         else:
             out.append(st)
     return ["module", out]
+
+
+def fe_register_alias(aname: str, src_name: str, alias_names: list[str], alias_exports: object) -> None:
+    # second name bound to src_name's exports (import x as y); safe to
+    # call whether or not src_name just loaded or was already inlined
+    si: int = fe_alias_index(alias_names, src_name)
+    if si < 0:
+        return
+    ti: int = fe_alias_index(alias_names, aname)
+    if ti < 0:
+        alias_names.append(aname)
+        alias_exports.append(dyn_get(alias_exports, si))
+    else:
+        for m, en in enumerate(dyn_get(alias_exports, si)):
+            if not hg_in_list(dyn_get(alias_exports, ti), en):
+                dyn_get(alias_exports, ti).append(en)
 
 
 def fe_alias_index(names: list[str], name: str) -> int:

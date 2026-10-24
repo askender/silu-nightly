@@ -207,6 +207,24 @@ CASES = {
         ),
         "expected": "3\n",
     },
+    "import_as_alias": {
+        "leafx.si": (
+            "SCALE: int = 7\n\n"
+            "def scale(x: int) -> int:\n"
+            "    return x * SCALE\n"
+        ),
+        "main.si": (
+            "import leafx\n"
+            "import leafx as lx\n\n"
+            "def use(n: int) -> int:\n"
+            "    import leafx as lx2\n"
+            "    return lx2.scale(n)\n\n"
+            "def main() -> int:\n"
+            "    print(lx.scale(6) + use(3))\n"
+            "    return 0\n"
+        ),
+        "expected": "63\n",
+    },
 }
 
 
