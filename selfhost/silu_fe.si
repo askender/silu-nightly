@@ -16,6 +16,7 @@ class TokKind(Enum):
     NL = 5
     END = 6
     FSTR = 7
+    BYTES = 8
 
 
 class Token:
@@ -44,6 +45,11 @@ class Lexer:
         if self.pos + 1 >= len(self.src):
             return -1
         return ord(self.src[self.pos + 1])
+
+    def peek3_cp(self) -> int:
+        if self.pos + 2 >= len(self.src):
+            return -1
+        return ord(self.src[self.pos + 2])
 
     def advance(self) -> int:
         c: int = self.peek_cp()
@@ -79,7 +85,7 @@ class Lexer:
             or text == "else" or text == "while" or text == "for" or text == "in"
             or text == "not" or text == "and" or text == "or" or text == "return"
             or text == "break" or text == "continue" or text == "pass"
-            or text == "match" or text == "case" or text == "import" or text == "from"
+            or text == "import" or text == "from"
             or text == "raise" or text == "is" or text == "None" or text == "True"
             or text == "False" or text == "lambda" or text == "del" or text == "assert"
             or text == "with" or text == "as" or text == "try" or text == "except"
@@ -99,6 +105,19 @@ class Lexer:
             if self.depth > 0:
                 return self.next_token()
             return Token(TokKind.NL, "\n", line, col)
+        if (c == 98 or c == 66) and (self.peek2_cp() == 34 or self.peek2_cp() == 39):
+            # bytes literal: b'...' / b"..." - escapes decoded later
+            qb: int = self.peek2_cp()
+            self.advance()
+            self.advance()
+            startb: int = self.pos
+            while self.pos < len(self.src) and self.peek_cp() != qb:
+                if self.peek_cp() == 92:
+                    self.advance()
+                self.advance()
+            rawb: str = self.src[startb:self.pos]
+            self.advance()
+            return Token(TokKind.BYTES, rawb, line, col)
         if (c == 102 or c == 70) and (self.peek2_cp() == 34 or self.peek2_cp() == 39):
             # f-string: 'f' + quote ... quote, raw text (braces intact)
             q0: int = self.peek2_cp()
@@ -163,6 +182,31 @@ class Lexer:
                     return Token(TokKind.NUM, self.src[start:self.pos], line, col)
             return Token(TokKind.NUM, self.src[start:self.pos], line, col)
         if c == 34 or c == 39:
+            # triple-quoted string (multi-line, escapes honored) -
+            # module/function docstrings in dual-valid sources
+            if self.peek2_cp() == c and self.peek3_cp() == c:
+                self.advance()
+                self.advance()
+                self.advance()
+                start: int = self.pos
+                closed: bool = False
+                while self.pos < len(self.src):
+                    if (
+                        self.peek_cp() == c
+                        and self.peek2_cp() == c
+                        and self.peek3_cp() == c
+                    ):
+                        closed = True
+                        break
+                    if self.peek_cp() == 92:
+                        self.advance()
+                    self.advance()
+                text: str = self.src[start:self.pos]
+                if closed:
+                    self.advance()
+                    self.advance()
+                    self.advance()
+                return Token(TokKind.STR, text, line, col)
             q: int = self.advance()
             start: int = self.pos
             while self.pos < len(self.src) and self.peek_cp() != q:
@@ -209,7 +253,21 @@ def tokenize(src: str) -> list[Token]:
             return toks
 
 
+def hex_val(ch: str) -> int:
+    o: int = ord(ch)
+    if o >= 48 and o <= 57:
+        return o - 48
+    if o >= 97 and o <= 102:
+        return o - 87
+    if o >= 65 and o <= 70:
+        return o - 55
+    return -1
+
+
 def unescape(s: str) -> str:
+    # Python-compatible escape decoding: \n \t \r \' \\" \\\\ plus
+    # \xNN \uNNNN \NNN (octal) and \a \b \f \v - reference parity
+    # needs the full table, not just the common subset
     out: str = ""
     i: int = 0
     n: int = len(s)
@@ -235,9 +293,62 @@ def unescape(s: str) -> str:
             elif nxt == "\\":
                 out = out + "\\"
                 i += 2
+            elif nxt == "a":
+                out = out + chr(7)
+                i += 2
+            elif nxt == "b":
+                out = out + chr(8)
+                i += 2
+            elif nxt == "f":
+                out = out + chr(12)
+                i += 2
+            elif nxt == "v":
+                out = out + chr(11)
+                i += 2
+            elif nxt == "x":
+                if i + 3 < n and hex_val(s[i + 2]) >= 0 and hex_val(s[i + 3]) >= 0:
+                    out = out + chr(hex_val(s[i + 2]) * 16 + hex_val(s[i + 3]))
+                    i += 4
+                else:
+                    out = out + ch
+                    i += 1
+            elif nxt == "u":
+                ok4: bool = True
+                val4: int = 0
+                j4: int = 2
+                while j4 < 6:
+                    if i + j4 >= n or hex_val(s[i + j4]) < 0:
+                        ok4 = False
+                        break
+                    val4 = val4 * 16 + hex_val(s[i + j4])
+                    j4 += 1
+                if ok4:
+                    out = out + chr(val4)
+                    i += 6
+                else:
+                    out = out + ch
+                    i += 1
             else:
-                out = out + ch
-                i += 1
+                o8: int = ord(nxt)
+                if o8 >= 48 and o8 <= 55:
+                    val8: int = o8 - 48
+                    cnt8: int = 1
+                    while cnt8 < 3 and i + cnt8 + 1 < n:
+                        d8: int = ord(s[i + cnt8 + 1])
+                        if d8 >= 48 and d8 <= 55:
+                            val8 = val8 * 8 + (d8 - 48)
+                            cnt8 += 1
+                        else:
+                            break
+                    if val8 < 256:
+                        out = out + chr(val8)
+                        i += cnt8 + 1
+                    else:
+                        out = out + ch
+                        i += 1
+                else:
+                    out = out + ch
+                    i += 1
         else:
             out = out + ch
             i += 1
@@ -278,13 +389,21 @@ def to_int(text: str) -> int:
 
 
 def const_num(tok: Token) -> object:
-    if "." in tok.text or "e" in tok.text or "E" in tok.text:
-        return ["const", to_float(tok.text)]
-    return ["const", to_int(tok.text)]
+    t: str = tok.text
+    # 0x/0b/0o literals are always ints - their digits include e/E
+    if len(t) >= 2 and t[0] == "0" and (t[1] == "x" or t[1] == "X" or t[1] == "b" or t[1] == "B" or t[1] == "o" or t[1] == "O"):
+        return ["const", to_int(t)]
+    if "." in t or "e" in t or "E" in t:
+        return ["const", to_float(t)]
+    return ["const", to_int(t)]
 
 
 def const_str(tok: Token) -> object:
     return ["const", unescape(tok.text)]
+
+
+def const_bytes(tok: Token) -> object:
+    return ["const_b", unescape(tok.text)]
 
 
 class Parser:
@@ -339,6 +458,10 @@ class Parser:
     # ------------- statements -------------
     def parse_stmt(self) -> object:
         t = self.cur()
+        if t.kind == TokKind.NAME and t.text == "match" and self.stmt_ends_with_colon():
+            # soft keyword: 'match' lexes as a NAME; only a statement
+            # whose last token is ':' begins a match statement
+            return self.parse_match()
         if t.kind == TokKind.KW:
             if t.text == "def":
                 return self.parse_func_def()
@@ -350,8 +473,6 @@ class Parser:
                 return self.parse_while()
             if t.text == "for":
                 return self.parse_for()
-            if t.text == "match":
-                return self.parse_match()
             if t.text == "return":
                 return self.parse_return()
             if t.text == "break":
@@ -384,24 +505,42 @@ class Parser:
             self.error("expected end of line", t)
 
     def parse_import(self) -> object:
-        # import x / from x import y[, z] - names are recorded, loading
-        # is a no-op (M4 white-list has no importable surface)
+        # import x[.y][ as a] / from [.]*mod[.mod] import n[ as a][, ...]
+        # - unresolved names stay inert; .si resolution happens later
         if self.cur().text == "from":
             self.nxt()
-            module = self.expect_kind(TokKind.NAME).text
+            level: int = 0
+            while self.accept("."):
+                level += 1
+            # plain str + flag: ir2c's inference dislikes object/None
+            # reassignment feeding string concatenation
+            mod_text: str = ""
+            has_module: bool = False
+            if self.cur().kind == TokKind.NAME:
+                mod_text = self.expect_kind(TokKind.NAME).text
+                while self.accept("."):
+                    mod_text = mod_text + "." + self.expect_kind(TokKind.NAME).text
+                has_module = True
             self.expect("import")
             pairs = []
             while True:
                 n = self.expect_kind(TokKind.NAME).text
-                pairs.append([n, None])
+                asn2 = None
+                if self.accept("as"):
+                    asn2 = self.expect_kind(TokKind.NAME).text
+                pairs.append([n, asn2])
                 if not self.accept(","):
                     break
             self.expect_nl()
-            return ["from_import", module, pairs, 0]
+            if has_module:
+                return ["from_import", mod_text, pairs, level]
+            return ["from_import", None, pairs, level]
         self.expect("import")
         pairs = []
         while True:
             n = self.expect_kind(TokKind.NAME).text
+            while self.accept("."):
+                n = n + "." + self.expect_kind(TokKind.NAME).text
             asn = None
             if self.accept("as"):
                 asn = self.expect_kind(TokKind.NAME).text
@@ -510,7 +649,7 @@ class Parser:
         # else belongs to an inner chain this arm's block stopped at.
         if_col = self.cur().col
         self.expect("if")
-        test = self.parse_expr()
+        test = self.parse_expr_nt()
         self.expect(":")
         body = self.parse_block()
         orelse = []
@@ -529,7 +668,7 @@ class Parser:
     def parse_if_tail(self, if_col: int) -> object:
         # one elif arm: condition ':' block, then any further
         # elif/else continues the chain in its orelse
-        test = self.parse_expr()
+        test = self.parse_expr_nt()
         self.expect(":")
         body = self.parse_block()
         orelse = []
@@ -546,7 +685,7 @@ class Parser:
 
     def parse_while(self) -> object:
         self.expect("while")
-        test = self.parse_expr()
+        test = self.parse_expr_nt()
         self.expect(":")
         body = self.parse_block()
         return ["while", test, body]
@@ -567,9 +706,26 @@ class Parser:
         body = self.parse_block()
         return ["for", target, iter_expr, body, []]
 
+    def stmt_ends_with_colon(self) -> bool:
+        # the lexer swallows newlines inside brackets, so the first NL
+        # after pos ends this statement; a match statement's last token
+        # is ':' (match (x): is a match stmt, match(x) is a call)
+        i: int = self.pos
+        last: Token = self.toks[self.pos]
+        while i < len(self.toks):
+            tk: Token = self.toks[i]
+            if tk.kind == TokKind.NL or tk.kind == TokKind.END:
+                break
+            last = tk
+            i += 1
+        return last.kind == TokKind.OP and last.text == ":"
+
     def parse_match(self) -> object:
-        self.expect("match")
-        subject = self.parse_expr()
+        t0: Token = self.cur()
+        if not (t0.kind == TokKind.NAME and t0.text == "match"):
+            self.error("expected 'match'", t0)
+        self.nxt()
+        subject = self.parse_expr_nt()
         self.expect(":")
         self.expect_nl()
         cases = []
@@ -579,7 +735,7 @@ class Parser:
             if t.kind == TokKind.NL:
                 self.nxt()
                 continue
-            if t.kind != TokKind.KW or t.text != "case":
+            if t.kind != TokKind.NAME or t.text != "case":
                 break
             if base_col is None:
                 base_col = t.col
@@ -589,7 +745,7 @@ class Parser:
             pattern = self.parse_pattern()
             guard = None
             if self.accept("if"):
-                guard = self.parse_expr()
+                guard = self.parse_expr_nt()
             self.expect(":")
             body = self.parse_block()
             cases.append(["match_case", pattern, guard, body])
@@ -679,13 +835,19 @@ class Parser:
         self.expect("del")
         target = self.parse_expr()
         self.expect_nl()
+        # del obj[key] flattens to (obj, key) like the reference IR
+        if hoist_is_node(target) and dyn_head(target) == "subscript":
+            return ["delete", dyn_get(target, 1), dyn_get(target, 2)]
         return ["delete", target]
 
     def parse_assert(self) -> object:
         self.expect("assert")
-        test = self.parse_expr()
+        test = self.parse_expr_nt()
+        msg = None
+        if self.accept(","):
+            msg = self.parse_expr_nt()
         self.expect_nl()
-        return ["assert", test]
+        return ["assert", test, msg]
 
     # ------------- simple statements / assignment / expr -------------
     def parse_simple_stmt(self) -> object:
@@ -711,6 +873,31 @@ class Parser:
         if t.kind == TokKind.OP and t.text in ("=", "+=", "-=", "*=", "/=", "//=", "%="):
             self.nxt()
             value = self.parse_expr()
+            chained: bool = False
+            chain_targets = []
+            while (
+                self.cur().kind == TokKind.OP
+                and self.cur().text == "="
+                and hoist_is_node(value)
+                and dyn_head(value) == "name"
+            ):
+                # a = b = ... = v rolls into one multi_assign like the
+                # reference front end (one assign per target, same value)
+                if not chained:
+                    chained = True
+                    chain_targets = [expr, value]
+                else:
+                    chain_targets.append(value)
+                self.nxt()
+                value = self.parse_expr()
+                if not (hoist_is_node(value) and dyn_head(value) == "name"):
+                    break
+            if chained:
+                stmts = []
+                for ct in chain_targets:
+                    stmts.append(["assign", dyn_get(ct, 1), value, None])
+                self.expect_nl()
+                return ["multi_assign", stmts]
             self.expect_nl()
             op_map = {"=": None, "+=": "+", "-=": "-", "*=": "*", "/=": "/", "//=": "//", "%=": "%"}
             op = op_map[t.text]
@@ -740,7 +927,26 @@ class Parser:
 
     # ------------- expressions -------------
     def parse_expr(self) -> object:
-        # conditional expression: THEN if COND else ELSE
+        # bare tuple expression: lowest precedence; statement contexts
+        # only - bracketed contexts (call args, subscripts, lambda
+        # bodies) parse the no-tuple variant and own their commas
+        value = self.parse_expr_nt()
+        t = self.cur()
+        if t.kind == TokKind.OP and t.text == ",":
+            items = [value]
+            while self.accept(","):
+                t2 = self.cur()
+                if t2.kind == TokKind.NL or t2.kind == TokKind.END:
+                    break
+                if t2.kind == TokKind.OP and t2.text == "=":
+                    # single-target unpacking: obj_arg, = func.args
+                    break
+                items.append(self.parse_expr_nt())
+            return ["tuple", items]
+        return value
+
+    def parse_expr_nt(self) -> object:
+        # conditional expression: THEN if COND else ELSE (no tuple)
         value = self.parse_or()
         t = self.cur()
         if t.kind == TokKind.KW and t.text == "if":
@@ -750,7 +956,7 @@ class Parser:
             if not (t2.kind == TokKind.KW and t2.text == "else"):
                 self.error("expected 'else' in conditional expression", t2)
             self.nxt()
-            else_val = self.parse_expr()
+            else_val = self.parse_expr_nt()
             return ["if_expr", cond, value, else_val]
         return value
 
@@ -784,6 +990,21 @@ class Parser:
         if t.kind == TokKind.OP and t.text in ("==", "!=", "<", "<=", ">", ">="):
             self.nxt()
             right = self.parse_bitor()
+            t2 = self.cur()
+            if t2.kind == TokKind.OP and t2.text in ("==", "!=", "<", "<=", ">", ">="):
+                # chained comparison: a <= b <= c rolls forward, the
+                # shared operand repeated per pair like the reference IR
+                pairs = [[t.text, left, right]]
+                while True:
+                    t3 = self.cur()
+                    if t3.kind == TokKind.OP and t3.text in ("==", "!=", "<", "<=", ">", ">="):
+                        self.nxt()
+                        nxt2 = self.parse_bitor()
+                        pairs.append([t3.text, right, nxt2])
+                        right = nxt2
+                    else:
+                        break
+                return ["chained_compare", pairs]
             return [t.text, left, right]
         if t.kind == TokKind.KW and t.text == "is":
             self.nxt()
@@ -855,6 +1076,16 @@ class Parser:
         t = self.cur()
         # kind check matters: a STR token's text may be "+" or "-"
         if t.kind == TokKind.OP and t.text == "-":
+            if (
+                self.toks[self.pos + 1].kind == TokKind.NUM
+                and self.toks[self.pos + 1].text == "9223372036854775808"
+            ):
+                # fold ONLY the pathological literal (mirrors
+                # ast_processor.visit_UnaryOp): +2^63 overflows i64,
+                # every other -literal keeps the ["-", const] shape
+                self.nxt()
+                self.nxt()
+                return ["const", to_int("-9223372036854775808")]
             self.nxt()
             return ["-", self.parse_unary()]
         if t.kind == TokKind.OP and t.text == "+":
@@ -875,9 +1106,9 @@ class Parser:
                     if self.cur().kind == TokKind.NAME and self.toks[self.pos + 1].text == "=":
                         k = self.nxt().text
                         self.expect("=")
-                        kwargs.append((k, self.parse_expr()))
+                        kwargs.append((k, self.parse_expr_nt()))
                     else:
-                        args.append(self.parse_expr())
+                        args.append(self.parse_expr_nt())
                     if not self.accept(","):
                         break
                 self.expect(")")
@@ -889,23 +1120,31 @@ class Parser:
                     hi = None
                     step = None
                     if self.cur().text != ":" and self.cur().text != "]":
-                        hi = self.parse_expr()
+                        hi = self.parse_expr_nt()
                     if self.accept(":"):
                         if self.cur().text != "]":
-                            step = self.parse_expr()
+                            step = self.parse_expr_nt()
                     self.expect("]")
                     node = ["subscript", node, ["slice", lo, hi, step]]
                 else:
-                    index = self.parse_expr()
+                    index = self.parse_expr_nt()
+                    if self.cur().kind == TokKind.OP and self.cur().text == ",":
+                        # tuple subscript key: d[a, b]
+                        kitems = [index]
+                        while self.accept(","):
+                            if self.cur().text == "]":
+                                break
+                            kitems.append(self.parse_expr_nt())
+                        index = ["tuple", kitems]
                     if self.accept(":"):
                         lo2 = index
                         hi2 = None
                         step2 = None
                         if self.cur().text != ":" and self.cur().text != "]":
-                            hi2 = self.parse_expr()
+                            hi2 = self.parse_expr_nt()
                         if self.accept(":"):
                             if self.cur().text != "]":
-                                step2 = self.parse_expr()
+                                step2 = self.parse_expr_nt()
                         self.expect("]")
                         node = ["subscript", node, ["slice", lo2, hi2, step2]]
                     else:
@@ -925,6 +1164,9 @@ class Parser:
         if t.kind == TokKind.STR:
             self.nxt()
             return const_str(t)
+        if t.kind == TokKind.BYTES:
+            self.nxt()
+            return const_bytes(t)
         if t.kind == TokKind.FSTR:
             self.nxt()
             return self.parse_fstring(t.text)
@@ -940,7 +1182,7 @@ class Parser:
                     self.nxt()
                     lparams.append(self.expect_kind(TokKind.NAME).text)
                 self.expect(":")
-                lbody = self.parse_expr()
+                lbody = self.parse_expr_nt()
                 return ["lambda", lparams, lbody]
             if t.text == "None":
                 self.nxt()
@@ -954,13 +1196,16 @@ class Parser:
         if self.accept("("):
             if self.accept(")"):
                 return ["tuple", ()]
-            first = self.parse_expr()
+            first = self.parse_expr_nt()
             if self.accept(","):
-                items = [first, self.parse_expr()]
-                while self.accept(","):
+                # trailing comma allowed anywhere: (a,), (a, b,), ...
+                items = [first]
+                while True:
                     if self.cur().text == ")":
                         break
-                    items.append(self.parse_expr())
+                    items.append(self.parse_expr_nt())
+                    if not self.accept(","):
+                        break
                 self.expect(")")
                 return ["tuple", items]
             self.expect(")")
@@ -968,7 +1213,7 @@ class Parser:
         if self.accept("["):
             items = []
             if self.cur().text != "]":
-                items.append(self.parse_expr())
+                items.append(self.parse_expr_nt())
                 # list comprehension: [elt for target in iter (if cond)*]
                 t = self.cur()
                 if t.kind == TokKind.KW and t.text == "for":
@@ -992,25 +1237,37 @@ class Parser:
                 while self.accept(","):
                     if self.cur().text == "]":
                         break
-                    items.append(self.parse_expr())
+                    items.append(self.parse_expr_nt())
             self.expect("]")
             return ["list", items]
         if self.accept("{"):
             items = []
-            if self.cur().text != "}":
-                k = self.parse_expr()
-                self.expect(":")
-                v = self.parse_expr()
+            if self.cur().text == "}":
+                # {} is always the empty dict, never a set
+                self.nxt()
+                return ["dict", []]
+            k = self.parse_expr_nt()
+            if self.cur().kind == TokKind.OP and self.cur().text == ":":
+                self.nxt()
+                v = self.parse_expr_nt()
                 items.append((k, v))
                 while self.accept(","):
                     if self.cur().text == "}":
                         break
-                    k = self.parse_expr()
+                    k = self.parse_expr_nt()
                     self.expect(":")
-                    v = self.parse_expr()
+                    v = self.parse_expr_nt()
                     items.append((k, v))
+                self.expect("}")
+                return ["dict", items]
+            # set literal: {e, e, ...}
+            items.append(k)
+            while self.accept(","):
+                if self.cur().text == "}":
+                    break
+                items.append(self.parse_expr_nt())
             self.expect("}")
-            return ["dict", items]
+            return ["set", items]
         self.error("unexpected token '" + t.text + "'", t)
 
 
@@ -1028,6 +1285,7 @@ class HG:
     ren_dst: list[str]
     counter: int
     globals: list[str]
+    locals: object
 
 
 # ---------- cross-file import expansion (Rust mod shape) ----------
@@ -1108,6 +1366,10 @@ def fe_expand_imports(mod: object, seen: list[str], stack: list[str], alias_name
                 out.append(["import", kept])
         elif hoist_is_node(st) and dyn_head(st) == "from_import":
             fmod: object = dyn_get(st, 1)
+            flevel: object = dyn_get(st, 3)
+            if fmod is None or flevel != 0 or "." in str(fmod):
+                out.append(st)
+                continue
             fpath: str = fmod + ".si"
             if file_exists(fpath):
                 if dyn_len(out) > 0 and hoist_is_node(dyn_get(out, dyn_len(out) - 1)) and dyn_head(dyn_get(out, dyn_len(out) - 1)) == "line":
@@ -1269,6 +1531,9 @@ def fe_hoist_nested(mod: object, seen: list[str], stack: list[str], alias_names:
             op: object = dyn_head(nd)
             if op == "from_import":
                 fmod: object = dyn_get(nd, 1)
+                fnlevel: object = dyn_get(nd, 3)
+                if fmod is None or fnlevel != 0 or "." in str(fmod):
+                    continue
                 fpath: str = fmod + ".si"
                 if file_exists(fpath):
                     more = fe_load_splice(fpath, fmod, seen, stack, alias_names, alias_exports)
@@ -1447,6 +1712,92 @@ def hoist_calls_one_of(node: object, names: object) -> bool:
     return False
 
 
+def hoist_collect_locals(node: object, out: object) -> None:
+    # names assigned within a function body: assign/ann_assign/aug_assign
+    # targets, tuple_assign targets, for-loop targets, nested def names -
+    # the function's own locals, never captures (mirrors
+    # nested_hoist._collect_locals)
+    if not isinstance(node, (list, tuple)):
+        return
+    if dyn_len(node) >= 2 and isinstance(dyn_head(node), str):
+        op: object = dyn_head(node)
+        if (op == "assign" or op == "ann_assign" or op == "aug_assign") and isinstance(dyn_get(node, 1), str):
+            out.append(dyn_get(node, 1))
+        elif op == "tuple_assign":
+            for target in dyn_get(node, 1):
+                if isinstance(target, str):
+                    out.append(target)
+                elif (
+                    isinstance(target, (list, tuple))
+                    and dyn_len(target) >= 2
+                    and dyn_head(target) == "name"
+                    and isinstance(dyn_get(target, 1), str)
+                ):
+                    out.append(dyn_get(target, 1))
+        elif op == "for" or op == "c_for":
+            target2 = dyn_get(node, 1)
+            if isinstance(target2, str):
+                out.append(target2)
+            elif (
+                isinstance(target2, (list, tuple))
+                and dyn_len(target2) >= 2
+                and dyn_head(target2) == "name"
+                and isinstance(dyn_get(target2, 1), str)
+            ):
+                out.append(dyn_get(target2, 1))
+            elif (
+                isinstance(target2, (list, tuple))
+                and dyn_len(target2) >= 2
+                and dyn_head(target2) == "tuple_unpack"
+            ):
+                for name in dyn_get(target2, 1):
+                    out.append(name)
+        elif op == "func_def":
+            out.append(dyn_get(node, 1))
+            return
+    for c in node:
+        if isinstance(c, (list, tuple)):
+            hoist_collect_locals(c, out)
+
+
+def hoist_collect_assigned(stmts: object, sink: object) -> None:
+    # names the function body itself binds: assignments, for targets,
+    # and anything assigned inside control-flow bodies (mirrors
+    # nested_hoist._collect_assigned_names)
+    if not isinstance(stmts, (list, tuple)):
+        return
+    for st in stmts:
+        if not isinstance(st, (list, tuple)) or dyn_len(st) == 0:
+            continue
+        op: object = dyn_head(st)
+        if op == "assign" or op == "ann_assign" or op == "aug_assign":
+            tgt = dyn_get(st, 1)
+            if isinstance(tgt, str):
+                sink.append(tgt)
+            elif (
+                isinstance(tgt, (list, tuple))
+                and dyn_len(tgt) >= 2
+                and dyn_head(tgt) == "name"
+            ):
+                sink.append(dyn_get(tgt, 1))
+        elif op == "for" and dyn_len(st) >= 2:
+            t = dyn_get(st, 1)
+            if isinstance(t, str):
+                sink.append(t)
+            elif (
+                isinstance(t, (list, tuple))
+                and dyn_len(t) >= 2
+                and dyn_head(t) == "name"
+            ):
+                sink.append(dyn_get(t, 1))
+            hoist_collect_locals(dyn_get(st, 3) if dyn_len(st) > 3 else [], sink)
+        elif op == "if" and dyn_len(st) >= 4:
+            hoist_collect_locals(dyn_get(st, 2), sink)
+            hoist_collect_locals(dyn_get(st, 3), sink)
+        elif op == "while" and dyn_len(st) >= 3:
+            hoist_collect_locals(dyn_get(st, 2), sink)
+
+
 def hoist_free_names(node: object, out: object) -> int:
     if hoist_is_scalar(node):
         return 0
@@ -1521,6 +1872,14 @@ def hoist_rec(node: object, g: HG, hoisted: object) -> object:
                 for i, a in enumerate(dyn_get(node, 2)):
                     new_args2.append(hoist_rec(a, g, hoisted))
                 return ["call", ["name", m2], new_args2, dyn_get(node, 3)]
+    if op == "name":
+        nm3: str = str(dyn_get(node, 1))
+        m4: str = hg_lookup(g, nm3)
+        if m4 != "" and not hg_in_list(g.locals, nm3):
+            # a hoisted function referenced as a VALUE (passed as an
+            # argument): the mangled funcref node - a local of the same
+            # name shadows it and reads the local slot instead
+            return ["funcref", m4]
     if hoist_is_node(node):
         out3 = [op]
         for j, c in enumerate(node):
@@ -1539,7 +1898,11 @@ def hoist_def(func_def: object, cls_name: str, is_method: bool, global_names: li
     prefix: str = str(dyn_get(func_def, 1))
     if cls_name != "":
         prefix = cls_name + "__" + str(dyn_get(func_def, 1))
-    g: HG = HG(prefix, cls_name, is_method, hg_empty_strs(), hg_empty_strs(), 0, global_names)
+    # untyped on purpose: a list[str] local boxes by value when passed
+    # to the collector's object param, so appends would mutate a copy
+    g_locals = []
+    hoist_collect_assigned(dyn_get(func_def, 3), g_locals)
+    g: HG = HG(prefix, cls_name, is_method, hg_empty_strs(), hg_empty_strs(), 0, global_names, g_locals)
     hoisted = []
     new_body = hoist_rec(dyn_get(func_def, 3), g, hoisted)
 
@@ -1585,6 +1948,15 @@ def hoist_def(func_def: object, cls_name: str, is_method: bool, global_names: li
         for pi, pv2 in enumerate(dyn_get(h3, 2)):
             allowed.append(pv2)
         allowed.append("self")
+        # the function's own locals are not captures, and any sibling
+        # hoisted name is callable (calls carry mangled names) - both
+        # per nested_hoist's bound set
+        own_locals = []
+        hoist_collect_locals(dyn_get(h3, 3), own_locals)
+        for li, ln in enumerate(own_locals):
+            allowed.append(ln)
+        for hi, hn in enumerate(hoisted):
+            allowed.append(dyn_get(hoisted[hi], 1))
         for fi, fname in enumerate(free):
             if not hg_in_list(allowed, fname):
                 print("M4 hoist error: nested function '" + mangled2 + "' captures '" + str(fname) + "'; pass it as a parameter")
@@ -1675,7 +2047,10 @@ def json_quote(s: str) -> str:
         elif ch == "\r":
             out.append("\\r")
         elif ord(ch) < 0x20:
-            out.append("\\u%04x" % ord(ch))
+            # manual hex digits: the runtime mod has no str formatting
+            digits: str = "0123456789abcdef"
+            c4: int = ord(ch)
+            out.append("\\u" + digits[c4 // 4096] + digits[(c4 // 256) % 16] + digits[(c4 // 16) % 16] + digits[c4 % 16])
         else:
             out.append(ch)
     out.append('"')

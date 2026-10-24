@@ -138,8 +138,19 @@
   子命令函数；LLVM_AVAILABLE 改 find_spec 探测，llvmlite dylib
   不再进 ir/interpret 路径）；`silu ir` 0.138s→0.047s。性质由
   test_cli 的 sys.modules 断言 + 60ms 导入预算锁住。
+- ~~前端自举收尾~~ **已完成（v1.6.0）**：aug-assign 形状 +
+  as-别名 + flat 转换器源全构造解析（三引号/裸元组/集合/字节
+  串/完整转义表/链式比较/链式赋值/元组下标/软 match/case/点
+  路径与相对 import/LLONG_MIN 折叠/del 形状/提升镜像对齐）；
+  语料 18/18 parity；管线级不动点落地（tools/selfhost_build +
+  test_pipeline_fixed_point）。
 - 常驻编译 daemon：再省进程启动 + import + 重复解析（估算
-  0.18 → ~0.12s/程序，与 rustc 0.128s 打平）。
+  0.19 → ~0.13s/程序，与 rustc 0.128s 打平）。
+- **typed 后端待查怪癖**（v1.6.0 发现，均已绕开）：
+  ①`list[str]` 类型化局部传入 object 参数按值装箱——append
+  改副本、调用方不可见（应共享或编译期报错）；
+  ②`t2 = toks[i+1]; t2.kind` 动态 getattr 崩溃而内联
+  `toks[i+1].kind` 正常（同函数同型）。
 - rustc 直调无缓存（实证：三连编译恒定 + 磁盘零残留）；cargo
   的缓存是工件级（冷 0.274s/热 0.050s），与我们的 .o 缓存同类。
 

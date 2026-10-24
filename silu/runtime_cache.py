@@ -23,14 +23,21 @@ import re
 import subprocess
 import tempfile
 
-from silu.typed_codegen import TypedCodegen
-
 _CACHE_DIR = os.path.join(
     os.path.expanduser("~"), ".cache", "silu-runtime"
 )
 
 _HEADER_RE = re.compile(
     r'\A(?:[^\n]*\n)*?(?=define|declare|@)'  # ModuleID/triple/layout
+)
+
+# any edit to a converter source changes the emitted runtime text, so
+# the text cache keys on the sources' combined content hash. A stale
+# cache cannot silently corrupt a build: split()'s prefix check
+# compares against the CURRENT converter's output and fails loudly.
+_TEXT_SOURCES = (
+    "typed_codegen.py", "typed_helpers.py",
+    "pyobj_runtime.py", "silu_ir_to_llvm.py",
 )
 
 
@@ -58,9 +65,34 @@ def _global_type(init_text):
     return t.split()[0]
 
 
-def runtime_text():
-    """The runtime-only module text (fresh converter, pre-convert)."""
-    return str(TypedCodegen().module)
+def _fingerprint():
+    h = hashlib.sha256()
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in _TEXT_SOURCES:
+        with open(os.path.join(here, name), "rb") as fh:
+            h.update(fh.read())
+    return h.hexdigest()[:24]
+
+
+def runtime_text(cached=True):
+    """The runtime-only module text (fresh converter, pre-convert).
+
+    Disk-cached under a fingerprint of the converter sources: the
+    TypedCodegen import (a 12k-line module that also drags llvmlite)
+    and the runtime module build only run on a cold cache."""
+    cache = os.path.join(_CACHE_DIR, f"rt-text-{_fingerprint()}.ll")
+    if cached and os.path.exists(cache):
+        with open(cache, "r", encoding="utf-8") as fh:
+            return fh.read()
+    from silu.typed_codegen import TypedCodegen
+
+    text = str(TypedCodegen().module)
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    tmp = cache + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, cache)
+    return text
 
 
 def split(full_text, rt_text=None):
@@ -163,6 +195,8 @@ def build_with_cache(source_ir_json, out_path, opt="-O2", cache_dir=None,
     compile user .o, link the cached runtime .o. Returns the
     converter's full .ll text."""
     if full_text is None:
+        from silu.typed_codegen import TypedCodegen
+
         full_text = TypedCodegen().convert(source_ir_json)
     rt_ll, user_ll = split(full_text)
     rt_obj = runtime_object(rt_ll, cache_dir=cache_dir, opt=opt)

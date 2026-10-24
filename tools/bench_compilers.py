@@ -30,30 +30,7 @@ def sh(cmd, cwd=REPO):
     return subprocess.run(cmd, capture_output=True, cwd=cwd)
 
 
-# single-process driver for the self-hosted pipeline: python does the
-# frontend in-process, fp.bin does codegen, the cached runtime link is
-# orchestrated in the same python process (no extra interpreter start)
-DRIVER = "/tmp/bc_selfbuild.py"
-with open(DRIVER, "w") as h:
-    h.write(
-        "import json, os, subprocess, sys\n"
-        f"sys.path.insert(0, {REPO!r})\n"
-        "from silu.importer import expand_imports_tree\n"
-        "from silu.ir_generator import SiluIRGenerator\n"
-        "from silu import runtime_cache\n"
-        "src, out, flat_bin = sys.argv[1], sys.argv[2], sys.argv[3]\n"
-        "with open(src, encoding='utf-8') as h:\n"
-        "    code = h.read()\n"
-        "tree = expand_imports_tree(\n"
-        "    code, os.path.dirname(os.path.abspath(src)))\n"
-        "ir_json = json.dumps(SiluIRGenerator().visit(tree))\n"
-        "p = subprocess.run([flat_bin], input=ir_json.encode(),\n"
-        "                   stdout=subprocess.PIPE)\n"
-        "if p.returncode != 0:\n"
-        "    sys.exit(p.returncode)\n"
-        "runtime_cache.build_with_cache(\n"
-        "    None, out, full_text=p.stdout.decode())\n"
-    )
+SELFHOST_BUILD = f"{REPO}/tools/selfhost_build.py"
 
 
 def t_median(fn, n=3, samples=False):
@@ -104,9 +81,10 @@ def clang_cold(ll, bin_):
 
 
 def build_self_cached_oneproc(si, bin_):
-    # self-hosted pipeline, minimal process count: one python (frontend
-    # + link orchestration) + fp.bin + cached clang link
-    return sh([PY, DRIVER, si, bin_, FLAT_BIN])
+    # the real self-hosted pipeline: native fe + native converter +
+    # clang (python only orchestrates); binaries rebuild on source
+    # change, so steady-state runs are pure execution
+    return sh([PY, SELFHOST_BUILD, si, "-o", bin_])
 
 
 def link_cached(ll, bin_):
@@ -212,7 +190,18 @@ ll_nat = f"/tmp/bc_{b}.nat.ll"
 front_end(si, ir)
 codegen_native(ir, ll_nat)
 print("stage breakdown (mandelbrot, median of 3):")
+
+
+def fe_front():
+    with open(si) as h:
+        return subprocess.run([f"{REPO}/silu_fe"], stdin=h,
+                              stdout=open(ir, "wb"),
+                              stderr=subprocess.DEVNULL, cwd=REPO)
+
+
+tfe = t_median(fe_front)
 t0 = t_median(lambda: front_end(si, ir))
+print(f"  native frontend (silu_fe)          {fmt(tfe)}")
 t1 = t_median(lambda: codegen_py(ir, ll_py))
 t2 = t_median(lambda: codegen_native(ir, ll_nat))
 t3 = t_median(lambda: clang_cold(ll_nat, "/tmp/bc_trash.bin"))

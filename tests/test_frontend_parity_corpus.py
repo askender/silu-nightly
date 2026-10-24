@@ -24,6 +24,8 @@ def _corpus():
         os.path.join(REPO, "selfhost", "ir_interp.si"),
         # the front end parses its own source - the strongest member
         os.path.join(REPO, "selfhost", "silu_fe.si"),
+        # and the flattened converter: the largest Silu program there is
+        os.path.join(REPO, "selfhost", "typed_codegen_flat.si"),
     ]
     return files
 
@@ -46,5 +48,5 @@ def test_frontend_corpus_parity():
             f"front ends diverge on {path}"
         )
         checked += 1
-    # 14 benchmarks + calc + ir_interp + silu_fe itself
-    assert checked == 17
+    # 14 benchmarks + calc + ir_interp + silu_fe + flat converter
+    assert checked == 18
