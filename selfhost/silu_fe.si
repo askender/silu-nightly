@@ -719,7 +719,10 @@ class Parser:
             if target[0] == "subscript":
                 if op is None:
                     return ["subscript_assign", target[1], target[2], value]
-                return ["subscript_aug_assign", target[1], target[2], t.text, value]
+                # reference front end folds this into aug_assign with a
+                # subscript target (its subscript_aug_assign branch never
+                # fires for source-level obj[key] += ...)
+                return ["aug_assign", target, t.text, value]
             if target[0] == "attribute":
                 if op is None:
                     return ["assign", target, value, None]
