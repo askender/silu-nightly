@@ -100,7 +100,7 @@ def compile_with(fe, conv, source, out_path, save_ll=None):
     _link(full_ll, out_path, save_ll)
 
 
-def build(source, out_path, save_ll=None):
+def build(source, out_path, save_ll=None, static_only=False):
     """source .si -> native binary via siluc + clang."""
     siluc = ensure_siluc()
     src = os.path.abspath(source)
@@ -108,6 +108,13 @@ def build(source, out_path, save_ll=None):
         [siluc], stdin=open(src, "r"), stdout=subprocess.PIPE,
         cwd=os.path.dirname(src), check=True,
     ).stdout.decode("utf-8")
+    if static_only:
+        sys.path.insert(0, REPO)
+        from silu.static_gate import static_gate_error, static_violations
+
+        violations = static_violations(full_ll)
+        if violations:
+            raise RuntimeError(static_gate_error(violations))
     _link(full_ll, out_path, save_ll)
 
 
@@ -126,8 +133,13 @@ def main():
     ap.add_argument("file", help="Silu source file")
     ap.add_argument("-o", "--output", required=True, help="output binary")
     ap.add_argument("--save-ll", help="also dump the converter's full .ll here")
+    ap.add_argument(
+        "--static", action="store_true",
+        help="refuse programs whose code touches the dynamic (pyobj) runtime",
+    )
     args = ap.parse_args()
-    build(args.file, args.output, save_ll=args.save_ll)
+    build(args.file, args.output, save_ll=args.save_ll,
+          static_only=args.static)
     print(f"Built (self-hosted): {args.output}")
 
 

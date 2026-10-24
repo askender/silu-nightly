@@ -283,11 +283,14 @@ def run_llvm_ir_generator(
         sys.exit(1)
 
 
-def _compile_to_binary(source_file: str, out_path: str) -> None:
+def _compile_to_binary(source_file: str, out_path: str,
+                       static_only: bool = False) -> None:
     """Silu source -> IR -> LLVM IR -> clang executable.
 
     Honors SILU_CODEGEN (typed default / dynamic) and SILU_CHECKS the
-    same way the step-by-step pipeline does. Raises on any failure."""
+    same way the step-by-step pipeline does. With static_only, the
+    dynamic (pyobj) runtime must go unreferenced - a silent fallback
+    to PyObject storage becomes a loud error. Raises on any failure."""
     import json
     import shutil
     import subprocess
@@ -320,6 +323,13 @@ def _compile_to_binary(source_file: str, out_path: str) -> None:
         converter = TypedCodegen()
     llvm_ir = converter.convert(ir_json)
 
+    if static_only:
+        from silu.static_gate import static_gate_error, static_violations
+
+        violations = static_violations(llvm_ir)
+        if violations:
+            raise RuntimeError(static_gate_error(violations))
+
     if os.environ.get("SILU_RUNTIME_CACHE", "") == "1" and \
             codegen_mode != "dynamic":
         # opt-in fast path: the ~350KB pyobj runtime compiles once
@@ -347,11 +357,12 @@ def _compile_to_binary(source_file: str, out_path: str) -> None:
             raise RuntimeError(f"clang failed:\n{result.stderr}")
 
 
-def run_build(source_file: str, output_file: str = None, **kwargs) -> None:
+def run_build(source_file: str, output_file: str = None,
+              static_only: bool = False, **kwargs) -> None:
     """One-command native build: Silu source -> executable."""
     try:
         out_path = output_file or os.path.splitext(os.path.basename(source_file))[0]
-        _compile_to_binary(source_file, out_path)
+        _compile_to_binary(source_file, out_path, static_only=static_only)
         print(f"Built executable: {out_path}")
     except Exception as e:
         print(f"Error building {source_file}: {e}", file=sys.stderr)
@@ -709,6 +720,11 @@ Examples:
         build_parser.add_argument(
             "--output", "-o", help="Output executable path (default: source basename)"
         )
+        build_parser.add_argument(
+            "--static", action="store_true",
+            help="Refuse programs whose code touches the dynamic (pyobj) "
+            "runtime - silent fallback to PyObject storage becomes an error",
+        )
 
     # Differential verification subcommand
     if LLVM_AVAILABLE:
@@ -954,7 +970,11 @@ def main() -> None:
 
         elif args.mode == "build":
             # One-command native build
-            run_build(args.file, output_file=getattr(args, "output", None))
+            run_build(
+                args.file,
+                output_file=getattr(args, "output", None),
+                static_only=getattr(args, "static", False),
+            )
 
         elif args.mode == "verify":
             # Differential verification: interpreter vs compiled binary
