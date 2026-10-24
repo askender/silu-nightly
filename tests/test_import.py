@@ -101,6 +101,112 @@ CASES = {
         ),
         "expected": "ok\n",
     },
+    # ---- imports nested inside function/class bodies hoist to
+    # compile time (module inlines at module level, the in-body
+    # statement becomes pass) on every surface
+    "nested_from_import": {
+        "geom.si": (
+            "PI: float = 3.5\n\n"
+            "def area(r: float) -> float:\n"
+            "    return PI * r * r\n"
+        ),
+        "main.si": (
+            "def use(n: float) -> float:\n"
+            "    from geom import area\n"
+            "    return area(n)\n\n"
+            "def main() -> int:\n"
+            "    print(use(2.0))\n"
+            "    return 0\n"
+        ),
+        "expected": "14.0\n",
+    },
+    "nested_plain_import": {
+        "geom.si": (
+            "PI: float = 3.5\n\n"
+            "def area(r: float) -> float:\n"
+            "    return PI * r * r\n"
+        ),
+        "main.si": (
+            "def use(n: float) -> float:\n"
+            "    import geom\n"
+            "    return geom.area(n) + geom.PI\n\n"
+            "def main() -> int:\n"
+            "    print(use(2.0))\n"
+            "    return 0\n"
+        ),
+        "expected": "17.5\n",
+    },
+    "nested_in_class_method": {
+        "geom.si": (
+            "PI: float = 3.5\n\n"
+            "def area(r: float) -> float:\n"
+            "    return PI * r * r\n"
+        ),
+        "main.si": (
+            "class Calc:\n"
+            "    def area2(self, r: float) -> float:\n"
+            "        from geom import area\n"
+            "        return area(r)\n\n"
+            "def main() -> int:\n"
+            "    c = Calc()\n"
+            "    print(c.area2(2.0))\n"
+            "    return 0\n"
+        ),
+        "expected": "14.0\n",
+    },
+    "nested_deep_and_diamond": {
+        "geom.si": (
+            "PI: float = 3.5\n\n"
+            "def area(r: float) -> float:\n"
+            "    return PI * r * r\n"
+        ),
+        "main.si": (
+            "def outer(n: float) -> float:\n"
+            "    def inner(r: float) -> float:\n"
+            "        from geom import area\n"
+            "        return area(r)\n"
+            "    return inner(n)\n\n"
+            "def again(n: float) -> float:\n"
+            "    from geom import area\n"
+            "    return area(n)\n\n"
+            "def main() -> int:\n"
+            "    print(outer(2.0) + again(2.0))\n"
+            "    return 0\n"
+        ),
+        "expected": "28.0\n",
+    },
+    "nested_import_only_body": {
+        "geom.si": (
+            "PI: float = 3.5\n\n"
+            "def area(r: float) -> float:\n"
+            "    return PI * r * r\n"
+        ),
+        "main.si": (
+            "def noop() -> int:\n"
+            "    from geom import area\n"
+            "    return 0\n\n"
+            "def main() -> int:\n"
+            "    noop()\n"
+            "    print(\"done\")\n"
+            "    return 0\n"
+        ),
+        "expected": "done\n",
+    },
+    "nested_transitive": {
+        "leafc.si": "def three() -> int:\n    return 3\n",
+        "midc.si": (
+            "def call_leaf() -> int:\n"
+            "    from leafc import three\n"
+            "    return three()\n"
+        ),
+        "main.si": (
+            "import midc\n\n"
+            "def main() -> int:\n"
+            "    print(midc.call_leaf())\n"
+            "    return 0\n"
+        ),
+        "expected": "3\n",
+    },
 }
 
 
@@ -189,12 +295,9 @@ def test_import_ir2c_build(program, tmp_path):
 def test_import_frontend_parity(program):
     """The self-hosted front end expands imports identically."""
     main, _, _ = program
-    fe = os.path.join(REPO, "silu_fe")
-    if not os.path.exists(fe):
-        subprocess.run(
-            [sys.executable, "-m", "silu", "build", FRONTEND, "-o", fe],
-            check=True, capture_output=True, cwd=REPO,
-        )
+    from tests import ensure_fe_binary
+
+    fe = ensure_fe_binary()
     ref = json.loads(subprocess.run(
         [sys.executable, "-m", "silu", "ir", main, "--format", "json"],
         capture_output=True, text=True, cwd=REPO,
@@ -223,12 +326,9 @@ def test_import_cycle_rejected_frontend(tmp_path):
     _write(tmp_path, "x.si", "import y\n\ndef xv() -> int:\n    return 1\n")
     _write(tmp_path, "y.si", "import x\n\ndef yv() -> int:\n    return 2\n")
     main = _write(tmp_path, "main.si", "import x\n\nprint(x.xv())\n")
-    fe = os.path.join(REPO, "silu_fe")
-    if not os.path.exists(fe):
-        subprocess.run(
-            [sys.executable, "-m", "silu", "build", FRONTEND, "-o", fe],
-            check=True, capture_output=True, cwd=REPO,
-        )
+    from tests import ensure_fe_binary
+
+    fe = ensure_fe_binary()
     r = subprocess.run(
         [fe], stdin=open(main), capture_output=True, text=True,
         cwd=os.path.dirname(main),
@@ -264,3 +364,77 @@ def test_class_import(tmp_path):
     )
     r = subprocess.run([binary], capture_output=True, text=True)
     assert r.stdout == "36\n"
+
+
+def _alias_module(tmp_path):
+    _write(tmp_path, "leafx.si", (
+        "SCALE: int = 7\n\n"
+        "def scale(x: int) -> int:\n"
+        "    return x * SCALE\n"
+    ))
+
+
+def test_import_as_alias(tmp_path):
+    """`import m as a` binds a second alias for attribute rewriting
+    (front end only: the self-hosted fe parser does not accept `as`)."""
+    _alias_module(tmp_path)
+    main = _write(tmp_path, "main.si", (
+        "import leafx as lx\n\n"
+        "def main() -> int:\n"
+        "    print(lx.scale(6))\n"
+        "    return 0\n"
+    ))
+    r = subprocess.run(
+        [sys.executable, "-m", "silu", "interpret", main],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "42\n"
+
+
+def test_import_as_alias_diamond(tmp_path):
+    """The second import of an already-inlined module under a NEW
+    alias must still register that alias (old bug: registered only on
+    first load, so lx.X stayed unresolved)."""
+    _alias_module(tmp_path)
+    main = _write(tmp_path, "main.si", (
+        "import leafx\n"
+        "import leafx as lx\n\n"
+        "def main() -> int:\n"
+        "    print(lx.scale(6) + leafx.scale(1))\n"
+        "    return 0\n"
+    ))
+    r = subprocess.run(
+        [sys.executable, "-m", "silu", "interpret", main],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "49\n"
+    binary = str(tmp_path / "prog")
+    b = subprocess.run(
+        [sys.executable, "-m", "silu", "build", main, "-o", binary],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert b.returncode == 0, b.stderr
+    r = subprocess.run([binary], capture_output=True, text=True, timeout=60)
+    assert r.stdout == "49\n"
+
+
+def test_nested_as_alias(tmp_path):
+    """Same aliasing fix for imports hoisted out of function bodies."""
+    _alias_module(tmp_path)
+    main = _write(tmp_path, "main.si", (
+        "import leafx\n\n"
+        "def use(n: int) -> int:\n"
+        "    import leafx as lx\n"
+        "    return lx.scale(n)\n\n"
+        "def main() -> int:\n"
+        "    print(use(3))\n"
+        "    return 0\n"
+    ))
+    r = subprocess.run(
+        [sys.executable, "-m", "silu", "interpret", main],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "21\n"

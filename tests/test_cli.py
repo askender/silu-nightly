@@ -43,7 +43,9 @@ def test_legacy_usage_with_valid_file(mock_parse, mock_file):
     mock_parse.return_value = mock_tree
 
     with patch.object(sys, "argv", ["silu", "test.si"]):
-        with patch("silu.cli.SiluInterpreter") as mock_interpreter:
+        # the import is lazy inside run_interpreter, so patch at the
+        # defining module (from-import resolves it at call time)
+        with patch("silu.interpreter.SiluInterpreter") as mock_interpreter:
             # This should not raise an exception for legacy usage
             main()
 
@@ -266,3 +268,47 @@ def test_no_types_flag():
         with patch("silu.cli.generate_ir") as mock_generate:
             main()
             mock_generate.assert_called_once_with("x = 5", "pretty", record_types=False)
+
+
+def test_cli_module_stays_lean():
+    """Importing silu.cli must not pull z3/loguru/llvmlite: those ride
+    behind their subcommands now (the fat-import fix, ~0.1s per CLI
+    call). Locks the property against accidental top-level re-imports."""
+    import subprocess
+
+    from tests import REPO
+
+    code = (
+        "import sys; import silu.cli; "
+        "assert 'z3' not in sys.modules, 'z3 eagerly imported'; "
+        "assert 'loguru' not in sys.modules, 'loguru eagerly imported'; "
+        "assert 'llvmlite' not in sys.modules, 'llvmlite eagerly imported'"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert r.returncode == 0, r.stderr
+    assert silu_cli_import_cost_bounded()
+
+
+def silu_cli_import_cost_bounded() -> bool:
+    """And the silu.cli import itself stays under 60ms of wall time
+    (was ~96ms with the fat imports, ~12ms after the fix)."""
+    import statistics
+    import subprocess
+
+    from tests import REPO
+
+    code = (
+        "import time; t = time.perf_counter(); "
+        "import silu.cli; print(time.perf_counter() - t)"
+    )
+    times = []
+    for _ in range(3):
+        r = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, cwd=REPO,
+        )
+        times.append(float(r.stdout.strip()))
+    return statistics.median(times) < 0.06

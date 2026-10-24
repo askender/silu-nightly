@@ -133,12 +133,13 @@
 
 ### 后续提速空间（2026-10-24 四管线实测后排序，见 progress 文档）
 
-- **cli.py 胖 import 懒加载**：`python -m silu ir` 实测 96ms 花
-  在 import silu.cli（z3+loguru 66ms，`ir` 子命令根本不用）。
-  把 CLI 顶层 silu 导入挪进各子命令函数 = 每次编译省 ~0.1s，
-  最便宜的一步。cli.py 不在 flatten 双平面内，不触字节锁。
+- ~~**cli.py 胖 import 懒加载**~~ **已完成**：silu.cli 导入
+  96ms→12ms（z3+loguru+ir_interpreter/ir_to_source 全部下沉到
+  子命令函数；LLVM_AVAILABLE 改 find_spec 探测，llvmlite dylib
+  不再进 ir/interpret 路径）；`silu ir` 0.138s→0.047s。性质由
+  test_cli 的 sys.modules 断言 + 60ms 导入预算锁住。
 - 常驻编译 daemon：再省进程启动 + import + 重复解析（估算
-  0.273 → ~0.15s/程序，逼近 rustc 的 0.128s）。
+  0.18 → ~0.12s/程序，与 rustc 0.128s 打平）。
 - rustc 直调无缓存（实证：三连编译恒定 + 磁盘零残留）；cargo
   的缓存是工件级（冷 0.274s/热 0.050s），与我们的 .o 缓存同类。
 

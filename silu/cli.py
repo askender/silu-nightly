@@ -12,28 +12,21 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
-from silu.ir_interpreter import (
-    execute_ir_from_file,
-    execute_ir_from_string,
-)
-from silu.symbolic_executor import (
-    SymbolicExecutor,
-    # execute_symbolic_from_string_with_executor,
-    #     execute_symbolic_from_file,
-    #     execute_symbolic_from_string,
-)
-from silu.symbolic_executor_wrapper import execute_symbolic_from_file_with_executor
 
-from silu.ir_to_source import convert_ir_file_to_source, convert_ir_string_to_source
+# Heavy subcommand dependencies (symbolic chain pulls z3+loguru, ~66ms;
+# ir_interpreter/ir_to_source/interpreter add ~15ms) import lazily
+# inside their command functions: every CLI invocation runs exactly one
+# subcommand, so the others never pay. silu_ir_to_llvm stays module
+# level - argparse needs LLVM_AVAILABLE to register build/llvm/verify.
 
-try:
-    from .silu_ir_to_llvm import SiluToLLVMConverter
+import importlib.util
 
-    LLVM_AVAILABLE = True
-except ImportError:
-    LLVM_AVAILABLE = False
+# Availability probe only: importing the converter pulls the llvmlite
+# dylib (~0.1s cold dlopen), which the ir/interpret paths never need.
+# The command functions import SiluToLLVMConverter lazily after this
+# flag gates them.
+LLVM_AVAILABLE = importlib.util.find_spec("llvmlite") is not None
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -70,6 +63,7 @@ def run_interpreter(source_code: str, **kwargs) -> None:
     """Run the interpreter on the source code."""
     try:
         from silu.importer import parse_with_imports
+        from silu.interpreter import SiluInterpreter
 
         tree = parse_with_imports(source_code)
         interpreter = SiluInterpreter(**kwargs)
@@ -119,6 +113,7 @@ def check_interpreter(source_code: str, **kwargs) -> tuple[bool, str]:
 
     try:
         from silu.importer import parse_with_imports
+        from silu.interpreter import SiluInterpreter
 
         tree = parse_with_imports(source_code)
         interpreter = SiluInterpreter(**kwargs)
@@ -211,6 +206,11 @@ def generate_ir(source_code: str, output_format: str = "pretty", **kwargs) -> No
 def run_ir_interpreter(ir_source: str, **kwargs) -> None:
     """Run the IR interpreter on IR code."""
     try:
+        from silu.ir_interpreter import (
+            execute_ir_from_file,
+            execute_ir_from_string,
+        )
+
         result = None
         if ir_source.strip().startswith(("[", "(")):
             # Direct IR string
@@ -263,6 +263,8 @@ def run_llvm_ir_generator(
         # restores the original all-PyObject backend.
         codegen_mode = os.environ.get("SILU_CODEGEN", "typed")
         if codegen_mode == "dynamic":
+            from silu.silu_ir_to_llvm import SiluToLLVMConverter
+
             converter = SiluToLLVMConverter()
         else:
             from silu.typed_codegen import TypedCodegen
@@ -309,6 +311,8 @@ def _compile_to_binary(source_file: str, out_path: str) -> None:
 
     codegen_mode = os.environ.get("SILU_CODEGEN", "typed")
     if codegen_mode == "dynamic":
+        from silu.silu_ir_to_llvm import SiluToLLVMConverter
+
         converter = SiluToLLVMConverter()
     else:
         from silu.typed_codegen import TypedCodegen
@@ -406,6 +410,11 @@ def run_ir_to_source_converter(
 ) -> None:
     """Convert IR to source code."""
     try:
+        from silu.ir_to_source import (
+            convert_ir_file_to_source,
+            convert_ir_string_to_source,
+        )
+
         if ir_source.strip().startswith(("[", "(")):
             # Direct IR string
             source_code = convert_ir_string_to_source(ir_source)
@@ -430,6 +439,11 @@ def run_symbolic_executor(
     debug = kwargs.get("debug", False)
     report = {}
     try:
+        from silu.symbolic_executor import SymbolicExecutor
+        from silu.symbolic_executor_wrapper import (
+            execute_symbolic_from_file_with_executor,
+        )
+
         performance_mode = kwargs.get("performance_mode", False)
         if debug:
             logger.info(

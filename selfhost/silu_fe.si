@@ -1129,6 +1129,182 @@ def fe_expand_imports(mod: object, seen: list[str], stack: list[str], alias_name
                 out.append(st)
         else:
             out.append(st)
+    mod2 = ["module", out]
+    mod2 = fe_hoist_nested(mod2, seen, stack, alias_names, alias_exports)
+    return mod2
+
+
+# ---------- nested (in-body) import hoisting ----------
+# Imports inside function/class/branch bodies resolve at expansion
+# time exactly like top-level ones: the module splices at module level
+# before the enclosing top-level statement, and the in-body import
+# node becomes a pass. Mirrors importer._hoist_nested_imports.
+
+
+def fe_copy_str_list(xs: object) -> list[str]:
+    out: list[str] = []
+    for i, x in enumerate(xs):
+        out.append(x)
+    return out
+
+
+def fe_load_splice(path: str, nm: str, seen: list[str], stack: list[str], alias_names: list[str], alias_exports: object) -> object:
+    # load path's module once (seen is shared), expand it against a
+    # COPY of the ancestor stack, and return its top-level statements
+    stmts = []
+    if hg_in_list(stack, path):
+        print("M4 import error: import cycle through '" + path + "'")
+        raise SystemExit(1)
+    if not hg_in_list(seen, path):
+        seen.append(path)
+        nstack: list[str] = fe_copy_str_list(stack)
+        nstack.append(path)
+        src: str = read_file(path)
+        parser: Parser = Parser(tokenize(src), 0)
+        sub = parser.parse_module()
+        sub = fe_expand_imports(sub, seen, nstack, alias_names, alias_exports)
+        for k, s in enumerate(dyn_get(sub, 1)):
+            stmts.append(s)
+        exports = fe_collect_exports(dyn_get(sub, 1))
+        ai: int = fe_alias_index(alias_names, nm)
+        if ai < 0:
+            alias_names.append(nm)
+            alias_exports.append(exports)
+        else:
+            for m, en in enumerate(exports):
+                if not hg_in_list(dyn_get(alias_exports, ai), en):
+                    dyn_get(alias_exports, ai).append(en)
+    return stmts
+
+
+def fe_collect_imports_list(stmts: object, found: object) -> None:
+    for i, st in enumerate(stmts):
+        if hoist_is_node(st):
+            op: object = dyn_head(st)
+            if op == "import" or op == "from_import":
+                found.append(st)
+            else:
+                fe_collect_imports_into(st, found)
+
+
+def fe_collect_imports_into(st: object, found: object) -> None:
+    if not hoist_is_node(st):
+        return
+    op: object = dyn_head(st)
+    if op == "func_def" or op == "class_def":
+        fe_collect_imports_list(dyn_get(st, 3), found)
+    elif op == "if":
+        fe_collect_imports_list(dyn_get(st, 2), found)
+        fe_collect_imports_list(dyn_get(st, 3), found)
+    elif op == "while":
+        fe_collect_imports_list(dyn_get(st, 2), found)
+    elif op == "for":
+        fe_collect_imports_list(dyn_get(st, 3), found)
+    elif op == "match":
+        cases = dyn_get(st, 2)
+        for k, cs in enumerate(cases):
+            fe_collect_imports_list(dyn_get(cs, 3), found)
+
+
+def fe_node_in_list(xs: object, node: object) -> bool:
+    for i, x in enumerate(xs):
+        if x == node:
+            return True
+    return False
+
+
+def fe_subst_pass_list(stmts: object, consumed: object) -> object:
+    out = []
+    for i, st in enumerate(stmts):
+        out.append(fe_subst_pass_stmt(st, consumed))
+    return out
+
+
+def fe_subst_pass_stmt(st: object, consumed: object) -> object:
+    if not hoist_is_node(st):
+        return st
+    op: object = dyn_head(st)
+    if op == "import" or op == "from_import":
+        if fe_node_in_list(consumed, st):
+            return ["pass"]
+        return st
+    if op == "func_def":
+        return ["func_def", dyn_get(st, 1), dyn_get(st, 2), fe_subst_pass_list(dyn_get(st, 3), consumed), dyn_get(st, 4), dyn_get(st, 5)]
+    if op == "class_def":
+        return ["class_def", dyn_get(st, 1), dyn_get(st, 2), fe_subst_pass_list(dyn_get(st, 3), consumed)]
+    if op == "if":
+        return ["if", dyn_get(st, 1), fe_subst_pass_list(dyn_get(st, 2), consumed), fe_subst_pass_list(dyn_get(st, 3), consumed)]
+    if op == "while":
+        return ["while", dyn_get(st, 1), fe_subst_pass_list(dyn_get(st, 2), consumed)]
+    if op == "for":
+        return ["for", dyn_get(st, 1), dyn_get(st, 2), fe_subst_pass_list(dyn_get(st, 3), consumed), dyn_get(st, 4)]
+    if op == "match":
+        ncases = []
+        cases = dyn_get(st, 2)
+        for k, cs in enumerate(cases):
+            ncases.append(["match_case", dyn_get(cs, 1), dyn_get(cs, 2), fe_subst_pass_list(dyn_get(cs, 3), consumed)])
+        return ["match", dyn_get(st, 1), ncases]
+    return st
+
+
+def fe_hoist_nested(mod: object, seen: list[str], stack: list[str], alias_names: list[str], alias_exports: object) -> object:
+    stmts = dyn_get(mod, 1)
+    inserts = []
+    consumed = []
+    any_consumed: bool = False
+    for i, st in enumerate(stmts):
+        found = []
+        fe_collect_imports_into(st, found)
+        spliced = []
+        for j, nd in enumerate(found):
+            op: object = dyn_head(nd)
+            if op == "from_import":
+                fmod: object = dyn_get(nd, 1)
+                fpath: str = fmod + ".si"
+                if file_exists(fpath):
+                    more = fe_load_splice(fpath, fmod, seen, stack, alias_names, alias_exports)
+                    for k, s in enumerate(more):
+                        spliced.append(s)
+                    consumed.append(nd)
+                    any_consumed = True
+            else:
+                pairs = dyn_get(nd, 1)
+                all_ok: bool = dyn_len(pairs) > 0
+                for j2, pr in enumerate(pairs):
+                    nm: object = dyn_get(pr, 0)
+                    path: str = nm + ".si"
+                    if file_exists(path):
+                        more2 = fe_load_splice(path, nm, seen, stack, alias_names, alias_exports)
+                        for k2, s2 in enumerate(more2):
+                            spliced.append(s2)
+                    else:
+                        all_ok = False
+                # partial (mixed .si + foreign) keeps the node as-is:
+                # the foreign names stay inert and the resolved ones are
+                # already inlined at module level
+                if all_ok:
+                    consumed.append(nd)
+                    any_consumed = True
+        inserts.append(spliced)
+    out = []
+    for i, st in enumerate(stmts):
+        sp = inserts[i]
+        if dyn_len(sp) > 0 and dyn_len(out) > 0 and hoist_is_node(out[dyn_len(out) - 1]) and dyn_head(out[dyn_len(out) - 1]) == "line":
+            # keep the enclosing statement's line marker directly in
+            # front of it: spliced content goes BEFORE the marker,
+            # matching the reference front end's statement order
+            marker = out[dyn_len(out) - 1]
+            out = fe_drop_tail(out)
+            for m, s3 in enumerate(sp):
+                out.append(s3)
+            out.append(marker)
+        else:
+            for m, s3 in enumerate(sp):
+                out.append(s3)
+        if any_consumed:
+            out.append(fe_subst_pass_stmt(st, consumed))
+        else:
+            out.append(st)
     return ["module", out]
 
 

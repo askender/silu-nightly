@@ -116,12 +116,9 @@ def test_raise_typed_build(source, before, exc_line, code, tmp_path):
 
 @pytest.mark.parametrize("source,before,exc_line,code", PROGRAMS)
 def test_raise_frontend_parity(source, before, exc_line, code):
-    fe = os.path.join(REPO, "silu_fe")
-    if not os.path.exists(fe):
-        subprocess.run(
-            [sys.executable, "-m", "silu", "build", FRONTEND, "-o", fe],
-            check=True, capture_output=True, cwd=REPO,
-        )
+    from tests import ensure_fe_binary
+
+    fe = ensure_fe_binary()
     ref = json.loads(subprocess.run(
         [sys.executable, "-m", "silu", "ir", "--source", source, "--format", "json"],
         capture_output=True, text=True, cwd=REPO,
