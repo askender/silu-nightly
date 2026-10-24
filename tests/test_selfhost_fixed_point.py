@@ -32,9 +32,13 @@ def fixed_point_artifacts(tmp_path_factory):
     assert gen.returncode == 0, gen.stderr
     flat_si.write_text(gen.stdout)
     shutil.copy(os.path.join(REPO, "selfhost", "llvmlite.si"), tmp / "llvmlite.si")
+    # flat is main-free (siluc.si imports it inline); the runnable
+    # converter is the thin wrapper, and that wrapper is its own source
+    wrapper = tmp / "silu_conv_main.si"
+    shutil.copy(os.path.join(REPO, "selfhost", "silu_conv_main.si"), wrapper)
 
     ir_json = tmp / "flat.ir.json"
-    r = _run([PY, "-m", "silu", "ir", str(flat_si), "--format", "json",
+    r = _run([PY, "-m", "silu", "ir", str(wrapper), "--format", "json",
               "--output", str(ir_json)])
     assert r.returncode == 0, r.stderr
 

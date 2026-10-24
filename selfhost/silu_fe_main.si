@@ -1,0 +1,9 @@
+# Standalone front-end binary entry: thin wrapper around silu_fe's
+# fe_compile (kept main-free so siluc.si can import it inline).
+import silu_fe
+
+
+def main() -> int:
+    src: str = read_stdin()
+    print(fe_compile(src))
+    return 0

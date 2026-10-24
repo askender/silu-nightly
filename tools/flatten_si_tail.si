@@ -167,13 +167,12 @@ def parse_ir_from_json_string(text):
     return jr_value(j)
 
 
-def main() -> int:
-    src = read_stdin()
-    if len(src) == 0:
-        return 0
+def conv_convert(ir_json: str) -> str:
+    # workhorse, main-free: the standalone converter wrapper and the
+    # siluc monolith both call this (import inlining puts every module
+    # symbol in one namespace, so it cannot be 'main')
     conv = typed_codegen_new()
-    print(conv.convert(src), end="")
-    return 0
+    return conv.convert(ir_json)
 
 
 def _builtin_all(xs) -> bool:

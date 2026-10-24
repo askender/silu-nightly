@@ -55,6 +55,7 @@ def native_converter(tmp_path_factory):
         "selfhost/llvmlite.si",
         "tools/flatten_codegen.py",
         "tools/flatten_si_tail.si",
+        "selfhost/silu_conv_main.si",
     ):
         with open(os.path.join(REPO, path), "rb") as handle:
             key_src += handle.read().decode("utf-8", "replace")
@@ -77,11 +78,15 @@ def native_converter(tmp_path_factory):
     flat_si.write_text(gen.stdout)
     # the flat source does `import llvmlite`, resolved next to itself
     shutil.copy(os.path.join(REPO, "selfhost", "llvmlite.si"), tmp / "llvmlite.si")
+    # flat is main-free (siluc.si imports it inline); the runnable
+    # converter is the thin wrapper, and the wrapper is its own source
+    shutil.copy(os.path.join(REPO, "selfhost", "silu_conv_main.si"),
+                tmp / "silu_conv_main.si")
 
     ir_json = tmp / "flat.ir.json"
     result = _run(
-        [PY, "-m", "silu", "ir", str(flat_si), "--format", "json",
-         "--output", str(ir_json)]
+        [PY, "-m", "silu", "ir", str(tmp / "silu_conv_main.si"),
+         "--format", "json", "--output", str(ir_json)]
     )
     assert result.returncode == 0, result.stderr
     conv_ll = tmp / "flat_conv.ll"

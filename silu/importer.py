@@ -208,7 +208,10 @@ def expand_imports_tree(source: str, base_dir: str) -> ast.Module:
     _expand(tree, os.path.abspath(base_dir), set(), (), aliases)
     if aliases:
         tree = _AliasRewriter(aliases).visit(tree)
-        ast.fix_missing_locations(tree)
+    # unconditionally: partially-resolved import nodes get REBUILT
+    # ast.alias children with no locations, and compile() requires
+    # lineno on them even when no alias rewriting happened
+    ast.fix_missing_locations(tree)
     return tree
 
 

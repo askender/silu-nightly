@@ -1,0 +1,11 @@
+# Standalone converter binary entry: thin wrapper around the flattened
+# converter's conv_convert (kept main-free so siluc.si can import it).
+import typed_codegen_flat
+
+
+def main() -> int:
+    src: str = read_stdin()
+    if len(src) == 0:
+        return 0
+    print(conv_convert(src), end="")
+    return 0

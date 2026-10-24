@@ -21,7 +21,7 @@ import tempfile
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRONTEND = f"{REPO}/selfhost/silu_fe.si"
+FRONTEND = f"{REPO}/selfhost/silu_fe_main.si"
 M2_INTERP = f"{REPO}/selfhost/ir_interp.si"
 M3_IR2C = f"{REPO}/selfhost/ir2c.si"
 
@@ -107,6 +107,9 @@ def _fe_ir(fe_binary, source_path):
     with open(source_path) as handle:
         result = subprocess.run(
             [fe_binary], stdin=handle, capture_output=True, text=True,
+            # stdin sources resolve imports against the cwd; the
+            # reference front end uses the file's own directory
+            cwd=os.path.dirname(os.path.abspath(source_path)),
             timeout=120,
         )
     assert result.returncode == 0, (result.stdout, result.stderr)
@@ -320,6 +323,8 @@ def test_pycompat_silu_fe_matches(fe_bin, source):
         cpython = subprocess.run(
             [sys.executable, PYCOMPAT, FRONTEND],
             stdin=handle, capture_output=True, text=True, timeout=300,
+            # fe_compile resolves the INPUT's imports against the cwd
+            cwd=os.path.dirname(os.path.abspath(source)),
         )
     assert cpython.returncode == 0, cpython.stderr[-400:]
     assert json.loads(cpython.stdout) == _fe_ir(fe_bin, source)
@@ -366,15 +371,26 @@ def _round_trip(source_path):
     return out_file
 
 
-ROUNDTRIP_SOURCES = sorted(
+# import-bearing sources (the wrapper) cannot round-trip: expansion
+# carries line numbers from OTHER files, which a regenerated single
+# file cannot reproduce - the self-contained fe source covers the
+# bootstrap-closure member instead
+SELFCONTAINED_SOURCES = sorted(
     glob.glob(f"{REPO}/benchmarks/*.si")
-) + SELFHOST_SOURCES
+) + [f for f in SELFHOST_SOURCES if f != FRONTEND] + [
+    f"{REPO}/selfhost/silu_fe.si"
+]
 
 
-@pytest.mark.parametrize("source", ROUNDTRIP_SOURCES)
+@pytest.mark.parametrize(
+    "source", SELFCONTAINED_SOURCES, ids=[os.path.basename(f) for f in SELFCONTAINED_SOURCES]
+)
 def test_round_trip_ir_fixed_point(source):
     """IR(source) == IR(to_source(IR(source))) - byte-identical, for
-    every selfhost program including the front end itself."""
+    every selfhost program including the front end itself. Import-
+    bearing sources (the wrapper) are excluded: expansion carries line
+    numbers from OTHER files, which a regenerated single file cannot
+    reproduce."""
     regenerated = _round_trip(source)
     a = subprocess.run(
         [sys.executable, "-m", "silu", "ir", source, "--format", "json"],
@@ -507,6 +523,7 @@ def test_m5_self_hosted_toolchain(fe_bin, ir2c_bin):
     fe_ir = subprocess.run(
         [fe_bin], stdin=open(FRONTEND),
         capture_output=True, text=True, timeout=300,
+        cwd=os.path.dirname(os.path.abspath(FRONTEND)),
     )
     assert fe_ir.returncode == 0, fe_ir.stderr
     c_src = subprocess.run(
@@ -523,14 +540,20 @@ def test_m5_self_hosted_toolchain(fe_bin, ir2c_bin):
             capture_output=True, text=True,
         )
         assert build.returncode == 0, build.stderr
-        for f in SELFHOST_SOURCES:
+        # ir2c's dynamic slots are untyped int64 - dynamic STRINGS
+        # (the front end's import-expansion path) cannot ride in them
+        # yet, so the loop keeps its selfhost scope with the wrapper
+        # swapped for the self-contained fe source
+        for f in [x for x in SELFHOST_SOURCES if x != FRONTEND] + [
+            f"{REPO}/selfhost/silu_fe.si"
+        ]:
             ref = subprocess.run(
                 [sys.executable, "-m", "silu", "ir", f, "--format", "json"],
                 capture_output=True, text=True, cwd=REPO,
             ).stdout
             run = subprocess.run(
                 [binary], stdin=open(f), capture_output=True, text=True,
-                timeout=600,
+                timeout=600, cwd=os.path.dirname(os.path.abspath(f)),
             )
             assert run.returncode == 0, (f, run.stderr[-200:])
             assert json.loads(run.stdout) == json.loads(ref), f

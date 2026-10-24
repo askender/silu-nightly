@@ -131,9 +131,13 @@ def test_si_converter_interpreter_parity():
         flat_path = os.path.join(td, "typed_codegen_flat.si")
         with open(flat_path, "w") as h:
             h.write(flat.stdout)
-        # module resolution: llvmlite.si must sit next to the flat file
+        # module resolution: llvmlite.si must sit next to the flat
+        # file, and the entry is the thin wrapper (flat is main-free)
         with open(os.path.join(td, "llvmlite.si"), "w") as h:
             h.write(open(f"{REPO}/selfhost/llvmlite.si").read())
+        wrapper_path = os.path.join(td, "silu_conv_main.si")
+        with open(wrapper_path, "w") as h:
+            h.write(open(f"{REPO}/selfhost/silu_conv_main.si").read())
 
         def one(program, index):
             ir = subprocess.run(
@@ -153,7 +157,7 @@ def test_si_converter_interpreter_parity():
             )
             assert real.returncode == 0, real.stderr
             silu = subprocess.run(
-                [sys.executable, "-m", "silu", "interpret", flat_path],
+                [sys.executable, "-m", "silu", "interpret", wrapper_path],
                 input=ir, capture_output=True, text=True, cwd=REPO,
                 timeout=600,
             )

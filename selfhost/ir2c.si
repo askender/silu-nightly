@@ -1141,6 +1141,11 @@ class Gen:
                 return te("silu_file_exists(" + fae.text + ")", "bool")
             if nm == "read_stdin":
                 return te("read_stdin_all()", "str")
+            if nm == "read_file":
+                # read_file(path) -> str - the front end's import
+                # expansion reads .si modules through this
+                a_rf: TE = self.expr(elem(args, 0))
+                return te("silu_read_file(" + a_rf.text + ")", "str")
             if nm == "ord":
                 a5: TE = self.expr(elem(args, 0))
                 return te("str_ord0(" + a5.text + ")", "int")
@@ -2419,6 +2424,7 @@ RUNTIME: list[str] = [
     "static int64_t bits_i(double d) { int64_t b; memcpy(&b, &d, 8); return b; }",
     "static int64_t ipow_i(int64_t b, int64_t e) { int64_t r = 1; while (e > 0) { if (e & 1) r *= b; b *= b; e >>= 1; } return r; }",
     "static Str* read_line(void) { char buf[4096]; if (!fgets(buf, 4096, stdin)) return str_of(\"\"); int64_t n = (int64_t)strlen(buf); if (n && buf[n-1] == '\\n') n--; return str_new(buf, n); }",
+    "static Str* silu_read_file(Str* p) { char* b = silu_malloc(p->len + 1); memcpy(b, p->data, p->len); b[p->len] = 0; FILE* f = fopen(b, \"r\"); if (!f) { return str_new(\"\", 0); } int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, f)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } fclose(f); return str_new(buf, len); }",
     "static Str* read_stdin_all(void) { int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, stdin)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } return str_new(buf, len); }",
     "static void silu_sep(void) { putchar(' '); }",
     "static void silu_nl(void) { putchar('\\n'); }",

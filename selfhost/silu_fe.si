@@ -398,7 +398,7 @@ def const_num(tok: Token) -> object:
     return ["const", to_int(t)]
 
 
-def const_str(tok: Token) -> object:
+def fe_const_str(tok: Token) -> object:
     return ["const", unescape(tok.text)]
 
 
@@ -805,7 +805,7 @@ class Parser:
             return ["match_value", const_num(t)]
         if t.kind == TokKind.STR:
             self.nxt()
-            return ["match_value", const_str(t)]
+            return ["match_value", fe_const_str(t)]
         if t.kind == TokKind.NAME:
             self.nxt()
             # Enum.Member value pattern
@@ -1163,7 +1163,7 @@ class Parser:
             return const_num(t)
         if t.kind == TokKind.STR:
             self.nxt()
-            return const_str(t)
+            return fe_const_str(t)
         if t.kind == TokKind.BYTES:
             self.nxt()
             return const_bytes(t)
@@ -2063,8 +2063,10 @@ def json_dumps(node) -> str:
     return "".join(out)
 
 
-def main() -> int:
-    src: str = read_stdin()
+def fe_compile(src: str) -> str:
+    # source -> IR JSON; the standalone front end and the siluc
+    # monolith both call this (import inlining puts every module
+    # symbol in one namespace, so the workhorse cannot be 'main')
     parser: Parser = Parser(tokenize(src), 0)
     module = parser.parse_module()
     seen: list[str] = []
@@ -2073,5 +2075,4 @@ def main() -> int:
     alias_exports = []
     module = fe_expand_imports(module, seen, stack, alias_names, alias_exports)
     module = fe_rewrite_aliases(module, alias_names, alias_exports)
-    print(json_dumps(hoist_module(module)))
-    return 0
+    return json_dumps(hoist_module(module))

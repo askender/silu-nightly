@@ -55,6 +55,16 @@ def _silu_build_class(func, name, *bases, **kw):
 def run(path):
     with open(path, encoding="utf-8") as handle:
         source = handle.read()
+    # Silu imports are compile-time file inlining (Rust mod shape), not
+    # Python module imports - expand them first so main-free workhorses
+    # plus their wrappers run exactly like the native front end sees them
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, repo)
+    from silu.importer import expand_imports_tree
+
+    tree = expand_imports_tree(
+        source, os.path.dirname(os.path.abspath(path))
+    )
     g = {
         "__name__": "__silu__",
         "Enum": Enum,
@@ -67,7 +77,7 @@ def run(path):
     import builtins
     builtins.__build_class__ = _silu_build_class
     try:
-        exec(compile(source, path, "exec"), g)
+        exec(compile(tree, path, "exec"), g)
     finally:
         builtins.__build_class__ = _orig_build_class
     # the Silu compiler entry calls main() automatically

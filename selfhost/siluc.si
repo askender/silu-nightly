@@ -1,0 +1,14 @@
+# siluc: the monolithic self-hosted compiler - ONE process turns Silu
+# source into LLVM IR (front end + converter inlined via import
+# expansion; linking stays clang's job, exactly as rustc delegates to
+# the system linker).
+import silu_fe
+import typed_codegen_flat
+
+
+def main() -> int:
+    src: str = read_stdin()
+    if len(src) == 0:
+        return 0
+    print(conv_convert(fe_compile(src)), end="")
+    return 0
