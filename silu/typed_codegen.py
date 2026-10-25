@@ -635,6 +635,42 @@ class TypedCodegen(SiluToLLVMConverter):
         builder.position_at_end(loop_done)
         builder.ret(raw)
 
+        # i8* pylist_to_rawlist_f64(PyObject* list) - unbox each float
+        # element into a fresh raw array (doubles stored as bits)
+        self.pylist_to_rawlist_f64 = ir.func_(
+            self.module, ir.FunctionType(i8p, [pyobj_ptr], False), 'pylist_to_rawlist_f64'
+        )
+        entry_f = self.pylist_to_rawlist_f64.append_basic_block("entry")
+        check_f = self.pylist_to_rawlist_f64.append_basic_block("p2rf_check")
+        body_f = self.pylist_to_rawlist_f64.append_basic_block("p2rf_body")
+        done_f = self.pylist_to_rawlist_f64.append_basic_block("p2rf_done")
+        builder = ir.builder_(entry_f)
+        (list_arg_f,) = self.pylist_to_rawlist_f64.args
+        struct_ptr_f = builder.bitcast(
+            builder.load(builder.gep(list_arg_f, [zero32b, one32b])),
+            ir.PointerType(self.list_struct_type),
+        )
+        length_f = builder.load(_struct_gep(builder, struct_ptr_f, 0))
+        items_f = builder.load(_struct_gep(builder, struct_ptr_f, 2))
+        raw_f = builder.call(self.rawlist_new, [ir.const_(i64, 8)])
+        idx_f = builder.alloca(i64, None, 'p2rf_i')
+        builder.store(zero64, idx_f)
+        builder.branch(check_f)
+        builder.position_at_end(check_f)
+        i_f = builder.load(idx_f)
+        more_f = builder.icmp_signed("<", i_f, length_f)
+        builder.cbranch(more_f, body_f, done_f)
+        builder.position_at_end(body_f)
+        elem_f = builder.load(builder.gep(items_f, [i_f]))
+        data_f = builder.load(builder.gep(elem_f, [zero32b, one32b]))
+        dbl_f = builder.load(builder.bitcast(data_f, ir.PointerType(ir.DoubleType())))
+        bits_f = builder.bitcast(dbl_f, i64)
+        builder.call(self.rawlist_push, [raw_f, bits_f])
+        builder.store(builder.add(i_f, one64), idx_f)
+        builder.branch(check_f)
+        builder.position_at_end(done_f)
+        builder.ret(raw_f)
+
         # i64 rawlist_len(i8* list)
         self.rawlist_len = ir.func_(
             self.module, ir.FunctionType(i64, [i8p], False), 'rawlist_len'
@@ -4621,6 +4657,33 @@ class TypedCodegen(SiluToLLVMConverter):
             return F64
         return None
 
+    def _rawlist_writeback(self, arg_node, boxed, builder):
+        """After a call whose OBJ parameter received a rawlist copy:
+        convert the (possibly mutated) pyobj list back and replace the
+        source variable's slot - Python aliasing semantics. Returns
+        True when a writeback was emitted."""
+        if not (
+            isinstance(arg_node, (list, tuple))
+            and len(arg_node) >= 2
+            and arg_node[0] == "name"
+        ):
+            return False
+        name = arg_node[1]
+        kind = self.var_kinds.get(name)
+        if kind == RAWLIST_S:
+            converter = self.pylist_to_rawlist_str
+        elif kind == RAWLIST_I:
+            converter = self.pylist_to_rawlist
+        elif kind == RAWLIST_F:
+            converter = self.pylist_to_rawlist_f64
+        else:
+            return False
+        if name not in self.variables:
+            return False
+        fresh = builder.call(converter, [boxed])
+        builder.store(fresh, self.variables[name])
+        return True
+
     def _box(self, tv: Tuple[str, Any]) -> Any:
         """TypedValue -> PyObject* (dynamic world boundary)."""
         kind, value = tv
@@ -6920,6 +6983,13 @@ class TypedCodegen(SiluToLLVMConverter):
             kind = OBJ
         if kind not in LLVM_KIND_TYPES:
             kind = OBJ
+        if str(inst_ptr.type) == "i64":
+            # instance-list elements ride as i64 words (string compare:
+            # isinstance's type argument must stay a builtin name for
+            # the flattened converter)
+            inst_ptr = self.current_builder.inttoptr(
+                inst_ptr, LLVM_KIND_TYPES[INSTANCE]
+            )
         raw = self.current_builder.gep(
             inst_ptr, [ir.const_(ir.IntType(64), index * 8)]
         )
@@ -7600,6 +7670,20 @@ class TypedCodegen(SiluToLLVMConverter):
         inst_tv = self._convert_node(obj_node)
         if mangled in self.static_funcs:
             param_kinds, ret_kind, func = self.static_funcs[mangled]
+            # instance-list receivers ride as i64 words; directly-held
+            # instances as pointers - coerce to the callee's self ABI
+            self_kind = param_kinds[0] if param_kinds else INSTANCE
+            if self_kind == I64 and inst_tv[0] not in (I64, OBJ):
+                inst_tv = (I64, self.current_builder.ptrtoint(
+                    inst_tv[1], ir.IntType(64)
+                ))
+            elif (
+                self_kind not in (I64, OBJ)
+                and inst_tv[0] == I64
+            ):
+                inst_tv = (INSTANCE, self.current_builder.inttoptr(
+                    inst_tv[1], LLVM_KIND_TYPES[INSTANCE]
+                ))
             if len(args_node) != len(param_kinds) - 1:
                 raise TypeError(
                     f"{cls}.{method_name}() takes "
@@ -7624,17 +7708,30 @@ class TypedCodegen(SiluToLLVMConverter):
             self._dyn_func_kinds.get(mangled)
             or self._dynamic_param_kinds(callee_def)
         )
+        dyn_self = callee_kinds[0] if callee_kinds else INSTANCE
+        if dyn_self == I64 and inst_tv[0] not in (I64, OBJ):
+            inst_tv = (I64, self.current_builder.ptrtoint(
+                inst_tv[1], ir.IntType(64)
+            ))
+        elif dyn_self not in (I64, OBJ) and inst_tv[0] == I64:
+            inst_tv = (INSTANCE, self.current_builder.inttoptr(
+                inst_tv[1], LLVM_KIND_TYPES[INSTANCE]
+            ))
         if len(args_node) != len(callee_kinds) - 1:
             raise TypeError(
                 f"{cls}.{method_name}() takes {len(callee_kinds) - 1} "
                 f"arguments but {len(args_node)} given"
             )
         call_args = [inst_tv[1]]
+        writebacks = []
         for index, arg_node in enumerate(args_node):
             expected = callee_kinds[index + 1]
             arg_tv = self._convert_node(arg_node)
             if expected == OBJ:
-                call_args.append(self._box(arg_tv))
+                boxed = self._box(arg_tv)
+                if arg_tv[0] in RAWLIST_KINDS:
+                    writebacks.append((arg_node, boxed))
+                call_args.append(boxed)
             elif (
                 expected == RAWSTR
                 and arg_tv[0] == RAWSTR
@@ -7645,7 +7742,17 @@ class TypedCodegen(SiluToLLVMConverter):
                 call_args.append(arg_tv[1])
             else:
                 call_args.append(self._coerce(arg_tv, expected)[1])
-        return (OBJ, self.current_builder.call(func, call_args))
+        result = self.current_builder.call(func, call_args)
+        for wb_node, wb_boxed in writebacks:
+            self._rawlist_writeback(wb_node, wb_boxed, self.current_builder)
+        # a raw-ABI callee returns a raw scalar (dyn-ABI functions
+        # return boxes) - labeling a raw i64 as OBJ let _box pass it
+        # through unboxed and blow up the consumer
+        ret_ann = callee_def[5] if len(callee_def) > 5 else None
+        ret_kind = self._annotation_kind(ret_ann)
+        if ret_kind in (I64, F64, I1):
+            return (ret_kind, result)
+        return (OBJ, result)
 
     def _infer_function_signatures(self):
         """Two-pass cross-function kind propagation.
@@ -8644,6 +8751,30 @@ class TypedCodegen(SiluToLLVMConverter):
                     self._declare_var(target, OBJ)
                     self._funcref_var[target] = mangled
                     return (OBJ, null_obj)
+                # t2 = self.toks[i] (a list[Token] element arrives as
+                # an i64 word): keep the CLASS so t2.kind reads the
+                # field directly instead of a dynamic getattr on a
+                # misboxed int (the historical "local roundtrip"
+                # crash - the inline form always worked)
+                inst_cls = self._class_of_node(value_node)
+                if (
+                    inst_cls is not None
+                    and isinstance(value_node, list)
+                    and len(value_node) >= 3
+                    and value_node[0] == "subscript"
+                ):
+                    elem_tv = self._convert_node(value_node)
+                    if elem_tv[0] == I64:
+                        # instance-list elements ride as i64 words;
+                        # keep the word, record the CLASS so every use
+                        # (field read, method call) converts exactly
+                        # like the inline form does
+                        self._var_class[target] = inst_cls
+                        self._declare_var(target, I64)
+                        self.current_builder.store(
+                            elem_tv[1], self.variables[target]
+                        )
+                        return (I64, elem_tv[1])
                 ctor_class = self._constructor_call_class(value_node)
                 if ctor_class is not None:
                     # st = JointState(1.0, 2.0) - optionally annotated
@@ -11362,7 +11493,13 @@ class TypedCodegen(SiluToLLVMConverter):
             method_name = func_node[2]
             raw_obj_tv = self._convert_node(func_node[1])
             raw_kind = raw_obj_tv[0]
-            if _is_inst(raw_kind):
+            if _is_inst(raw_kind) or (
+                raw_kind == I64
+                and self._class_of_node(func_node[1]) is not None
+            ):
+                # an instance-list element rides as an i64 word but
+                # still has a resolvable class - the method-call
+                # emitter coerces self to the callee's ABI
                 return self._emit_method_call(
                     func_node[1], method_name, args_node
                 )
@@ -12157,6 +12294,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                 )
                 boxed_args = []
+                writebacks = []
                 for arg_index, arg_node in enumerate(args_node):
                     arg_tv = self._convert_node(arg_node)
                     expected = (
@@ -12186,8 +12324,14 @@ class TypedCodegen(SiluToLLVMConverter):
                         boxed_args.append(
                             self._coerce(arg_tv, expected)[1]
                         )
+                    if expected == OBJ and arg_tv[0] in RAWLIST_KINDS:
+                        writebacks.append((arg_node, boxed_args[-1]))
                 if len(boxed_args) == len(func.args):
                     result = self.current_builder.call(func, boxed_args)
+                    for wb_node, wb_boxed in writebacks:
+                        self._rawlist_writeback(
+                            wb_node, wb_boxed, self.current_builder
+                        )
                     return (OBJ, result)
                 raise NotImplementedError(
                     f"call to '{func_name}' with {len(args_node)} args "
