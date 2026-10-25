@@ -922,6 +922,38 @@ class SiluInterpreter(BaseASTProcessor):
                     "star patterns are not supported"
                 )
             return True
+        if isinstance(pattern, ast.MatchClass):
+            # class pattern: exact-class check + positional field
+            # binding in declaration order (dataclass __match_args__
+            # semantics), then keyword patterns by attribute name
+            cls_obj = self.visit(pattern.cls)
+            if not isinstance(value, SiluInstance) or \
+                    value.__silu_class__ is not cls_obj:
+                return False
+            saved = dict(bindings)
+            for sub, (fname, _ann, _has_d, _d) in zip(
+                pattern.patterns, cls_obj.fields
+            ):
+                if not self._match_ast_pattern(
+                    sub, value.__silu_fields__[fname], bindings
+                ):
+                    bindings.clear()
+                    bindings.update(saved)
+                    return False
+            for attr, sub in zip(
+                pattern.kwd_attrs, pattern.kwd_patterns
+            ):
+                if attr not in value.__silu_fields__:
+                    bindings.clear()
+                    bindings.update(saved)
+                    return False
+                if not self._match_ast_pattern(
+                    sub, value.__silu_fields__[attr], bindings
+                ):
+                    bindings.clear()
+                    bindings.update(saved)
+                    return False
+            return True
         raise NotImplementedError(
             f"match pattern {type(pattern).__name__} is not supported"
         )

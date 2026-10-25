@@ -813,6 +813,29 @@ class Parser:
                 self.nxt()
                 member = self.expect_kind(TokKind.NAME).text
                 return ["match_value", ["attribute", ["name", t.text], member]]
+            # class pattern C(p, ...) / C(k=p): positional captures
+            # bind fields in declaration order, keywords by field name
+            if self.cur().kind == TokKind.OP and self.cur().text == "(":
+                self.nxt()
+                pats = []
+                kattrs = []
+                kpats = []
+                while not (self.cur().kind == TokKind.OP and self.cur().text == ")"):
+                    if (
+                        self.cur().kind == TokKind.NAME
+                        and self.toks[self.pos + 1].kind == TokKind.OP
+                        and self.toks[self.pos + 1].text == "="
+                    ):
+                        kn = self.nxt().text
+                        self.nxt()
+                        kattrs.append(kn)
+                        kpats.append(self.parse_pattern())
+                    else:
+                        pats.append(self.parse_pattern())
+                    if not self.accept(","):
+                        break
+                self.expect(")")
+                return ["match_class", ["name", t.text], pats, kattrs, kpats]
             return ["match_as", None, t.text]
         self.error("unsupported pattern", t)
 

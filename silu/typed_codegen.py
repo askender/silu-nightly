@@ -55,6 +55,12 @@ class TypedCodegen(SiluToLLVMConverter):
         self._char_idxerr = None
         self._module_kinds = set()
         self._module_vars: set = set()
+        # names this function scope declared itself: a slot we created
+        # is always safe to reuse for the same kind, even when a module
+        # global shares the name (the module binding came from a match
+        # capture; without this the second declare opened a SECOND slot
+        # and the initializer's store vanished into the first)
+        self._scope_local_vars: set = set()
         self._scope_depth = 0
         self.rawdict_to_pydict: Dict[str, Any] = {}
         # Overflow/precision panics and rawlist bounds branches follow
@@ -4251,6 +4257,104 @@ class TypedCodegen(SiluToLLVMConverter):
         )
 
 
+    def _match_class_head(self, pattern, subject_tv):
+        """(cid condition, [(capture_name, field_index, field_tuple)])
+        for a match_class pattern against a dynamic subject box."""
+        cls_node = pattern[1]
+        if (
+            not isinstance(cls_node, (list, tuple))
+            or len(cls_node) < 2
+            or cls_node[0] != "name"
+            or cls_node[1] not in self._class_layouts
+        ):
+            raise NotImplementedError(
+                "class patterns need a known class name, got "
+                + str(cls_node)
+            )
+        cls = cls_node[1]
+        fields = self._class_layouts[cls]["fields"]
+        field_index = {}
+        for fi, ftup in enumerate(fields):
+            field_index[ftup[0]] = fi
+
+        def check_sub(sub):
+            # returns the capture name or None; nested defs cannot
+            # raise (the hoister treats builtins as captures)
+            if (
+                isinstance(sub, (list, tuple))
+                and len(sub) >= 3
+                and sub[0] == "match_as"
+                and sub[1] is None
+                and sub[2] is not None
+            ):
+                return sub[2]
+            return None
+
+        bindings = []
+        for index, sub in enumerate(pattern[2] or ()):
+            name = check_sub(sub)
+            if name is None:
+                raise NotImplementedError(
+                    "class patterns support simple captures "
+                    "(case C(x) / C(k=x))"
+                )
+            if index >= len(fields):
+                raise TypeError(
+                    f"class pattern for '{cls}' binds more captures "
+                    f"than the class has fields"
+                )
+            bindings.append((name, index, fields[index]))
+        kwd_attrs = pattern[3] if len(pattern) > 3 else []
+        kwd_pats = pattern[4] if len(pattern) > 4 else []
+        for attr, sub in zip(kwd_attrs, kwd_pats):
+            if attr not in field_index:
+                raise TypeError(
+                    f"class pattern for '{cls}' references unknown "
+                    f"field '{attr}'"
+                )
+            kname = check_sub(sub)
+            if kname is None:
+                raise NotImplementedError(
+                    "class patterns support simple captures "
+                    "(case C(x) / C(k=x))"
+                )
+            bindings.append((kname, field_index[attr],
+                             fields[field_index[attr]]))
+        cid = self.current_builder.call(
+            self.pyobj_instance_cid, [subject_tv[1]]
+        )
+        cond = self.current_builder.icmp_signed(
+            "==", cid,
+            ir.const_(ir.IntType(64), self._class_ids[cls]),
+        )
+        return cond, bindings
+
+    def _bind_match_class_fields(self, bindings, subject_tv):
+        """Inside a matched class-pattern arm: load each captured field
+        with its declared kind (str fields copy on read, exactly like
+        attribute reads on known instances)."""
+        inst = self.current_builder.call(
+            self.pyobj_instance_ptr, [subject_tv[1]]
+        )
+        for name, index, __ftup in bindings:
+            field_name, kind, _default, fclass = __ftup
+            slot = self._field_slot(inst, index, kind)
+            value = self.current_builder.load(slot)
+            if kind == RAWSTR:
+                value = self.current_builder.call(
+                    self.rawstr_copy, [value]
+                )
+            # bare list/dict fields carry kind None; normalize like
+            # _field_slot so the declared slot matches the loaded one
+            if kind is None or (
+                kind != INSTANCE and kind not in LLVM_KIND_TYPES
+            ):
+                kind = OBJ
+            if kind == INSTANCE and fclass:
+                self._var_class[name] = fclass
+            self._declare_var(name, kind)
+            self.current_builder.store(value, self.variables[name])
+
     def _match_value_condition(self, value_node, subject_kind, subject_tv):
         """i1 condition: subject == the pattern's value."""
         if subject_kind == RAWSTR:
@@ -5064,6 +5168,7 @@ class TypedCodegen(SiluToLLVMConverter):
                     self.current_function is None
                     or self.current_function.name == "main"
                     or name not in self._module_vars
+                    or name in self._scope_local_vars
                 )
             ):
                 return
@@ -5118,6 +5223,7 @@ class TypedCodegen(SiluToLLVMConverter):
             self.variables[name] = self.current_builder.alloca(
                 alloca_type, None, name
             )
+            self._scope_local_vars.add(name)
             if kind == RAWSTR:
                 # null-init IN THE ENTRY BLOCK, right after the alloca:
                 # a branch-local declaration never executes on other
@@ -8044,6 +8150,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = dict(self.variables)
         self.var_kinds = dict(self.var_kinds)
         self._var_class = dict(self._var_class)
+        self._scope_local_vars = set()
         # a name this body rebinds is function-local: drop any module-
         # scope class hints for it (they answered for the global, and
         # the shadowed local may hold a different class entirely)
@@ -8060,6 +8167,12 @@ class TypedCodegen(SiluToLLVMConverter):
             _rk = self.var_kinds.get(_rn, None)
             if _rk is not None and _is_inst(_rk):
                 self.var_kinds.pop(_rn, None)
+            # the STORAGE slot must go too: an inherited module slot
+            # let some paths read it while the body's own declare used
+            # a fresh alloca - the name split across two slots and the
+            # initializer's store vanished (module-level match capture
+            # n + a function-local n miscompiled to 0)
+            self.variables.pop(_rn, None)
 
         for index, param_name in enumerate(func_def[2]):
             kind = param_kinds[index]
@@ -8186,6 +8299,7 @@ class TypedCodegen(SiluToLLVMConverter):
         self.variables = dict(self.variables)
         self.var_kinds = dict(self.var_kinds)
         self._var_class = dict(self._var_class)
+        self._scope_local_vars = set()
         # a name this body rebinds is function-local: drop any module-
         # scope class hints for it (they answered for the global, and
         # the shadowed local may hold a different class entirely)
@@ -8202,6 +8316,12 @@ class TypedCodegen(SiluToLLVMConverter):
             _rk = self.var_kinds.get(_rn, None)
             if _rk is not None and _is_inst(_rk):
                 self.var_kinds.pop(_rn, None)
+            # the STORAGE slot must go too: an inherited module slot
+            # let some paths read it while the body's own declare used
+            # a fresh alloca - the name split across two slots and the
+            # initializer's store vanished (module-level match capture
+            # n + a function-local n miscompiled to 0)
+            self.variables.pop(_rn, None)
 
         # methods: bind the self parameter's class for attribute access
         method_class = self._method_class.get(func_def[1])
@@ -10128,7 +10248,7 @@ class TypedCodegen(SiluToLLVMConverter):
         a no-op (Python semantics)."""
         subject_tv = self._convert_node(node[1])
         subject_kind = subject_tv[0]
-        if subject_kind not in (I64, I1, F64, RAWSTR):
+        if subject_kind not in (I64, I1, F64, RAWSTR, OBJ):
             raise NotImplementedError(
                 "compiled match needs a statically typed subject "
                 "(annotate it: x: int / float / bool / str)"
@@ -10148,6 +10268,50 @@ class TypedCodegen(SiluToLLVMConverter):
             body_block = func.append_basic_block("case_body")
             next_block = func.append_basic_block("case_next")
 
+            if (
+                isinstance(pattern, (list, tuple))
+                and pattern
+                and pattern[0] == "match_class"
+            ):
+                # class pattern over a dynamic subject: the cid check
+                # branches first, then the arm binds the payload fields
+                # with their DECLARED kinds - the narrowing
+                cond, bindings = self._match_class_head(pattern, subject_tv)
+                guard_blk = (
+                    func.append_basic_block("case_guard")
+                    if guard_node is not None
+                    else body_block
+                )
+                self.current_builder.cbranch(cond, guard_blk, next_block)
+                self.current_builder.position_at_end(guard_blk)
+                self._bind_match_class_fields(bindings, subject_tv)
+                if guard_node is not None:
+                    guard_cond = self._to_i1_cond(
+                        self._convert_node(guard_node)
+                    )
+                    self.current_builder.cbranch(
+                        guard_cond, body_block, next_block
+                    )
+                self.current_builder.position_at_end(body_block)
+                for stmt in body:
+                    self._convert_statement(stmt)
+                    if self.current_builder.block.is_terminated:
+                        break
+                if not self.current_builder.block.is_terminated:
+                    self.current_builder.branch(end_block)
+                self.current_builder.position_at_end(next_block)
+                continue
+
+            if subject_kind == OBJ and (
+                not isinstance(pattern, (list, tuple))
+                or not pattern
+                or pattern[0] not in ("match_as",)
+            ):
+                raise NotImplementedError(
+                    "a dynamic (untyped) match subject supports class "
+                    "patterns and captures/wildcards only - annotate "
+                    "the subject to match values against it"
+                )
             cond, capture = self._match_pattern_parts(pattern, subject_kind, subject_tv)
             if capture is not None:
                 # bind before the guard (guard may reference it)

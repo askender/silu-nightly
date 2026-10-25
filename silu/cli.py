@@ -1013,7 +1013,7 @@ def main() -> None:
         print("\nInterrupted by user.", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Unexpected error: {e}", file=sys.stderr)
+        print(f"Unexpected error: {e}", file=sys.stderr)
         # if hasattr(args, "debug") and getattr(args, "debug", False):
         #     import traceback
         #     logger.error(traceback.format_exc())

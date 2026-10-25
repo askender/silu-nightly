@@ -533,6 +533,12 @@ class IRToSourceConverter:
                 return base if name is None else f"{base} as {name}"
             if kind == "match_or":
                 return " | ".join(self._pattern_str(p) for p in pattern[1])
+            if kind == "match_class":
+                cls = self.convert_to_source(pattern[1])
+                parts = [self._pattern_str(p) for p in (pattern[2] or [])]
+                for attr, sub in zip(pattern[3] or [], pattern[4] or []):
+                    parts.append(f"{attr}={self._pattern_str(sub)}")
+                return f"{cls}({', '.join(parts)})"
         return str(pattern)
 
     def _convert_list_comp(self, ir_node: Tuple) -> str:

@@ -337,6 +337,10 @@ def si_main():
     NON_BUILDER_RECV = {"sink", "_rebound", "seen", "useset", "parts", "out",
                         "probes", "calls", "fill", "parent_names",
                         "repeated", "field_names", "tags"}
+    # attribute receivers that are real container objects, not the
+    # llvmlite builder (self._scope_local_vars.add(name) would
+    # otherwise get builder-arity-rewritten to three arguments)
+    NON_BUILDER_ATTR = {"_scope_local_vars"}
     _t = A.parse(text)
     _lines = text.split("\n")
     _edits = []
@@ -348,6 +352,8 @@ def si_main():
             continue
         _recv = _n.func.value
         if isinstance(_recv, A.Name) and _recv.id in NON_BUILDER_RECV:
+            continue
+        if isinstance(_recv, A.Attribute) and _recv.attr in NON_BUILDER_ATTR:
             continue
         if (isinstance(_recv, A.Attribute)
                 and _recv.attr in ("attributes", "metadata")):

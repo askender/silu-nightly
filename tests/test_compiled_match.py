@@ -210,8 +210,10 @@ class TestCompiledMatchUnsupported:
             )
 
     def test_dynamic_subject_rejected(self):
-        # input() returns a dynamic (boxed) value - no static kind
-        with pytest.raises(NotImplementedError, match="statically typed"):
+        # a dynamic (boxed) subject supports class patterns, captures
+        # and wildcards; matching VALUES against it still requires a
+        # statically typed subject
+        with pytest.raises(NotImplementedError, match="annotate"):
             self._convert(
                 "x = input()\n"
                 "match x:\n"

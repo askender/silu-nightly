@@ -995,29 +995,29 @@ class IRInterpreter:
         if match_result is None:
             return False  # Pattern didn't match
 
-        # If we have captured variables, add them to local environment.
-        # (An empty capture dict must NOT be pushed: the pushed frame is
-        # innermost, so `total += 1` in the body would write into it and
-        # the outer variable would never change.)
-        pushed = isinstance(match_result, dict) and bool(match_result)
-        if pushed:
-            self.local_env_stack.append(match_result)
+        # Python semantics: match captures bind in the ENCLOSING scope.
+        # A pushed capture frame would swallow assignments to outer
+        # names in the body (`total += n` wrote into the capture frame
+        # and the outer variable never changed); bind into the current
+        # innermost frame instead. Captures stay bound after the match,
+        # exactly like Python.
+        if isinstance(match_result, dict):
+            frame = (
+                self.local_env_stack[-1]
+                if self.local_env_stack
+                else self.global_env
+            )
+            frame.update(match_result)
 
-        try:
-            # Evaluate guard condition if present
-            if guard is not None:
-                guard_result = self.execute(guard)
-                if not guard_result:
-                    return False  # Guard failed
+        # Evaluate guard condition if present
+        if guard is not None:
+            guard_result = self.execute(guard)
+            if not guard_result:
+                return False  # Guard failed
 
-            # Pattern matched and guard passed, execute body
-            self._execute_block(body)
-            return True
-
-        finally:
-            # Pop local environment if we pushed captured variables
-            if pushed:
-                self.local_env_stack.pop()
+        # Pattern matched and guard passed, execute body
+        self._execute_block(body)
+        return True
 
     def _match_pattern(self, pattern: Tuple, value: Any) -> Union[dict, bool, None]:
         """
@@ -1184,6 +1184,53 @@ class IRInterpreter:
                 rest_dict = {k: v for k, v in value.items() if k not in matched_keys}
                 captures[rest_name] = rest_dict
 
+            return captures
+
+        elif pattern_type == "match_class":
+            # class pattern: exact-class check + positional field
+            # binding in declaration order (dataclass __match_args__
+            # semantics), then keyword patterns by field name
+            cls_node = pattern[1] if len(pattern) > 1 else None
+            cls_name = (
+                cls_node[1]
+                if isinstance(cls_node, (tuple, list))
+                and len(cls_node) >= 2
+                and cls_node[0] == "name"
+                else None
+            )
+            if cls_name is None or cls_name not in self.classes:
+                raise NotImplementedError(
+                    "class patterns need a known class name, got "
+                    + str(cls_node)
+                )
+            if (
+                not isinstance(value, dict)
+                or value.get("__silu_class__") != cls_name
+            ):
+                return None
+            cls_info = self.classes[cls_name]
+            captures = {}
+            for i, sub in enumerate(pattern[2] if len(pattern) > 2 else []):
+                if i >= len(cls_info["fields"]):
+                    return None
+                fname = cls_info["fields"][i][0]
+                if fname not in value:
+                    return None
+                result = self._match_pattern(sub, value[fname])
+                if result is None:
+                    return None
+                if isinstance(result, dict):
+                    captures.update(result)
+            kwd_attrs = pattern[3] if len(pattern) > 3 else []
+            kwd_pats = pattern[4] if len(pattern) > 4 else []
+            for attr, sub in zip(kwd_attrs, kwd_pats):
+                if attr not in value:
+                    return None
+                result = self._match_pattern(sub, value[attr])
+                if result is None:
+                    return None
+                if isinstance(result, dict):
+                    captures.update(result)
             return captures
 
         # Unsupported pattern type

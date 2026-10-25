@@ -38,6 +38,9 @@ def _silu_build_class(func, name, *bases, **kw):
     cls = _orig_build_class(func, name, *bases, **kw)
     if bases and bases[0] is Enum:
         return cls
+    # positional match patterns (case C(x)) need __match_args__ =
+    # annotated fields in declaration order (dataclass semantics)
+    cls.__match_args__ = tuple(getattr(cls, "__annotations__", {}))
     fields = list(getattr(cls, "__annotations__", {}))
     if fields and "__init__" not in cls.__dict__:
         def __init__(self, *args):
