@@ -144,8 +144,13 @@
   路径与相对 import/LLONG_MIN 折叠/del 形状/提升镜像对齐）；
   语料 18/18 parity；管线级不动点落地（tools/selfhost_build +
   test_pipeline_fixed_point）。
-- 常驻编译 daemon：再省进程启动 + import + 重复解析（估算
-  0.19 → ~0.13s/程序，与 rustc 0.128s 打平）。
+- ~~常驻编译 daemon~~ **实测打平（否定结论，2026-10-25）**：搭了
+  unix-socket daemon（编排常驻、siluc/clang 照常 spawn），实测
+  0.172s vs 无 daemon 0.174s——编排成本在**客户端**的 Python
+  启动，daemon 只是把同一份工作搬家。已移除。剩余 0.05s 差距
+  只能靠非 Python 薄客户端（编译型 sender）消除，价值 50ms 不
+  值当；管线已在 clang 地板价（0.17 中 ~0.12 是 clang 用户段
+  +链接，rustc 全程 0.12s）。
 - **typed 后端待查怪癖**（v1.6.0 发现，均已绕开）：
   ①`list[str]` 类型化局部传入 object 参数按值装箱——append
   改副本、调用方不可见（应共享或编译期报错）；
