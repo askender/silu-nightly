@@ -52,6 +52,10 @@ class IRToSourceConverter:
                 return self._convert_match(ir_node, indent_level)
             elif node_type == "list_comp":
                 return self._convert_list_comp(ir_node)
+            elif node_type == "dict_comp":
+                return self._convert_dict_comp(ir_node)
+            elif node_type == "set_comp":
+                return self._convert_set_comp(ir_node)
             elif node_type == "subscript_assign":
                 return self._convert_subscript_assign(ir_node, indent_level)
             elif node_type == "aug_assign":
@@ -540,6 +544,39 @@ class IRToSourceConverter:
                     parts.append(f"{attr}={self._pattern_str(sub)}")
                 return f"{cls}({', '.join(parts)})"
         return str(pattern)
+
+    def _convert_dict_comp(self, ir_node: Tuple) -> str:
+        _, (key_node, value_node), generators = ir_node
+        parts = []
+        for gen in generators:
+            target, iter_val, conds = gen[0], gen[1], gen[2]
+            target_str = (
+                target[1] if isinstance(target, (tuple, list)) else str(target)
+            )
+            bit = f"for {target_str} in {self.convert_to_source(iter_val)}"
+            for cond in conds or ():
+                bit += f" if {self.convert_to_source(cond)}"
+            parts.append(bit)
+        return (
+            f"{{{self.convert_to_source(key_node)}: "
+            f"{self.convert_to_source(value_node)} {' '.join(parts)}}}"
+        )
+
+    def _convert_set_comp(self, ir_node: Tuple) -> str:
+        _, elt, generators = ir_node
+        parts = []
+        for gen in generators:
+            target, iter_val, conds = gen[0], gen[1], gen[2]
+            target_str = (
+                target[1] if isinstance(target, (tuple, list)) else str(target)
+            )
+            bit = f"for {target_str} in {self.convert_to_source(iter_val)}"
+            for cond in conds or ():
+                bit += f" if {self.convert_to_source(cond)}"
+            parts.append(bit)
+        return (
+            f"{{{self.convert_to_source(elt)} {' '.join(parts)}}}"
+        )
 
     def _convert_list_comp(self, ir_node: Tuple) -> str:
         _, elt, generators = ir_node

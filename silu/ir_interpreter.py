@@ -84,6 +84,8 @@ class IRInterpreter:
 
     # ================== Main Execution Methods ==================
 
+    _MISSING = object()
+
     def execute(self, ir_node: Union[Tuple, Any]) -> Any:
         """Execute an IR node and return its value."""
         if not isinstance(ir_node, (tuple, list)) or (
@@ -212,6 +214,62 @@ class IRInterpreter:
             args = [self.execute(arg) for arg in ir_node[1:]]
             print(*args)
             return None
+
+        # Comprehensions: [elt for t in iter (if c)*] and the
+        # dict/set forms; generators are [target, iter_node, conds]
+        if opcode in ("list_comp", "set_comp", "dict_comp"):
+            if opcode == "dict_comp":
+                key_node, value_node = ir_node[1]
+            else:
+                elt_node = ir_node[1]
+            generators = ir_node[2] if len(ir_node) > 2 else []
+            if opcode == "list_comp":
+                out: list = []
+            elif opcode == "set_comp":
+                out = set()
+            else:
+                out = {}
+
+            def run(gi):
+                if gi >= len(generators):
+                    if opcode == "dict_comp":
+                        k = self.execute(key_node)
+                        out[k] = self.execute(value_node)
+                    elif opcode == "set_comp":
+                        out.add(self.execute(elt_node))
+                    else:
+                        out.append(self.execute(elt_node))
+                    return
+                target, iter_node, conds = (
+                    generators[gi][0], generators[gi][1], generators[gi][2]
+                )
+                tname = (
+                    target[1]
+                    if isinstance(target, (tuple, list))
+                    and len(target) >= 2
+                    and target[0] == "name"
+                    else None
+                )
+                if tname is None:
+                    raise NotImplementedError(
+                        "comprehension target must be a plain name"
+                    )
+                saved = self.local_env_stack[-1].get(tname, self._MISSING) \
+                    if self.local_env_stack else self._MISSING
+                for item in self.execute(iter_node):
+                    self._set_variable(tname, item)
+                    if all(self.execute(c) for c in conds or ()):
+                        run(gi + 1)
+                # restore any shadowed binding (Python leaks the loop
+                # variable, but the IR plane keeps scopes clean)
+                if saved is self._MISSING:
+                    if self.local_env_stack:
+                        self.local_env_stack[-1].pop(tname, None)
+                else:
+                    self._set_variable(tname, saved)
+
+            run(0)
+            return out
 
         # Handle import operation, temp skip it.
         if opcode == "import":

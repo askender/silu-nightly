@@ -958,6 +958,58 @@ class SiluInterpreter(BaseASTProcessor):
             f"match pattern {type(pattern).__name__} is not supported"
         )
 
+    def _iter_comprehension(self, generators, index, env_depth):
+        """Yield (gens_done) as nested loops over comprehension
+        generators, binding targets; conditions filter."""
+        if index >= len(generators):
+            yield True
+            return
+        gen = generators[index]
+        iterable = self.visit(gen.iter)
+        if not hasattr(iterable, "__iter__"):
+            raise TypeError("comprehension over non-iterable")
+        for item in iterable:
+            self._bind_pattern(gen.target, item)
+            if all(self.visit(cond) for cond in gen.ifs):
+                yield from self._iter_comprehension(
+                    generators, index + 1, env_depth
+                )
+
+    def _bind_pattern(self, target, value):
+        """Bind a comprehension target (name or tuple) to a value."""
+        if isinstance(target, ast.Name):
+            self.env.set(target.id, value)
+        elif isinstance(target, ast.Tuple):
+            for element, part in zip(target.elts, value):
+                self._bind_pattern(element, part)
+        else:
+            raise TypeError("unsupported comprehension target")
+
+    def visit_ListComp(self, node: ast.ListComp) -> Any:
+        return [
+            self.visit(node.elt)
+            for _ in self._iter_comprehension(node.generators, 0, 0)
+        ]
+
+    def visit_SetComp(self, node: ast.SetComp) -> Any:
+        return {
+            self.visit(node.elt)
+            for _ in self._iter_comprehension(node.generators, 0, 0)
+        }
+
+    def visit_DictComp(self, node: ast.DictComp) -> Any:
+        result = {}
+        for _ in self._iter_comprehension(node.generators, 0, 0):
+            key = self.visit(node.key)
+            result[key] = self.visit(node.value)
+        return result
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> Any:
+        return (
+            self.visit(node.elt)
+            for _ in self._iter_comprehension(node.generators, 0, 0)
+        )
+
     def visit_JoinedStr(self, node: ast.JoinedStr) -> Any:
         """f-string: concatenate parts, converting each expr with str()."""
         out = ""

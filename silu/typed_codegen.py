@@ -10159,14 +10159,19 @@ class TypedCodegen(SiluToLLVMConverter):
                         )
             return (OBJ, null_obj)
 
-        if op == "list_comp" and len(node) >= 3:
-            # [elt for t in iter (if cond)*]: desugar to build-append
-            # loops (same shape as the enumerate desugar). elt is
-            # node[1]; node[2] is a list of generators, each
-            # [target, iter_node, conds]
+        if op in ("list_comp", "dict_comp", "set_comp") and len(node) >= 3:
+            # [elt for t in iter (if c)*] / {k: v ...} / {elt ...}:
+            # desugar to build-collect loops (same shape as the
+            # enumerate desugar). node[2] is a list of generators,
+            # each [target, iter_node, conds]
             b = self.current_builder
             func = self.current_function
-            out = b.call(self.create_list, [], "")
+            if op == "list_comp":
+                out = b.call(self.create_list, [], "")
+            elif op == "set_comp":
+                out = b.call(self.create_set, [], "")
+            else:
+                out = b.call(self.create_dict, [], "")
             for gen in node[2]:
                 target, iter_node, conds = gen[0], gen[1], gen[2] or ()
                 is_range = (
@@ -10232,8 +10237,22 @@ class TypedCodegen(SiluToLLVMConverter):
                 if not keep_blk.is_terminated and self.current_builder.block is keep_blk:
                     self.current_builder.branch(ok_blk)
                 b.position_at_end(ok_blk)
-                elem_val = self._convert_node(node[1])
-                b.call(self.list_append, [out, self._box(elem_val)])
+                if op == "dict_comp":
+                    key_node, value_node = node[1]
+                    key_tv = self._convert_node(key_node)
+                    val_tv = self._convert_node(value_node)
+                    b.call(
+                        self.pyobj_subscript_set,
+                        [out, self._box(key_tv), self._box(val_tv)],
+                    )
+                elif op == "set_comp":
+                    elem_tv = self._convert_node(node[1])
+                    b.call(
+                        self.pyobj_set_add, [out, self._box(elem_tv)]
+                    )
+                else:
+                    elem_val = self._convert_node(node[1])
+                    b.call(self.list_append, [out, self._box(elem_val)])
                 b.branch(skip_blk)
                 b.position_at_end(skip_blk)
                 b.store(b.add(b.load(idx_ptr), ir.const_(ir.IntType(64), 1)), idx_ptr)
@@ -11538,6 +11557,7 @@ class TypedCodegen(SiluToLLVMConverter):
                 "count": (self.list_count, 1, True),
                 "index": (self.list_index, 1, True),
                 "add": (self.pyobj_set_add, 1, False),
+                "discard": (self.pyobj_set_discard, 1, False),
                 "items": (self.dict_items_rt, 0, True),
                 "join": (self.str_join_boxed, 1, True),
                 "keys": (self.dict_keys_rt, 0, True),

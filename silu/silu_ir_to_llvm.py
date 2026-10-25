@@ -238,6 +238,9 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
         self.memcpy = ir.func_(
             self.module, memcpy_ty, 'llvm.memcpy.p0i8.p0i8.i64'
         )
+        self.memmove = ir.func_(
+            self.module, memcpy_ty, 'llvm.memmove.p0i8.p0i8.i64'
+        )
         memset_ty = ir.FunctionType(
             ir.VoidType(),
             [

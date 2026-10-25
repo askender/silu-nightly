@@ -1273,6 +1273,23 @@ class Parser:
             if self.cur().kind == TokKind.OP and self.cur().text == ":":
                 self.nxt()
                 v = self.parse_expr_nt()
+                # dict comprehension: {k: v for t in iter (if c)*}
+                if self.cur().kind == TokKind.KW and self.cur().text == "for":
+                    self.nxt()
+                    target = self.expect_kind(TokKind.NAME).text
+                    self.expect("in")
+                    iter_expr = self.parse_or()
+                    conds = []
+                    while True:
+                        t3 = self.cur()
+                        if t3.kind == TokKind.KW and t3.text == "if":
+                            self.nxt()
+                            conds.append(self.parse_or())
+                        else:
+                            break
+                    self.expect("}")
+                    return ["dict_comp", [k, v],
+                            [[["name", target], iter_expr, conds]]]
                 items.append((k, v))
                 while self.accept(","):
                     if self.cur().text == "}":
@@ -1283,6 +1300,23 @@ class Parser:
                     items.append((k, v))
                 self.expect("}")
                 return ["dict", items]
+            # set comprehension: {e for t in iter (if c)*}
+            if self.cur().kind == TokKind.KW and self.cur().text == "for":
+                self.nxt()
+                target = self.expect_kind(TokKind.NAME).text
+                self.expect("in")
+                iter_expr = self.parse_or()
+                conds = []
+                while True:
+                    t4 = self.cur()
+                    if t4.kind == TokKind.KW and t4.text == "if":
+                        self.nxt()
+                        conds.append(self.parse_or())
+                    else:
+                        break
+                self.expect("}")
+                return ["set_comp", k,
+                        [[["name", target], iter_expr, conds]]]
             # set literal: {e, e, ...}
             items.append(k)
             while self.accept(","):

@@ -2870,6 +2870,63 @@ class PyobjRuntimeMixin:
         cs_b.store(cs_st_raw, cs_b.gep(cs_box, [zero32, one32]))
         cs_b.ret(cs_box)
 
+        # PObj* pyobj_set_discard(PObj* set, PObj* item) - remove by
+        # value if present, no error when absent (Python set.discard).
+        # Scan + in-place shift on the underlying list struct.
+        self.pyobj_set_discard = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_set_discard',
+        )
+        sd_entry = self.pyobj_set_discard.append_basic_block("sd_entry")
+        sd_loop = self.pyobj_set_discard.append_basic_block("sd_loop")
+        sd_shift = self.pyobj_set_discard.append_basic_block("sd_shift")
+        sd_done = self.pyobj_set_discard.append_basic_block("sd_done")
+        b = ir.builder_(sd_entry)
+        sd_set, sd_item = self.pyobj_set_discard.args
+        sd_struct = self._load_list_struct(b, sd_set)
+        sd_len = b.load(b.gep(sd_struct, [zero32, zero32]))
+        b.branch(sd_loop)
+        b.position_at_end(sd_loop)
+        sd_i_phi = b.phi(i64)
+        sd_i_phi.add_incoming(ir.const_(i64, 0), sd_entry)
+        sd_in_range = b.icmp_signed("<", sd_i_phi, sd_len)
+        sd_body = self.pyobj_set_discard.append_basic_block("sd_body")
+        b.cbranch(sd_in_range, sd_body, sd_done)
+        b.position_at_end(sd_body)
+        sd_items = b.load(b.gep(sd_struct, [zero32, ir.const_(i32, 2)]))
+        # mirror list_get: gep steps pointer-sized slots (result stays
+        # PObj**), the load is the element pointer
+        sd_elem = b.load(b.gep(sd_items, [sd_i_phi]))
+        sd_eq = b.call(self.pyobj_deep_eq, [sd_elem, sd_item])
+        sd_next = self.pyobj_set_discard.append_basic_block("sd_next")
+        b.cbranch(sd_eq, sd_shift, sd_next)
+        b.position_at_end(sd_next)
+        sd_i_inc = b.add(sd_i_phi, ir.const_(i64, 1))
+        sd_i_phi.add_incoming(sd_i_inc, sd_next)
+        b.branch(sd_loop)
+        b.position_at_end(sd_shift)
+        # memmove items[i+1 .. len) down one slot, then len -= 1;
+        # reload the items pointer here - the sd_body value does not
+        # dominate this block
+        sd_items2 = b.load(b.gep(sd_struct, [zero32, ir.const_(i32, 2)]))
+        sd_src = b.gep(sd_items2, [b.add(sd_i_phi, ir.const_(i64, 1))])
+        sd_dst = b.gep(sd_items2, [sd_i_phi])
+        sd_count = b.sub(sd_len, b.add(sd_i_phi, ir.const_(i64, 1)))
+        b.call(
+            self.memmove,
+            [
+                b.bitcast(sd_dst, ir.PointerType(ir.IntType(8))),
+                b.bitcast(sd_src, ir.PointerType(ir.IntType(8))),
+                b.mul(sd_count, ir.const_(i64, 8)),
+                ir.const_(ir.IntType(1), 0),
+            ],
+        )
+        b.store(b.sub(sd_len, ir.const_(i64, 1)), b.gep(sd_struct, [zero32, zero32]))
+        b.branch(sd_done)
+        b.position_at_end(sd_done)
+        b.ret(sd_set)
+
         # PObj* pyobj_set_add(PObj* set, PObj* item) - idempotent add,
         # returning the set (same ABI shape as list_append: void here
         # once broke the converter binary in ways not worth chasing)
