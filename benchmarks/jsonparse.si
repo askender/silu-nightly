@@ -105,16 +105,16 @@ total: int = 0
 count: int = 0
 data = parse_value(doc, [0])
 match data:
-    case JArr(items):
+    case JArr(items=items):
         i: int = 0
         while i < len(items):
             match items[i]:
-                case JObj(o):
+                case JObj(o=o):
                     match o["id"]:
-                        case JInt(n):
+                        case JInt(v=n):
                             total += n
                     match o["name"]:
-                        case JStr(w):
+                        case JStr(v=w):
                             names.append(w)
             i += 1
         count = len(items)

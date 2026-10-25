@@ -29,6 +29,11 @@ SILU = REPO / ".venv" / "bin" / "silu"
 if not SILU.exists():
     SILU = Path("silu")  # fallback to PATH
 CPYTHON = sys.executable
+# the CPython plane runs .si sources through the pycompat shim: Silu
+# classes get positional ctors + __match_args__, Enum/read_stdin are
+# provided - plain CPython cannot execute class patterns or dataclass
+# construction
+PYCOMPAT = str(Path(__file__).resolve().parent.parent / "tools" / "pycompat.py")
 
 
 def run(cmd, timeout=300, stdin_path=None):
@@ -111,7 +116,7 @@ def main():
         if clang_result.returncode != 0:
             raise RuntimeError("baseline clang failed")
         interp_base, _ = median_time([SILU, "interpret", baseline], args.runs)
-        cpython_base, _ = median_time([CPYTHON, baseline], args.runs)
+        cpython_base, _ = median_time([CPYTHON, PYCOMPAT, baseline], args.runs)
         bin_base, _ = median_time([baseline_bin], args.runs)
 
         rows = []
@@ -152,7 +157,7 @@ def main():
                 [SILU, "interpret", program], args.runs, stdin_path=stdin_arg
             )
             cpython_time, cpython_out = median_time(
-                [CPYTHON, program], args.runs, stdin_path=stdin_arg
+                [CPYTHON, PYCOMPAT, program], args.runs, stdin_path=stdin_arg
             )
             bin_time, bin_out = median_time(
                 [binary], args.runs, stdin_path=stdin_arg
