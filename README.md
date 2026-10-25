@@ -253,6 +253,7 @@ ir_generator_for_c.py    # C → Silu IR (pycparser-based)
 - [Development Guide](docs/development.md) — setup, testing, and contributing
 - [C Interop & Self-Hosted Toolchain](docs/interop.md) — @export / from c import / siluc driver
 - [Speed Benchmarks](docs/benchmarks.md) — the full 14-program table (run + compile), evolution timeline, methodology
+- [Memory Management](docs/memory.md) — Rust-style ownership on typed paths, leak-by-design pyobj world, and why no borrow checker is needed
 
 ## Vision & AI Roadmap
 

@@ -234,6 +234,7 @@ ir_generator_for_c.py    # C → Silu IR（基于 pycparser）
 - [开发指南](docs/development.md) — 环境搭建、测试与贡献
 - [C 互操作与自举工具链](docs/interop.md) — @export / from c import / siluc 驱动
 - [速度评测](docs/benchmarks.md) — 14 程序运行+编译全表、演进轨迹、方法学
+- [内存管理](docs/memory.md) — 静态路径 Rust 式所有权、pyobj 故意泄漏、为何无需借用检查器
 
 ## 愿景与 AI 路线图
 
