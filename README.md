@@ -252,6 +252,7 @@ ir_generator_for_c.py    # C → Silu IR (pycparser-based)
 - [Interpreter Specification](docs/interpreter_spec.md) — core implementation details
 - [Development Guide](docs/development.md) — setup, testing, and contributing
 - [C Interop & Self-Hosted Toolchain](docs/interop.md) — @export / from c import / siluc driver
+- [Speed Benchmarks](docs/benchmarks.md) — the full 14-program table (run + compile), evolution timeline, methodology
 
 ## Vision & AI Roadmap
 

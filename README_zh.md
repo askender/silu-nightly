@@ -233,6 +233,7 @@ ir_generator_for_c.py    # C → Silu IR（基于 pycparser）
 - [解释器规范](docs/interpreter_spec.md) — 核心实现细节
 - [开发指南](docs/development.md) — 环境搭建、测试与贡献
 - [C 互操作与自举工具链](docs/interop.md) — @export / from c import / siluc 驱动
+- [速度评测](docs/benchmarks.md) — 14 程序运行+编译全表、演进轨迹、方法学
 
 ## 愿景与 AI 路线图
 
