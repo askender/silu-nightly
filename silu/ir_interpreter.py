@@ -185,7 +185,16 @@ class IRInterpreter:
             "and",
             "or",
         }
-        if opcode in binary_ops and len(ir_node) == 3:
+        if opcode in binary_ops and len(ir_node) >= 3:
+            if opcode in ("and", "or") and len(ir_node) > 3:
+                # n-ary chain (a and b and c): short-circuit fold
+                acc = self.execute(ir_node[1])
+                for part in ir_node[2:]:
+                    if opcode == "and":
+                        acc = acc and self.execute(part)
+                    else:
+                        acc = acc or self.execute(part)
+                return acc
             return self._execute_binary_op(opcode, ir_node[1], ir_node[2])
 
         # Handle post-increment operation
@@ -512,6 +521,30 @@ class IRInterpreter:
 
     def _execute_aug_assign(self, target, op: str, value: Any) -> None:
         """Execute augmented assignment: target op= value"""
+        # subscript target: obj[key] op= value (pos[0] += 1 idiom)
+        if isinstance(target, (tuple, list)) and len(target) >= 3 and target[0] == "subscript":
+            obj_node, key_node = target[1], target[2]
+            obj_val = self.execute(obj_node)
+            key_val = self.execute(key_node)
+            current_value = self._execute_subscript(obj_val, key_val)
+            new_value = self.execute(value)
+            op_map_sub = {
+                "+=": "+", "-=": "-", "*=": "*", "/=": "/",
+                "//=": "//", "%=": "%", "**=": "**",
+                "&=": "&", "|=": "|", "^=": "^",
+            }
+            binary_op = op_map_sub.get(op, op[:-1])
+            result = self._execute_binary_op(binary_op, current_value, new_value)
+            self._execute_subscript_assign(
+                obj_node, key_node, result
+            )
+            return
+        # attribute target: obj.attr op= value
+        if isinstance(target, (tuple, list)) and len(target) >= 3 and target[0] == "attribute":
+            self._execute_attribute_aug_assign(
+                target[1], target[2], op, value
+            )
+            return
         # Handle name tuples from IR
         if isinstance(target, tuple) and len(target) == 2 and target[0] == "name":
             var_name = target[1]
