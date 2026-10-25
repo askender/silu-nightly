@@ -78,10 +78,22 @@ def ensure_converter():
     return CONV_BIN
 
 
+SILUC1_BIN = os.path.join(REPO, "siluc1")
+DRIVER_SRC = os.path.join(REPO, "tools", "siluc_main.c")
+
+
 def ensure_siluc():
+    """siluc1 = the native compiler core (stdin .si -> stdout .ll);
+    siluc = the C driver (file-in binary-out, no Python anywhere)."""
     ensure_converter()  # flat regeneration feeds the monolith too
-    if any(_newer(d, SILUC_BIN) for d in SILUC_DEPS):
-        _build(SILUC_SRC, SILUC_BIN, "siluc (one-shot, ~25s)")
+    if any(_newer(d, SILUC1_BIN) for d in SILUC_DEPS):
+        _build(SILUC_SRC, SILUC1_BIN, "siluc1 (one-shot, ~25s)")
+    driver_deps = [DRIVER_SRC] + [SILUC1_BIN]
+    if any(_newer(d, SILUC_BIN) for d in driver_deps):
+        subprocess.run(
+            ["clang", "-O2", DRIVER_SRC, "-o", SILUC_BIN],
+            check=True, capture_output=True, cwd=REPO,
+        )
     return SILUC_BIN
 
 
@@ -101,11 +113,21 @@ def compile_with(fe, conv, source, out_path, save_ll=None):
 
 
 def build(source, out_path, save_ll=None, static_only=False):
-    """source .si -> native binary via siluc + clang."""
-    siluc = ensure_siluc()
+    """source .si -> native binary via the siluc driver (C, no
+    Python anywhere between the user and the compilers)."""
+    ensure_siluc()
     src = os.path.abspath(source)
+    if save_ll is None and static_only is False:
+        # the driver handles the whole pipeline including the .o cache
+        subprocess.run(
+            [SILUC_BIN, src, "-o", out_path],
+            check=True, capture_output=True, cwd=REPO,
+        )
+        return
+    # --save-ll / --static fall back to the split pipeline (siluc1
+    # emits .ll; the python side splits/links or runs the gate)
     full_ll = subprocess.run(
-        [siluc], stdin=open(src, "r"), stdout=subprocess.PIPE,
+        [SILUC1_BIN], stdin=open(src, "r"), stdout=subprocess.PIPE,
         cwd=os.path.dirname(src), check=True,
     ).stdout.decode("utf-8")
     if static_only:

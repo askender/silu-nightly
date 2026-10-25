@@ -97,14 +97,16 @@ def test_siluc_monolith_matches_split_chain():
     """The monolith (fe + converter import-inlined, ONE process) emits
     the same .ll as the split two-process chain - and as the Python
     reference plane."""
-    siluc = shb.ensure_siluc()
+    # `siluc` is now the C DRIVER (file-in, binary-out); the stdin->
+    # .ll monolith lives on as siluc1
+    siluc1 = shb.SILUC1_BIN
     fe2 = os.path.join(CACHE, "silu_fe2")
     conv2 = os.path.join(CACHE, "silu_conv2")
     if not (os.path.exists(fe2) and os.path.exists(conv2)):
         pytest.skip("generations fixture not run first")
     for probe in ("benchmarks/fib.si", "benchmarks/jsonparse.si"):
         path = os.path.join(REPO, probe)
-        one = _run([siluc], stdin=open(path))
+        one = _run([siluc1], stdin=open(path))
         assert one.returncode == 0, one.stderr[:400]
         ir = _run([fe2], stdin=open(path))
         two = subprocess.run([conv2], input=ir.stdout, capture_output=True,
