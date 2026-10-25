@@ -883,6 +883,20 @@ class SiluInterpreter(BaseASTProcessor):
             return None
         return None
 
+    def visit_ImportFrom(self, node):
+        """from c import ...: bind ctypes externs (every other module
+        falls through to the base class)."""
+        if node.module == "c" and node.level == 0:
+            names = [
+                (a.name, a.asname or a.name) for a in node.names
+            ]
+            self._bind_c_externs(names)
+            return None
+        # the base NodeVisitor has no visit_ImportFrom; imports are
+        # expanded before interpretation, reaching this only unexpanded
+        # (foreign modules) - a no-op
+        return None
+
     def _match_ast_pattern(self, pattern: ast.AST, value: Any, bindings: dict) -> bool:
         """Match one pattern against a value, collecting captures.
         Returns True on match."""

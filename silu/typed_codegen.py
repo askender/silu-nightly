@@ -68,6 +68,13 @@ class TypedCodegen(SiluToLLVMConverter):
         # Plain assignment replaces the slot with an owned copy.
         self._borrowed_strs: set = set()
         self._owned_strs: set = set()
+        # @export functions: external linkage, C-ABI callable
+        self._exported_funcs: set = set()
+        # from c import sqrt [as f]: alias -> C name
+        self._c_externs: dict = {}
+        # (cname, internal_decl_name, type_text) - materialized as
+        # LLVM declares with the C symbol name before emission
+        self._c_declares: list = []
         self._scope_depth = 0
         self.rawdict_to_pydict: Dict[str, Any] = {}
         # Overflow/precision panics and rawlist bounds branches follow
@@ -4657,11 +4664,79 @@ class TypedCodegen(SiluToLLVMConverter):
             return F64
         return None
 
-    def _rawlist_writeback(self, arg_node, boxed, builder):
+    def _emit_c_extern_call(self, cname, args_node):
+        """Call an external C function: the declare's signature is
+        derived from the (static) argument kinds at this site. int
+        args -> i64, float -> double, bool -> i1; the return kind is
+        I64 unless every use context implies float (a const float in
+        the same expression is not proof, so the caller annotates via
+        a float-typed variable; default int covers most libm use)."""
+        arg_tvs = [self._convert_node(a) for a in args_node]
+        key_parts = []
+        param_types = []
+        for tv in arg_tvs:
+            if tv[0] == F64:
+                param_types.append(ir.DoubleType())
+                key_parts.append("d")
+            elif tv[0] == RAWSTR:
+                # str crosses as const char* (borrowed: C must not
+                # free or retain it past the call)
+                param_types.append(ir.PointerType(ir.IntType(8)))
+                key_parts.append("s")
+            elif tv[0] == I1:
+                param_types.append(ir.IntType(1))
+                key_parts.append("b")
+            else:
+                # dynamic values do not cross: extern is the static
+                # world's door
+                if tv[0] not in (I64, I1, F64, RAWSTR):
+                    raise NotImplementedError(
+                        "extern C calls accept int/float/bool/str "
+                        "arguments only, got kind " + str(tv[0])
+                    )
+                param_types.append(ir.IntType(64))
+                key_parts.append("i")
+        ret_kind = F64 if "d" in key_parts else I64
+        ret_ty = (
+            ir.DoubleType() if ret_kind == F64 else ir.IntType(64)
+        )
+        fn = self.functions.get(cname)
+        if fn is None:
+            # the runtime may already declare the same C symbol
+            # (pow, sqrt via float_repr); reuse it, else declare
+            if cname in self.module.globals:
+                fn = self.module.globals[cname]
+            else:
+                fn_ty = ir.FunctionType(
+                    ret_ty, param_types, False
+                )
+                fn = ir.func_(self.module, fn_ty, cname)
+            self.functions[cname] = fn
+        fn = self.functions[cname]
+        vals = []
+        for tv, pt in zip(arg_tvs, param_types):
+            pt_text = str(pt)
+            if pt_text == "double":
+                vals.append(self._coerce(tv, F64)[1])
+            elif pt_text == "i8*":
+                # rawstr header field 2 = data pointer
+                data_ptr = self.current_builder.call(
+                    self.rawstr_to_cstr, [tv[1]]
+                )
+                vals.append(data_ptr)
+            else:
+                vals.append(tv[1])
+        call = self.current_builder.call(fn, vals)
+        return (ret_kind, call)
+
+    def _rawlist_writeback(self, arg_node, boxed, builder, before_len):
         """After a call whose OBJ parameter received a rawlist copy:
         convert the (possibly mutated) pyobj list back and replace the
-        source variable's slot - Python aliasing semantics. Returns
-        True when a writeback was emitted."""
+        source variable's slot - Python aliasing semantics. When the
+        caller passes the pre-call length, an UNCHANGED length means
+        the callee did not append: keep the ORIGINAL pointer (a
+        read-only callee like hg_in_list would otherwise silently
+        detach the slot from the shared list)."""
         if not (
             isinstance(arg_node, (list, tuple))
             and len(arg_node) >= 2
@@ -4672,14 +4747,29 @@ class TypedCodegen(SiluToLLVMConverter):
         kind = self.var_kinds.get(name)
         if kind == RAWLIST_S:
             converter = self.pylist_to_rawlist_str
+            len_fn = self.rawlist_len
         elif kind == RAWLIST_I:
             converter = self.pylist_to_rawlist
+            len_fn = self.rawlist_len
         elif kind == RAWLIST_F:
             converter = self.pylist_to_rawlist_f64
+            len_fn = self.rawlist_len
         else:
             return False
         if name not in self.variables:
             return False
+        if before_len is not None:
+            # convert first, then compare lengths on the raw side (the
+            # box is a pyobj; rawlist_len takes the raw pointer)
+            fresh = builder.call(converter, [boxed])
+            after_len = builder.call(len_fn, [fresh])
+            changed = builder.icmp_signed(
+                "!=", after_len, before_len
+            )
+            keep = builder.load(self.variables[name])
+            select = builder.select(changed, fresh, keep)
+            builder.store(select, self.variables[name])
+            return True
         fresh = builder.call(converter, [boxed])
         builder.store(fresh, self.variables[name])
         return True
@@ -7730,7 +7820,10 @@ class TypedCodegen(SiluToLLVMConverter):
             if expected == OBJ:
                 boxed = self._box(arg_tv)
                 if arg_tv[0] in RAWLIST_KINDS:
-                    writebacks.append((arg_node, boxed))
+                    before_len = self.current_builder.call(
+                        self.rawlist_len, [arg_tv[1]]
+                    )
+                    writebacks.append((arg_node, boxed, before_len))
                 call_args.append(boxed)
             elif (
                 expected == RAWSTR
@@ -7743,8 +7836,10 @@ class TypedCodegen(SiluToLLVMConverter):
             else:
                 call_args.append(self._coerce(arg_tv, expected)[1])
         result = self.current_builder.call(func, call_args)
-        for wb_node, wb_boxed in writebacks:
-            self._rawlist_writeback(wb_node, wb_boxed, self.current_builder)
+        for wb_node, wb_boxed, wb_len in writebacks:
+            self._rawlist_writeback(
+                wb_node, wb_boxed, self.current_builder, wb_len
+            )
         # a raw-ABI callee returns a raw scalar (dyn-ABI functions
         # return boxes) - labeling a raw i64 as OBJ let _box pass it
         # through unboxed and blow up the consumer
@@ -8141,9 +8236,17 @@ class TypedCodegen(SiluToLLVMConverter):
                 )
                 func = ir.func_(self.module, func_ty, func_name)
                 # module-private + inline hint: the recursive-descent
-                # clusters (parsers etc.) only pay off inlined
-                func.linkage = "internal"
-                func.attributes.add("alwaysinline")
+                # clusters (parsers etc.) only pay off inlined.
+                # @export lifts to external linkage (C ABI: the
+                # signature already IS the C signature)
+                if (
+                    len(func_def) > 6
+                    and func_def[6] == "export"
+                ):
+                    self._exported_funcs.add(func_name)
+                else:
+                    func.linkage = "internal"
+                    func.attributes.add("alwaysinline")
                 self.static_funcs[func_name] = (param_kinds, ret_kind, func)
             else:
                 dyn_kinds = param_kinds
@@ -10428,6 +10531,14 @@ class TypedCodegen(SiluToLLVMConverter):
                 self._convert_statement(sub_stmt)
             return (OBJ, null_obj)
 
+        if op == "c_extern" and len(node) >= 2:
+            # from c import name [as alias]: register the extern; the
+            # declare is emitted per call site (signature from the
+            # argument kinds at that site, C varargs-free convention)
+            for pair in node[1]:
+                cname, alias = pair[0], pair[1]
+                self._c_externs[alias] = cname
+            return (OBJ, null_obj)
         if op in ("import", "from_import", "pass", "line"):
             # import markers: expansion happened upstream; pass/line
             # carry no code. Explicit no-ops, NOT silent degradation
@@ -11772,6 +11883,10 @@ class TypedCodegen(SiluToLLVMConverter):
         ):
             func_name = func_node[1]
 
+            if func_name in self._c_externs:
+                return self._emit_c_extern_call(
+                    self._c_externs[func_name], args_node
+                )
             if func_name in self._funcref_var:
                 # indirect call through a funcref local: resolve the
                 # target statically (the slot itself is never read)
@@ -12325,12 +12440,17 @@ class TypedCodegen(SiluToLLVMConverter):
                             self._coerce(arg_tv, expected)[1]
                         )
                     if expected == OBJ and arg_tv[0] in RAWLIST_KINDS:
-                        writebacks.append((arg_node, boxed_args[-1]))
+                        before_len = self.current_builder.call(
+                            self.rawlist_len, [arg_tv[1]]
+                        )
+                        writebacks.append(
+                            (arg_node, boxed_args[-1], before_len)
+                        )
                 if len(boxed_args) == len(func.args):
                     result = self.current_builder.call(func, boxed_args)
-                    for wb_node, wb_boxed in writebacks:
+                    for wb_node, wb_boxed, wb_len in writebacks:
                         self._rawlist_writeback(
-                            wb_node, wb_boxed, self.current_builder
+                            wb_node, wb_boxed, self.current_builder, wb_len
                         )
                     return (OBJ, result)
                 raise NotImplementedError(

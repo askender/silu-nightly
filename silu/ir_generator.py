@@ -137,6 +137,17 @@ class SiluIRGenerator(BaseASTProcessor):
                 if "returns" in kwargs and kwargs["returns"]
                 else None
             )
+            if kwargs.get("exported", False):
+                # optional 7th element: the C-ABI export flag
+                return (
+                    "func_def",
+                    kwargs["name"],
+                    tuple(kwargs["args"]),
+                    body,
+                    type_params,
+                    returns,
+                    "export",
+                )
             return (
                 "func_def",
                 kwargs["name"],
@@ -479,6 +490,12 @@ class SiluIRGenerator(BaseASTProcessor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> Tuple:
         """Generate from-import statement IR."""
         module = node.module
+        if module == "c" and node.level == 0:
+            # external C-ABI declarations: from c import sqrt [as f]
+            names = tuple(
+                (a.name, a.asname or a.name) for a in node.names
+            )
+            return self._make_node("c_extern", names)
         names = [(alias.name, alias.asname) for alias in node.names]
         level = node.level
         return self._make_node("from_import", module, tuple(names), level)

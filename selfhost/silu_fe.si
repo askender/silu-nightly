@@ -451,8 +451,13 @@ class Parser:
             if t.kind == TokKind.NL:
                 self.nxt()
                 continue
-            stmts.append(["line", t.line])
-            stmts.append(self.parse_stmt())
+            st = self.parse_stmt()
+            if hoist_is_node(st) and dyn_head(st) == "export_stmt":
+                stmts.append(["line", dyn_get(st, 1)])
+                stmts.append(dyn_get(st, 2))
+            else:
+                stmts.append(["line", t.line])
+                stmts.append(st)
         return ["module", stmts]
 
     # ------------- statements -------------
@@ -462,9 +467,21 @@ class Parser:
             # soft keyword: 'match' lexes as a NAME; only a statement
             # whose last token is ':' begins a match statement
             return self.parse_match()
+        if t.kind == TokKind.OP and t.text == "@":
+            # @export decorator: lift the next def to external linkage
+            self.nxt()
+            dn = self.expect_kind(TokKind.NAME).text
+            if dn != "export":
+                self.error("only @export is supported", t)
+            self.expect_nl()
+            nd = self.cur()
+            if not (nd.kind == TokKind.KW and nd.text == "def"):
+                self.error("@export must decorate a def", nd)
+            fdef = self.parse_func_def(True)
+            return ["export_stmt", nd.line, fdef]
         if t.kind == TokKind.KW:
             if t.text == "def":
-                return self.parse_func_def()
+                return self.parse_func_def(False)
             if t.text == "class":
                 return self.parse_class_def()
             if t.text == "if":
@@ -521,6 +538,20 @@ class Parser:
                 while self.accept("."):
                     mod_text = mod_text + "." + self.expect_kind(TokKind.NAME).text
                 has_module = True
+            if has_module and mod_text == "c" and level == 0:
+                # from c import fn [as a][, ...]: external C-ABI decls
+                self.expect("import")
+                pairs_c = []
+                while True:
+                    cn = self.expect_kind(TokKind.NAME).text
+                    ca = cn
+                    if self.accept("as"):
+                        ca = self.expect_kind(TokKind.NAME).text
+                    pairs_c.append([cn, ca])
+                    if not self.accept(","):
+                        break
+                self.expect_nl()
+                return ["c_extern", pairs_c]
             self.expect("import")
             pairs = []
             while True:
@@ -550,7 +581,7 @@ class Parser:
         self.expect_nl()
         return ["import", pairs]
 
-    def parse_func_def(self) -> object:
+    def parse_func_def(self, exported: bool) -> object:
         self.expect("def")
         name = self.expect_kind(TokKind.NAME).text
         self.expect("(")
@@ -570,6 +601,8 @@ class Parser:
             ret_anno = self.parse_annotation()
         self.expect(":")
         body = self.parse_block()
+        if exported:
+            return ["func_def", name, params, body, annos, ret_anno, "export"]
         return ["func_def", name, params, body, annos, ret_anno]
 
     def parse_annotation(self) -> object:
@@ -639,8 +672,13 @@ class Parser:
                 base_col = t.col
             if t.col < base_col:
                 break
-            stmts.append(["line", t.line])
-            stmts.append(self.parse_stmt())
+            st = self.parse_stmt()
+            if hoist_is_node(st) and dyn_head(st) == "export_stmt":
+                stmts.append(["line", dyn_get(st, 1)])
+                stmts.append(dyn_get(st, 2))
+            else:
+                stmts.append(["line", t.line])
+                stmts.append(st)
         return stmts
 
     def parse_if(self) -> object:
@@ -1557,6 +1595,8 @@ def fe_subst_pass_stmt(st: object, consumed: object) -> object:
             return ["pass"]
         return st
     if op == "func_def":
+        if dyn_len(st) > 6:
+            return ["func_def", dyn_get(st, 1), dyn_get(st, 2), fe_subst_pass_list(dyn_get(st, 3), consumed), dyn_get(st, 4), dyn_get(st, 5), dyn_get(st, 6)]
         return ["func_def", dyn_get(st, 1), dyn_get(st, 2), fe_subst_pass_list(dyn_get(st, 3), consumed), dyn_get(st, 4), dyn_get(st, 5)]
     if op == "class_def":
         return ["class_def", dyn_get(st, 1), dyn_get(st, 2), fe_subst_pass_list(dyn_get(st, 3), consumed)]
@@ -1904,7 +1944,13 @@ def hoist_rec(node: object, g: HG, hoisted: object) -> object:
         g.ren_src.append(str(dyn_get(node, 1)))
         g.ren_dst.append(mangled)
         body = hoist_rec(dyn_get(node, 3), g, hoisted)
-        hoisted.append(["func_def", mangled, dyn_get(node, 2), body, dyn_get(node, 4), dyn_get(node, 5)])
+        exp_flag = None
+        if dyn_len(node) > 6:
+            exp_flag = dyn_get(node, 6)
+        if exp_flag is not None:
+            hoisted.append(["func_def", mangled, dyn_get(node, 2), body, dyn_get(node, 4), dyn_get(node, 5), exp_flag])
+        else:
+            hoisted.append(["func_def", mangled, dyn_get(node, 2), body, dyn_get(node, 4), dyn_get(node, 5)])
         return None
     if op == "lambda":
         g.counter += 1
@@ -2024,6 +2070,8 @@ def hoist_def(func_def: object, cls_name: str, is_method: bool, global_names: li
         new_body = hoist_insert_self(new_body, needing)
     for q, f2 in enumerate(final):
         extra.append(f2)
+    if dyn_len(func_def) > 6:
+        return ["func_def", dyn_get(func_def, 1), dyn_get(func_def, 2), new_body, dyn_get(func_def, 4), dyn_get(func_def, 5), dyn_get(func_def, 6)]
     return ["func_def", dyn_get(func_def, 1), dyn_get(func_def, 2), new_body, dyn_get(func_def, 4), dyn_get(func_def, 5)]
 
 

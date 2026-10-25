@@ -89,6 +89,51 @@ def run(path):
         entry()
 
 
+
+
+
+def export(f):
+    """@export decorator for the CPython plane: a no-op here, the
+    compiled plane lifts the function to external C-ABI linkage."""
+    return f
+
+
+import ctypes as _ctypes
+
+_C_LIBM = _ctypes.CDLL(None)
+_C_LIBM.sqrt.restype = _ctypes.c_double
+_C_LIBM.sqrt.argtypes = [_ctypes.c_double]
+_C_LIBM.floor.restype = _ctypes.c_double
+_C_LIBM.floor.argtypes = [_ctypes.c_double]
+_C_LIBM.pow.restype = _ctypes.c_double
+_C_LIBM.pow.argtypes = [_ctypes.c_double, _ctypes.c_double]
+_C_LIBM.strlen.restype = _ctypes.c_longlong
+_C_LIBM.strlen.argtypes = [_ctypes.c_char_p]
+
+
+def _strlen_shim(s):
+    if isinstance(s, str):
+        return _C_LIBM.strlen(s.encode("utf-8"))
+    return _C_LIBM.strlen(s)
+
+
+class _CModule:
+    """`from c import ...` under CPython: ctypes bindings for the
+    common libc/libm surface the compiled plane declares."""
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        if name == "strlen":
+            return _strlen_shim
+        fn = getattr(_C_LIBM, name, None)
+        if fn is not None:
+            return fn
+        raise ImportError(f"extern '{name}' has no ctypes binding")
+
+
+sys.modules.setdefault("c", _CModule())
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print(__doc__)
