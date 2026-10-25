@@ -90,6 +90,21 @@ print(greet("Silu Programming"))
 | `silu build program.si -o program` | 一条命令编译出原生可执行文件 |
 | `silu verify program.si` | 将编译产物输出与解释器对拍 |
 
+### 自举编译器（siluc）
+
+编译器本身用 Silu 写成并完成自举：`siluc1`（前端 + 转换器的
+原生编译产物）能逐字节重建自己——由不动点门禁验证。一个 C 驱动
+封装它：
+
+```bash
+./siluc program.si -o program          # 一行命令，零 Python（约 0.13s，
+                                       #  与 rustc 在本机打平）
+./siluc lib.si -o lib.o --object       # 产出可链接 .o + 自动生成 C 头文件
+```
+
+`python tools/selfhost_build.py` 按源码 mtime 按需构建/刷新两个
+二进制。驱动管理共享的运行时对象缓存，每次编译只为用户代码付费。
+
 ### 符号执行
 
 ```bash
@@ -150,6 +165,43 @@ python run_symbolic_tool.py my_program.c.ir.json
 
 完整语法参考见[语言特性指南](docs/language_features.md)。
 
+## C 互操作
+
+Silu 与 C 双向互通；静态标量签名一一对应（`int`↔`int64_t`、
+`float`↔`double`、`bool`↔`bool`）。
+
+**导出 Silu 函数给 C/Rust** —— `@export` 将函数提升为外部链接；
+`--object` 产出可链接的 `.o` 和自动生成的 C 头文件：
+
+```python
+@export
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+```
+
+```bash
+./siluc lib.si -o libfib.o --object   # 产出 libfib.o + libfib.o.h
+clang -O2 host.c libfib.o -o host      # C 宿主：fib(24) -> 46368
+```
+
+Rust 宿主用 `extern "C" { fn fib(...) }` 链接同一对象。
+
+**在 Silu 里调 C** —— 声明 libc/libm 函数并直接调用；每个调用点
+的参数类型决定 C 签名：
+
+```python
+from c import sqrt, floor, strlen
+
+x: float = sqrt(2.0)      # 1.4142135623730951
+print(strlen("hello"))    # 5
+```
+
+动态值不跨边界（编译期拒绝）——extern 是静态世界的大门。
+完整映射表、PObj 盒布局与验证矩阵见
+[docs/interop.md](docs/interop.md)。
+
 ## 项目结构
 
 ```
@@ -180,6 +232,7 @@ ir_generator_for_c.py    # C → Silu IR（基于 pycparser）
 - [LLVM IR 生成](docs/llvm_ir_generation.md) — 基于 LLVM 的原生编译
 - [解释器规范](docs/interpreter_spec.md) — 核心实现细节
 - [开发指南](docs/development.md) — 环境搭建、测试与贡献
+- [C 互操作与自举工具链](docs/interop.md) — @export / from c import / siluc 驱动
 
 ## 愿景与 AI 路线图
 

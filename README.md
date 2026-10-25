@@ -99,6 +99,23 @@ print(greet("Silu Programming"))
 | `silu build program.si -o program` | One-command native executable |
 | `silu verify program.si` | Diff compiled output against the interpreter |
 
+### The Self-Hosted Compiler (siluc)
+
+The compiler itself is written in Silu and bootstraps: the pipeline
+(`siluc1` = front end + converter compiled natively from Silu
+source) rebuilds itself byte-identically — verified by a fixed-point
+gate. A small C driver wraps it:
+
+```bash
+./siluc program.si -o program          # one command, zero Python (~0.13s,
+                                       #  at parity with rustc on this hardware)
+./siluc lib.si -o lib.o --object       # emit a linkable .o + a generated C header
+```
+
+`python tools/selfhost_build.py` builds/refreshes both binaries on
+demand (source mtime). The driver manages a shared runtime-object
+cache, so per-program compiles only pay for the user code.
+
 ### Symbolic Execution
 
 ```bash
@@ -166,6 +183,44 @@ This is currently used to analyze embedded/automotive-style state machines (see 
 
 See the [Language Features guide](docs/language_features.md) for the complete syntax reference.
 
+## C Interop
+
+Silu talks to C in both directions; static scalar signatures map
+1:1 (`int`↔`int64_t`, `float`↔`double`, `bool`↔`bool`).
+
+**Export Silu functions to C/Rust** — `@export` lifts a function to
+external linkage; `--object` emits a linkable `.o` plus a generated
+C header:
+
+```python
+@export
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+```
+
+```bash
+./siluc lib.si -o libfib.o --object   # produces libfib.o + libfib.o.h
+clang -O2 host.c libfib.o -o host      # C host: fib(24) -> 46368
+```
+
+A Rust host links the same object with `extern "C" { fn fib(...) }`.
+
+**Call C from Silu** — declare libc/libm functions and call them;
+argument kinds at each call site determine the C signature:
+
+```python
+from c import sqrt, floor, strlen
+
+x: float = sqrt(2.0)      # 1.4142135623730951
+print(strlen("hello"))    # 5
+```
+
+Dynamic values do not cross the boundary (compile-time rejection) —
+extern is the static world's door. Full mapping table, PObj box
+layout, and verified-matrix details: [docs/interop.md](docs/interop.md).
+
 ## Project Layout
 
 ```
@@ -196,6 +251,7 @@ ir_generator_for_c.py    # C → Silu IR (pycparser-based)
 - [LLVM IR Generation](docs/llvm_ir_generation.md) — native compilation via LLVM
 - [Interpreter Specification](docs/interpreter_spec.md) — core implementation details
 - [Development Guide](docs/development.md) — setup, testing, and contributing
+- [C Interop & Self-Hosted Toolchain](docs/interop.md) — @export / from c import / siluc driver
 
 ## Vision & AI Roadmap
 
