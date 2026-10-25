@@ -340,7 +340,8 @@ def si_main():
     # attribute receivers that are real container objects, not the
     # llvmlite builder (self._scope_local_vars.add(name) would
     # otherwise get builder-arity-rewritten to three arguments)
-    NON_BUILDER_ATTR = {"_scope_local_vars"}
+    NON_BUILDER_ATTR = {"_scope_local_vars", "_owned_strs",
+                        "_borrowed_strs"}
     _t = A.parse(text)
     _lines = text.split("\n")
     _edits = []

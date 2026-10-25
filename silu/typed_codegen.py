@@ -61,6 +61,13 @@ class TypedCodegen(SiluToLLVMConverter):
         # capture; without this the second declare opened a SECOND slot
         # and the initializer's store vanished into the first)
         self._scope_local_vars: set = set()
+        # str names whose slot holds a BORROWED buffer (function
+        # parameters): reads are free, but in-place append is
+        # forbidden - `s += x` rebinds via concat instead, exactly the
+        # Python aliasing semantics the interpreter planes implement.
+        # Plain assignment replaces the slot with an owned copy.
+        self._borrowed_strs: set = set()
+        self._owned_strs: set = set()
         self._scope_depth = 0
         self.rawdict_to_pydict: Dict[str, Any] = {}
         # Overflow/precision panics and rawlist bounds branches follow
@@ -5402,6 +5409,14 @@ class TypedCodegen(SiluToLLVMConverter):
         """Drop the slot's previous buffer (Rust drop on overwrite), then
         store the new one. Ownership is exclusive, so freeing the old
         buffer is always safe; slots are null-initialized."""
+        if name in self._borrowed_strs and name not in self._owned_strs:
+            # the slot held a BORROWED buffer (a str parameter): the
+            # caller owns it - no drop. new_ptr is always a fresh
+            # buffer (concat output or an assignment-side copy), so
+            # the slot is owned from here on.
+            self._owned_strs.add(name)
+            self.current_builder.store(new_ptr, self.variables[name])
+            return
         old_ptr = self.current_builder.load(self.variables[name])
         self.current_builder.call(self.rawstr_free, [old_ptr])
         self.current_builder.store(new_ptr, self.variables[name])
@@ -5421,6 +5436,10 @@ class TypedCodegen(SiluToLLVMConverter):
                 kind == RAWSTR
                 and name not in module_kinds
                 and name in self.variables
+                and (
+                    name not in self._borrowed_strs
+                    or name in self._owned_strs
+                )
             ):
                 self.current_builder.call(
                     self.rawstr_free,
@@ -7616,6 +7635,14 @@ class TypedCodegen(SiluToLLVMConverter):
             arg_tv = self._convert_node(arg_node)
             if expected == OBJ:
                 call_args.append(self._box(arg_tv))
+            elif (
+                expected == RAWSTR
+                and arg_tv[0] == RAWSTR
+            ):
+                # borrow, don't copy: the callee only reads (a `+=`
+                # rebinds via concat); eager-copying here made every
+                # recursive call deep-copy the whole string
+                call_args.append(arg_tv[1])
             else:
                 call_args.append(self._coerce(arg_tv, expected)[1])
         return (OBJ, self.current_builder.call(func, call_args))
@@ -8111,6 +8138,9 @@ class TypedCodegen(SiluToLLVMConverter):
         entry_block = func.append_basic_block("entry")
         old_function = self.current_function
         old_builder = self.current_builder
+        old_scope_locals = self._scope_local_vars
+        old_borrowed = self._borrowed_strs
+        old_owned = self._owned_strs
         old_variables = self.variables.copy()
         old_kinds = dict(self.var_kinds)
         old_ret = self.current_ret_kind
@@ -8151,6 +8181,8 @@ class TypedCodegen(SiluToLLVMConverter):
         self.var_kinds = dict(self.var_kinds)
         self._var_class = dict(self._var_class)
         self._scope_local_vars = set()
+        self._borrowed_strs = set()
+        self._owned_strs = set()
         # a name this body rebinds is function-local: drop any module-
         # scope class hints for it (they answered for the global, and
         # the shadowed local may hold a different class entirely)
@@ -8202,6 +8234,9 @@ class TypedCodegen(SiluToLLVMConverter):
                     self._var_class[param_name] = pcls
             self._declare_var(param_name, kind)
             self.current_builder.store(func.args[index], self.variables[param_name])
+            if kind == RAWSTR:
+                # the caller passed its buffer by reference (borrow)
+                self._borrowed_strs.add(param_name)
 
         # methods: bind the self parameter's class for attribute access
         method_class = self._method_class.get(func.name)
@@ -8259,6 +8294,9 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_function = old_function
         self.current_builder = old_builder
         self.variables = old_variables
+        self._scope_local_vars = old_scope_locals
+        self._borrowed_strs = old_borrowed
+        self._owned_strs = old_owned
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
@@ -8273,6 +8311,9 @@ class TypedCodegen(SiluToLLVMConverter):
         entry_block = func.append_basic_block("entry")
         old_function = self.current_function
         old_builder = self.current_builder
+        old_scope_locals = self._scope_local_vars
+        old_borrowed = self._borrowed_strs
+        old_owned = self._owned_strs
         old_variables = self.variables.copy()
         old_kinds = dict(self.var_kinds)
         old_ret = self.current_ret_kind
@@ -8300,6 +8341,8 @@ class TypedCodegen(SiluToLLVMConverter):
         self.var_kinds = dict(self.var_kinds)
         self._var_class = dict(self._var_class)
         self._scope_local_vars = set()
+        self._borrowed_strs = set()
+        self._owned_strs = set()
         # a name this body rebinds is function-local: drop any module-
         # scope class hints for it (they answered for the global, and
         # the shadowed local may hold a different class entirely)
@@ -8360,6 +8403,9 @@ class TypedCodegen(SiluToLLVMConverter):
                     )
                     self.current_builder.store(func.args[index], param_alloca)
                     self.variables[param_name] = param_alloca
+                    if kind == RAWSTR:
+                        # the caller passed its buffer by reference
+                        self._borrowed_strs.add(param_name)
                     if kind == INSTANCE:
                         # _var_class (bound above) classes the slot so
                         # every load re-stamps the box's cid
@@ -8392,6 +8438,9 @@ class TypedCodegen(SiluToLLVMConverter):
         self.current_function = old_function
         self.current_builder = old_builder
         self.variables = old_variables
+        self._scope_local_vars = old_scope_locals
+        self._borrowed_strs = old_borrowed
+        self._owned_strs = old_owned
         self.var_kinds = old_kinds
         self.current_ret_kind = old_ret
         self._inferred_kinds = old_inferred
@@ -9051,6 +9100,18 @@ class TypedCodegen(SiluToLLVMConverter):
             if target_name not in self.var_kinds and target_name not in self.variables:
                 return (OBJ, null_obj)
             if self.var_kinds.get(target_name) == RAWSTR:
+                # a BORROWED slot (parameter) must not grow in place -
+                # that would append into the CALLER's buffer; rebind
+                # via fresh concat (Python semantics), which also
+                # makes the slot owned from here on
+                if (
+                    target_name in self._borrowed_strs
+                    and target_name not in self._owned_strs
+                ):
+                    current = self._load_var(target_name)
+                    result = self._typed_binop("+", current, right_tv)
+                    self._store_rawstr(target_name, result[1])
+                    return result
                 # s += rhs grows the owned buffer in place; a rhs naming
                 # s itself must take the fresh-concat path (append's
                 # realloc would move the buffer under its own source)
@@ -11579,6 +11640,9 @@ class TypedCodegen(SiluToLLVMConverter):
                     arg_tv = self._convert_node(arg_node)
                     if kind == OBJ:
                         raw_args.append(self._box(arg_tv))
+                    elif kind == RAWSTR and arg_tv[0] == RAWSTR:
+                        # borrow, not copy (see the method-call site)
+                        raw_args.append(arg_tv[1])
                     else:
                         raw_args.append(self._coerce(arg_tv, kind)[1])
                 call = self.current_builder.call(fn, raw_args)
@@ -12041,7 +12105,12 @@ class TypedCodegen(SiluToLLVMConverter):
                         if index < len(param_kinds)
                         else param_kinds[-1]
                     )
-                    raw_args.append(self._coerce(self._convert_node(arg_node), kind)[1])
+                    arg_tv = self._convert_node(arg_node)
+                    if kind == RAWSTR and arg_tv[0] == RAWSTR:
+                        # borrow, not copy (the callee only reads)
+                        raw_args.append(arg_tv[1])
+                    else:
+                        raw_args.append(self._coerce(arg_tv, kind)[1])
                 if len(raw_args) == len(param_kinds):
                     call = self.current_builder.call(func, raw_args)
                     if ret_kind == INSTANCE:
@@ -12087,6 +12156,10 @@ class TypedCodegen(SiluToLLVMConverter):
                                     [self._box(arg_tv)],
                                 )
                             )
+                    elif expected == RAWSTR and arg_tv[0] == RAWSTR:
+                        # borrow, not copy: the callee treats str params
+                        # as read-only (a += rebinds via concat)
+                        boxed_args.append(arg_tv[1])
                     else:
                         # proven raw scalar/str parameter: coerce in place
                         # (str coercion copies at the boundary)
