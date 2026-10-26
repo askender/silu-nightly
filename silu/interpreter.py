@@ -555,115 +555,149 @@ class SiluInterpreter(BaseASTProcessor):
 
         return func(*args, **keywords)
 
+    def _define_function(self, kwargs: dict) -> None:
+        func = Function(kwargs["name"], kwargs["args"], kwargs["body"], self.env)
+        self.env.set(kwargs["name"], func)
+
+    def _define_enum_class(self, name: str, kwargs: dict) -> dict:
+        """Enum base: members are plain ints (Rust bare-discriminant enum)."""
+        namespace = {"__name__": name}
+        next_value = 0
+        for stmt in kwargs["body"]:
+            if isinstance(stmt, ast.Assign) and isinstance(
+                stmt.targets[0], ast.Name
+            ):
+                value = self.visit(stmt.value)
+                if not isinstance(value, int) or isinstance(
+                    value, bool
+                ):
+                    raise TypeError(
+                        f"enum '{name}': member "
+                        f"'{stmt.targets[0].id}' must be an int"
+                    )
+                namespace[stmt.targets[0].id] = value
+                next_value = value + 1
+            elif isinstance(stmt, ast.Expr) and isinstance(
+                stmt.value, ast.Name
+            ):
+                namespace[stmt.value.id] = next_value
+                next_value += 1
+            elif isinstance(stmt, ast.Pass):
+                continue
+            else:
+                raise TypeError(
+                    f"enum '{name}': only 'NAME = value' or "
+                    "bare NAME members are allowed"
+                )
+        self.env.set(name, namespace)
+        return namespace
+
+    def _define_silu_class(self, name: str, kwargs: dict) -> SiluClass:
+        """Silu class = dataclass semantics (Rust struct + impl):
+        annotated fields + methods only, no inheritance."""
+        fields = []  # [(field_name, annotation, has_default, default)]
+        methods: dict = {}
+        seen_default = False
+        for stmt in kwargs["body"]:
+            if isinstance(stmt, ast.AnnAssign) and isinstance(
+                stmt.target, ast.Name
+            ):
+                field_name = stmt.target.id
+                if stmt.annotation is None:
+                    raise TypeError(
+                        f"class '{name}': field '{field_name}' must be "
+                        "annotated"
+                    )
+                annotation = ast.unparse(stmt.annotation)
+                has_default = stmt.value is not None
+                default = self.visit(stmt.value) if has_default else None
+                if seen_default and not has_default:
+                    raise TypeError(
+                        f"class '{name}': field '{field_name}' without "
+                        "default follows a field with a default"
+                    )
+                seen_default = seen_default or has_default
+                fields.append((field_name, annotation, has_default, default))
+            elif isinstance(stmt, ast.FunctionDef):
+                method_name = stmt.name
+                if method_name == "__init__":
+                    raise TypeError(
+                        f"class '{name}': __init__ is not supported; "
+                        "construction assigns fields in declaration order"
+                    )
+                method_args = [arg.arg for arg in stmt.args.args]
+                if not method_args:
+                    raise TypeError(
+                        f"class '{name}': method '{method_name}' must "
+                        "take 'self'"
+                    )
+                methods[method_name] = Function(
+                    method_name, method_args, stmt.body, self.env
+                )
+            elif isinstance(stmt, ast.Assign):
+                raise TypeError(
+                    f"class '{name}': fields must be annotated "
+                    "(class variables are not supported)"
+                )
+            elif isinstance(stmt, ast.Pass):
+                pass
+            elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
+                pass
+            else:
+                raise TypeError(
+                    f"class '{name}': unsupported statement "
+                    f"'{type(stmt).__name__}' in class body"
+                )
+
+        cls = SiluClass(name, fields, methods)
+        self.env.set(name, cls)
+        return cls
+
+    def _define_class(self, kwargs: dict) -> Any:
+        name = kwargs["name"]
+        bases = kwargs.get("bases", [])
+        if bases:
+            # the one sanctioned base is Enum
+            if (
+                len(bases) == 1
+                and isinstance(bases[0], ast.Name)
+                and bases[0].id == "Enum"
+            ):
+                return self._define_enum_class(name, kwargs)
+            raise TypeError(
+                f"class '{name}': inheritance is not supported"
+            )
+        return self._define_silu_class(name, kwargs)
+
+    def _run_for_body(self, kwargs: dict) -> None:
+        """Run the loop body once; Continue/Break propagate to the caller."""
+        for stmt in kwargs["body"]:
+            self.visit(stmt)
+
+    def _run_for_loop(self, kwargs: dict, assign_item) -> None:
+        try:
+            for item in kwargs["iter"]:
+                assign_item(item)
+                try:
+                    self._run_for_body(kwargs)
+                except ContinueException:
+                    continue
+                except BreakException:
+                    break
+            else:
+                # Execute else clause if loop completed normally (no break)
+                if kwargs.get("orelse"):
+                    for stmt in kwargs["orelse"]:
+                        self.visit(stmt)
+        except BreakException:
+            pass
+
     def process_control_flow(self, node_type: str, **kwargs) -> Any:
         """Handle control flow statements."""
         if node_type == "function_def":
-            func = Function(kwargs["name"], kwargs["args"], kwargs["body"], self.env)
-            self.env.set(kwargs["name"], func)
+            self._define_function(kwargs)
         elif node_type == "class_def":
-            # Silu class = dataclass semantics (Rust struct + impl):
-            # annotated fields + methods only, no inheritance.
-            name = kwargs["name"]
-            bases = kwargs.get("bases", [])
-            if bases:
-                # the one sanctioned base is Enum (Rust bare-discriminant
-                # enum): members are plain ints
-                if (
-                    len(bases) == 1
-                    and isinstance(bases[0], ast.Name)
-                    and bases[0].id == "Enum"
-                ):
-                    namespace = {"__name__": name}
-                    next_value = 0
-                    for stmt in kwargs["body"]:
-                        if isinstance(stmt, ast.Assign) and isinstance(
-                            stmt.targets[0], ast.Name
-                        ):
-                            value = self.visit(stmt.value)
-                            if not isinstance(value, int) or isinstance(
-                                value, bool
-                            ):
-                                raise TypeError(
-                                    f"enum '{name}': member "
-                                    f"'{stmt.targets[0].id}' must be an int"
-                                )
-                            namespace[stmt.targets[0].id] = value
-                            next_value = value + 1
-                        elif isinstance(stmt, ast.Expr) and isinstance(
-                            stmt.value, ast.Name
-                        ):
-                            namespace[stmt.value.id] = next_value
-                            next_value += 1
-                        elif isinstance(stmt, ast.Pass):
-                            continue
-                        else:
-                            raise TypeError(
-                                f"enum '{name}': only 'NAME = value' or "
-                                "bare NAME members are allowed"
-                            )
-                    self.env.set(name, namespace)
-                    return namespace
-                raise TypeError(
-                    f"class '{name}': inheritance is not supported"
-                )
-
-            fields = []  # [(field_name, annotation, has_default, default)]
-            methods = {}
-            seen_default = False
-            for stmt in kwargs["body"]:
-                if isinstance(stmt, ast.AnnAssign) and isinstance(
-                    stmt.target, ast.Name
-                ):
-                    field_name = stmt.target.id
-                    if stmt.annotation is None:
-                        raise TypeError(
-                            f"class '{name}': field '{field_name}' must be "
-                            "annotated"
-                        )
-                    annotation = ast.unparse(stmt.annotation)
-                    has_default = stmt.value is not None
-                    default = self.visit(stmt.value) if has_default else None
-                    if seen_default and not has_default:
-                        raise TypeError(
-                            f"class '{name}': field '{field_name}' without "
-                            "default follows a field with a default"
-                        )
-                    seen_default = seen_default or has_default
-                    fields.append((field_name, annotation, has_default, default))
-                elif isinstance(stmt, ast.FunctionDef):
-                    method_name = stmt.name
-                    if method_name == "__init__":
-                        raise TypeError(
-                            f"class '{name}': __init__ is not supported; "
-                            "construction assigns fields in declaration order"
-                        )
-                    method_args = [arg.arg for arg in stmt.args.args]
-                    if not method_args:
-                        raise TypeError(
-                            f"class '{name}': method '{method_name}' must "
-                            "take 'self'"
-                        )
-                    methods[method_name] = Function(
-                        method_name, method_args, stmt.body, self.env
-                    )
-                elif isinstance(stmt, ast.Assign):
-                    raise TypeError(
-                        f"class '{name}': fields must be annotated "
-                        "(class variables are not supported)"
-                    )
-                elif isinstance(stmt, ast.Pass):
-                    pass
-                elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
-                    pass
-                else:
-                    raise TypeError(
-                        f"class '{name}': unsupported statement "
-                        f"'{type(stmt).__name__}' in class body"
-                    )
-
-            cls = SiluClass(name, fields, methods)
-            self.env.set(name, cls)
-            return cls
+            return self._define_class(kwargs)
         elif node_type == "return":
             raise ReturnException(kwargs["value"])
         elif node_type == "if":
@@ -691,56 +725,27 @@ class SiluInterpreter(BaseASTProcessor):
             # Handle tuple unpacking
             if isinstance(target, tuple) and target[0] == "tuple_unpack":
                 _, target_names = target
-                try:
-                    for item in kwargs["iter"]:
-                        # Perform tuple unpacking
-                        if not isinstance(item, (tuple, list)):
-                            raise ValueError(
-                                f"Cannot unpack non-sequence {type(item).__name__}"
-                            )
-                        if len(item) != len(target_names):
-                            raise ValueError(
-                                f"Too many values to unpack (expected {len(target_names)}, got {len(item)})"
-                            )
 
-                        # Assign each unpacked value to corresponding variable
-                        for name, value in zip(target_names, item):
-                            self.env.set(name, value)
+                def assign_unpacked(item):
+                    if not isinstance(item, (tuple, list)):
+                        raise ValueError(
+                            f"Cannot unpack non-sequence {type(item).__name__}"
+                        )
+                    if len(item) != len(target_names):
+                        raise ValueError(
+                            f"Too many values to unpack (expected {len(target_names)}, got {len(item)})"
+                        )
+                    for name, value in zip(target_names, item):
+                        self.env.set(name, value)
 
-                        try:
-                            for stmt in kwargs["body"]:
-                                self.visit(stmt)
-                        except ContinueException:
-                            continue
-                        except BreakException:
-                            break
-                    else:
-                        # Execute else clause if loop completed normally (no break)
-                        if kwargs.get("orelse"):
-                            for stmt in kwargs["orelse"]:
-                                self.visit(stmt)
-                except BreakException:
-                    pass
+                self._run_for_loop(kwargs, assign_unpacked)
 
             # Handle simple variable targets
             elif isinstance(target, str):
-                try:
-                    for item in kwargs["iter"]:
-                        self.env.set(target, item)
-                        try:
-                            for stmt in kwargs["body"]:
-                                self.visit(stmt)
-                        except ContinueException:
-                            continue
-                        except BreakException:
-                            break
-                    else:
-                        # Execute else clause if loop completed normally (no break)
-                        if kwargs.get("orelse"):
-                            for stmt in kwargs["orelse"]:
-                                self.visit(stmt)
-                except BreakException:
-                    pass
+                def assign_named(item):
+                    self.env.set(target, item)
+
+                self._run_for_loop(kwargs, assign_named)
 
             else:
                 raise NotImplementedError(
