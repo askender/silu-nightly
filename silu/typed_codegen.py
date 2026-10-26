@@ -4646,7 +4646,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         call = self.current_builder.call(fn, vals)
         return (ret_kind, call)
 
-    def _rawlist_writeback(self, arg_node, boxed, builder, before_len):
+    def _rawlist_writeback(self, arg_node, boxed, builder, before_len) -> bool:
         """After a call whose OBJ parameter received a rawlist copy:
         convert the (possibly mutated) pyobj list back and replace the
         source variable's slot - Python aliasing semantics. When the
@@ -6146,7 +6146,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             candidates[name] = None  # conflict: keep it dynamic
 
 
-    def _walk_assign_kinds(self, stmt_list: list, annotations: Dict[str, str], candidates: Dict[str, Optional[str]], func_ret: Dict[str, str]):
+    def _walk_assign_kinds(self, stmt_list: list, annotations: Dict[str, str], candidates: Dict[str, Optional[str]], func_ret: Dict[str, str]) -> bool:
         def is_range_call(iter_node: Any) -> bool:
             return (
                 isinstance(iter_node, list)
@@ -8365,7 +8365,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 # const str operands make this a string concatenation
                 # even when both sides boxed: route it through the raw
                 # concat so t = "ab" + "cd" never round-trips pyobj_add
-                def is_str_const(operand_node):
+                def is_str_const(operand_node) -> bool:
                     return (
                         isinstance(operand_node, list)
                         and len(operand_node) >= 2

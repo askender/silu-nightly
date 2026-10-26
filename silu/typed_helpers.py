@@ -139,7 +139,7 @@ def _kind_of_llvm_type(kind: str) -> ir.Type:
     return LLVM_KIND_TYPES[kind]
 
 
-def _targets_parent(target_node, parent_names):
+def _targets_parent(target_node, parent_names) -> bool:
     if isinstance(target_node, str):
         return target_node in parent_names
     if (
@@ -161,7 +161,7 @@ def _targets_parent(target_node, parent_names):
     return False
 
 
-def _all_name_parts(parts):
+def _all_name_parts(parts) -> bool:
     for part in parts:
         if not (
             isinstance(part, list) and len(part) >= 2 and part[0] == "name"
@@ -170,21 +170,21 @@ def _all_name_parts(parts):
     return True
 
 
-def _all_of_kind(kinds, want):
+def _all_of_kind(kinds, want) -> bool:
     for k in kinds:
         if k != want:
             return False
     return True
 
 
-def _all_non_obj(kinds):
+def _all_non_obj(kinds) -> bool:
     for k in kinds:
         if k == OBJ:
             return False
     return True
 
 
-def _all_str(names):
+def _all_str(names) -> bool:
     for name in names:
         if not isinstance(name, str):
             return False
@@ -360,7 +360,7 @@ def _inst_kind(cls):
     return INSTANCE + ":" + cls
 
 
-def _is_inst(kind):
+def _is_inst(kind) -> bool:
     if not isinstance(kind, str):
         return False
     return kind == INSTANCE or kind.startswith(INSTANCE + ":")
