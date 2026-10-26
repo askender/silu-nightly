@@ -144,3 +144,10 @@ zcode_check
 _flat_test_codegen.py
 typed_codegen_flat.py
 typed_codegen_flat.si
+.attic/
+
+# self-hosted build artifacts
+silu_fe
+silu_conv
+siluc
+siluc1
