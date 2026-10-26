@@ -93,6 +93,18 @@ quality: ruff tail + return-type annotations on the mixin families
 
 - modularization step C: typed_match.py + typed_call.py (byte-identical)
 
+### v1.11.0
+modularization step D: _convert_node_scoped dispatch extraction (byte-identical)
+
+- _convert_node_scoped 1891 -> 762 lines: the five largest branches
+  (assign/ann_assign 386, subscript 309, aug_assign 170,
+  subscript_assign 170, comprehension 98) extracted to _conv_* methods
+  with one-line delegations; dynamic-getattr dispatch rejected (typed
+  backend does not lower getattr calls; sequential delegation is fully
+  inside the verified .si subset)
+- acceptance: 16-program corpus .ll byte-identical across the refactor,
+  converter + pipeline fixed points re-established, native parity green
+
 ## v0.x — Pre-Self-Hosting Foundation
 
 Early development: interpreter, IR generator, symbolic executor,

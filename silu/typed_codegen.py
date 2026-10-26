@@ -8192,564 +8192,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return (OBJ, null_obj)
 
         if op in ("assign", "ann_assign"):
-            target = node[1]
-            value_node = node[2]
-            if op == "ann_assign" and value_node is None:
-                return (OBJ, null_obj)
-            if (
-                isinstance(target, (list, tuple))
-                and len(target) >= 3
-                and target[0] == "attribute"
-            ):
-                # obj.attr = value on a class instance
-                if self._class_of_node(target[1]) is None:
-                    recv_tv = self._convert_node(target[1])
-                    if recv_tv[0] == OBJ:
-                        value_tv = self._convert_node(value_node)
-                        self._emit_dyn_attr_write(
-                            recv_tv, target[2], value_tv
-                        )
-                        return (OBJ, null_obj)
-                    raise NotImplementedError(
-                        "attribute assignment is only supported on class "
-                        "instances"
-                    )
-                field_kind = self._field_kind_of(target[1], target[2])
-                self._emit_field_write(
-                    target[1],
-                    target[2],
-                    self._convert_field_value(field_kind, value_node),
-                )
-                return (OBJ, null_obj)
-            if isinstance(target, str):
-                if (
-                    isinstance(value_node, list)
-                    and len(value_node) == 2
-                    and value_node[0] == "funcref"
-                ):
-                    mangled = value_node[1]
-                    if mangled not in self.functions:
-                        raise NameError(
-                            f"funcref to unknown function '{mangled}'"
-                        )
-                    self._declare_var(target, OBJ)
-                    self._funcref_var[target] = mangled
-                    return (OBJ, null_obj)
-                # t2 = self.toks[i] (a list[Token] element arrives as
-                # an i64 word): keep the CLASS so t2.kind reads the
-                # field directly instead of a dynamic getattr on a
-                # misboxed int (the historical "local roundtrip"
-                # crash - the inline form always worked)
-                inst_cls = self._class_of_node(value_node)
-                if (
-                    inst_cls is not None
-                    and isinstance(value_node, list)
-                    and len(value_node) >= 3
-                    and value_node[0] == "subscript"
-                ):
-                    elem_tv = self._convert_node(value_node)
-                    if elem_tv[0] == I64:
-                        # instance-list elements ride as i64 words;
-                        # keep the word, record the CLASS so every use
-                        # (field read, method call) converts exactly
-                        # like the inline form does
-                        self._var_class[target] = inst_cls
-                        self._declare_var(target, I64)
-                        self.current_builder.store(
-                            elem_tv[1], self.variables[target]
-                        )
-                        return (I64, elem_tv[1])
-                ctor_class = self._constructor_call_class(value_node)
-                if ctor_class is not None:
-                    # st = JointState(1.0, 2.0) - optionally annotated
-                    if op == "ann_assign":
-                        ann = node[3] if len(node) > 3 else None
-                        if (
-                            isinstance(ann, list)
-                            and len(ann) >= 2
-                            and ann[0] == "name"
-                            and ann[1] in self._class_layouts
-                            and ann[1] != ctor_class
-                        ):
-                            raise TypeError(
-                                f"cannot assign {ctor_class}() to "
-                                f"'{ann[1]}' variable '{target}'"
-                            )
-                    inst = self._emit_construct(
-                        ctor_class,
-                        value_node[2] if len(value_node) > 2 else [],
-                        value_node[3] if len(value_node) > 3 else [],
-                    )
-                    self._var_class[target] = ctor_class
-                    self._declare_var(target, INSTANCE)
-                    self.current_builder.store(inst[1], self.variables[target])
-                    return inst
-                if (
-                    isinstance(value_node, list)
-                    and len(value_node) >= 2
-                    and value_node[0] == "name"
-                    and _is_inst(self.var_kinds.get(value_node[1]))
-                ):
-                    # a = b: instances alias (Python reference semantics)
-                    value = self._convert_node(value_node)
-                    src_cls = _kind_cls(self.var_kinds.get(value_node[1]))
-                    if src_cls:
-                        self._var_class[target] = src_cls
-                    self._declare_var(target, INSTANCE)
-                    self.current_builder.store(value[1], self.variables[target])
-                    return value
-                if (
-                    isinstance(value_node, list)
-                    and len(value_node) >= 3
-                    and value_node[0] == "attribute"
-                    and self._class_of_node(value_node) is not None
-                ):
-                    # a = b.inner: aliasing an instance field
-                    value = self._convert_node(value_node)
-                    self._var_class[target] = self._class_of_node(value_node)
-                    self._declare_var(target, INSTANCE)
-                    self.current_builder.store(value[1], self.variables[target])
-                    return value
-            if op == "ann_assign":
-                annotation_kind = self._annotation_kind(node[3]) or OBJ
-                # a class-annotated declaration binds the name to its
-                # class even before the value is looked at
-                ann = node[3] if len(node) > 3 else None
-                if (
-                    annotation_kind == INSTANCE
-                    and isinstance(target, str)
-                    and isinstance(ann, list)
-                    and len(ann) >= 2
-                    and ann[0] == "name"
-                ):
-                    self._var_class[target] = ann[1]
-                if (
-                    annotation_kind == RAWLIST_I
-                    and isinstance(target, str)
-                    and isinstance(ann, list)
-                    and len(ann) >= 3
-                    and ann[0] == "subscript"
-                    and isinstance(ann[2], list)
-                    and len(ann[2]) >= 2
-                    and ann[2][0] == "name"
-                    and ann[2][1] in self._class_layouts
-                ):
-                    self._list_elem_class[target] = ann[2][1]
-            else:
-                annotation_kind = self.var_kinds.get(target)
-            if annotation_kind is None and target not in self.var_kinds:
-                # unannotated rebinding: raw storage only when the
-                # pre-pass proved every assignment yields one same kind
-                annotation_kind = self._inferred_kinds.get(target) or OBJ
-            if (
-                isinstance(target, str)
-                and isinstance(value_node, list)
-                and len(value_node) >= 3
-                and value_node[0] == "subscript"
-                and isinstance(value_node[1], list)
-                and len(value_node[1]) >= 2
-                and value_node[1][0] == "name"
-                and self.var_kinds.get(value_node[1][1]) == RAWSTR
-                and not (
-                    isinstance(value_node[2], list)
-                    and len(value_node[2]) >= 4
-                    and value_node[2][0] == "slice"
-                )
-            ):
-                # ch = s[i]: a materialized copy. (A borrowed char-view
-                # alias optimization lived here and is disabled: its
-                # kill-site placement interacted badly with loop
-                # back-edges and expression coercions. Revisit with a
-                # proper lifetime model - a copy per char is correct.)
-                str_name = value_node[1][1]
-                str_tv = self._load_var(str_name)
-                index_frozen = self._coerce(
-                    self._convert_node(value_node[2]), I64
-                )[1]
-                coerced = self._coerce(
-                    self._emit_char_view(str_tv[1], index_frozen), RAWSTR
-                )
-                self._declare_var(target, RAWSTR)
-                self._store_rawstr(target, coerced[1])
-                return (RAWSTR, None)
-            if (
-                annotation_kind == RAWSTR
-                and isinstance(target, str)
-                and isinstance(value_node, list)
-                and len(value_node) >= 3
-                and value_node[0] == "+"
-                and isinstance(value_node[1], list)
-                and value_node[1][0] == "name"
-                and value_node[1][1] == target
-            ):
-                # s = s + rhs: the slot owns its buffer and the old value
-                # dies here, so append in place (amortized O(1)) instead
-                # of a fresh quadratic copy. A rhs naming s itself goes
-                # through rawstr_concat: append's realloc could move the
-                # buffer out from under its own source.
-                data_ptr, byte_len, temp = self._rawstr_append_operand(value_node[2])
-                slot_value = self._load_var(target)[1]
-                self.current_builder.call(
-                    self.rawstr_append, [slot_value, data_ptr, byte_len]
-                )
-                if temp is not None:
-                    self.current_builder.call(self.rawstr_free, [temp])
-                self._declare_var(target, RAWSTR)
-                return (RAWSTR, slot_value)
-            if (
-                annotation_kind in RAWLIST_KINDS
-                and isinstance(value_node, list)
-                and len(value_node) >= 3
-                and value_node[0] == "*"
-                and isinstance(value_node[1], list)
-                and value_node[1][0] == "list"
-            ):
-                # [init] * count into a rawlist variable: constant counts
-                # expand at compile time, runtime counts use a fill loop
-                elem_nodes = value_node[1][1] if len(value_node[1]) > 1 else []
-                count_tv = self._convert_node(value_node[2])
-                count_const = _extract_i64_const(count_tv[1])
-                if count_const is not None:
-                    expanded: list = []
-                    for _ in range(count_const):
-                        for en in elem_nodes:
-                            expanded.append(en)
-                    raw = self._build_raw_list(expanded, annotation_kind)
-                    self._declare_var(target, annotation_kind)
-                    self.current_builder.store(raw[1], self.variables[target])
-                    return raw
-                # runtime count: create the list then push in a loop
-                raw = self.current_builder.call(
-                    self.rawlist_new, [ir.const_(ir.IntType(64), 8)]
-                )
-                count_i64 = self._coerce(count_tv, I64)[1]
-                raw_ptr = self.current_builder.alloca(
-                    ir.PointerType(ir.IntType(8)), None, 'fill_list'
-                )
-                self.current_builder.store(raw, raw_ptr)
-                fill_idx = self.current_builder.alloca(
-                    ir.IntType(64), None, 'fill_i'
-                )
-                self.current_builder.store(ir.const_(ir.IntType(64), 0), fill_idx)
-                fill_cond = self.current_function.append_basic_block("fill_cond")
-                fill_body = self.current_function.append_basic_block("fill_body")
-                fill_end = self.current_function.append_basic_block("fill_end")
-                self.current_builder.branch(fill_cond)
-
-                self.current_builder.position_at_end(fill_cond)
-                fill_i = self.current_builder.load(fill_idx)
-                fill_more = self.current_builder.icmp_signed("<", fill_i, count_i64)
-                self.current_builder.cbranch(fill_more, fill_body, fill_end)
-
-                self.current_builder.position_at_end(fill_body)
-                for element_node in elem_nodes:
-                    elem = self._coerce(
-                        self._convert_node(element_node), RAWLIST_KINDS[annotation_kind]
-                    )
-                    elem_bits = elem[1]
-                    if RAWLIST_KINDS[annotation_kind] == F64:
-                        elem_bits = self.current_builder.bitcast(
-                            elem[1], ir.IntType(64)
-                        )
-                    self.current_builder.call(
-                        self.rawlist_push,
-                        [
-                            self.current_builder.load(raw_ptr),
-                            elem_bits,
-                        ],
-                    )
-                self.current_builder.store(
-                    self.current_builder.add(fill_i, ir.const_(ir.IntType(64), 1)),
-                    fill_idx,
-                )
-                self.current_builder.branch(fill_cond)
-
-                self.current_builder.position_at_end(fill_end)
-                self._declare_var(target, annotation_kind)
-                self.current_builder.store(raw, self.variables[target])
-                return (annotation_kind, raw)
-            if (
-                annotation_kind in RAWLIST_KINDS
-                and isinstance(value_node, list)
-                and len(value_node) >= 1
-                and value_node[0] == "list"
-            ):
-                raw = self._build_raw_list(value_node[1], annotation_kind)
-                self._declare_var(target, annotation_kind)
-                self.current_builder.store(raw[1], self.variables[target])
-                return raw
-            if (
-                annotation_kind in RAWDICT_KINDS
-                and isinstance(value_node, list)
-                and len(value_node) >= 1
-                and value_node[0] == "dict"
-            ):
-                raw_ptr = self.current_builder.call(self.rawdict_new, [])
-                value_kind = RAWDICT_KINDS[annotation_kind]
-                for pair_node in value_node[1]:
-                    val_tv = self._coerce(
-                        self._convert_node(pair_node[1]), value_kind
-                    )
-                    val_bits = val_tv[1]
-                    if value_kind == F64:
-                        val_bits = self.current_builder.bitcast(
-                            val_tv[1], ir.IntType(64)
-                        )
-                    self._rawdict_key_call(
-                        annotation_kind, raw_ptr,
-                        pair_node[0],
-                        self.rawdict_set, self.rawdict_str_set,
-                        (val_bits,),
-                    )
-                self._declare_var(target, annotation_kind)
-                self.current_builder.store(raw_ptr, self.variables[target])
-                return (annotation_kind, raw_ptr)
-            value = self._convert_node(value_node)
-            if isinstance(target, str) and value[1] is not None:
-                if _is_inst(value[0]) and annotation_kind in (None, OBJ):
-                    # an unannotated name bound to an instance: declare it
-                    # INSTANCE and record the class (t = self.cur())
-                    ctor = self._constructor_call_class(value_node)
-                    cls = (
-                        ctor
-                        or _kind_cls(value[0])
-                        or self._call_ret_class.get(
-                            value_node[1][1]
-                            if (
-                                isinstance(value_node, list)
-                                and len(value_node) >= 2
-                                and value_node[0] == "call"
-                                and isinstance(value_node[1], list)
-                                and len(value_node[1]) >= 2
-                                and value_node[1][0] == "name"
-                            )
-                            else ""
-                        )
-                        or self._class_of_node(value_node)
-                    )
-                    if cls:
-                        self._var_class[target] = cls
-                    self._declare_var(target, INSTANCE)
-                    self.current_builder.store(value[1], self.variables[target])
-                    return value
-                if annotation_kind == RAWSTR and value[0] == RAWSTR:
-                    # a name aliases another slot's buffer, so assigning
-                    # it must copy (exclusive ownership); an expression
-                    # result is a fresh temporary the slot can simply own
-                    aliases_slot = (
-                        isinstance(value_node, list)
-                        and len(value_node) >= 2
-                        and value_node[0] == "name"
-                    )
-                    coerced = (
-                        self._coerce(value, RAWSTR) if aliases_slot else value
-                    )
-                    self._declare_var(target, RAWSTR)
-                    # the slot owns its buffer exclusively: drop the old
-                    # value on overwrite (Rust drop), no leak per reassign
-                    self._store_rawstr(target, coerced[1])
-                    return coerced
-                is_none_value = value_node is None or (
-                    isinstance(value_node, list)
-                    and len(value_node) >= 2
-                    and value_node[:2] == ["const", None]
-                )
-                if is_none_value and annotation_kind in (
-                    INSTANCE, RAWSTR
-                ) or is_none_value and annotation_kind in RAWLIST_KINDS or (
-                    is_none_value and annotation_kind in RAWDICT_KINDS
-                ):
-                    value = (
-                        annotation_kind,
-                        ir.const_(LLVM_KIND_TYPES[annotation_kind], None),
-                    )
-                    self._declare_var(target, annotation_kind)
-                    self.current_builder.store(
-                        value[1], self.variables[target]
-                    )
-                    return value
-                coerced = self._coerce(value, annotation_kind)
-                self._declare_var(target, annotation_kind)
-                if annotation_kind == RAWSTR:
-                    # the coerced value is a fresh owned temporary; drop
-                    # the slot's previous buffer as we overwrite it
-                    self._store_rawstr(target, coerced[1])
-                else:
-                    self.current_builder.store(coerced[1], self.variables[target])
-                return coerced
-            return (OBJ, null_obj)
+            return self._conv_assign(node, op, null_obj)
 
         if op == "aug_assign":
-            bin_op = node[2][:-1]  # "+=" -> "+"
-            target_node = node[1]
-            right_tv = self._convert_node(node[3])
-
-            # subscript target: obj[i] <op>= value
-            if (
-                isinstance(target_node, list)
-                and len(target_node) >= 3
-                and target_node[0] == "subscript"
-            ):
-                if (
-                    isinstance(target_node[1], (list, tuple))
-                    and len(target_node[1]) >= 2
-                    and target_node[1][0] == "name"
-                    and target_node[1][1] in self.cursor_kinds
-                    and isinstance(target_node[2], (list, tuple))
-                    and target_node[2][:2] == ["const", 0]
-                ):
-                    slot = self._cursor_slot(target_node[1][1])
-                    current = (I64, self.current_builder.load(slot))
-                    result = self._typed_binop(bin_op, current, right_tv)
-                    coerced = self._coerce(result, I64)
-                    self.current_builder.store(coerced[1], slot)
-                    return coerced
-                obj_tv = self._convert_node(target_node[1])
-                key_tv = self._convert_node(target_node[2])
-                if obj_tv[0] == RAWLIST_S:
-                    # l[i] <op>= v on str elements: copy-out, combine,
-                    # set (which drops the old slot and copies in)
-                    index = self._coerce(key_tv, I64)[1]
-                    current = (
-                        RAWSTR,
-                        self.current_builder.call(
-                            self.rawlist_str_get, [obj_tv[1], index]
-                        ),
-                    )
-                    result = self._typed_binop("+", current, right_tv) if bin_op == "+" else None
-                    if result is None:
-                        # unsupported op on strings: fallback via boxed
-                        current_boxed = self._box(current)
-                        result = self._typed_binop(
-                            bin_op, (OBJ, current_boxed), right_tv
-                        )
-                        coerced = self._coerce(result, RAWSTR)
-                    else:
-                        coerced = self._coerce(result, RAWSTR)
-                    self.current_builder.call(
-                        self.rawlist_str_set,
-                        [obj_tv[1], index, coerced[1]],
-                    )
-                    return coerced
-                if obj_tv[0] in RAWLIST_KINDS:
-                    elem_kind = RAWLIST_KINDS[obj_tv[0]]
-                    index = self._coerce(key_tv, I64)[1]
-                    # read-modify-write on the raw element
-                    items = self.current_builder.load(
-                        self.current_builder.gep(
-                            self.current_builder.bitcast(
-                                obj_tv[1],
-                                ir.PointerType(self.raw_list_struct_type),
-                            ),
-                            [
-                                ir.const_(ir.IntType(32), 0),
-                                ir.const_(ir.IntType(32), 2),
-                            ],
-                        )
-                    )
-                    items_i64 = self.current_builder.bitcast(
-                        items, ir.PointerType(ir.IntType(64))
-                    )
-                    slot = self.current_builder.gep(items_i64, [index])
-                    current = (elem_kind, self.current_builder.load(slot))
-                    if elem_kind == F64:
-                        current = (
-                            F64,
-                            self.current_builder.bitcast(current[1], ir.DoubleType()),
-                        )
-                    result = self._typed_binop(bin_op, current, right_tv)
-                    coerced = self._coerce(result, elem_kind)
-                    stored = coerced[1]
-                    if elem_kind == F64:
-                        stored = self.current_builder.bitcast(
-                            stored, ir.IntType(64)
-                        )
-                    self.current_builder.store(stored, slot)
-                    return coerced
-                if obj_tv[0] in RAWDICT_KINDS:
-                    # d[k] <op>= v: lookup, combine, store back
-                    value_kind = RAWDICT_KINDS[obj_tv[0]]
-                    current_bits = self._rawdict_key_call_tv(
-                        obj_tv[0], obj_tv[1], key_tv,
-                        self.rawdict_get, self.rawdict_str_get,
-                    (),
-                    )
-                    if value_kind == F64:
-                        current_tv = (
-                            F64,
-                            self.current_builder.bitcast(
-                                current_bits, ir.DoubleType()
-                            ),
-                        )
-                    else:
-                        current_tv = (value_kind, current_bits)
-                    result = self._typed_binop(bin_op, current_tv, right_tv)
-                    coerced = self._coerce(result, value_kind)
-                    stored_bits = coerced[1]
-                    if value_kind == F64:
-                        stored_bits = self.current_builder.bitcast(
-                            coerced[1], ir.IntType(64)
-                        )
-                    self._rawdict_key_call_tv(
-                        obj_tv[0], obj_tv[1], key_tv,
-                        self.rawdict_set, self.rawdict_str_set,
-                        (stored_bits,),
-                    )
-                    return coerced
-                obj = self._box(obj_tv)
-                key = self._box(key_tv)
-                current_obj = self.current_builder.call(
-                    self.pyobj_subscript, [obj, key]
-                )
-                result = self._typed_binop(
-                    bin_op, (OBJ, current_obj), right_tv
-                )
-                value = self._box(result)
-                self.current_builder.call(
-                    self.pyobj_subscript_set, [obj, key, value]
-                )
-                return (OBJ, value)
-
-            # plain variable target
-            target_name = target_node[1]
-            if target_name not in self.var_kinds and target_name not in self.variables:
-                return (OBJ, null_obj)
-            if self.var_kinds.get(target_name) == RAWSTR:
-                # a BORROWED slot (parameter) must not grow in place -
-                # that would append into the CALLER's buffer; rebind
-                # via fresh concat (Python semantics), which also
-                # makes the slot owned from here on
-                if (
-                    target_name in self._borrowed_strs
-                    and target_name not in self._owned_strs
-                ):
-                    current = self._load_var(target_name)
-                    result = self._typed_binop("+", current, right_tv)
-                    self._store_rawstr(target_name, result[1])
-                    return result
-                # s += rhs grows the owned buffer in place; a rhs naming
-                # s itself must take the fresh-concat path (append's
-                # realloc would move the buffer under its own source)
-                if isinstance(node[3], list) and node[3][:2] == ["name", target_name]:
-                    current = self._load_var(target_name)
-                    result = self._typed_binop("+", current, right_tv)
-                    # concat output is a fresh temporary: own it directly
-                    # (a coerce here would copy it and leak the original)
-                    self._store_rawstr(target_name, result[1])
-                    return result
-                data_ptr, byte_len, temp = self._rawstr_append_operand(node[3])
-                slot_value = self._load_var(target_name)[1]
-                self.current_builder.call(
-                    self.rawstr_append, [slot_value, data_ptr, byte_len]
-                )
-                if temp is not None:
-                    self.current_builder.call(self.rawstr_free, [temp])
-                return (RAWSTR, slot_value)
-            current = self._load_var(target_name)
-            result = self._typed_binop(bin_op, current, right_tv)
-            coerced = self._coerce(result, self.var_kinds[target_name])
-            self.current_builder.store(coerced[1], self.variables[target_name])
-            return coerced
+            return self._conv_aug_assign(node, op, null_obj)
 
         if op == "-" and len(node) == 2:
             # unary minus (checked before the binary dispatch); a
@@ -9205,487 +8651,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return (OBJ, set_obj)
 
         if op == "subscript":
-            if len(node) >= 3:
-                # scalar cursor read: pos[0] on a promoted name is a
-                # plain i64 load (the slot exists in this scope only)
-                if (
-                    isinstance(node[1], (list, tuple))
-                    and len(node[1]) >= 2
-                    and node[1][0] == "name"
-                    and node[1][1] in self.cursor_kinds
-                    and isinstance(node[2], (list, tuple))
-                    and node[2][:2] == ["const", 0]
-                ):
-                    return (
-                        I64,
-                        self.current_builder.load(
-                            self._cursor_slot(node[1][1])
-                        ),
-                    )
-                obj_tv = self._borrowed_field_str(node[1], node[2])
-                if obj_tv is None:
-                    obj_tv = self._convert_node(node[1])
-                if obj_tv[0] in RAWDICT_KINDS:
-                    # machine-word lookup; rawdict_get panics KeyError
-                    # on a missing key (Python raises, Rust panics).
-                    # The key node goes in unevaluated so slice keys
-                    # become views without materializing
-                    val_bits = self._rawdict_key_call(
-                        obj_tv[0], obj_tv[1], node[2],
-                        self.rawdict_get, self.rawdict_str_get,
-                    (),
-                    )
-                    value_kind = RAWDICT_KINDS[obj_tv[0]]
-                    if value_kind == F64:
-                        val_bits = self.current_builder.bitcast(
-                            val_bits, ir.DoubleType()
-                        )
-                    return (value_kind, val_bits)
-                if (
-                    isinstance(node[2], (list, tuple))
-                    and len(node[2]) >= 4
-                    and node[2][0] == "slice"
-                    and (obj_tv[0] == OBJ or obj_tv[0] is None)
-                ):
-                    # xs[lo:hi:step] on a dynamic container: the tag
-                    # dispatch helper (str twin keeps its fast path
-                    # above; rawstr/rawlist have their own)
-                    lower_node, upper_node, step_node = (
-                        node[2][1], node[2][2], node[2][3],
-                    )
-                    i64t = ir.IntType(64)
-                    has_lo = ir.const_(ir.IntType(1), lower_node is not None)
-                    has_hi = ir.const_(ir.IntType(1), upper_node is not None)
-                    lo = (
-                        ir.const_(i64t, 0)
-                        if lower_node is None
-                        else self._coerce(
-                            self._convert_node(lower_node), I64
-                        )[1]
-                    )
-                    hi = (
-                        ir.const_(i64t, 0)
-                        if upper_node is None
-                        else self._coerce(
-                            self._convert_node(upper_node), I64
-                        )[1]
-                    )
-                    step = (
-                        ir.const_(i64t, 1)
-                        if step_node is None
-                        else self._coerce(
-                            self._convert_node(step_node), I64
-                        )[1]
-                    )
-                    return (
-                        OBJ,
-                        self.current_builder.call(
-                            self.pyobj_slice_any,
-                            [self._box(obj_tv), lo, hi, step, has_lo, has_hi],
-                        ),
-                    )
-                if (
-                    isinstance(node[2], (list, tuple))
-                    and len(node[2]) >= 4
-                    and node[2][0] == "slice"
-                ):
-                    # a slice reached the typed paths (rawstr keeps its
-                    # dedicated emitter below; rawlist boxes through the
-                    # generic helper). Converting the slice node itself
-                    # is meaningless - it is structure, not a value
-                    if obj_tv[0] in RAWLIST_KINDS:
-                        _sl = node[2]
-                        _i64t = ir.IntType(64)
-                        _lo_n, _hi_n, _st_n = _sl[1], _sl[2], _sl[3]
-                        _has_lo = ir.const_(
-                            ir.IntType(1), _lo_n is not None
-                        )
-                        _has_hi = ir.const_(
-                            ir.IntType(1), _hi_n is not None
-                        )
-                        _lo = (
-                            ir.const_(_i64t, 0)
-                            if _lo_n is None
-                            else self._coerce(
-                                self._convert_node(_lo_n), I64
-                            )[1]
-                        )
-                        _hi = (
-                            ir.const_(_i64t, 0)
-                            if _hi_n is None
-                            else self._coerce(
-                                self._convert_node(_hi_n), I64
-                            )[1]
-                        )
-                        _st = (
-                            ir.const_(_i64t, 1)
-                            if _st_n is None
-                            else self._coerce(
-                                self._convert_node(_st_n), I64
-                            )[1]
-                        )
-                        return (
-                            OBJ,
-                            self.current_builder.call(
-                                self.pyobj_slice_any,
-                                [
-                                    self._box(obj_tv), _lo, _hi, _st,
-                                    _has_lo, _has_hi,
-                                ],
-                            ),
-                        )
-                    if obj_tv[0] != RAWSTR:
-                        raise NotImplementedError(
-                            "slice on kind '" + str(obj_tv[0])
-                            + "' is not supported"
-                        )
-                    # RAWSTR: fall through, the dedicated slice path
-                    # below reads node[2] itself
-                    key_tv = (I64, ir.const_(ir.IntType(64), 0))
-                else:
-                    key_tv = self._convert_node(node[2])
-                if obj_tv[0] == RAWLIST_S:
-                    # element read hands the caller its own copy (slots
-                    # are shared; the reading slot owns the copy)
-                    index = self._coerce(key_tv, I64)[1]
-                    return (
-                        RAWSTR,
-                        self.current_builder.call(
-                            self.rawlist_str_get, [obj_tv[1], index]
-                        ),
-                    )
-                if obj_tv[0] in RAWLIST_KINDS:
-                    elem_kind = RAWLIST_KINDS[obj_tv[0]]
-                    index = self._coerce(key_tv, I64)[1]
-                    # inline load: negative indices adjust by +length
-                    # (Python semantics), out-of-range still panics via
-                    # the bounds branch below. No function call keeps the
-                    # surrounding loop vectorizable.
-                    struct_ptr = self.current_builder.bitcast(
-                        obj_tv[1], ir.PointerType(self.raw_list_struct_type)
-                    )
-                    length = self.current_builder.load(
-                        self.current_builder.gep(
-                            struct_ptr,
-                            [
-                                ir.const_(ir.IntType(32), 0),
-                                ir.const_(ir.IntType(32), 0),
-                            ],
-                        )
-                    )
-                    items = self.current_builder.load(
-                        self.current_builder.gep(
-                            struct_ptr,
-                            [
-                                ir.const_(ir.IntType(32), 0),
-                                ir.const_(ir.IntType(32), 2),
-                            ],
-                        )
-                    )
-                    is_negative = self.current_builder.icmp_signed(
-                        "<", index, ir.const_(ir.IntType(64), 0)
-                    )
-                    adjusted = self.current_builder.add(index, length)
-                    index_eff = self.current_builder.select(
-                        is_negative, adjusted, index
-                    )
-                    in_range = self.current_builder.icmp_signed(
-                        "<", index_eff, length
-                    )
-                    if self.checks:
-                        ok_block = self.current_function.append_basic_block("get_ok")
-                        err_block = self.current_function.append_basic_block("get_err")
-                        self.current_builder.cbranch(in_range, ok_block, err_block)
-
-                        self.current_builder.position_at_end(err_block)
-                        msg = self._create_global_string_with_builder(
-                            "IndexError: list index out of range",
-                            self.current_builder,
-                        )
-                        self._emit_panic(self.current_builder, msg)
-
-                        self.current_builder.position_at_end(ok_block)
-                    items_i64 = self.current_builder.bitcast(
-                        items, ir.PointerType(ir.IntType(64))
-                    )
-                    element = self.current_builder.load(
-                        self.current_builder.gep(items_i64, [index_eff])
-                    )
-                    if elem_kind == F64:
-                        element = self.current_builder.bitcast(
-                            element, ir.DoubleType()
-                        )
-                    return (elem_kind, element)
-                if obj_tv[0] == RAWSTR:
-                    key_node = node[2]
-                    if (
-                        isinstance(key_node, list)
-                        and len(key_node) >= 4
-                        and key_node[0] == "slice"
-                    ):
-                        lower_node, upper_node, step_node = (
-                            key_node[1],
-                            key_node[2],
-                            key_node[3],
-                        )
-                        if step_node is not None:
-                            is_one = (
-                                isinstance(step_node, list)
-                                and len(step_node) >= 2
-                                and step_node[0] == "const"
-                                and step_node[1] == 1
-                            )
-                            if not is_one:
-                                # stepped str slices: box the string and
-                                # use the PyObject slice helper (it owns
-                                # both step directions and the bounds
-                                # defaults)
-                                i64t = ir.IntType(64)
-                                has_lo = ir.const_(
-                                    ir.IntType(1), lower_node is not None
-                                )
-                                has_hi = ir.const_(
-                                    ir.IntType(1), upper_node is not None
-                                )
-                                lo = (
-                                    ir.const_(i64t, 0)
-                                    if lower_node is None
-                                    else self._coerce(
-                                        self._convert_node(lower_node), I64
-                                    )[1]
-                                )
-                                hi = (
-                                    ir.const_(i64t, 0)
-                                    if upper_node is None
-                                    else self._coerce(
-                                        self._convert_node(upper_node), I64
-                                    )[1]
-                                )
-                                step = self._coerce(
-                                    self._convert_node(step_node), I64
-                                )[1]
-                                boxed = self._box(obj_tv)
-                                return (
-                                    OBJ,
-                                    self.current_builder.call(
-                                        self.pyobj_str_slice,
-                                        [boxed, lo, hi, step, has_lo, has_hi],
-                                    ),
-                                )
-                        struct_ptr = self.current_builder.bitcast(
-                            obj_tv[1],
-                            ir.PointerType(self.rawstr_struct_type),
-                        )
-                        str_len = self.current_builder.load(
-                            self.current_builder.gep(
-                                struct_ptr,
-                                [
-                                    ir.const_(ir.IntType(32), 0),
-                                    ir.const_(ir.IntType(32), 3),
-                                ],
-                            )
-                        )
-                        lo = (
-                            ir.const_(ir.IntType(64), 0)
-                            if lower_node is None
-                            else self._coerce(
-                                self._convert_node(lower_node), I64
-                            )[1]
-                        )
-                        hi = (
-                            str_len
-                            if upper_node is None
-                            else self._coerce(
-                                self._convert_node(upper_node), I64
-                            )[1]
-                        )
-                        return (
-                            RAWSTR,
-                            self.current_builder.call(
-                                self.rawstr_slice, [obj_tv[1], lo, hi]
-                            ),
-                        )
-                    index = self._coerce(key_tv, I64)[1]
-                    return self._emit_char_view(obj_tv[1], index)
-                obj = self._box(obj_tv)
-                key = self._box(key_tv)
-                return (
-                    OBJ,
-                    self.current_builder.call(self.pyobj_subscript, [obj, key]),
-                )
-            return (OBJ, null_obj)
+            return self._conv_subscript(node, op, null_obj)
 
         if op == "subscript_assign":
-            if len(node) >= 4:
-                if (
-                    isinstance(node[1], (list, tuple))
-                    and len(node[1]) >= 2
-                    and node[1][0] == "name"
-                    and node[1][1] in self.cursor_kinds
-                    and isinstance(node[2], (list, tuple))
-                    and node[2][:2] == ["const", 0]
-                ):
-                    value = self._coerce(
-                        self._convert_node(node[3]), I64
-                    )
-                    self.current_builder.store(
-                        value[1], self._cursor_slot(node[1][1])
-                    )
-                    return (OBJ, null_obj)
-                obj_tv = self._convert_node(node[1])
-                if obj_tv[0] == RAWLIST_S:
-                    # copy-on-write into the slot (old element freed)
-                    index = self._coerce(self._convert_node(node[2]), I64)[1]
-                    value = self._coerce(self._convert_node(node[3]), RAWSTR)
-                    self.current_builder.call(
-                        self.rawlist_str_set,
-                        [obj_tv[1], index, value[1]],
-                    )
-                    return (OBJ, null_obj)
-                if obj_tv[0] in RAWLIST_KINDS:
-                    elem_kind = RAWLIST_KINDS[obj_tv[0]]
-                    index = self._coerce(self._convert_node(node[2]), I64)[1]
-                    value = self._coerce(self._convert_node(node[3]), elem_kind)
-                    # inline store: negative indices adjust by +length
-                    # (Python semantics); the bounds branch is emitted
-                    # only under SILU_CHECKS. No call keeps the
-                    # surrounding loop vectorizable (spectral-norm
-                    # writes out[i] in its inner loop).
-                    struct_ptr = self.current_builder.bitcast(
-                        obj_tv[1], ir.PointerType(self.raw_list_struct_type)
-                    )
-                    length = self.current_builder.load(
-                        self.current_builder.gep(
-                            struct_ptr,
-                            [
-                                ir.const_(ir.IntType(32), 0),
-                                ir.const_(ir.IntType(32), 0),
-                            ],
-                        )
-                    )
-                    items = self.current_builder.load(
-                        self.current_builder.gep(
-                            struct_ptr,
-                            [
-                                ir.const_(ir.IntType(32), 0),
-                                ir.const_(ir.IntType(32), 2),
-                            ],
-                        )
-                    )
-                    is_negative = self.current_builder.icmp_signed(
-                        "<", index, ir.const_(ir.IntType(64), 0)
-                    )
-                    adjusted = self.current_builder.add(index, length)
-                    index_eff = self.current_builder.select(
-                        is_negative, adjusted, index
-                    )
-                    if self.checks:
-                        in_range = self.current_builder.icmp_signed(
-                            "<", index_eff, length
-                        )
-                        ok_block = self.current_function.append_basic_block("set_ok")
-                        err_block = self.current_function.append_basic_block("set_err")
-                        self.current_builder.cbranch(in_range, ok_block, err_block)
-
-                        self.current_builder.position_at_end(err_block)
-                        msg = self._create_global_string_with_builder(
-                            "IndexError: list assignment index out of range",
-                            self.current_builder,
-                        )
-                        self._emit_panic(self.current_builder, msg)
-
-                        self.current_builder.position_at_end(ok_block)
-                    items_i64 = self.current_builder.bitcast(
-                        items, ir.PointerType(ir.IntType(64))
-                    )
-                    elem_bits = value[1]
-                    if elem_kind == F64:
-                        elem_bits = self.current_builder.bitcast(
-                            value[1], ir.IntType(64)
-                        )
-                    self.current_builder.store(
-                        elem_bits,
-                        self.current_builder.gep(items_i64, [index_eff]),
-                    )
-                    return (OBJ, null_obj)
-                if obj_tv[0] in RAWDICT_KINDS:
-                    value_kind = RAWDICT_KINDS[obj_tv[0]]
-
-                    # d[k] = d.get(k, default) <op> rhs - the counting
-                    # idiom. One probe via entry() (Rust's
-                    # entry().or_insert) instead of get+set's two.
-                    value_node = node[3]
-                    if (
-                        isinstance(value_node, list)
-                        and len(value_node) >= 3
-                        and isinstance(value_node[1], list)
-                        and len(value_node[1]) >= 3
-                        and value_node[1][0] == "call"
-                        and isinstance(value_node[1][1], list)
-                        and len(value_node[1][1]) >= 3
-                        and value_node[1][1][0] == "attribute"
-                        and value_node[1][1][1] == node[1]
-                        and value_node[1][1][2] == "get"
-                        and isinstance(value_node[1][2], (list, tuple))
-                        and len(value_node[1][2]) == 2
-                        and value_node[1][2][0] == node[2]
-                    ):
-                        binop = value_node[0]
-                        default_bits_tv = self._coerce(
-                            self._convert_node(value_node[1][2][1]),
-                            value_kind,
-                        )
-                        default_bits = default_bits_tv[1]
-                        if value_kind == F64:
-                            default_bits = self.current_builder.bitcast(
-                                default_bits, ir.IntType(64)
-                            )
-                        right_tv = self._convert_node(value_node[2])
-                        slot = self._rawdict_key_call(
-                            obj_tv[0], obj_tv[1], node[2],
-                            self.rawdict_int_entry, self.rawdict_str_entry,
-                            (default_bits,),
-                        )
-                        slot_i64 = self.current_builder.bitcast(
-                            slot, ir.PointerType(ir.IntType(64))
-                        )
-                        current_bits = self.current_builder.load(slot_i64)
-                        if value_kind == F64:
-                            current_tv = (
-                                F64,
-                                self.current_builder.bitcast(
-                                    current_bits, ir.DoubleType()
-                                ),
-                            )
-                        else:
-                            current_tv = (I64, current_bits)
-                        result = self._typed_binop(binop, current_tv, right_tv)
-                        coerced = self._coerce(result, value_kind)
-                        store_bits = coerced[1]
-                        if value_kind == F64:
-                            store_bits = self.current_builder.bitcast(
-                                store_bits, ir.IntType(64)
-                            )
-                        self.current_builder.store(store_bits, slot_i64)
-                        return (OBJ, null_obj)
-
-                    value = self._coerce(self._convert_node(node[3]), value_kind)
-                    val_bits = value[1]
-                    if value_kind == F64:
-                        val_bits = self.current_builder.bitcast(
-                            value[1], ir.IntType(64)
-                        )
-                    self._rawdict_key_call(
-                        obj_tv[0], obj_tv[1], node[2],
-                        self.rawdict_set, self.rawdict_str_set,
-                        (val_bits,),
-                    )
-                    return (OBJ, null_obj)
-                obj = self._box(obj_tv)
-                key = self._box(self._convert_node(node[2]))
-                value = self._box(self._convert_node(node[3]))
-                self.current_builder.call(self.pyobj_subscript_set, [obj, key, value])
-            return (OBJ, null_obj)
+            return self._conv_subscript_assign(node, op, null_obj)
 
         if op == "delete":
             # del obj[key]: raw dicts tombstone natively; everything else
@@ -9775,104 +8744,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return (OBJ, null_obj)
 
         if op in ("list_comp", "dict_comp", "set_comp") and len(node) >= 3:
-            # [elt for t in iter (if c)*] / {k: v ...} / {elt ...}:
-            # desugar to build-collect loops (same shape as the
-            # enumerate desugar). node[2] is a list of generators,
-            # each [target, iter_node, conds]
-            b = self.current_builder
-            func = self.current_function
-            if op == "list_comp":
-                out = b.call(self.create_list, [], "")
-            elif op == "set_comp":
-                out = b.call(self.create_set, [], "")
-            else:
-                out = b.call(self.create_dict, [], "")
-            for gen in node[2]:
-                target, iter_node, conds = gen[0], gen[1], gen[2] or ()
-                is_range = (
-                    isinstance(iter_node, (list, tuple))
-                    and len(iter_node) >= 3
-                    and iter_node[0] == "call"
-                    and isinstance(iter_node[1], (list, tuple))
-                    and len(iter_node[1]) >= 2
-                    and iter_node[1][0] == "name"
-                    and iter_node[1][1] == "range"
-                )
-                idx_ptr = b.alloca(ir.IntType(64), None, "lc_i")
-                b.store(ir.const_(ir.IntType(64), 0), idx_ptr)
-                if is_range:
-                    # range boxes as a plain int (its count): iterate
-                    # the index directly, the element IS the index
-                    rargs = iter_node[2] if len(iter_node) > 2 else []
-                    stop_tv = self._convert_node(
-                        rargs[-1] if rargs else ["const", 0]
-                    )
-                    total = self._coerce(stop_tv, I64)[1]
-                    keys = None
-                else:
-                    boxed_iter = self._box(self._convert_node(iter_node))
-                    keys = b.call(self.pyobj_iter_keys, [boxed_iter])
-                    total = b.call(self.list_length, [keys])
-                cond_blk = func.append_basic_block("lc_cond")
-                body_blk = func.append_basic_block("lc_body")
-                done_blk = func.append_basic_block("lc_done")
-                b.branch(cond_blk)
-                b.position_at_end(cond_blk)
-                cur = b.load(idx_ptr)
-                b.cbranch(
-                    b.icmp_signed("<", cur, total), body_blk, done_blk
-                )
-                b.position_at_end(body_blk)
-                if keys is not None:
-                    elem = b.call(
-                        self.list_get,
-                        [keys, b.call(self.create_int, [cur])],
-                    )
-                else:
-                    elem = b.call(self.create_int, [cur])
-                # bind the loop target (a plain name per the generator)
-                if (
-                    isinstance(target, (list, tuple))
-                    and len(target) >= 2
-                    and target[0] == "name"
-                ):
-                    tname = target[1]
-                    self._declare_var(tname, OBJ)
-                    b.store(elem, self.variables[tname])
-                # evaluate conditions; any False skips the append
-                keep_blk = b.block
-                skip_blk = func.append_basic_block("lc_skip")
-                ok_blk = func.append_basic_block("lc_emit")
-                for cond_node in conds:
-                    cblk = self._convert_node(cond_node)
-                    self.current_builder.cbranch(
-                        self._to_i1_cond(cblk), ok_blk, skip_blk
-                    )
-                if not keep_blk.is_terminated and self.current_builder.block is keep_blk:
-                    self.current_builder.branch(ok_blk)
-                b.position_at_end(ok_blk)
-                if op == "dict_comp":
-                    key_node, value_node = node[1]
-                    key_tv = self._convert_node(key_node)
-                    val_tv = self._convert_node(value_node)
-                    b.call(
-                        self.pyobj_subscript_set,
-                        [out, self._box(key_tv), self._box(val_tv)],
-                    )
-                elif op == "set_comp":
-                    elem_tv = self._convert_node(node[1])
-                    b.call(
-                        self.pyobj_set_add, [out, self._box(elem_tv)]
-                    )
-                else:
-                    elem_val = self._convert_node(node[1])
-                    b.call(self.list_append, [out, self._box(elem_val)])
-                b.branch(skip_blk)
-                b.position_at_end(skip_blk)
-                b.store(b.add(b.load(idx_ptr), ir.const_(ir.IntType(64), 1)), idx_ptr)
-                b.branch(cond_blk)
-                b.position_at_end(done_blk)
-            return (OBJ, out)
+            return self._conv_comprehension(node, op)
 
         if op == "chained_compare" and len(node) >= 2:
             # a <= b < c: pairwise compares over one shared middle
@@ -9939,6 +8811,1149 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             "unsupported IR node: '" + str(op) + "' "
             "(the IR generator emits nodes every backend must handle)"
         )
+
+    def _conv_assign(self, node, op, null_obj):
+        target = node[1]
+        value_node = node[2]
+        if op == "ann_assign" and value_node is None:
+            return (OBJ, null_obj)
+        if (
+            isinstance(target, (list, tuple))
+            and len(target) >= 3
+            and target[0] == "attribute"
+        ):
+            # obj.attr = value on a class instance
+            if self._class_of_node(target[1]) is None:
+                recv_tv = self._convert_node(target[1])
+                if recv_tv[0] == OBJ:
+                    value_tv = self._convert_node(value_node)
+                    self._emit_dyn_attr_write(
+                        recv_tv, target[2], value_tv
+                    )
+                    return (OBJ, null_obj)
+                raise NotImplementedError(
+                    "attribute assignment is only supported on class "
+                    "instances"
+                )
+            field_kind = self._field_kind_of(target[1], target[2])
+            self._emit_field_write(
+                target[1],
+                target[2],
+                self._convert_field_value(field_kind, value_node),
+            )
+            return (OBJ, null_obj)
+        if isinstance(target, str):
+            if (
+                isinstance(value_node, list)
+                and len(value_node) == 2
+                and value_node[0] == "funcref"
+            ):
+                mangled = value_node[1]
+                if mangled not in self.functions:
+                    raise NameError(
+                        f"funcref to unknown function '{mangled}'"
+                    )
+                self._declare_var(target, OBJ)
+                self._funcref_var[target] = mangled
+                return (OBJ, null_obj)
+            # t2 = self.toks[i] (a list[Token] element arrives as
+            # an i64 word): keep the CLASS so t2.kind reads the
+            # field directly instead of a dynamic getattr on a
+            # misboxed int (the historical "local roundtrip"
+            # crash - the inline form always worked)
+            inst_cls = self._class_of_node(value_node)
+            if (
+                inst_cls is not None
+                and isinstance(value_node, list)
+                and len(value_node) >= 3
+                and value_node[0] == "subscript"
+            ):
+                elem_tv = self._convert_node(value_node)
+                if elem_tv[0] == I64:
+                    # instance-list elements ride as i64 words;
+                    # keep the word, record the CLASS so every use
+                    # (field read, method call) converts exactly
+                    # like the inline form does
+                    self._var_class[target] = inst_cls
+                    self._declare_var(target, I64)
+                    self.current_builder.store(
+                        elem_tv[1], self.variables[target]
+                    )
+                    return (I64, elem_tv[1])
+            ctor_class = self._constructor_call_class(value_node)
+            if ctor_class is not None:
+                # st = JointState(1.0, 2.0) - optionally annotated
+                if op == "ann_assign":
+                    ann = node[3] if len(node) > 3 else None
+                    if (
+                        isinstance(ann, list)
+                        and len(ann) >= 2
+                        and ann[0] == "name"
+                        and ann[1] in self._class_layouts
+                        and ann[1] != ctor_class
+                    ):
+                        raise TypeError(
+                            f"cannot assign {ctor_class}() to "
+                            f"'{ann[1]}' variable '{target}'"
+                        )
+                inst = self._emit_construct(
+                    ctor_class,
+                    value_node[2] if len(value_node) > 2 else [],
+                    value_node[3] if len(value_node) > 3 else [],
+                )
+                self._var_class[target] = ctor_class
+                self._declare_var(target, INSTANCE)
+                self.current_builder.store(inst[1], self.variables[target])
+                return inst
+            if (
+                isinstance(value_node, list)
+                and len(value_node) >= 2
+                and value_node[0] == "name"
+                and _is_inst(self.var_kinds.get(value_node[1]))
+            ):
+                # a = b: instances alias (Python reference semantics)
+                value = self._convert_node(value_node)
+                src_cls = _kind_cls(self.var_kinds.get(value_node[1]))
+                if src_cls:
+                    self._var_class[target] = src_cls
+                self._declare_var(target, INSTANCE)
+                self.current_builder.store(value[1], self.variables[target])
+                return value
+            if (
+                isinstance(value_node, list)
+                and len(value_node) >= 3
+                and value_node[0] == "attribute"
+                and self._class_of_node(value_node) is not None
+            ):
+                # a = b.inner: aliasing an instance field
+                value = self._convert_node(value_node)
+                self._var_class[target] = self._class_of_node(value_node)
+                self._declare_var(target, INSTANCE)
+                self.current_builder.store(value[1], self.variables[target])
+                return value
+        if op == "ann_assign":
+            annotation_kind = self._annotation_kind(node[3]) or OBJ
+            # a class-annotated declaration binds the name to its
+            # class even before the value is looked at
+            ann = node[3] if len(node) > 3 else None
+            if (
+                annotation_kind == INSTANCE
+                and isinstance(target, str)
+                and isinstance(ann, list)
+                and len(ann) >= 2
+                and ann[0] == "name"
+            ):
+                self._var_class[target] = ann[1]
+            if (
+                annotation_kind == RAWLIST_I
+                and isinstance(target, str)
+                and isinstance(ann, list)
+                and len(ann) >= 3
+                and ann[0] == "subscript"
+                and isinstance(ann[2], list)
+                and len(ann[2]) >= 2
+                and ann[2][0] == "name"
+                and ann[2][1] in self._class_layouts
+            ):
+                self._list_elem_class[target] = ann[2][1]
+        else:
+            annotation_kind = self.var_kinds.get(target)
+        if annotation_kind is None and target not in self.var_kinds:
+            # unannotated rebinding: raw storage only when the
+            # pre-pass proved every assignment yields one same kind
+            annotation_kind = self._inferred_kinds.get(target) or OBJ
+        if (
+            isinstance(target, str)
+            and isinstance(value_node, list)
+            and len(value_node) >= 3
+            and value_node[0] == "subscript"
+            and isinstance(value_node[1], list)
+            and len(value_node[1]) >= 2
+            and value_node[1][0] == "name"
+            and self.var_kinds.get(value_node[1][1]) == RAWSTR
+            and not (
+                isinstance(value_node[2], list)
+                and len(value_node[2]) >= 4
+                and value_node[2][0] == "slice"
+            )
+        ):
+            # ch = s[i]: a materialized copy. (A borrowed char-view
+            # alias optimization lived here and is disabled: its
+            # kill-site placement interacted badly with loop
+            # back-edges and expression coercions. Revisit with a
+            # proper lifetime model - a copy per char is correct.)
+            str_name = value_node[1][1]
+            str_tv = self._load_var(str_name)
+            index_frozen = self._coerce(
+                self._convert_node(value_node[2]), I64
+            )[1]
+            coerced = self._coerce(
+                self._emit_char_view(str_tv[1], index_frozen), RAWSTR
+            )
+            self._declare_var(target, RAWSTR)
+            self._store_rawstr(target, coerced[1])
+            return (RAWSTR, None)
+        if (
+            annotation_kind == RAWSTR
+            and isinstance(target, str)
+            and isinstance(value_node, list)
+            and len(value_node) >= 3
+            and value_node[0] == "+"
+            and isinstance(value_node[1], list)
+            and value_node[1][0] == "name"
+            and value_node[1][1] == target
+        ):
+            # s = s + rhs: the slot owns its buffer and the old value
+            # dies here, so append in place (amortized O(1)) instead
+            # of a fresh quadratic copy. A rhs naming s itself goes
+            # through rawstr_concat: append's realloc could move the
+            # buffer out from under its own source.
+            data_ptr, byte_len, temp = self._rawstr_append_operand(value_node[2])
+            slot_value = self._load_var(target)[1]
+            self.current_builder.call(
+                self.rawstr_append, [slot_value, data_ptr, byte_len]
+            )
+            if temp is not None:
+                self.current_builder.call(self.rawstr_free, [temp])
+            self._declare_var(target, RAWSTR)
+            return (RAWSTR, slot_value)
+        if (
+            annotation_kind in RAWLIST_KINDS
+            and isinstance(value_node, list)
+            and len(value_node) >= 3
+            and value_node[0] == "*"
+            and isinstance(value_node[1], list)
+            and value_node[1][0] == "list"
+        ):
+            # [init] * count into a rawlist variable: constant counts
+            # expand at compile time, runtime counts use a fill loop
+            elem_nodes = value_node[1][1] if len(value_node[1]) > 1 else []
+            count_tv = self._convert_node(value_node[2])
+            count_const = _extract_i64_const(count_tv[1])
+            if count_const is not None:
+                expanded: list = []
+                for _ in range(count_const):
+                    for en in elem_nodes:
+                        expanded.append(en)
+                raw = self._build_raw_list(expanded, annotation_kind)
+                self._declare_var(target, annotation_kind)
+                self.current_builder.store(raw[1], self.variables[target])
+                return raw
+            # runtime count: create the list then push in a loop
+            raw = self.current_builder.call(
+                self.rawlist_new, [ir.const_(ir.IntType(64), 8)]
+            )
+            count_i64 = self._coerce(count_tv, I64)[1]
+            raw_ptr = self.current_builder.alloca(
+                ir.PointerType(ir.IntType(8)), None, 'fill_list'
+            )
+            self.current_builder.store(raw, raw_ptr)
+            fill_idx = self.current_builder.alloca(
+                ir.IntType(64), None, 'fill_i'
+            )
+            self.current_builder.store(ir.const_(ir.IntType(64), 0), fill_idx)
+            fill_cond = self.current_function.append_basic_block("fill_cond")
+            fill_body = self.current_function.append_basic_block("fill_body")
+            fill_end = self.current_function.append_basic_block("fill_end")
+            self.current_builder.branch(fill_cond)
+
+            self.current_builder.position_at_end(fill_cond)
+            fill_i = self.current_builder.load(fill_idx)
+            fill_more = self.current_builder.icmp_signed("<", fill_i, count_i64)
+            self.current_builder.cbranch(fill_more, fill_body, fill_end)
+
+            self.current_builder.position_at_end(fill_body)
+            for element_node in elem_nodes:
+                elem = self._coerce(
+                    self._convert_node(element_node), RAWLIST_KINDS[annotation_kind]
+                )
+                elem_bits = elem[1]
+                if RAWLIST_KINDS[annotation_kind] == F64:
+                    elem_bits = self.current_builder.bitcast(
+                        elem[1], ir.IntType(64)
+                    )
+                self.current_builder.call(
+                    self.rawlist_push,
+                    [
+                        self.current_builder.load(raw_ptr),
+                        elem_bits,
+                    ],
+                )
+            self.current_builder.store(
+                self.current_builder.add(fill_i, ir.const_(ir.IntType(64), 1)),
+                fill_idx,
+            )
+            self.current_builder.branch(fill_cond)
+
+            self.current_builder.position_at_end(fill_end)
+            self._declare_var(target, annotation_kind)
+            self.current_builder.store(raw, self.variables[target])
+            return (annotation_kind, raw)
+        if (
+            annotation_kind in RAWLIST_KINDS
+            and isinstance(value_node, list)
+            and len(value_node) >= 1
+            and value_node[0] == "list"
+        ):
+            raw = self._build_raw_list(value_node[1], annotation_kind)
+            self._declare_var(target, annotation_kind)
+            self.current_builder.store(raw[1], self.variables[target])
+            return raw
+        if (
+            annotation_kind in RAWDICT_KINDS
+            and isinstance(value_node, list)
+            and len(value_node) >= 1
+            and value_node[0] == "dict"
+        ):
+            raw_ptr = self.current_builder.call(self.rawdict_new, [])
+            value_kind = RAWDICT_KINDS[annotation_kind]
+            for pair_node in value_node[1]:
+                val_tv = self._coerce(
+                    self._convert_node(pair_node[1]), value_kind
+                )
+                val_bits = val_tv[1]
+                if value_kind == F64:
+                    val_bits = self.current_builder.bitcast(
+                        val_tv[1], ir.IntType(64)
+                    )
+                self._rawdict_key_call(
+                    annotation_kind, raw_ptr,
+                    pair_node[0],
+                    self.rawdict_set, self.rawdict_str_set,
+                    (val_bits,),
+                )
+            self._declare_var(target, annotation_kind)
+            self.current_builder.store(raw_ptr, self.variables[target])
+            return (annotation_kind, raw_ptr)
+        value = self._convert_node(value_node)
+        if isinstance(target, str) and value[1] is not None:
+            if _is_inst(value[0]) and annotation_kind in (None, OBJ):
+                # an unannotated name bound to an instance: declare it
+                # INSTANCE and record the class (t = self.cur())
+                ctor = self._constructor_call_class(value_node)
+                cls = (
+                    ctor
+                    or _kind_cls(value[0])
+                    or self._call_ret_class.get(
+                        value_node[1][1]
+                        if (
+                            isinstance(value_node, list)
+                            and len(value_node) >= 2
+                            and value_node[0] == "call"
+                            and isinstance(value_node[1], list)
+                            and len(value_node[1]) >= 2
+                            and value_node[1][0] == "name"
+                        )
+                        else ""
+                    )
+                    or self._class_of_node(value_node)
+                )
+                if cls:
+                    self._var_class[target] = cls
+                self._declare_var(target, INSTANCE)
+                self.current_builder.store(value[1], self.variables[target])
+                return value
+            if annotation_kind == RAWSTR and value[0] == RAWSTR:
+                # a name aliases another slot's buffer, so assigning
+                # it must copy (exclusive ownership); an expression
+                # result is a fresh temporary the slot can simply own
+                aliases_slot = (
+                    isinstance(value_node, list)
+                    and len(value_node) >= 2
+                    and value_node[0] == "name"
+                )
+                coerced = (
+                    self._coerce(value, RAWSTR) if aliases_slot else value
+                )
+                self._declare_var(target, RAWSTR)
+                # the slot owns its buffer exclusively: drop the old
+                # value on overwrite (Rust drop), no leak per reassign
+                self._store_rawstr(target, coerced[1])
+                return coerced
+            is_none_value = value_node is None or (
+                isinstance(value_node, list)
+                and len(value_node) >= 2
+                and value_node[:2] == ["const", None]
+            )
+            if is_none_value and annotation_kind in (
+                INSTANCE, RAWSTR
+            ) or is_none_value and annotation_kind in RAWLIST_KINDS or (
+                is_none_value and annotation_kind in RAWDICT_KINDS
+            ):
+                value = (
+                    annotation_kind,
+                    ir.const_(LLVM_KIND_TYPES[annotation_kind], None),
+                )
+                self._declare_var(target, annotation_kind)
+                self.current_builder.store(
+                    value[1], self.variables[target]
+                )
+                return value
+            coerced = self._coerce(value, annotation_kind)
+            self._declare_var(target, annotation_kind)
+            if annotation_kind == RAWSTR:
+                # the coerced value is a fresh owned temporary; drop
+                # the slot's previous buffer as we overwrite it
+                self._store_rawstr(target, coerced[1])
+            else:
+                self.current_builder.store(coerced[1], self.variables[target])
+            return coerced
+        return (OBJ, null_obj)
+
+    def _conv_aug_assign(self, node, op, null_obj):
+        bin_op = node[2][:-1]  # "+=" -> "+"
+        target_node = node[1]
+        right_tv = self._convert_node(node[3])
+
+        # subscript target: obj[i] <op>= value
+        if (
+            isinstance(target_node, list)
+            and len(target_node) >= 3
+            and target_node[0] == "subscript"
+        ):
+            if (
+                isinstance(target_node[1], (list, tuple))
+                and len(target_node[1]) >= 2
+                and target_node[1][0] == "name"
+                and target_node[1][1] in self.cursor_kinds
+                and isinstance(target_node[2], (list, tuple))
+                and target_node[2][:2] == ["const", 0]
+            ):
+                slot = self._cursor_slot(target_node[1][1])
+                current = (I64, self.current_builder.load(slot))
+                result = self._typed_binop(bin_op, current, right_tv)
+                coerced = self._coerce(result, I64)
+                self.current_builder.store(coerced[1], slot)
+                return coerced
+            obj_tv = self._convert_node(target_node[1])
+            key_tv = self._convert_node(target_node[2])
+            if obj_tv[0] == RAWLIST_S:
+                # l[i] <op>= v on str elements: copy-out, combine,
+                # set (which drops the old slot and copies in)
+                index = self._coerce(key_tv, I64)[1]
+                current = (
+                    RAWSTR,
+                    self.current_builder.call(
+                        self.rawlist_str_get, [obj_tv[1], index]
+                    ),
+                )
+                result = self._typed_binop("+", current, right_tv) if bin_op == "+" else None
+                if result is None:
+                    # unsupported op on strings: fallback via boxed
+                    current_boxed = self._box(current)
+                    result = self._typed_binop(
+                        bin_op, (OBJ, current_boxed), right_tv
+                    )
+                    coerced = self._coerce(result, RAWSTR)
+                else:
+                    coerced = self._coerce(result, RAWSTR)
+                self.current_builder.call(
+                    self.rawlist_str_set,
+                    [obj_tv[1], index, coerced[1]],
+                )
+                return coerced
+            if obj_tv[0] in RAWLIST_KINDS:
+                elem_kind = RAWLIST_KINDS[obj_tv[0]]
+                index = self._coerce(key_tv, I64)[1]
+                # read-modify-write on the raw element
+                items = self.current_builder.load(
+                    self.current_builder.gep(
+                        self.current_builder.bitcast(
+                            obj_tv[1],
+                            ir.PointerType(self.raw_list_struct_type),
+                        ),
+                        [
+                            ir.const_(ir.IntType(32), 0),
+                            ir.const_(ir.IntType(32), 2),
+                        ],
+                    )
+                )
+                items_i64 = self.current_builder.bitcast(
+                    items, ir.PointerType(ir.IntType(64))
+                )
+                slot = self.current_builder.gep(items_i64, [index])
+                current = (elem_kind, self.current_builder.load(slot))
+                if elem_kind == F64:
+                    current = (
+                        F64,
+                        self.current_builder.bitcast(current[1], ir.DoubleType()),
+                    )
+                result = self._typed_binop(bin_op, current, right_tv)
+                coerced = self._coerce(result, elem_kind)
+                stored = coerced[1]
+                if elem_kind == F64:
+                    stored = self.current_builder.bitcast(
+                        stored, ir.IntType(64)
+                    )
+                self.current_builder.store(stored, slot)
+                return coerced
+            if obj_tv[0] in RAWDICT_KINDS:
+                # d[k] <op>= v: lookup, combine, store back
+                value_kind = RAWDICT_KINDS[obj_tv[0]]
+                current_bits = self._rawdict_key_call_tv(
+                    obj_tv[0], obj_tv[1], key_tv,
+                    self.rawdict_get, self.rawdict_str_get,
+                (),
+                )
+                if value_kind == F64:
+                    current_tv = (
+                        F64,
+                        self.current_builder.bitcast(
+                            current_bits, ir.DoubleType()
+                        ),
+                    )
+                else:
+                    current_tv = (value_kind, current_bits)
+                result = self._typed_binop(bin_op, current_tv, right_tv)
+                coerced = self._coerce(result, value_kind)
+                stored_bits = coerced[1]
+                if value_kind == F64:
+                    stored_bits = self.current_builder.bitcast(
+                        coerced[1], ir.IntType(64)
+                    )
+                self._rawdict_key_call_tv(
+                    obj_tv[0], obj_tv[1], key_tv,
+                    self.rawdict_set, self.rawdict_str_set,
+                    (stored_bits,),
+                )
+                return coerced
+            obj = self._box(obj_tv)
+            key = self._box(key_tv)
+            current_obj = self.current_builder.call(
+                self.pyobj_subscript, [obj, key]
+            )
+            result = self._typed_binop(
+                bin_op, (OBJ, current_obj), right_tv
+            )
+            value = self._box(result)
+            self.current_builder.call(
+                self.pyobj_subscript_set, [obj, key, value]
+            )
+            return (OBJ, value)
+
+        # plain variable target
+        target_name = target_node[1]
+        if target_name not in self.var_kinds and target_name not in self.variables:
+            return (OBJ, null_obj)
+        if self.var_kinds.get(target_name) == RAWSTR:
+            # a BORROWED slot (parameter) must not grow in place -
+            # that would append into the CALLER's buffer; rebind
+            # via fresh concat (Python semantics), which also
+            # makes the slot owned from here on
+            if (
+                target_name in self._borrowed_strs
+                and target_name not in self._owned_strs
+            ):
+                current = self._load_var(target_name)
+                result = self._typed_binop("+", current, right_tv)
+                self._store_rawstr(target_name, result[1])
+                return result
+            # s += rhs grows the owned buffer in place; a rhs naming
+            # s itself must take the fresh-concat path (append's
+            # realloc would move the buffer under its own source)
+            if isinstance(node[3], list) and node[3][:2] == ["name", target_name]:
+                current = self._load_var(target_name)
+                result = self._typed_binop("+", current, right_tv)
+                # concat output is a fresh temporary: own it directly
+                # (a coerce here would copy it and leak the original)
+                self._store_rawstr(target_name, result[1])
+                return result
+            data_ptr, byte_len, temp = self._rawstr_append_operand(node[3])
+            slot_value = self._load_var(target_name)[1]
+            self.current_builder.call(
+                self.rawstr_append, [slot_value, data_ptr, byte_len]
+            )
+            if temp is not None:
+                self.current_builder.call(self.rawstr_free, [temp])
+            return (RAWSTR, slot_value)
+        current = self._load_var(target_name)
+        result = self._typed_binop(bin_op, current, right_tv)
+        coerced = self._coerce(result, self.var_kinds[target_name])
+        self.current_builder.store(coerced[1], self.variables[target_name])
+        return coerced
+
+    def _conv_subscript(self, node, op, null_obj):
+        if len(node) >= 3:
+            # scalar cursor read: pos[0] on a promoted name is a
+            # plain i64 load (the slot exists in this scope only)
+            if (
+                isinstance(node[1], (list, tuple))
+                and len(node[1]) >= 2
+                and node[1][0] == "name"
+                and node[1][1] in self.cursor_kinds
+                and isinstance(node[2], (list, tuple))
+                and node[2][:2] == ["const", 0]
+            ):
+                return (
+                    I64,
+                    self.current_builder.load(
+                        self._cursor_slot(node[1][1])
+                    ),
+                )
+            obj_tv = self._borrowed_field_str(node[1], node[2])
+            if obj_tv is None:
+                obj_tv = self._convert_node(node[1])
+            if obj_tv[0] in RAWDICT_KINDS:
+                # machine-word lookup; rawdict_get panics KeyError
+                # on a missing key (Python raises, Rust panics).
+                # The key node goes in unevaluated so slice keys
+                # become views without materializing
+                val_bits = self._rawdict_key_call(
+                    obj_tv[0], obj_tv[1], node[2],
+                    self.rawdict_get, self.rawdict_str_get,
+                (),
+                )
+                value_kind = RAWDICT_KINDS[obj_tv[0]]
+                if value_kind == F64:
+                    val_bits = self.current_builder.bitcast(
+                        val_bits, ir.DoubleType()
+                    )
+                return (value_kind, val_bits)
+            if (
+                isinstance(node[2], (list, tuple))
+                and len(node[2]) >= 4
+                and node[2][0] == "slice"
+                and (obj_tv[0] == OBJ or obj_tv[0] is None)
+            ):
+                # xs[lo:hi:step] on a dynamic container: the tag
+                # dispatch helper (str twin keeps its fast path
+                # above; rawstr/rawlist have their own)
+                lower_node, upper_node, step_node = (
+                    node[2][1], node[2][2], node[2][3],
+                )
+                i64t = ir.IntType(64)
+                has_lo = ir.const_(ir.IntType(1), lower_node is not None)
+                has_hi = ir.const_(ir.IntType(1), upper_node is not None)
+                lo = (
+                    ir.const_(i64t, 0)
+                    if lower_node is None
+                    else self._coerce(
+                        self._convert_node(lower_node), I64
+                    )[1]
+                )
+                hi = (
+                    ir.const_(i64t, 0)
+                    if upper_node is None
+                    else self._coerce(
+                        self._convert_node(upper_node), I64
+                    )[1]
+                )
+                step = (
+                    ir.const_(i64t, 1)
+                    if step_node is None
+                    else self._coerce(
+                        self._convert_node(step_node), I64
+                    )[1]
+                )
+                return (
+                    OBJ,
+                    self.current_builder.call(
+                        self.pyobj_slice_any,
+                        [self._box(obj_tv), lo, hi, step, has_lo, has_hi],
+                    ),
+                )
+            if (
+                isinstance(node[2], (list, tuple))
+                and len(node[2]) >= 4
+                and node[2][0] == "slice"
+            ):
+                # a slice reached the typed paths (rawstr keeps its
+                # dedicated emitter below; rawlist boxes through the
+                # generic helper). Converting the slice node itself
+                # is meaningless - it is structure, not a value
+                if obj_tv[0] in RAWLIST_KINDS:
+                    _sl = node[2]
+                    _i64t = ir.IntType(64)
+                    _lo_n, _hi_n, _st_n = _sl[1], _sl[2], _sl[3]
+                    _has_lo = ir.const_(
+                        ir.IntType(1), _lo_n is not None
+                    )
+                    _has_hi = ir.const_(
+                        ir.IntType(1), _hi_n is not None
+                    )
+                    _lo = (
+                        ir.const_(_i64t, 0)
+                        if _lo_n is None
+                        else self._coerce(
+                            self._convert_node(_lo_n), I64
+                        )[1]
+                    )
+                    _hi = (
+                        ir.const_(_i64t, 0)
+                        if _hi_n is None
+                        else self._coerce(
+                            self._convert_node(_hi_n), I64
+                        )[1]
+                    )
+                    _st = (
+                        ir.const_(_i64t, 1)
+                        if _st_n is None
+                        else self._coerce(
+                            self._convert_node(_st_n), I64
+                        )[1]
+                    )
+                    return (
+                        OBJ,
+                        self.current_builder.call(
+                            self.pyobj_slice_any,
+                            [
+                                self._box(obj_tv), _lo, _hi, _st,
+                                _has_lo, _has_hi,
+                            ],
+                        ),
+                    )
+                if obj_tv[0] != RAWSTR:
+                    raise NotImplementedError(
+                        "slice on kind '" + str(obj_tv[0])
+                        + "' is not supported"
+                    )
+                # RAWSTR: fall through, the dedicated slice path
+                # below reads node[2] itself
+                key_tv = (I64, ir.const_(ir.IntType(64), 0))
+            else:
+                key_tv = self._convert_node(node[2])
+            if obj_tv[0] == RAWLIST_S:
+                # element read hands the caller its own copy (slots
+                # are shared; the reading slot owns the copy)
+                index = self._coerce(key_tv, I64)[1]
+                return (
+                    RAWSTR,
+                    self.current_builder.call(
+                        self.rawlist_str_get, [obj_tv[1], index]
+                    ),
+                )
+            if obj_tv[0] in RAWLIST_KINDS:
+                elem_kind = RAWLIST_KINDS[obj_tv[0]]
+                index = self._coerce(key_tv, I64)[1]
+                # inline load: negative indices adjust by +length
+                # (Python semantics), out-of-range still panics via
+                # the bounds branch below. No function call keeps the
+                # surrounding loop vectorizable.
+                struct_ptr = self.current_builder.bitcast(
+                    obj_tv[1], ir.PointerType(self.raw_list_struct_type)
+                )
+                length = self.current_builder.load(
+                    self.current_builder.gep(
+                        struct_ptr,
+                        [
+                            ir.const_(ir.IntType(32), 0),
+                            ir.const_(ir.IntType(32), 0),
+                        ],
+                    )
+                )
+                items = self.current_builder.load(
+                    self.current_builder.gep(
+                        struct_ptr,
+                        [
+                            ir.const_(ir.IntType(32), 0),
+                            ir.const_(ir.IntType(32), 2),
+                        ],
+                    )
+                )
+                is_negative = self.current_builder.icmp_signed(
+                    "<", index, ir.const_(ir.IntType(64), 0)
+                )
+                adjusted = self.current_builder.add(index, length)
+                index_eff = self.current_builder.select(
+                    is_negative, adjusted, index
+                )
+                in_range = self.current_builder.icmp_signed(
+                    "<", index_eff, length
+                )
+                if self.checks:
+                    ok_block = self.current_function.append_basic_block("get_ok")
+                    err_block = self.current_function.append_basic_block("get_err")
+                    self.current_builder.cbranch(in_range, ok_block, err_block)
+
+                    self.current_builder.position_at_end(err_block)
+                    msg = self._create_global_string_with_builder(
+                        "IndexError: list index out of range",
+                        self.current_builder,
+                    )
+                    self._emit_panic(self.current_builder, msg)
+
+                    self.current_builder.position_at_end(ok_block)
+                items_i64 = self.current_builder.bitcast(
+                    items, ir.PointerType(ir.IntType(64))
+                )
+                element = self.current_builder.load(
+                    self.current_builder.gep(items_i64, [index_eff])
+                )
+                if elem_kind == F64:
+                    element = self.current_builder.bitcast(
+                        element, ir.DoubleType()
+                    )
+                return (elem_kind, element)
+            if obj_tv[0] == RAWSTR:
+                key_node = node[2]
+                if (
+                    isinstance(key_node, list)
+                    and len(key_node) >= 4
+                    and key_node[0] == "slice"
+                ):
+                    lower_node, upper_node, step_node = (
+                        key_node[1],
+                        key_node[2],
+                        key_node[3],
+                    )
+                    if step_node is not None:
+                        is_one = (
+                            isinstance(step_node, list)
+                            and len(step_node) >= 2
+                            and step_node[0] == "const"
+                            and step_node[1] == 1
+                        )
+                        if not is_one:
+                            # stepped str slices: box the string and
+                            # use the PyObject slice helper (it owns
+                            # both step directions and the bounds
+                            # defaults)
+                            i64t = ir.IntType(64)
+                            has_lo = ir.const_(
+                                ir.IntType(1), lower_node is not None
+                            )
+                            has_hi = ir.const_(
+                                ir.IntType(1), upper_node is not None
+                            )
+                            lo = (
+                                ir.const_(i64t, 0)
+                                if lower_node is None
+                                else self._coerce(
+                                    self._convert_node(lower_node), I64
+                                )[1]
+                            )
+                            hi = (
+                                ir.const_(i64t, 0)
+                                if upper_node is None
+                                else self._coerce(
+                                    self._convert_node(upper_node), I64
+                                )[1]
+                            )
+                            step = self._coerce(
+                                self._convert_node(step_node), I64
+                            )[1]
+                            boxed = self._box(obj_tv)
+                            return (
+                                OBJ,
+                                self.current_builder.call(
+                                    self.pyobj_str_slice,
+                                    [boxed, lo, hi, step, has_lo, has_hi],
+                                ),
+                            )
+                    struct_ptr = self.current_builder.bitcast(
+                        obj_tv[1],
+                        ir.PointerType(self.rawstr_struct_type),
+                    )
+                    str_len = self.current_builder.load(
+                        self.current_builder.gep(
+                            struct_ptr,
+                            [
+                                ir.const_(ir.IntType(32), 0),
+                                ir.const_(ir.IntType(32), 3),
+                            ],
+                        )
+                    )
+                    lo = (
+                        ir.const_(ir.IntType(64), 0)
+                        if lower_node is None
+                        else self._coerce(
+                            self._convert_node(lower_node), I64
+                        )[1]
+                    )
+                    hi = (
+                        str_len
+                        if upper_node is None
+                        else self._coerce(
+                            self._convert_node(upper_node), I64
+                        )[1]
+                    )
+                    return (
+                        RAWSTR,
+                        self.current_builder.call(
+                            self.rawstr_slice, [obj_tv[1], lo, hi]
+                        ),
+                    )
+                index = self._coerce(key_tv, I64)[1]
+                return self._emit_char_view(obj_tv[1], index)
+            obj = self._box(obj_tv)
+            key = self._box(key_tv)
+            return (
+                OBJ,
+                self.current_builder.call(self.pyobj_subscript, [obj, key]),
+            )
+        return (OBJ, null_obj)
+
+    def _conv_subscript_assign(self, node, op, null_obj):
+        if len(node) >= 4:
+            if (
+                isinstance(node[1], (list, tuple))
+                and len(node[1]) >= 2
+                and node[1][0] == "name"
+                and node[1][1] in self.cursor_kinds
+                and isinstance(node[2], (list, tuple))
+                and node[2][:2] == ["const", 0]
+            ):
+                value = self._coerce(
+                    self._convert_node(node[3]), I64
+                )
+                self.current_builder.store(
+                    value[1], self._cursor_slot(node[1][1])
+                )
+                return (OBJ, null_obj)
+            obj_tv = self._convert_node(node[1])
+            if obj_tv[0] == RAWLIST_S:
+                # copy-on-write into the slot (old element freed)
+                index = self._coerce(self._convert_node(node[2]), I64)[1]
+                value = self._coerce(self._convert_node(node[3]), RAWSTR)
+                self.current_builder.call(
+                    self.rawlist_str_set,
+                    [obj_tv[1], index, value[1]],
+                )
+                return (OBJ, null_obj)
+            if obj_tv[0] in RAWLIST_KINDS:
+                elem_kind = RAWLIST_KINDS[obj_tv[0]]
+                index = self._coerce(self._convert_node(node[2]), I64)[1]
+                value = self._coerce(self._convert_node(node[3]), elem_kind)
+                # inline store: negative indices adjust by +length
+                # (Python semantics); the bounds branch is emitted
+                # only under SILU_CHECKS. No call keeps the
+                # surrounding loop vectorizable (spectral-norm
+                # writes out[i] in its inner loop).
+                struct_ptr = self.current_builder.bitcast(
+                    obj_tv[1], ir.PointerType(self.raw_list_struct_type)
+                )
+                length = self.current_builder.load(
+                    self.current_builder.gep(
+                        struct_ptr,
+                        [
+                            ir.const_(ir.IntType(32), 0),
+                            ir.const_(ir.IntType(32), 0),
+                        ],
+                    )
+                )
+                items = self.current_builder.load(
+                    self.current_builder.gep(
+                        struct_ptr,
+                        [
+                            ir.const_(ir.IntType(32), 0),
+                            ir.const_(ir.IntType(32), 2),
+                        ],
+                    )
+                )
+                is_negative = self.current_builder.icmp_signed(
+                    "<", index, ir.const_(ir.IntType(64), 0)
+                )
+                adjusted = self.current_builder.add(index, length)
+                index_eff = self.current_builder.select(
+                    is_negative, adjusted, index
+                )
+                if self.checks:
+                    in_range = self.current_builder.icmp_signed(
+                        "<", index_eff, length
+                    )
+                    ok_block = self.current_function.append_basic_block("set_ok")
+                    err_block = self.current_function.append_basic_block("set_err")
+                    self.current_builder.cbranch(in_range, ok_block, err_block)
+
+                    self.current_builder.position_at_end(err_block)
+                    msg = self._create_global_string_with_builder(
+                        "IndexError: list assignment index out of range",
+                        self.current_builder,
+                    )
+                    self._emit_panic(self.current_builder, msg)
+
+                    self.current_builder.position_at_end(ok_block)
+                items_i64 = self.current_builder.bitcast(
+                    items, ir.PointerType(ir.IntType(64))
+                )
+                elem_bits = value[1]
+                if elem_kind == F64:
+                    elem_bits = self.current_builder.bitcast(
+                        value[1], ir.IntType(64)
+                    )
+                self.current_builder.store(
+                    elem_bits,
+                    self.current_builder.gep(items_i64, [index_eff]),
+                )
+                return (OBJ, null_obj)
+            if obj_tv[0] in RAWDICT_KINDS:
+                value_kind = RAWDICT_KINDS[obj_tv[0]]
+
+                # d[k] = d.get(k, default) <op> rhs - the counting
+                # idiom. One probe via entry() (Rust's
+                # entry().or_insert) instead of get+set's two.
+                value_node = node[3]
+                if (
+                    isinstance(value_node, list)
+                    and len(value_node) >= 3
+                    and isinstance(value_node[1], list)
+                    and len(value_node[1]) >= 3
+                    and value_node[1][0] == "call"
+                    and isinstance(value_node[1][1], list)
+                    and len(value_node[1][1]) >= 3
+                    and value_node[1][1][0] == "attribute"
+                    and value_node[1][1][1] == node[1]
+                    and value_node[1][1][2] == "get"
+                    and isinstance(value_node[1][2], (list, tuple))
+                    and len(value_node[1][2]) == 2
+                    and value_node[1][2][0] == node[2]
+                ):
+                    binop = value_node[0]
+                    default_bits_tv = self._coerce(
+                        self._convert_node(value_node[1][2][1]),
+                        value_kind,
+                    )
+                    default_bits = default_bits_tv[1]
+                    if value_kind == F64:
+                        default_bits = self.current_builder.bitcast(
+                            default_bits, ir.IntType(64)
+                        )
+                    right_tv = self._convert_node(value_node[2])
+                    slot = self._rawdict_key_call(
+                        obj_tv[0], obj_tv[1], node[2],
+                        self.rawdict_int_entry, self.rawdict_str_entry,
+                        (default_bits,),
+                    )
+                    slot_i64 = self.current_builder.bitcast(
+                        slot, ir.PointerType(ir.IntType(64))
+                    )
+                    current_bits = self.current_builder.load(slot_i64)
+                    if value_kind == F64:
+                        current_tv = (
+                            F64,
+                            self.current_builder.bitcast(
+                                current_bits, ir.DoubleType()
+                            ),
+                        )
+                    else:
+                        current_tv = (I64, current_bits)
+                    result = self._typed_binop(binop, current_tv, right_tv)
+                    coerced = self._coerce(result, value_kind)
+                    store_bits = coerced[1]
+                    if value_kind == F64:
+                        store_bits = self.current_builder.bitcast(
+                            store_bits, ir.IntType(64)
+                        )
+                    self.current_builder.store(store_bits, slot_i64)
+                    return (OBJ, null_obj)
+
+                value = self._coerce(self._convert_node(node[3]), value_kind)
+                val_bits = value[1]
+                if value_kind == F64:
+                    val_bits = self.current_builder.bitcast(
+                        value[1], ir.IntType(64)
+                    )
+                self._rawdict_key_call(
+                    obj_tv[0], obj_tv[1], node[2],
+                    self.rawdict_set, self.rawdict_str_set,
+                    (val_bits,),
+                )
+                return (OBJ, null_obj)
+            obj = self._box(obj_tv)
+            key = self._box(self._convert_node(node[2]))
+            value = self._box(self._convert_node(node[3]))
+            self.current_builder.call(self.pyobj_subscript_set, [obj, key, value])
+        return (OBJ, null_obj)
+
+    def _conv_comprehension(self, node, op):
+        # [elt for t in iter (if c)*] / {k: v ...} / {elt ...}:
+        # desugar to build-collect loops (same shape as the
+        # enumerate desugar). node[2] is a list of generators,
+        # each [target, iter_node, conds]
+        b = self.current_builder
+        func = self.current_function
+        if op == "list_comp":
+            out = b.call(self.create_list, [], "")
+        elif op == "set_comp":
+            out = b.call(self.create_set, [], "")
+        else:
+            out = b.call(self.create_dict, [], "")
+        for gen in node[2]:
+            target, iter_node, conds = gen[0], gen[1], gen[2] or ()
+            is_range = (
+                isinstance(iter_node, (list, tuple))
+                and len(iter_node) >= 3
+                and iter_node[0] == "call"
+                and isinstance(iter_node[1], (list, tuple))
+                and len(iter_node[1]) >= 2
+                and iter_node[1][0] == "name"
+                and iter_node[1][1] == "range"
+            )
+            idx_ptr = b.alloca(ir.IntType(64), None, "lc_i")
+            b.store(ir.const_(ir.IntType(64), 0), idx_ptr)
+            if is_range:
+                # range boxes as a plain int (its count): iterate
+                # the index directly, the element IS the index
+                rargs = iter_node[2] if len(iter_node) > 2 else []
+                stop_tv = self._convert_node(
+                    rargs[-1] if rargs else ["const", 0]
+                )
+                total = self._coerce(stop_tv, I64)[1]
+                keys = None
+            else:
+                boxed_iter = self._box(self._convert_node(iter_node))
+                keys = b.call(self.pyobj_iter_keys, [boxed_iter])
+                total = b.call(self.list_length, [keys])
+            cond_blk = func.append_basic_block("lc_cond")
+            body_blk = func.append_basic_block("lc_body")
+            done_blk = func.append_basic_block("lc_done")
+            b.branch(cond_blk)
+            b.position_at_end(cond_blk)
+            cur = b.load(idx_ptr)
+            b.cbranch(
+                b.icmp_signed("<", cur, total), body_blk, done_blk
+            )
+            b.position_at_end(body_blk)
+            if keys is not None:
+                elem = b.call(
+                    self.list_get,
+                    [keys, b.call(self.create_int, [cur])],
+                )
+            else:
+                elem = b.call(self.create_int, [cur])
+            # bind the loop target (a plain name per the generator)
+            if (
+                isinstance(target, (list, tuple))
+                and len(target) >= 2
+                and target[0] == "name"
+            ):
+                tname = target[1]
+                self._declare_var(tname, OBJ)
+                b.store(elem, self.variables[tname])
+            # evaluate conditions; any False skips the append
+            keep_blk = b.block
+            skip_blk = func.append_basic_block("lc_skip")
+            ok_blk = func.append_basic_block("lc_emit")
+            for cond_node in conds:
+                cblk = self._convert_node(cond_node)
+                self.current_builder.cbranch(
+                    self._to_i1_cond(cblk), ok_blk, skip_blk
+                )
+            if not keep_blk.is_terminated and self.current_builder.block is keep_blk:
+                self.current_builder.branch(ok_blk)
+            b.position_at_end(ok_blk)
+            if op == "dict_comp":
+                key_node, value_node = node[1]
+                key_tv = self._convert_node(key_node)
+                val_tv = self._convert_node(value_node)
+                b.call(
+                    self.pyobj_subscript_set,
+                    [out, self._box(key_tv), self._box(val_tv)],
+                )
+            elif op == "set_comp":
+                elem_tv = self._convert_node(node[1])
+                b.call(
+                    self.pyobj_set_add, [out, self._box(elem_tv)]
+                )
+            else:
+                elem_val = self._convert_node(node[1])
+                b.call(self.list_append, [out, self._box(elem_val)])
+            b.branch(skip_blk)
+            b.position_at_end(skip_blk)
+            b.store(b.add(b.load(idx_ptr), ir.const_(ir.IntType(64), 1)), idx_ptr)
+            b.branch(cond_blk)
+            b.position_at_end(done_blk)
+        return (OBJ, out)
 
     def _convert_bool_chain(self, op: str, operand_nodes: list) -> Tuple[str, Any]:
         """N-ary short-circuit and/or over TypedValues."""
