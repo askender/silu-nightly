@@ -4,6 +4,31 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.11.1
+quality pass six-pack: emitters split, metadata, CI layers
+
+- modularization: both runtime emitters split byte-identical
+  (_create_raw_list_runtime 3480 -> 30 + 12 _emit_* families,
+  _create_dict_runtime 1536 -> 8; panic-string globals promoted to
+  self attributes, pure-type constants reconstructed per emitter)
+- metadata: pyproject 0.10.0 -> 1.11.0, silu.__version__, silu
+  --version, dead mlir dependency dropped
+- negative finding: llvmlite_text.py is byte-locked to
+  selfhost/llvmlite.si WITHOUT flattening - return annotations enter
+  the IR there (func_def slot 6) and the typed backend gives them
+  real semantics; the fixed point caught a 3.6KB numbering drift.
+  Converter sources are safe (flatten strips annotations). Locked
+  copies must stay unannotated.
+- negative finding: typed_call <-> typed_codegen clone windows are
+  emission idioms, not logic duplication - deliberately not harvested
+- interpreter.process_control_flow complexity 52 -> 23 (class/enum
+  definition and the for-loop variants extracted)
+- repo hygiene: 115 untracked scratch files -> .attic/, build
+  artifacts gitignored; working tree clean
+- ci: two-layer workflow (fast 1133 tests / gates on dispatch), ruff
+  baseline F403/F405 pinned in pyproject - 'ruff check' genuinely
+  green
+
 ### v1.0.0
 COMPLETE SELF-HOSTING: fixed point byte-identical
 
