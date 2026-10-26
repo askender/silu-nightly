@@ -1,3 +1,4 @@
+# ruff: noqa: E741, F401 - build tool, not product code
 """Flatten the converter inheritance into one class (M6a prep).
 
 TypedCodegen(SiluToLLVMConverter) cannot port to Silu (no class

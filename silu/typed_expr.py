@@ -23,10 +23,10 @@ from silu.typed_helpers import (
 
 class TypedExprMixin:
 
-    def _promote_pair(self, left: Tuple[str, Any], right: Tuple[str, Any], target: str):
+    def _promote_pair(self, left: Tuple[str, Any], right: Tuple[str, Any], target: str) -> Tuple:
         return self._coerce(left, target), self._coerce(right, target)
 
-    def _typed_binop(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any]):
+    def _typed_binop(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any]) -> Tuple:
         if op == "+" and (left[0] == RAWSTR or right[0] == RAWSTR):
             # string concatenation on raw slots: fresh buffer, inputs
             # untouched (t = s + "x" must not disturb s). Raw operands
@@ -165,7 +165,7 @@ class TypedExprMixin:
             return (I64, self._py_mod_inline(l_val, r_val))
         raise NotImplementedError(f"typed binop {op}")
 
-    def _typed_pow(self, left: Tuple[str, Any], right: Tuple[str, Any]):
+    def _typed_pow(self, left: Tuple[str, Any], right: Tuple[str, Any]) -> Tuple:
         """x ** y: int ** int stays int (repeated multiply), float ** 0.5
         takes the sqrt fast path, everything else goes through libc pow."""
         if left[0] == OBJ or right[0] == OBJ:
@@ -241,7 +241,7 @@ class TypedExprMixin:
         adjustment = builder.select(adjust, right, ir.const_(i64, 0))
         return builder.add(remainder, adjustment)
 
-    def _rawstr_cstr_operands(self, left, right, left_node, right_node, op):
+    def _rawstr_cstr_operands(self, left, right, left_node, right_node, op) -> Any:
         """(raw_ptr, cdata, clen, flipped) when one side is a rawstr and
         the other a string constant - the constant compares straight
         out of its global with no allocation. Ordering ops flip when

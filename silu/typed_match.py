@@ -12,13 +12,13 @@ from typing import Any, Tuple
 
 from silu.ir_iface import ir
 from silu.typed_helpers import (
-    F64, I1, I64, OBJ, RAWSTR, INSTANCE, LLVM_KIND_TYPES, _is_inst,
+    F64, I1, I64, OBJ, RAWSTR, INSTANCE, LLVM_KIND_TYPES,
 )
 
 
 class TypedMatchMixin:
 
-    def _match_pattern_parts(self, pattern, subject_kind, subject_tv):
+    def _match_pattern_parts(self, pattern, subject_kind, subject_tv) -> Tuple:
         """(condition_or_None, capture_name_or_None). A None condition
         means the pattern always matches (capture/wildcard)."""
         if not isinstance(pattern, (list, tuple)) or not pattern:
@@ -63,7 +63,7 @@ class TypedMatchMixin:
         )
 
 
-    def _match_class_head(self, pattern, subject_tv):
+    def _match_class_head(self, pattern, subject_tv) -> Tuple:
         """(cid condition, [(capture_name, field_index, field_tuple)])
         for a match_class pattern against a dynamic subject box."""
         cls_node = pattern[1]
@@ -135,7 +135,7 @@ class TypedMatchMixin:
         )
         return cond, bindings
 
-    def _bind_match_class_fields(self, bindings, subject_tv):
+    def _bind_match_class_fields(self, bindings, subject_tv) -> None:
         """Inside a matched class-pattern arm: load each captured field
         with its declared kind (str fields copy on read, exactly like
         attribute reads on known instances)."""
@@ -161,7 +161,7 @@ class TypedMatchMixin:
             self._declare_var(name, kind)
             self.current_builder.store(value, self.variables[name])
 
-    def _match_value_condition(self, value_node, subject_kind, subject_tv):
+    def _match_value_condition(self, value_node, subject_kind, subject_tv) -> Any:
         """i1 condition: subject == the pattern's value."""
         if subject_kind == RAWSTR:
             if (

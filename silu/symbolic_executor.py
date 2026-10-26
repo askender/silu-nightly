@@ -595,7 +595,7 @@ class SymbolicExecutor:
                                 f"Error: Recursion depth exceeded limit of {self.max_recursion_depth}"
                             )
                             self.current_path.state = ExecutionPathState.ERROR
-                        return create_symbolic_value(f"error_recursion_depth")
+                        return create_symbolic_value("error_recursion_depth")
 
                     params, body = func_handler
 

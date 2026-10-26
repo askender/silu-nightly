@@ -1,3 +1,4 @@
+# ruff: noqa: E741, F401 - build tool, not product code
 #!/usr/bin/env python3
 """Three-toolchain timing harness (interp vs silu pipeline vs rustc).
 

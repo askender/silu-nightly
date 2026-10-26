@@ -452,7 +452,7 @@ class PyobjRuntimeMixin:
             lambda b, s, n: b.call(self.str_repeat, [s, n]),
             False,
             True,
-            lambda b, l, n: b.call(self.list_repeat, [l, n]),
+            lambda b, l_val, n: b.call(self.list_repeat, [l_val, n]),
         )
         # Python true division always returns a float
         self.pyobj_truediv = self._create_numeric_binary_function(
@@ -485,27 +485,27 @@ class PyobjRuntimeMixin:
         # bitwise ops on int/bool PyObjects (float operands fall to the
         # error path - bitwise on floats is a type error)
         self.pyobj_bitor = self._create_numeric_binary_function(
-            "bitor", lambda b, l, r: b.or_(l, r, ""), False,
+            "bitor", lambda b, l_val, r: b.or_(l_val, r, ""), False,
             None, False, False,
             None,
         )
         self.pyobj_bitand = self._create_numeric_binary_function(
-            "bitand", lambda b, l, r: b.and_(l, r, ""), False,
+            "bitand", lambda b, l_val, r: b.and_(l_val, r, ""), False,
             None, False, False,
             None,
         )
         self.pyobj_bitxor = self._create_numeric_binary_function(
-            "bitxor", lambda b, l, r: b.xor(l, r, ""), False,
+            "bitxor", lambda b, l_val, r: b.xor(l_val, r, ""), False,
             None, False, False,
             None,
         )
         self.pyobj_shl = self._create_numeric_binary_function(
-            "shl", lambda b, l, r: b.shl(l, r, ""), False,
+            "shl", lambda b, l_val, r: b.shl(l_val, r, ""), False,
             None, False, False,
             None,
         )
         self.pyobj_shr = self._create_numeric_binary_function(
-            "shr", lambda b, l, r: b.ashr(l, r, ""), False,
+            "shr", lambda b, l_val, r: b.ashr(l_val, r, ""), False,
             None, False, False,
             None,
         )

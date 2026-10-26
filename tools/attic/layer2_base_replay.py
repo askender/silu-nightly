@@ -1,3 +1,4 @@
+# ruff: noqa: E741 - archived one-off analysis script
 """One-shot replay of the layer-2 cleanup for silu/silu_ir_to_llvm.py.
 
 Idempotent-by-construction (runs from a clean HEAD checkout): hoists

@@ -98,7 +98,7 @@ def export(f):
     return f
 
 
-import ctypes as _ctypes
+import ctypes as _ctypes  # noqa: E402
 
 _C_LIBM = _ctypes.CDLL(None)
 _C_LIBM.sqrt.restype = _ctypes.c_double

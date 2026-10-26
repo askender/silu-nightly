@@ -1,3 +1,4 @@
+# ruff: noqa: E402  - imports follow the module contract header
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 

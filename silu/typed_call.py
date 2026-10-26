@@ -260,7 +260,6 @@ class TypedCallMixin:
                 "endswith": (self.boxed_affix["str_ends_with"], 1, False),
                 "rfind": (self.str_rfind, 1, True),
                 "get": (self.dict_get_or, 2, True),
-                "setdefault": (self.dict_setdefault, 2, True),
                 "pop": (self.pyobj_pop_dispatch, 1, True),
                 "__getitem__": (self.dict_get_or, 2, True),
                 "__setitem__": (self.dict_set, 2, False),

@@ -7,6 +7,7 @@ of Silu programs to native machine code.
 The converter handles the dynamic typing of Silu by creating a runtime system
 with tagged unions for Python-like objects.
 """
+# ruff: noqa: E402  - imports follow the module contract header
 
 import sys
 from typing import Any, Dict, Optional
@@ -102,15 +103,6 @@ def _is_numeric_tag(builder, tag):
             builder.icmp_signed("==", tag, ir.const_(i32, 3)),
         ),
     )
-
-
-from .pyobj_runtime import (  # noqa: F401 - shared runtime helpers
-    PyobjRuntimeMixin,
-    _is_numeric_tag,
-    _dict_field,
-    _py_mod_apply,
-    _floor_div_apply,
-)
 
 
 from .pyobj_runtime import (  # noqa: F401 - shared runtime helpers
