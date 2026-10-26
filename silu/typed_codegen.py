@@ -161,7 +161,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
         i64t = ir.IntType(64)
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
         zero32 = ir.const_(i32t, 0)
-        one32 = ir.const_(i32t, 1)
         self.pyobj_pow = ir.func_(
             self.module,
             ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False), 'pyobj_pow',
@@ -631,7 +630,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
 
         builder.position_at_end(loop_body)
         elem = builder.load(builder.gep(items, [i_val]))
-        elem_tag = builder.load(
+        elem_tag = builder.load(  # noqa: F841 - documents the tag slot
             builder.gep(elem, [zero32b, zero32b])
         )
         elem_data = builder.load(
@@ -4625,11 +4624,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
 
     def _create_unbox_runtime(self):
         """unbox helpers for the typed -> dynamic -> typed boundary."""
-        i32 = ir.IntType(32)
         i64 = ir.IntType(64)
-        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
-        zero32 = ir.const_(i32, 0)
-        one32 = ir.const_(i32, 1)
 
         self.unbox_int = self._emit_unbox(
             "unbox_int",
@@ -6820,7 +6815,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
         if not self._fn_table_used:
             return
         i8p = ir.PointerType(ir.IntType(8))
-        i64 = ir.IntType(64)
         table_ty = ir.ArrayType(i8p, len(self._fn_table))
         gv = ir.gvar_(self.module, table_ty, "silu_fn_table")
         gv.linkage = "internal"
@@ -10037,7 +10031,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
                 ok_blk = func.append_basic_block("lc_emit")
                 for cond_node in conds:
                     cblk = self._convert_node(cond_node)
-                    cbranch_blk = self.current_builder.block
                     self.current_builder.cbranch(
                         self._to_i1_cond(cblk), ok_blk, skip_blk
                     )
@@ -10148,7 +10141,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
                 "compiled match needs a statically typed subject "
                 "(annotate it: x: int / float / bool / str)"
             )
-        i1 = ir.IntType(1)
         func = self.current_function
         end_block = func.append_basic_block("match_end")
 
@@ -10801,7 +10793,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
     def _build_raw_list(self, element_nodes: list, kind: str) -> Tuple[str, Any]:
         """[a, b, c] literal stored into a rawlist-typed variable. Str
         lists take copies of every element (the list owns them)."""
-        i8p = ir.PointerType(ir.IntType(8))
         elem_kind = RAWLIST_KINDS[kind]
         if kind == RAWLIST_S:
             list_ptr = self.current_builder.call(
@@ -11029,7 +11020,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
         """Index walk over a raw dict's slot table: live slots hold
         entry_index + 1 (0 = empty, -1 = tombstone)."""
         i64 = ir.IntType(64)
-        zero32 = ir.const_(ir.IntType(32), 0)
         b = self.current_builder
         kind = recv_tv[0]
         struct_ptr = b.bitcast(
@@ -11189,7 +11179,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin):
                 )
             if raw_kind in RAWLIST_KINDS:
                 elem_kind = RAWLIST_KINDS[raw_kind]
-                elem_size = _rawlist_elem_size(raw_kind)
                 list_ptr = raw_obj_tv[1]
                 if method_name == "append" and args_node:
                     arg_tv = self._convert_node(args_node[0])

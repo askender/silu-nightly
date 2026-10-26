@@ -5,14 +5,12 @@ from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple, Union
 from abc import ABC, abstractmethod
 
-from z3.z3 import Option
 
 from .symbolic.condition_utils import PathCondition
 
 from .symbolic.builtin_utils import (
     SymbolicValue,
-    create_symbolic_value,
-    create_expression_value,  # TODO
+    create_symbolic_value,  # TODO
 )
 
 from .symbolic.z3_utils import (

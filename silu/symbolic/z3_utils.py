@@ -35,7 +35,7 @@ try:
         String,
         StringVal,
         IntSort,
-        StringSort,
+        StringSort,  # noqa: F401 - re-exported for callers
     )
 
     Z3_AVAILABLE = True

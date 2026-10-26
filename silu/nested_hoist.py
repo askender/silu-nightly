@@ -238,7 +238,7 @@ def _hoist_def(func_def, cls_name, is_method, global_names, extra):
     prefix = ("%s__%s" % (cls_name, func_def[1])) if cls_name else func_def[1]
     group = _Group(prefix, cls_name, is_method, global_names)
 
-    name, params, body, annos, ret = (
+    _name, _params, body, _annos, _ret = (
         func_def[1], func_def[2], func_def[3], func_def[4],
         func_def[5] if len(func_def) > 5 else None,
     )

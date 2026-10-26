@@ -4,7 +4,8 @@
 # tools/flatten_codegen.py inlines this file verbatim into the self-hosted
 # converter, so everything here must stay in the dual-valid subset.
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple  # noqa: F401 -
+# Dict/List ride the star-export (dual-valid sources use them)
 
 from silu.ir_iface import ir
 

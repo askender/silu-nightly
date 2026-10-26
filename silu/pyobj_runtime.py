@@ -12,7 +12,6 @@ statement converts) and only touches self attributes introduced by
 SiluToLLVMConverter.__init__.
 """
 
-from typing import Any
 
 from silu.ir_iface import ir
 from silu.silu_ir_to_llvm import (
@@ -919,7 +918,6 @@ class PyobjRuntimeMixin:
         pyobj_fn_call dispatches on the index with compile-time-known
         arity."""
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
-        i8p = ir.PointerType(ir.IntType(8))
         i64 = ir.IntType(64)
         i32 = ir.IntType(32)
 

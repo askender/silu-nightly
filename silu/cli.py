@@ -4,7 +4,7 @@ Command line interface for the Silu interpreter and IR generator.
 """
 
 import argparse
-import ast
+import ast  # noqa: F401 - tests patch silu.cli.ast
 import json
 import os
 import sys

@@ -10,7 +10,7 @@ normalized onto both modules so the converter source stays one text.
 import os
 
 if os.environ.get("SILU_LLVM_IR") == "text":
-    import silu.llvmlite_pyinit  # attach __init__s (no-op in Silu)
+    import silu.llvmlite_pyinit  # noqa: F401 - attaches __init__s
     from silu import llvmlite_text
     from silu import llvmlite_text as ir
 

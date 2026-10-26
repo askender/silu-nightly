@@ -8,7 +8,6 @@ path constraints for functions with improved Z3 integration and loop handling.
 """
 
 import copy
-import sys
 from typing import Any, Dict, List, Tuple, Optional, Union
 
 # Import symbolic execution utilities

@@ -17,7 +17,7 @@ from typing import Any, Tuple
 from silu.ir_iface import ir
 from silu.typed_helpers import (
     F64, I1, I64, OBJ, RAWSTR, RAWCHAR_VIEW,
-    LLVM_KIND_TYPES, _extract_i64_const,
+    _extract_i64_const,
 )
 
 
@@ -316,10 +316,10 @@ class TypedExprMixin:
             left_is_index = index_side_node(left_node)
             right_is_index = index_side_node(right_node)
         if left_is_index and const_side(right_node):
-            sub_node, const_node = left_node, right_node
+            sub_node, _const_node = left_node, right_node
             text, flip = right_node[1], False
         elif right_is_index and const_side(left_node):
-            sub_node, const_node = right_node, left_node
+            sub_node, _const_node = right_node, left_node
             text, flip = left_node[1], True
         else:
             return None
