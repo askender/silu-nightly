@@ -402,10 +402,22 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         raw array of machine values. Element values cross the boundary
         as pointers to stack slots so one runtime serves both widths.
         """
-        i32 = ir.IntType(32)
+        self._emit_rawlist_core()
+        self._emit_rawdict_core()
+        self._emit_rawstr_core()
+        self._emit_rawstr_index()
+        self._emit_rawdict_probes()
+        self._emit_rawlist_str_core()
+        self._emit_rawstr_text()
+        self._emit_rawlist_str_access()
+        self._emit_rawstr_convert()
+        self._emit_rawdict_str()
+        self._emit_rawlist_str_convert()
+        self._emit_rawlist_access()
+
+    def _emit_rawlist_core(self):
         i64 = ir.IntType(64)
         i8p = ir.PointerType(ir.IntType(8))
-        zero32 = ir.const_(i32, 0)
         zero64 = ir.const_(i64, 0)
         one64 = ir.const_(i64, 1)
 
@@ -692,6 +704,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
         builder.ret(builder.load(_struct_gep(builder, struct_ptr, 0)))
 
+    def _emit_rawdict_core(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
+
         # ---- raw dicts: dict[int, int] / dict[int, float] ----
         # {i64 count, i64 filled, i64 entries_cap, i64 mask,
         #  i64* index_table, i64* keys, i64* values}
@@ -713,8 +734,8 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
 
         self._key_error_msg = self._panic_string(b"KeyError: key not found\0", "str_keyerr")
-        key_error_msg = self._key_error_msg
-        str_index_error_msg = self._panic_string(
+
+        self._str_index_error_msg = self._panic_string(
             b"IndexError: string index out of range\0", "str_idxerr"
         )
 
@@ -1076,7 +1097,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.branch(probe_test)
 
         builder.position_at_end(missing)
-        msg_ptr = builder.gep(key_error_msg, [zero32, zero32])
+        msg_ptr = builder.gep(self._key_error_msg, [zero32, zero32])
         self._emit_panic(builder, msg_ptr)
 
         # i64 rawdict_del(i8* d, i64 key) - tombstones the slot, returns the
@@ -1134,7 +1155,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.branch(probe_test)
 
         builder.position_at_end(missing)
-        msg_ptr = builder.gep(key_error_msg, [zero32, zero32])
+        msg_ptr = builder.gep(self._key_error_msg, [zero32, zero32])
         self._emit_panic(builder, msg_ptr)
 
         # PyObject* rawdict_to_pydict_{ii,if,si,sf}(i8* d) - boundary
@@ -1209,6 +1230,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.position_at_end(loop_done)
             builder.ret(result)
             self.rawdict_to_pydict[tag] = func
+
+    def _emit_rawstr_core(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
         # {i64 byte_len, i64 cap, i8* data, i64 cp_len}. Every slot owns
         # its buffer exclusively (assignment copies), so appends may
         # realloc in place and grow amortized like Rust's String.
@@ -1227,7 +1256,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
 
 
-        type_error_msg = self._panic_string(
+        self._type_error_msg = self._panic_string(
             b"TypeError: expected str\0", "str_typeerr"
         )
 
@@ -1536,6 +1565,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.select(is_eq, builder.sub(s_len, clen_arg), mem64)
         )
 
+    def _emit_rawstr_index(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
+
         # i64 rawutf8_cp_offset(i8* data, i64 cp_index) - byte offset of
         # the cp_index-th code point (callers clamp cp_index, so the
         # walk always stays inside the buffer)
@@ -1599,7 +1637,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         builder.position_at_end(err_block)
         self._emit_panic(
-            builder, builder.gep(str_index_error_msg, [zero32, zero32])
+            builder, builder.gep(self._str_index_error_msg, [zero32, zero32])
         )
 
         builder.position_at_end(ok_block)
@@ -1666,7 +1704,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         builder.position_at_end(err_block)
         self._emit_panic(
-            builder, builder.gep(str_index_error_msg, [zero32, zero32])
+            builder, builder.gep(self._str_index_error_msg, [zero32, zero32])
         )
 
         builder.position_at_end(ok_block)
@@ -1725,7 +1763,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.cbranch(builder.and_(below, above), ok_block, err_block)
 
         builder.position_at_end(err_block)
-        msg_ptr = builder.gep(str_index_error_msg, [zero32, zero32])
+        msg_ptr = builder.gep(self._str_index_error_msg, [zero32, zero32])
         self._emit_panic(builder, msg_ptr)
 
         builder.position_at_end(ok_block)
@@ -1950,6 +1988,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.position_at_end(miss_block)
         builder.ret(ir.const_(ir.IntType(1), 0))
 
+    def _emit_rawdict_probes(self):
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
+
         # i1 rawdict_has(i8* d, i64 key) - probe without the KeyError panic
         self.rawdict_has = ir.func_(
             self.module, ir.FunctionType(ir.IntType(1), [i8p, i64], False), 'rawdict_has',
@@ -2073,6 +2118,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             ],
         )
         builder.ret_void()
+
+    def _emit_rawlist_str_core(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
 
         # void rawlist_clear(i8* list) - keep capacity, drop elements
         self.rawlist_clear = ir.func_(
@@ -2293,7 +2347,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         # ---------- lexer-oriented string builtins (self-hosting) ----------
 
+
+    def _emit_rawstr_text(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
         b8 = ir.IntType(8)
+
 
         # i64 rawstr_ord(i8* s) - code point of a one-character string
         self.rawstr_ord = ir.func_(
@@ -2819,6 +2881,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.call(self.rawstr_free, [tail_token])
         builder.ret(ss_result)
 
+    def _emit_rawlist_str_access(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
+
         # void rawlist_str_set(i8* list, i64 index, i8* s) - bounds
         # checked under SILU_CHECKS; frees the old element, stores a copy
         self.rawlist_str_set = ir.func_(
@@ -3107,6 +3178,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.position_at_end(miss_block)
         builder.ret(ir.const_(ir.IntType(1), 0))
 
+    def _emit_rawstr_convert(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        one32b = ir.const_(ir.IntType(32), 1)
+
+
         # PyObject* rawstr_to_pystr(i8* s) - boundary box (data copied)
         self.rawstr_to_pystr = ir.func_(
             self.module,
@@ -3155,7 +3237,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         builder.position_at_end(error_block)
-        msg_ptr = builder.gep(type_error_msg, [zero32, zero32])
+        msg_ptr = builder.gep(self._type_error_msg, [zero32, zero32])
         self._emit_panic(builder, msg_ptr)
 
 
@@ -3234,6 +3316,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         builder.position_at_end(fnv_done)
         builder.ret(builder.load(fnv_h))
+
+    def _emit_rawdict_str(self):
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
 
         # i64 rawdict_str_get(i8* d, i8* key) - KeyError when missing
         self.rawdict_str_get = self._emit_rawdict_str_probe(
@@ -3698,6 +3787,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.ret(result)
             self.rawdict_to_pydict[tag] = func
 
+    def _emit_rawlist_str_convert(self):
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32b = ir.const_(ir.IntType(32), 0)
+        one32b = ir.const_(ir.IntType(32), 1)
+
+
         # PyObject* rawlist_str_to_pylist(i8* list, i64 length)
         self.rawlist_str_to_pylist = ir.func_(
             self.module,
@@ -3777,6 +3876,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         builder.position_at_end(loop_done)
         builder.ret(raw)
+
+    def _emit_rawlist_access(self):
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+
 
         # void rawlist_get(i8* list, i64 index, i8* out_ptr, i64 elem_size)
         # Bounds are checked; OOB aborts like list_get.

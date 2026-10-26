@@ -2354,6 +2354,16 @@ class PyobjRuntimeMixin:
         with a null key) plus a power-of-two open-addressed index table
         whose slots hold entry_index + 1, 0 = empty, -1 = deleted.
         """
+        self._emit_dict_core()
+        self._emit_dict_ops()
+        self._emit_contains_and_set()
+        self._emit_io()
+        self._emit_dict_views()
+        self._emit_dict_update()
+        self._emit_slice()
+        self._emit_subscript_set_clear()
+
+    def _emit_dict_core(self):
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
@@ -2602,6 +2612,17 @@ class PyobjRuntimeMixin:
         builder.store(builder.load(j_ptr), _dict_field(builder, struct_ptr, 1))
         builder.ret_void()
 
+    def _emit_dict_ops(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+        one32 = ir.const_(i32, 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        pyobj_null = ir.const_(pyobj_ptr, None)
+
+
         # PyObject* create_dict()
         self.create_dict = ir.func_(
             self.module, ir.FunctionType(pyobj_ptr, [], False), 'create_dict'
@@ -2752,6 +2773,16 @@ class PyobjRuntimeMixin:
 
         builder.position_at_end(missing_block)
         builder.ret(pyobj_null)
+
+    def _emit_contains_and_set(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+        one32 = ir.const_(i32, 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
 
         # i1 pyobj_contains(PyObject* container, PyObject* item)
         # Membership test for `in` / `not in`: dict keys via probe,
@@ -2945,6 +2976,15 @@ class PyobjRuntimeMixin:
         b.branch(sa_done)
         b.position_at_end(sa_done)
         b.ret(sa_set)
+
+    def _emit_io(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
 
 
         # PyObject* pyobj_str_conv(PyObject* obj) - str(x) for scalars:
@@ -3249,6 +3289,16 @@ class PyobjRuntimeMixin:
         peb.position_at_end(pe_no)
         peb.ret(ir.const_(ir.IntType(1), 0))
 
+    def _emit_dict_views(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+        one32 = ir.const_(i32, 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
+
         # void dict_clear_entries(PyObject* d)
         self.dict_clear_entries = ir.func_(
             self.module,
@@ -3319,6 +3369,17 @@ class PyobjRuntimeMixin:
         self.dict_values_rt = self._create_dict_projection_rt(
             'dict_values_rt', 2
         )
+
+    def _emit_dict_update(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+        one32 = ir.const_(i32, 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        pyobj_null = ir.const_(pyobj_ptr, None)
+
 
         # void dict_update(PyObject* dst, PyObject* src)
         # src may be a dict (copy live entries) or a list of [k, v] pairs
@@ -3455,6 +3516,16 @@ class PyobjRuntimeMixin:
 
         builder.position_at_end(loop_done)
         builder.ret_void()
+
+    def _emit_slice(self):
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+        one32 = ir.const_(i32, 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
 
         # PyObject* pyobj_str_char_at(PyObject* s, PyObject* index)
         # s[i] on a boxed str: 1-byte string, negative indices adjust,
@@ -3813,6 +3884,12 @@ class PyobjRuntimeMixin:
             "TypeError: object is not subscriptable", builder
         )
         self._emit_panic(builder, error_msg)
+
+    def _emit_subscript_set_clear(self):
+        i32 = ir.IntType(32)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+
 
         # void pyobj_subscript_set(PyObject* obj, PyObject* key, PyObject* value)
         self.pyobj_subscript_set = ir.func_(
