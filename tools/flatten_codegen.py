@@ -29,6 +29,7 @@ BASE = f"{REPO}/silu/silu_ir_to_llvm.py"
 DERIVED = f"{REPO}/silu/typed_codegen.py"
 HELPERS = f"{REPO}/silu/typed_helpers.py"
 RUNTIME_MIXIN = f"{REPO}/silu/pyobj_runtime.py"
+EXPR_MIXIN = f"{REPO}/silu/typed_expr.py"
 
 RENAMES = {
     "__init__": "_base_init",
@@ -137,6 +138,12 @@ def main():
     mixin_methods, _unused_cls = method_blocks(
         mixin_tree, "PyobjRuntimeMixin"
     )
+    expr_src = open(EXPR_MIXIN).read()
+    expr_tree = ast.parse(expr_src)
+    expr_lines = expr_src.split("\n")
+    expr_methods, _e_cls = method_blocks(
+        expr_tree, "TypedExprMixin"
+    )
     # typed_codegen.py's leaf helpers live in silu/typed_helpers.py;
     # inline them so the flattened module stays self-contained
     marker = "from silu.typed_helpers import *"
@@ -167,7 +174,9 @@ def main():
     # merged class: header from derived, then non-overridden base
     # methods (renamed where super() needs them), then derived body
     header = derived_lines[derived_cls_start]  # class TypedCodegen(...):
+    header = header.replace("(SiluToLLVMConverter, TypedExprMixin)", "")
     header = header.replace("(SiluToLLVMConverter)", "")
+    header = header.replace(", TypedExprMixin", "")
 
     def emit_mixin():
         # the runtime-emission mixin methods occupy exactly the slot
@@ -223,9 +232,21 @@ def main():
             merged.append("")
             merged.extend(block)
 
+    # derived body: rewire the two super() calls. The expr-mixin
+    # methods re-enter at their historical position: immediately
+    # before _unsupported_raw_method, keeping the flat output
+    # byte-identical
+    def emit_expr_mixin():
+        for name, s_, e_ in expr_methods:
+            block = expr_lines[s_:e_]
+            merged.append("")
+            merged.extend(block)
+
     # derived body: rewire the two super() calls
     for name, s, e in derived_methods:
         block = derived_lines[s:e]
+        if name == "_unsupported_raw_method":
+            emit_expr_mixin()
         rewired = []
         for l in block:
             l = l.replace("super().__init__()", "self._base_init()")
@@ -241,6 +262,10 @@ def main():
     keep_pre = []
     for l in derived_pre:
         if "from .silu_ir_to_llvm import" in l:
+            continue
+        # the expr-mixin import resolved its methods at import time;
+        # the flat file carries the method bodies inline
+        if "from silu.typed_expr import" in l:
             continue
         keep_pre.append(l)
 

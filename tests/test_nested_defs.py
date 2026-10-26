@@ -11,7 +11,7 @@ import tempfile
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRONTEND = f"{REPO}/selfhost/silu_fe.si"
+FRONTEND = f"{REPO}/selfhost/silu_fe_main.si"
 
 
 def _silu_to_cpython(source: str) -> str:

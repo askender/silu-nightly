@@ -17,7 +17,7 @@ import tempfile
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRONTEND = f"{REPO}/selfhost/silu_fe.si"
+FRONTEND = f"{REPO}/selfhost/silu_fe_main.si"
 IR2C = f"{REPO}/selfhost/ir2c.si"
 
 

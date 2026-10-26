@@ -349,7 +349,8 @@ def _compile_to_binary(source_file: str, out_path: str,
             # dead_strip drops the unreferenced runtime functions the
             # converter embeds in every module (fib keeps 1 of 178);
             # verified behavior-identical, binary ~3x smaller
-            [clang, "-O2", ll_path, "-o", out_path, "-Wl,-dead_strip"],
+            [clang, "-O2", ll_path, "-o", out_path,
+             "-Wl,-dead_strip", "-lm"],
             capture_output=True,
             text=True,
         )

@@ -210,5 +210,5 @@ def build_with_cache(source_ir_json, out_path, opt="-O2", cache_dir=None,
         # final binary (a static program links 1 of the 178; verified
         # behavior-identical, ~3x smaller)
         _run(["clang", user_obj, rt_obj, "-o", out_path,
-              "-Wl,-dead_strip"])
+              "-Wl,-dead_strip", "-lm"])
     return full_text

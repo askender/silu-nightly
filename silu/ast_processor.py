@@ -308,12 +308,55 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     # ================== Control Flow Handlers ==================
 
+    def _bind_c_externs(self, names):
+        """Interpreter planes: bind ctypes-backed extern names into
+        the current environment (sqrt/floor/pow have exact libc
+        signatures; anything else resolves via CDLL getattr)."""
+        import ctypes
+
+        lib = ctypes.CDLL(None)
+        typed = {
+            "sqrt": (ctypes.c_double, [ctypes.c_double]),
+            "floor": (ctypes.c_double, [ctypes.c_double]),
+            "pow": (ctypes.c_double,
+                    [ctypes.c_double, ctypes.c_double]),
+            "strlen": (ctypes.c_longlong, [ctypes.c_char_p]),
+        }
+        for cname, alias in names:
+            if cname in typed:
+                restype, argtypes = typed[cname]
+                fn = getattr(lib, cname)
+                fn.restype = restype
+                fn.argtypes = argtypes
+                if cname == "strlen":
+                    raw = fn
+
+                    def _shim(s, _raw=raw):
+                        if isinstance(s, str):
+                            return _raw(s.encode("utf-8"))
+                        return _raw(s)
+
+                    self.env.set(alias, _shim)
+                    continue
+            else:
+                fn = getattr(lib, cname, None)
+                if fn is None:
+                    raise ImportError(
+                        f"extern '{cname}' has no libc binding"
+                    )
+            self.env.set(alias, fn)
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
         """Visit a function definition node."""
         args = [arg.arg for arg in node.args.args]
         body = node.body
         type_params = [arg.annotation for arg in node.args.args]
         returns = node.returns if hasattr(node, "returns") else None
+        # @export: lift the function to external linkage for the C ABI
+        exported = any(
+            isinstance(d, ast.Name) and d.id == "export"
+            for d in (node.decorator_list or [])
+        )
         return self.process_control_flow(
             "function_def",
             name=node.name,
@@ -321,6 +364,7 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             body=body,
             type_params=type_params,
             returns=returns,
+            exported=exported,
         )
 
     def visit_Return(self, node: ast.Return) -> Any:
