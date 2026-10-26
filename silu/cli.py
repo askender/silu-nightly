@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from silu.ir_generator import SiluIRGenerator
+from silu import __version__
 
 # Heavy subcommand dependencies (symbolic chain pulls z3+loguru, ~66ms;
 # ir_interpreter/ir_to_source/interpreter add ~15ms) import lazily
@@ -589,6 +590,7 @@ def run_symbolic_executor(
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
+        prog="silu",
         description="Silu Language Processor - Interpreter, IR Generator, and IR Executor",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -630,6 +632,9 @@ Examples:
   %(prog)s check program.py
   # Output: program.py ok (or program.py bad: reason)
 """,
+    )
+    parser.add_argument(
+        "--version", action="version", version="%(prog)s " + __version__
     )
 
     subparsers = parser.add_subparsers(
