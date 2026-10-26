@@ -30,6 +30,8 @@ DERIVED = f"{REPO}/silu/typed_codegen.py"
 HELPERS = f"{REPO}/silu/typed_helpers.py"
 RUNTIME_MIXIN = f"{REPO}/silu/pyobj_runtime.py"
 EXPR_MIXIN = f"{REPO}/silu/typed_expr.py"
+MATCH_MIXIN = f"{REPO}/silu/typed_match.py"
+CALL_MIXIN = f"{REPO}/silu/typed_call.py"
 
 RENAMES = {
     "__init__": "_base_init",
@@ -144,6 +146,18 @@ def main():
     expr_methods, _e_cls = method_blocks(
         expr_tree, "TypedExprMixin"
     )
+    match_src = open(MATCH_MIXIN).read()
+    match_tree = ast.parse(match_src)
+    match_lines = match_src.split("\n")
+    match_methods, _m_cls = method_blocks(
+        match_tree, "TypedMatchMixin"
+    )
+    call_src = open(CALL_MIXIN).read()
+    call_tree = ast.parse(call_src)
+    call_lines = call_src.split("\n")
+    call_methods, _c_cls = method_blocks(
+        call_tree, "TypedCallMixin"
+    )
     # typed_codegen.py's leaf helpers live in silu/typed_helpers.py;
     # inline them so the flattened module stays self-contained
     marker = "from silu.typed_helpers import *"
@@ -174,6 +188,13 @@ def main():
     # merged class: header from derived, then non-overridden base
     # methods (renamed where super() needs them), then derived body
     header = derived_lines[derived_cls_start]  # class TypedCodegen(...):
+    header = header.replace(
+        "(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCallMixin)", ""
+    )
+    header = header.replace("TypedExprMixin, TypedMatchMixin, TypedCallMixin", "")
+    header = header.replace(
+        "(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin)", ""
+    )
     header = header.replace("(SiluToLLVMConverter, TypedExprMixin)", "")
     header = header.replace("(SiluToLLVMConverter)", "")
     header = header.replace(", TypedExprMixin", "")
@@ -242,11 +263,31 @@ def main():
             merged.append("")
             merged.extend(block)
 
+    def emit_match_helpers():
+        for name, s_, e_ in match_methods:
+            if name == "_convert_match":
+                continue
+            block = match_lines[s_:e_]
+            merged.append("")
+            merged.extend(block)
+
+    def emit_match_statement():
+        for name, s_, e_ in match_methods:
+            if name == "_convert_match":
+                block = match_lines[s_:e_]
+                merged.append("")
+                merged.extend(block)
+
     # derived body: rewire the two super() calls
+    _last_derived_name = derived_methods[-1][0]
     for name, s, e in derived_methods:
         block = derived_lines[s:e]
         if name == "_unsupported_raw_method":
             emit_expr_mixin()
+        if name == "_count_scalar_uses":
+            emit_match_helpers()
+        if name == "_convert_bool_chain":
+            emit_match_statement()
         rewired = []
         for l in block:
             l = l.replace("super().__init__()", "self._base_init()")
@@ -257,6 +298,11 @@ def main():
             rewired.append(l)
         merged.append("")
         merged.extend(rewired)
+        if name == _last_derived_name:
+            for cname, cs_, ce_ in call_methods:
+                block = call_lines[cs_:ce_]
+                merged.append("")
+                merged.extend(block)
 
     # imports & module-level code
     keep_pre = []
@@ -266,6 +312,10 @@ def main():
         # the expr-mixin import resolved its methods at import time;
         # the flat file carries the method bodies inline
         if "from silu.typed_expr import" in l:
+            continue
+        if "from silu.typed_match import" in l:
+            continue
+        if "from silu.typed_call import" in l:
             continue
         keep_pre.append(l)
 
