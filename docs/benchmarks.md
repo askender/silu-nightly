@@ -23,7 +23,7 @@
 | spectral | n=300 范数 | 77.151s | 0.299s | 0.0045s | 0.0049s | **1.1×** |
 | string | 48k 字符串拼接 | 0.580s | 0.053s | 0.0028s | 0.0031s | **1.1×** |
 | trees | 深度 4-14 二叉树 | 0.939s | 0.033s | 0.0030s | 0.0031s | **1.0×** |
-| wordcount | 单词计数 | 7.143s | 0.093s | 0.0241s | 0.0159s | 0.7× |
+| wordcount | 单词计数 | 7.143s | 0.091s | 0.0268s | 0.0155s | 0.6× |
 
 **几何平均：0.9× vs Rust（整体领先）｜14.1× vs CPython｜457× vs
 解释器**；进程启动基线 4.3ms。8 个程序打平或反超（knucleotide
@@ -57,9 +57,16 @@ siluc 与 rustc 差距 1.06×，剩余部分全在 clang 用户段+链接本体
 两个已归因的剩余短板（按需再战）：
 
 - **jsonparse 0.4×**：变体树的 pyobj 容器构造——根治需 sum-type
-  数据模型（RFC 路线二，3-4 周级）。arena 分配器已实测否定
+  数据模型（RFC `docs/rfc_sum_types.md`，3-4 周级）。arena 分配器已实测否定
   （malloc 仅占 ~2%，瓶颈在 pyobj 派发常数）。
-- **wordcount 0.7×**：pyobj 字典高频读写，同一根治方向。
+- **wordcount 0.6×（10-27 复测）**：v1.11.3 的下标类型推断消除了
+  `w = vocab[i]` 的 pyobj 装箱（`.ll` 调用序列验证），但暴露了更深
+  一层：`rawlist_str_get` 是**拷贝语义**（slots own copies），每次
+  读取 malloc 新块 + free 旧槽，两次堆操作反而贵过单次装箱。
+  A/B 实测（旧 `.ll` 21.2ms vs 新 24.3ms，各 15 次取最小值）。
+  根治 = 借用读（不可变元素下标返回借用指针）或缓冲复用
+  （`rawstr_copy_into`，Rust `clone_from` 思路）——即 RFC 的 S4
+  所有权议题；int/dict 场景的推断收益已落地（消除装箱纯赢）。
 
 ## 四、方法学要点
 

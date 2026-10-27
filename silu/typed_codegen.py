@@ -5971,6 +5971,29 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if name in candidates:
                 return candidates[name]
             return self.var_kinds.get(name)
+        if op == "subscript" and len(node) >= 3:
+            # element/value kind of an annotated container is
+            # authoritative: list[str][i] is a str, dict[str,int][k]
+            # is an int. The base kind must itself resolve through
+            # the conservative rules (annotated names, earlier
+            # candidates); an OBJ base stays dynamic. A slice index
+            # (s[1:], xs[i:j]) yields the container's own kind.
+            base = self._resolve_kind(node[1], annotations, candidates, func_ret)
+            index = node[2]
+            is_slice = (
+                isinstance(index, list) and len(index) >= 1 and index[0] == "slice"
+            )
+            if is_slice:
+                if base in RAWLIST_KINDS or base == RAWSTR:
+                    return base
+                return None
+            if base in RAWLIST_KINDS:
+                return RAWLIST_KINDS[base]
+            if base == RAWSTR:
+                return RAWSTR  # s[i]: 1-byte str, same as for-target
+            if base in RAWDICT_KINDS:
+                return RAWDICT_KINDS[base]
+            return None
         if op == "-" and len(node) == 2:
             return self._resolve_kind(node[1], annotations, candidates, func_ret)
         if op in ("+", "-", "*", "**") and len(node) >= 3:
