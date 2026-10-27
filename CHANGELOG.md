@@ -4,6 +4,24 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.11.5
+view materialization pooled: s[i] at parity with hand-written ord()
+
+- v1.11.4 correction: the char pool sat on rawstr_char_at, a dead
+  emitter (zero call sites; the dead-code scan's .si-text exclusion
+  had masked it) - its 0.8ms was noise. Real hot path: the
+  view->RAWSTR materialization (2 mallocs + memcpy + SIMD cp count
+  per char)
+- rawstr_char1(data, seq): one-byte code points from the shared
+  pool, longer ones copy, one call at the expression site;
+  rawstr_char_at deleted; phi dominance bug caught by llvm verify
+  and fixed
+- inline strategy measured and rejected: clang -O2 already inlines
+  the small runtime fns; alwaysinline on char1 is negative
+- jsonparse 9.8 -> 8.0-8.5ms (0.6x); scan probe at parity with the
+  ord() idiom (~5ns/char). Residual gap == construction cost:
+  sum-type RFC promoted to the closing move (share 12% -> ~24%)
+
 ### v1.11.4
 single-code-point cache: s[i] stops mallocing (CPython latin-1 model)
 
