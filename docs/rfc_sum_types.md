@@ -139,6 +139,29 @@ parameters are never freed by the callee.
   double-free probe test; symbolic invariant proof of
   `tagged_free` acyclicity-by-construction (roadmap Phase 1 tie-in).
 
+## 7b. S1 benefit measurement (2026-10-27, tools/probes/s1_benefit.py)
+
+With the REAL S1 emitters (not the S0 hand-rolled malloc shapes), a
+mixed construction probe matching jsonparse's value distribution
+(int + str + small array per group, values escaped to a global sink
+so clang cannot eliminate them):
+
+    pyobj  (create_int + create_str + create_list + appends +
+            pyobj_make_instance):  ~47ns/value
+    tagged (new_scalar + new_ptr + rawlist + wrap):   ~37ns/value
+    ratio: 1.20x
+
+Far below the S0 scalar-only 1.96x: str copies and container
+construction are shared costs. Re-projected for jsonparse: the
+construction share (~1.9ms) shrinks by ~20% = **~0.3-0.4ms**,
+taking 8.0ms to ~7.6ms - NOT enough to overtake Rust on its own.
+The J1 v_noinst delta (1.64ms) includes the CONSUMPTION side
+(class-pattern narrowing); the remaining gap needs a consumption-
+side attribution before more construction-side work. S2 proceeds
+for the expressive-completeness motivation (heterogeneous
+containers get a typed home), with performance expectations
+recorded honestly here.
+
 ## 7. Expected outcome - REVISED after S0 (2026-10-27)
 
 S0 probe result (tools/probes/): tagged construction is **1.96x**
