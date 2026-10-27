@@ -4300,71 +4300,114 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
     def _emit_json_builtins(self):
         """Checked unwrappers for the built-in Json sum type: each
         verifies the tag and aborts loudly on a mismatch (the
-        checked-error policy), then reads the payload. Fully flat -
-        no nested functions, no lambdas, nothing for the .si plane
-        to interpret differently."""
+        checked-error policy), then reads the payload. Flat open
+        coding - no nested functions, no lambdas: the .si plane has
+        Rust nested-item semantics (no captures)."""
         i32 = ir.IntType(32)
         i8p = ir.PointerType(ir.IntType(8))
         self._json_typeerr = self._panic_string(
             b"TypeError: wrong Json member\0", "json_typeerr"
         )
-        msg_base = self.current_builder  # placeholder, unused below
-
-        def emit_one(fn, tag_const, final):
-            b = ir.builder_(fn.append_basic_block("entry"))
-            ok = fn.append_basic_block("ok")
-            bad = fn.append_basic_block("bad")
-            blk = b.bitcast(
-                fn.args[0], ir.PointerType(self.tagged_struct_type)
-            )
-            tag_v = b.load(_struct_gep(b, blk, 0))
-            b.cbranch(
-                b.icmp_signed("==", tag_v, ir.const_(i32, tag_const)),
-                ok,
-                bad,
-            )
-            b.position_at_end(bad)
-            msg = b.gep(
-                self._json_typeerr,
-                [ir.const_(i32, 0), ir.const_(i32, 0)],
-            )
-            self._emit_panic(b, msg)
-            b.position_at_end(ok)
-            b.ret(final(b, _struct_gep(b, blk, 1)))
 
         self.json_unwrap_int = ir.func_(
             self.module, ir.FunctionType(ir.IntType(64), [i8p], False),
             'json_unwrap_int',
         )
-        emit_one(
-            self.json_unwrap_int, JSON_TAG_INT,
-            lambda b, slot: b.load(slot),
+        b = ir.builder_(self.json_unwrap_int.append_basic_block("entry"))
+        ok = self.json_unwrap_int.append_basic_block("ok")
+        bad = self.json_unwrap_int.append_basic_block("bad")
+        blk = b.bitcast(
+            self.json_unwrap_int.args[0],
+            ir.PointerType(self.tagged_struct_type),
         )
+        tag_v = b.load(_struct_gep(b, blk, 0))
+        b.cbranch(
+            b.icmp_signed("==", tag_v, ir.const_(i32, JSON_TAG_INT)),
+            ok,
+            bad,
+        )
+        b.position_at_end(bad)
+        msg = b.gep(
+            self._json_typeerr, [ir.const_(i32, 0), ir.const_(i32, 0)]
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(ok)
+        b.ret(b.load(_struct_gep(b, blk, 1)))
+
         self.json_unwrap_float = ir.func_(
             self.module, ir.FunctionType(ir.DoubleType(), [i8p], False),
             'json_unwrap_float',
         )
-        emit_one(
-            self.json_unwrap_float, JSON_TAG_FLOAT,
-            lambda b, slot: b.bitcast(b.load(slot), ir.DoubleType()),
+        b = ir.builder_(self.json_unwrap_float.append_basic_block("entry"))
+        ok = self.json_unwrap_float.append_basic_block("ok")
+        bad = self.json_unwrap_float.append_basic_block("bad")
+        blk = b.bitcast(
+            self.json_unwrap_float.args[0],
+            ir.PointerType(self.tagged_struct_type),
         )
+        tag_v = b.load(_struct_gep(b, blk, 0))
+        b.cbranch(
+            b.icmp_signed("==", tag_v, ir.const_(i32, JSON_TAG_FLOAT)),
+            ok,
+            bad,
+        )
+        b.position_at_end(bad)
+        msg = b.gep(
+            self._json_typeerr, [ir.const_(i32, 0), ir.const_(i32, 0)]
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(ok)
+        b.ret(b.bitcast(b.load(_struct_gep(b, blk, 1)), ir.DoubleType()))
+
         self.json_unwrap_bool = ir.func_(
             self.module, ir.FunctionType(ir.IntType(1), [i8p], False),
             'json_unwrap_bool',
         )
-        emit_one(
-            self.json_unwrap_bool, JSON_TAG_BOOL,
-            lambda b, slot: b.trunc(b.load(slot), ir.IntType(1)),
+        b = ir.builder_(self.json_unwrap_bool.append_basic_block("entry"))
+        ok = self.json_unwrap_bool.append_basic_block("ok")
+        bad = self.json_unwrap_bool.append_basic_block("bad")
+        blk = b.bitcast(
+            self.json_unwrap_bool.args[0],
+            ir.PointerType(self.tagged_struct_type),
         )
+        tag_v = b.load(_struct_gep(b, blk, 0))
+        b.cbranch(
+            b.icmp_signed("==", tag_v, ir.const_(i32, JSON_TAG_BOOL)),
+            ok,
+            bad,
+        )
+        b.position_at_end(bad)
+        msg = b.gep(
+            self._json_typeerr, [ir.const_(i32, 0), ir.const_(i32, 0)]
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(ok)
+        b.ret(b.trunc(b.load(_struct_gep(b, blk, 1)), ir.IntType(1)))
+
         self.json_unwrap_str = ir.func_(
             self.module, ir.FunctionType(i8p, [i8p], False),
             'json_unwrap_str',
         )
-        emit_one(
-            self.json_unwrap_str, JSON_TAG_STR,
-            lambda b, slot: b.inttoptr(b.load(slot), i8p),
+        b = ir.builder_(self.json_unwrap_str.append_basic_block("entry"))
+        ok = self.json_unwrap_str.append_basic_block("ok")
+        bad = self.json_unwrap_str.append_basic_block("bad")
+        blk = b.bitcast(
+            self.json_unwrap_str.args[0],
+            ir.PointerType(self.tagged_struct_type),
         )
-
+        tag_v = b.load(_struct_gep(b, blk, 0))
+        b.cbranch(
+            b.icmp_signed("==", tag_v, ir.const_(i32, JSON_TAG_STR)),
+            ok,
+            bad,
+        )
+        b.position_at_end(bad)
+        msg = b.gep(
+            self._json_typeerr, [ir.const_(i32, 0), ir.const_(i32, 0)]
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(ok)
+        b.ret(b.inttoptr(b.load(_struct_gep(b, blk, 1)), i8p))
     def _emit_rawdict_probe(self, name, ret_type, arg_types, on_hit, on_miss):
         """Shared tombstone-skipping probe for rawdict helpers.
 
@@ -7621,11 +7664,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 return kind
         raise AttributeError(f"'{cls}' object has no field '{attr}'")
 
-    def _convert_node_to_kind(self, node: Any, kind: str) -> Tuple[str, Any]:
-        """Convert a value node straight to a target kind. A str
-        constant boxes to OBJ by default; when the target is Json it
-        builds the tagged block directly over a copy of the constant
-        (same shape as the ann_assign fast path)."""
+    def _convert_node_to_kind(
+        self, node: Any, value: Tuple[str, Any], kind: str
+    ) -> Tuple[str, Any]:
+        """Re-coerce an ALREADY-EVALUATED value to a target kind; a
+        str constant targetting Json builds the tagged block over a
+        copy of the constant (constants re-evaluate harmlessly, calls
+        do not - value must be the single evaluation)."""
         if (
             kind == JSON
             and isinstance(node, list)
@@ -7646,7 +7691,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 [ir.const_(ir.IntType(32), JSON_TAG_STR), owned],
             )
             return (JSON, block)
-        return self._coerce(self._convert_node(node), kind)
+        return self._coerce(value, kind)
 
     def _convert_field_value(
         self, kind: str, value_node: Any
@@ -9671,7 +9716,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             raw_ptr = self.current_builder.call(self.rawdict_new, [])
             value_kind = RAWDICT_KINDS[annotation_kind]
             for pair_node in value_node[1]:
-                val_tv = self._convert_node_to_kind(pair_node[1], value_kind)
+                val_tv = self._convert_node_to_kind(
+                    pair_node[1],
+                    self._convert_node(pair_node[1]),
+                    value_kind,
+                )
                 val_bits = val_tv[1]
                 if value_kind == F64:
                     val_bits = self.current_builder.bitcast(
@@ -9754,7 +9803,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     value[1], self.variables[target]
                 )
                 return value
-            coerced = self._convert_node_to_kind(value_node, annotation_kind)
+            coerced = self._convert_node_to_kind(value_node, value, annotation_kind)
             self._declare_var(target, annotation_kind)
             if annotation_kind == RAWSTR:
                 # the coerced value is a fresh owned temporary; drop
@@ -10286,7 +10335,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if obj_tv[0] in RAWLIST_KINDS:
                 elem_kind = RAWLIST_KINDS[obj_tv[0]]
                 index = self._coerce(self._convert_node(node[2]), I64)[1]
-                value = self._convert_node_to_kind(node[3], elem_kind)
+                value = self._convert_node_to_kind(
+                    node[3], self._convert_node(node[3]), elem_kind
+                )
                 # inline store: negative indices adjust by +length
                 # (Python semantics); the bounds branch is emitted
                 # only under SILU_CHECKS. No call keeps the
@@ -10414,7 +10465,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     self.current_builder.store(store_bits, slot_i64)
                     return (OBJ, null_obj)
 
-                value = self._convert_node_to_kind(node[3], value_kind)
+                value = self._convert_node_to_kind(
+                    node[3], self._convert_node(node[3]), value_kind
+                )
                 val_bits = value[1]
                 if value_kind == F64:
                     val_bits = self.current_builder.bitcast(
