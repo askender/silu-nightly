@@ -942,7 +942,9 @@ class TestRawStrDict:
 
     def test_ascii_index_slice_fast_path(self):
         """byte_len == cp_len (pure ASCII) skips the code point walk
-        entirely: s[i] and s[a:b] become O(1)/O(k) via a branch."""
+        entirely: s[i] and s[a:b] become O(1)/O(k) via a branch.
+        s[i] materializes through the view->rawstr_char1 path (the
+        single-code-point pool); slices go through rawstr_slice."""
         source = (
             's: str = "hello world"\n'
             "print(s[1], s[7:9])\n"
@@ -950,8 +952,9 @@ class TestRawStrDict:
             "print(t[1], t[0:1])\n"
         )
         llvm_ir = _convert(source)
-        # the ascii/walk branch blocks exist in both functions
-        assert 'rawstr_char_at' in llvm_ir
+        # the materialization helper and the slice path are both live
+        assert 'rawstr_char1' in llvm_ir
+        assert 'rawstr_slice' in llvm_ir
         assert _run_main(_convert(source)) == _run_interpreter(source)
 
     def test_str_key_boxing_boundary(self):

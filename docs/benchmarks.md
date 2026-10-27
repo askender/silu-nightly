@@ -15,7 +15,7 @@
 | fannkuch | n=10 排列 | 0.057s | 0.034s | 0.0032s | 0.0032s | **1.0×** |
 | fib | fib(24) 递归 | 1.842s | 0.036s | 0.0055s | 0.0045s | 0.8× |
 | float | 200k 浮点运算 | 3.794s | 0.055s | 0.0061s | 0.0057s | 0.9× |
-| jsonparse | 87KB JSON 解析 | 1.770s | 0.051s | 0.0090s | 0.0044s | 0.5× |
+| jsonparse | 87KB JSON 解析 | 1.805s | 0.051s | 0.0085s | 0.0048s | 0.6× |
 | knucleotide | DNA k-mer 计数 | 15.852s | 0.832s | 0.0114s | 0.0163s | **1.4×** |
 | list | 30k append+遍历 | 0.491s | 0.036s | 0.0031s | 0.0036s | **1.2×** |
 | mandelbrot | 80×24 ASCII | 1.283s | 0.045s | 0.0038s | 0.0032s | 0.9× |
@@ -56,17 +56,18 @@ siluc 与 rustc 差距 1.06×，剩余部分全在 clang 用户段+链接本体
 
 两个已归因的剩余短板（按需再战）：
 
-- **jsonparse 0.5×（10-27 复测：9.0ms vs rust 4.4ms，池化后）**：归因已修正——
-  构造（instance+容器）仅占 12%（16.24→14.60→14.34ms 三层变体分解），
-  **大头是 `ch = s[i]` 的单字符 str 分配**：62ns/字符 × 87k ≈ 5.4ms；
-  `ord(s[i])` 改写版同扫描快 2.7× 是铁证。
-  **v1.11.4 已落地 CPython 式单字符缓存**（256 项惰性池 + cap=-1
-  永生哨兵，rawstr_free 跳过）：分配与释放归零，扫描探针
-  12.75→10.8ms，jsonparse 9.8→9.0ms。**剩余瓶颈是每字符 3 个不内联
-  的函数调用**（char_at + rawstr_eq + rawstr_free，clang -O2/-O3 均不
-  内联多块运行时函数）——下一层是 alwaysinline 发射或热点展开。
-  sum-type S0 探针（tools/probes/）：构造 1.96× 达标但对整体仅
-  ~0.9ms；RFC 预期已修订。
+- **jsonparse 0.6×（10-27 第三轮：8.0-8.5ms vs rust 4.5-4.8ms，物化池化后）**：
+  三层归因（构造 12% / 物化大头）与修复链——v1.11.4 的池最初挂在了
+  零调用的 `rawstr_char_at` 上（收益 0.8ms 实为噪音，本轮修正）；真正的
+  热路径是 `s[i]` 的 **view→RAWSTR 物化**（`rawstr_new_copy`：2 次
+  malloc + memcpy + SIMD 码点计数，每字符 ~62ns）。本轮把物化接到
+  `rawstr_char1`（单字节码点走 256 项共享池，cap=-1 永生哨兵）：
+  扫描探针 9.9→4.7ms，**与手写 `ord()` 惯用法持平（62→~5ns/字符）**，
+  jsonparse 9.8→8.0-8.5ms。**内联策略实测否定**：clang -O2 早已内联
+  小运行时函数（汇编证实），剩余单次 `char1` 调用加 alwaysinline
+  反而 4.64→4.91ms（icache 伤）。**剩余差距 ≈ 构造成本 1.9ms
+  （纯运行口径 5.2 vs 3.5ms 差 1.7ms）**——sum-type（RFC S1-S4）从
+  "次要" 升级为收官关键路径：物化修复后构造占比从 12% 升至 ~24%。
 - **wordcount 0.6×（10-27 复测）**：v1.11.3 的下标类型推断消除了
   `w = vocab[i]` 的 pyobj 装箱（`.ll` 调用序列验证），但暴露了更深
   一层：`rawlist_str_get` 是**拷贝语义**（slots own copies），每次

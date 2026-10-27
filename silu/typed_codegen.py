@@ -1358,6 +1358,72 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.store(src_cp, _struct_gep(builder, struct_ptr, 3))
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
+        # i8* rawstr_char1(i8* data, i64 seq) - materialize a
+        # single-code-point char: one-byte code points come from the
+        # shared pool (cap = -1 immortal sentinel, lazily filled -
+        # zero malloc per read, zero free); longer code points copy.
+        # The view->RAWSTR materialization calls this: one call, the
+        # branching lives here instead of at the expression site.
+        self.rawstr_char1 = ir.func_(
+            self.module, ir.FunctionType(i8p, [i8p, i64], False), 'rawstr_char1'
+        )
+        entry = self.rawstr_char1.append_basic_block("entry")
+        fill_block = self.rawstr_char1.append_basic_block("fill")
+        hit_block = self.rawstr_char1.append_basic_block("hit")
+        copy_block = self.rawstr_char1.append_basic_block("copy")
+        builder = ir.builder_(entry)
+        data_arg, seq_arg = self.rawstr_char1.args
+        is_one = builder.icmp_signed("==", seq_arg, one64)
+        builder.cbranch(is_one, fill_block, copy_block)
+
+        builder.position_at_end(fill_block)
+        lead = builder.load(data_arg)
+        byte_idx = builder.zext(lead, i64)
+        pool_slot = builder.gep(
+            self._char1_pool_gv, [zero64, byte_idx]
+        )
+        cached = builder.load(pool_slot)
+        probe_hit = self.rawstr_char1.append_basic_block("probe_hit")
+        builder.cbranch(
+            builder.icmp_signed(
+                "!=", builder.ptrtoint(cached, i64), zero64
+            ),
+            probe_hit,
+            hit_block,
+        )
+
+        builder.position_at_end(hit_block)
+        fill_buf = builder.call(self.malloc, [ir.const_(i64, 2)])
+        builder.store(lead, fill_buf)
+        builder.store(
+            ir.const_(ir.IntType(8), 0),
+            builder.gep(fill_buf, [one64]),
+        )
+        fill_struct = builder.bitcast(
+            builder.call(self.malloc, [ir.const_(i64, 32)]),
+            ir.PointerType(self.rawstr_struct_type),
+        )
+        builder.store(one64, _struct_gep(builder, fill_struct, 0))
+        builder.store(
+            ir.const_(i64, -1), _struct_gep(builder, fill_struct, 1)
+        )
+        builder.store(fill_buf, _struct_gep(builder, fill_struct, 2))
+        builder.store(one64, _struct_gep(builder, fill_struct, 3))
+        fill_ptr = builder.bitcast(fill_struct, i8p)
+        builder.store(fill_ptr, pool_slot)
+        builder.branch(probe_hit)
+
+        builder.position_at_end(probe_hit)
+        pooled = builder.phi(i8p)
+        pooled.add_incoming(cached, fill_block)
+        pooled.add_incoming(fill_ptr, hit_block)
+        builder.ret(pooled)
+
+        builder.position_at_end(copy_block)
+        builder.ret(
+            builder.call(self.rawstr_new_copy, [data_arg, seq_arg])
+        )
+
         # void rawstr_free(i8* s) - drop a slot's buffer on overwrite
         # (Rust drop). Slots are null-initialized, so free skips null.
         self.rawstr_free = ir.func_(
@@ -1765,117 +1831,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.select(is_eq, builder.sub(seq, clen_arg), mem64)
         )
 
-
-        # i8* rawstr_char_at(i8* s, i64 index) - s[i] as a one-code-point
-        # rawstr. Negative indices adjust by the code point count; the
-        # code point walk makes indexing O(n) like Rust's chars().nth().
-        self.rawstr_char_at = ir.func_(
-            self.module, ir.FunctionType(i8p, [i8p, i64], False), 'rawstr_char_at'
-        )
-        entry = self.rawstr_char_at.append_basic_block("entry")
-        ok_block = self.rawstr_char_at.append_basic_block("ok")
-        err_block = self.rawstr_char_at.append_basic_block("index_error")
-        builder = ir.builder_(entry)
-        s_arg, index_arg = self.rawstr_char_at.args
-        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
-        s_cp = _rawstr_load_cp(builder, s_struct)
-        is_neg = builder.icmp_signed("<", index_arg, zero64)
-        index_eff = builder.select(is_neg, builder.add(index_arg, s_cp), index_arg)
-        below = builder.icmp_signed(">=", index_eff, zero64)
-        above = builder.icmp_signed("<", index_eff, s_cp)
-        builder.cbranch(builder.and_(below, above), ok_block, err_block)
-
-        builder.position_at_end(err_block)
-        msg_ptr = builder.gep(self._str_index_error_msg, [zero32, zero32])
-        self._emit_panic(builder, msg_ptr)
-
-        builder.position_at_end(ok_block)
-        s_data = _rawstr_load_data(builder, s_struct)
-        # ASCII fast path: when every byte is a code point, the index
-        # IS the byte offset - skip the code point walk entirely
-        is_ascii = builder.icmp_signed(
-            "==", _rawstr_load_len(builder, s_struct), s_cp
-        )
-        ascii_block = self.rawstr_char_at.append_basic_block("ascii")
-        walk_block = self.rawstr_char_at.append_basic_block("walk")
-        join_block = self.rawstr_char_at.append_basic_block("join")
-        builder.cbranch(is_ascii, ascii_block, walk_block)
-
-        builder.position_at_end(ascii_block)
-        builder.branch(join_block)
-
-        builder.position_at_end(walk_block)
-        walked_off = builder.call(
-            self.rawutf8_cp_offset, [s_data, index_eff]
-        )
-        builder.branch(join_block)
-
-        builder.position_at_end(join_block)
-        char_off = builder.phi(i64)
-        char_off.add_incoming(index_eff, ascii_block)
-        char_off.add_incoming(walked_off, walk_block)
-        lead = builder.load(builder.gep(s_data, [char_off]))
-        seq = builder.select(is_ascii, one64, self._emit_seq_len(builder, lead))
-        # one-byte code point: serve from the shared pool - no malloc,
-        # no memcpy, no per-read free (the CPython latin-1 cache).
-        # Multi-byte code points keep the copy path.
-        is_one = builder.icmp_signed("==", seq, one64)
-        pool_block = self.rawstr_char_at.append_basic_block("pool_probe")
-        cp_block = self.rawstr_char_at.append_basic_block("cp_copy")
-        builder.cbranch(is_one, pool_block, cp_block)
-
-        builder.position_at_end(pool_block)
-        byte_idx = builder.zext(lead, i64)
-        pool_slot = builder.gep(self._char1_pool_gv, [zero64, byte_idx])
-        cached = builder.load(pool_slot)
-        cache_hit = self.rawstr_char_at.append_basic_block("cache_hit")
-        cache_fill = self.rawstr_char_at.append_basic_block("cache_fill")
-        builder.cbranch(
-            builder.icmp_signed(
-                "!=", builder.ptrtoint(cached, i64), zero64
-            ),
-            cache_hit,
-            cache_fill,
-        )
-
-        builder.position_at_end(cache_fill)
-        fill_buf = builder.call(self.malloc, [ir.const_(i64, 2)])
-        builder.store(lead, fill_buf)
-        builder.store(
-            ir.const_(ir.IntType(8), 0),
-            builder.gep(fill_buf, [one64]),
-        )
-        fill_struct = builder.bitcast(
-            builder.call(self.malloc, [ir.const_(i64, 32)]),
-            ir.PointerType(self.rawstr_struct_type),
-        )
-        builder.store(
-            one64, _struct_gep(builder, fill_struct, 0)
-        )
-        builder.store(
-            ir.const_(i64, -1), _struct_gep(builder, fill_struct, 1)
-        )
-        builder.store(fill_buf, _struct_gep(builder, fill_struct, 2))
-        builder.store(one64, _struct_gep(builder, fill_struct, 3))
-        builder.store(builder.bitcast(fill_struct, i8p), pool_slot)
-        builder.ret(builder.bitcast(fill_struct, i8p))
-
-        builder.position_at_end(cache_hit)
-        builder.ret(cached)
-
-        builder.position_at_end(cp_block)
-        char_buf = builder.call(self.malloc, [seq])
-        builder.call(
-            self.memcpy,
-            [
-                char_buf,
-                builder.gep(s_data, [char_off]),
-                seq,
-                ir.const_(ir.IntType(1), 0),
-            ],
-        )
-        char_struct = self._build_rawstr(builder, seq, seq, char_buf, one64)
-        builder.ret(builder.bitcast(char_struct, i8p))
 
         # i8* rawstr_slice(i8* s, i64 lo, i64 hi) - s[lo:hi] in code
         # points with Python's clamping (negative bounds adjust,
@@ -4923,10 +4878,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if target == RAWSTR:
                 data = self.current_builder.extract_value(value, 0)
                 seq = self.current_builder.extract_value(value, 1)
+                # one-byte code points come from the shared pool
+                # (see rawstr_char1); longer ones copy
                 return (
                     RAWSTR,
                     self.current_builder.call(
-                        self.rawstr_new_copy, [data, seq]
+                        self.rawstr_char1, [data, seq]
                     ),
                 )
             if target == I64:
