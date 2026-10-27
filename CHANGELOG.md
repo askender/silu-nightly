@@ -4,6 +4,22 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.11.4
+single-code-point cache: s[i] stops mallocing (CPython latin-1 model)
+
+- 256-entry lazy pool + cap=-1 immortal sentinel (rawstr_free
+  skips), rebinding-safe; multi-byte code points keep the copy path
+- llvmlite_text: aggregate None constant now spells
+  zeroinitializer (was invalid IR); si twin synced
+- jsonparse attribution revised by measurement: construction is
+  only 12% of runtime, the per-char 1-byte str allocation was the
+  real 5.4ms - pool removes it (9.8 -> 9.0ms official); residual
+  is three non-inlined runtime calls per char, recorded as the
+  next layer
+- S0 probe (sum-type RFC): tagged construction 1.96x vs pyobj
+  (tools/probes/), meets the go bar on construction; RFC outcome
+  section revised with the 12% finding
+
 ### v1.11.3
 subscript type inference + sum-type RFC + symbolic phase 1
 
