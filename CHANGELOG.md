@@ -4,6 +4,24 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.13.0
+S2: the built-in Json sum type lands on every plane
+
+- `x: Json` / `list[Json]` / `dict[str, Json]` annotations: tagged
+  blocks ride the raw container slots as pointer bits (no new
+  container runtime); literal build, subscript read/write, append,
+  for-iteration all channel through
+- json_tag/int/float/bool/str/free builtins with checked unwrappers
+  (loud TypeError on wrong member, the abort policy), fully
+  open-coded emission (.si Rust nested-item semantics)
+- interpreter + CPython planes agree byte-for-byte with the typed
+  binary; S1 benefit measurement had revised the jsonparse
+  projection to ~0.3-0.4ms (construction only 1.20x mixed) - this
+  lands for expressive completeness
+- two cross-plane bugs fixed en route: value re-evaluation in the
+  coercion helper (read_stdin called twice -> silent empty output)
+  and a nested-function capture violation
+
 ### v1.12.0
 sum-type runtime, stage S1: the tagged emitters land (lazy, byte-identical)
 
