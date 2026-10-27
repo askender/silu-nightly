@@ -4295,6 +4295,75 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self.tagged_emitted = True
         self._emit_tagged_core()
         self._emit_tagged_frees()
+        self._emit_json_builtins()
+
+    def _emit_json_builtins(self):
+        """Checked unwrappers for the built-in Json sum type: each
+        verifies the tag and aborts loudly on a mismatch (the
+        checked-error policy), then reads the payload. Fully flat -
+        no nested functions, no lambdas, nothing for the .si plane
+        to interpret differently."""
+        i32 = ir.IntType(32)
+        i8p = ir.PointerType(ir.IntType(8))
+        self._json_typeerr = self._panic_string(
+            b"TypeError: wrong Json member\0", "json_typeerr"
+        )
+        msg_base = self.current_builder  # placeholder, unused below
+
+        def emit_one(fn, tag_const, final):
+            b = ir.builder_(fn.append_basic_block("entry"))
+            ok = fn.append_basic_block("ok")
+            bad = fn.append_basic_block("bad")
+            blk = b.bitcast(
+                fn.args[0], ir.PointerType(self.tagged_struct_type)
+            )
+            tag_v = b.load(_struct_gep(b, blk, 0))
+            b.cbranch(
+                b.icmp_signed("==", tag_v, ir.const_(i32, tag_const)),
+                ok,
+                bad,
+            )
+            b.position_at_end(bad)
+            msg = b.gep(
+                self._json_typeerr,
+                [ir.const_(i32, 0), ir.const_(i32, 0)],
+            )
+            self._emit_panic(b, msg)
+            b.position_at_end(ok)
+            b.ret(final(b, _struct_gep(b, blk, 1)))
+
+        self.json_unwrap_int = ir.func_(
+            self.module, ir.FunctionType(ir.IntType(64), [i8p], False),
+            'json_unwrap_int',
+        )
+        emit_one(
+            self.json_unwrap_int, JSON_TAG_INT,
+            lambda b, slot: b.load(slot),
+        )
+        self.json_unwrap_float = ir.func_(
+            self.module, ir.FunctionType(ir.DoubleType(), [i8p], False),
+            'json_unwrap_float',
+        )
+        emit_one(
+            self.json_unwrap_float, JSON_TAG_FLOAT,
+            lambda b, slot: b.bitcast(b.load(slot), ir.DoubleType()),
+        )
+        self.json_unwrap_bool = ir.func_(
+            self.module, ir.FunctionType(ir.IntType(1), [i8p], False),
+            'json_unwrap_bool',
+        )
+        emit_one(
+            self.json_unwrap_bool, JSON_TAG_BOOL,
+            lambda b, slot: b.trunc(b.load(slot), ir.IntType(1)),
+        )
+        self.json_unwrap_str = ir.func_(
+            self.module, ir.FunctionType(i8p, [i8p], False),
+            'json_unwrap_str',
+        )
+        emit_one(
+            self.json_unwrap_str, JSON_TAG_STR,
+            lambda b, slot: b.inttoptr(b.load(slot), i8p),
+        )
 
     def _emit_rawdict_probe(self, name, ret_type, arg_types, on_hit, on_miss):
         """Shared tombstone-skipping probe for rawdict helpers.
@@ -5158,6 +5227,49 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return (OBJ, boxed)
         if target == OBJ:
             return (OBJ, self._box(tv))
+        if target == JSON:
+            # construction: wrap the value in a tagged block. The str
+            # path takes its own copy (payload owns; the source slot
+            # keeps its buffer) - same discipline as pyobj boxing.
+            if kind == I64:
+                return (
+                    JSON,
+                    self.current_builder.call(
+                        self.tagged_new_scalar,
+                        [ir.const_(ir.IntType(32), JSON_TAG_INT), value],
+                    ),
+                )
+            if kind == F64:
+                bits = self.current_builder.bitcast(value, ir.IntType(64))
+                return (
+                    JSON,
+                    self.current_builder.call(
+                        self.tagged_new_scalar,
+                        [ir.const_(ir.IntType(32), JSON_TAG_FLOAT), bits],
+                    ),
+                )
+            if kind == I1:
+                wide = self.current_builder.zext(value, ir.IntType(64))
+                return (
+                    JSON,
+                    self.current_builder.call(
+                        self.tagged_new_scalar,
+                        [ir.const_(ir.IntType(32), JSON_TAG_BOOL), wide],
+                    ),
+                )
+            if kind == RAWSTR:
+                owned = self.current_builder.call(
+                    self.rawstr_copy, [value]
+                )
+                return (
+                    JSON,
+                    self.current_builder.call(
+                        self.tagged_new_ptr,
+                        [ir.const_(ir.IntType(32), JSON_TAG_STR), owned],
+                    ),
+                )
+            if kind == JSON:
+                return tv
         if _is_inst(kind) and _is_inst(target):
             # same representation; the classed side keeps its class
             return tv
@@ -6190,6 +6302,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if node[1] in self._enums:
                 # `kind: Color` - enum-typed slots are i64 discriminants
                 return I64
+            if node[1] == "Json":
+                # built-in sum type: one tagged block per value
+                self._ensure_tagged_runtime()
+                return JSON
             return None
         if (
             isinstance(node, list)
@@ -6215,6 +6331,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 # pointers stored as 8-byte words (read back via a
                 # class-annotated name or an attribute chain)
                 return RAWLIST_I
+            if node[2][1] == "Json":
+                # list[Json]: slots own tagged blocks (word-sized)
+                self._ensure_tagged_runtime()
+                return RAWLIST_JSON
         if (
             isinstance(node, list)
             and len(node) >= 3
@@ -6239,6 +6359,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 return RAWDICT_SI
             if key_annotation == "str" and value_annotation == "float":
                 return RAWDICT_SF
+            if key_annotation == "str" and value_annotation == "Json":
+                # str keys, tagged block values riding the i64 slots
+                self._ensure_tagged_runtime()
+                return RAWDICT_SJ
         return None
 
     # ================== conservative kind inference ==================
@@ -7497,6 +7621,33 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 return kind
         raise AttributeError(f"'{cls}' object has no field '{attr}'")
 
+    def _convert_node_to_kind(self, node: Any, kind: str) -> Tuple[str, Any]:
+        """Convert a value node straight to a target kind. A str
+        constant boxes to OBJ by default; when the target is Json it
+        builds the tagged block directly over a copy of the constant
+        (same shape as the ann_assign fast path)."""
+        if (
+            kind == JSON
+            and isinstance(node, list)
+            and len(node) >= 2
+            and node[0] == "const"
+            and isinstance(node[1], str)
+        ):
+            self._ensure_tagged_runtime()
+            data_ptr = self._create_global_string_with_builder(
+                node[1], self.current_builder
+            )
+            owned = self.current_builder.call(
+                self.rawstr_new_copy,
+                [data_ptr, ir.const_(ir.IntType(64), _twin_utf8_len(node[1]))],
+            )
+            block = self.current_builder.call(
+                self.tagged_new_ptr,
+                [ir.const_(ir.IntType(32), JSON_TAG_STR), owned],
+            )
+            return (JSON, block)
+        return self._coerce(self._convert_node(node), kind)
+
     def _convert_field_value(
         self, kind: str, value_node: Any
     ) -> Tuple[str, Any]:
@@ -7525,6 +7676,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 val_bits = val_tv[1]
                 if value_kind == F64:
                     val_bits = self.current_builder.bitcast(
+                        val_tv[1], ir.IntType(64)
+                    )
+                if value_kind == JSON:
+                    val_bits = self.current_builder.ptrtoint(
                         val_tv[1], ir.IntType(64)
                     )
                 self._rawdict_key_call(
@@ -9516,12 +9671,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             raw_ptr = self.current_builder.call(self.rawdict_new, [])
             value_kind = RAWDICT_KINDS[annotation_kind]
             for pair_node in value_node[1]:
-                val_tv = self._coerce(
-                    self._convert_node(pair_node[1]), value_kind
-                )
+                val_tv = self._convert_node_to_kind(pair_node[1], value_kind)
                 val_bits = val_tv[1]
                 if value_kind == F64:
                     val_bits = self.current_builder.bitcast(
+                        val_tv[1], ir.IntType(64)
+                    )
+                if value_kind == JSON:
+                    val_bits = self.current_builder.ptrtoint(
                         val_tv[1], ir.IntType(64)
                     )
                 self._rawdict_key_call(
@@ -9597,7 +9754,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     value[1], self.variables[target]
                 )
                 return value
-            coerced = self._coerce(value, annotation_kind)
+            coerced = self._convert_node_to_kind(value_node, annotation_kind)
             self._declare_var(target, annotation_kind)
             if annotation_kind == RAWSTR:
                 # the coerced value is a fresh owned temporary; drop
@@ -9816,6 +9973,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     val_bits = self.current_builder.bitcast(
                         val_bits, ir.DoubleType()
                     )
+                if value_kind == JSON:
+                    val_bits = self.current_builder.inttoptr(
+                        val_bits, LLVM_KIND_TYPES[JSON]
+                    )
                 return (value_kind, val_bits)
             if (
                 isinstance(node[2], (list, tuple))
@@ -9991,6 +10152,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     element = self.current_builder.bitcast(
                         element, ir.DoubleType()
                     )
+                if elem_kind == JSON:
+                    element = self.current_builder.inttoptr(
+                        element, LLVM_KIND_TYPES[JSON]
+                    )
                 return (elem_kind, element)
             if obj_tv[0] == RAWSTR:
                 key_node = node[2]
@@ -10121,7 +10286,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if obj_tv[0] in RAWLIST_KINDS:
                 elem_kind = RAWLIST_KINDS[obj_tv[0]]
                 index = self._coerce(self._convert_node(node[2]), I64)[1]
-                value = self._coerce(self._convert_node(node[3]), elem_kind)
+                value = self._convert_node_to_kind(node[3], elem_kind)
                 # inline store: negative indices adjust by +length
                 # (Python semantics); the bounds branch is emitted
                 # only under SILU_CHECKS. No call keeps the
@@ -10177,6 +10342,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 elem_bits = value[1]
                 if elem_kind == F64:
                     elem_bits = self.current_builder.bitcast(
+                        value[1], ir.IntType(64)
+                    )
+                if elem_kind == JSON:
+                    elem_bits = self.current_builder.ptrtoint(
                         value[1], ir.IntType(64)
                     )
                 self.current_builder.store(
@@ -10245,10 +10414,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     self.current_builder.store(store_bits, slot_i64)
                     return (OBJ, null_obj)
 
-                value = self._coerce(self._convert_node(node[3]), value_kind)
+                value = self._convert_node_to_kind(node[3], value_kind)
                 val_bits = value[1]
                 if value_kind == F64:
                     val_bits = self.current_builder.bitcast(
+                        value[1], ir.IntType(64)
+                    )
+                if value_kind == JSON:
+                    val_bits = self.current_builder.ptrtoint(
                         value[1], ir.IntType(64)
                     )
                 self._rawdict_key_call(
@@ -10642,6 +10815,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             else:
                 if elem_kind == F64:
                     element = self.current_builder.bitcast(element, ir.DoubleType())
+                if elem_kind == JSON:
+                    element = self.current_builder.inttoptr(
+                        element, LLVM_KIND_TYPES[JSON]
+                    )
                 self._declare_var(var_name, elem_kind)
                 self.current_builder.store(element, self.variables[var_name])
 
@@ -10928,6 +11105,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             elem_bits = elem[1]
             if elem_kind == F64:
                 elem_bits = self.current_builder.bitcast(elem[1], ir.IntType(64))
+            if elem_kind == JSON:
+                # blocks ride the 8-byte slots as their pointer bits
+                elem_bits = self.current_builder.ptrtoint(
+                    elem[1], ir.IntType(64)
+                )
             self.current_builder.call(self.rawlist_push, [list_ptr, elem_bits])
         return (kind, list_ptr)
 

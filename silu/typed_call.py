@@ -11,7 +11,7 @@ from typing import Any, Tuple
 
 from silu.ir_iface import ir
 from silu.typed_helpers import (
-    F64, I1, I64, INSTANCE, LLVM_KIND_TYPES, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
+    F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, LLVM_KIND_TYPES, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
 )
 
 
@@ -121,6 +121,11 @@ class TypedCallMixin:
                     if elem_kind == F64:
                         # doubles travel as their bit pattern (8 bytes)
                         elem_bits = self.current_builder.bitcast(
+                            elem[1], ir.IntType(64)
+                        )
+                    if elem_kind == JSON:
+                        # tagged blocks ride the slots as pointer bits
+                        elem_bits = self.current_builder.ptrtoint(
                             elem[1], ir.IntType(64)
                         )
                     self.current_builder.call(
@@ -779,6 +784,35 @@ class TypedCallMixin:
                 )
             return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
+        if func_name == "json_tag" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            tag = self.current_builder.call(self.tagged_tag, [jv])
+            return (I64, self.current_builder.sext(tag, ir.IntType(64)))
+        if func_name == "json_free" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            self.current_builder.call(
+                self.tagged_free,
+                [
+                    jv,
+                    ir.const_(ir.IntType(32), JSON_TAG_STR),
+                    ir.const_(ir.IntType(32), JSON_TAG_LIST),
+                    ir.const_(ir.IntType(32), JSON_TAG_DICT),
+                ],
+            )
+            return (I64, ir.const_(ir.IntType(64), 0))
+        if func_name == "json_int" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            return (I64, self.current_builder.call(self.json_unwrap_int, [jv]))
+        if func_name == "json_float" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            return (F64, self.current_builder.call(self.json_unwrap_float, [jv]))
+        if func_name == "json_bool" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            return (I1, self.current_builder.call(self.json_unwrap_bool, [jv]))
+        if func_name == "json_str" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            borrowed = self.current_builder.call(self.json_unwrap_str, [jv])
+            return (RAWSTR, self.current_builder.call(self.rawstr_copy, [borrowed]))
         if func_name == "bool" and len(args_node) == 1:
             return self._convert_node(
                 ["call", ["name", "_builtin_bool"], [args_node[0]], []]

@@ -198,6 +198,41 @@ class Environment:
         # self-hosted front end treats as global names)
         self.set("set", set)
         self.set("sorted", sorted)
+        # Json sum-type builtins (typed plane: tagged blocks; here the
+        # values are plain Python and the tags mirror the fixed table:
+        # 0=null 1=int 2=float 3=bool 4=str 5=list 6=dict)
+        def _json_tag(v):
+            if v is None:
+                return 0
+            if isinstance(v, bool):
+                return 3
+            if isinstance(v, int):
+                return 1
+            if isinstance(v, float):
+                return 2
+            if isinstance(v, str):
+                return 4
+            if isinstance(v, list):
+                return 5
+            if isinstance(v, dict):
+                return 6
+            raise TypeError("not a Json value")
+        def _json_unwrap(v, want, label):
+            if isinstance(v, bool) != (want is bool) or type(v) is not want:
+                if want is bool and isinstance(v, bool):
+                    pass
+                elif not (want is int and isinstance(v, int) and not isinstance(v, bool)):
+                    if not (want is float and isinstance(v, float)) and not (
+                        want is str and isinstance(v, str)
+                    ):
+                        raise TypeError(f"json_{label}: wrong member")
+            return v
+        self.set("json_tag", _json_tag)
+        self.set("json_int", lambda v: _json_unwrap(v, int, "int"))
+        self.set("json_float", lambda v: _json_unwrap(v, float, "float"))
+        self.set("json_bool", lambda v: _json_unwrap(v, bool, "bool"))
+        self.set("json_str", lambda v: _json_unwrap(v, str, "str"))
+        self.set("json_free", lambda v: 0)
         self.set("zip", zip)
         self.set("any", any)
         self.set("all", all)

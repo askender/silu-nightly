@@ -44,6 +44,16 @@ __all__ = [
     "RAWCHAR_VIEW",
     "RAWLIST_S",
     "RAWLIST_KINDS",
+    "JSON",
+    "JSON_TAG_NULL",
+    "JSON_TAG_INT",
+    "JSON_TAG_FLOAT",
+    "JSON_TAG_BOOL",
+    "JSON_TAG_STR",
+    "JSON_TAG_LIST",
+    "JSON_TAG_DICT",
+    "RAWLIST_JSON",
+    "RAWDICT_SJ",
     "RAWDICT_II",
     "RAWDICT_IF",
     "RAWDICT_SI",
@@ -306,18 +316,36 @@ RAWSTR = "rawstr"  # str: {len, cap, data} with exclusive slot ownership
 # RAWSTR (a copy).
 RAWCHAR_VIEW = "rawchar_view"
 RAWLIST_S = "rawlist_str"  # list[str]: slots own a copy of each element
-RAWLIST_KINDS = {RAWLIST_I: I64, RAWLIST_F: F64, RAWLIST_S: RAWSTR}
+JSON = "json"  # built-in sum type: one 16-byte {i32 tag, i64 payload}
+# block (RFC docs/rfc_sum_types.md). Tag table (fixed, built-in):
+# 0=null 1=int 2=float 3=bool 4=str 5=list 6=dict
+JSON_TAG_NULL = 0
+JSON_TAG_INT = 1
+JSON_TAG_FLOAT = 2
+JSON_TAG_BOOL = 3
+JSON_TAG_STR = 4
+JSON_TAG_LIST = 5
+JSON_TAG_DICT = 6
+RAWLIST_JSON = "rawlist_json"  # list[Json]: slots own the blocks
+RAWLIST_KINDS = {
+    RAWLIST_I: I64,
+    RAWLIST_F: F64,
+    RAWLIST_S: RAWSTR,
+    RAWLIST_JSON: JSON,
+}
 RAWDICT_II = "rawdict_ii"  # dict[int, int]: machine-word open addressing
 RAWDICT_IF = "rawdict_if"  # dict[int, float] (values as f64 bit patterns)
 RAWDICT_SI = "rawdict_si"  # dict[str, int]: same table, rawstr keys
 RAWDICT_SF = "rawdict_sf"  # dict[str, float]
+RAWDICT_SJ = "rawdict_sj"  # dict[str, Json]: str keys, tagged values
 RAWDICT_KINDS = {
     RAWDICT_II: I64,
     RAWDICT_IF: F64,
     RAWDICT_SI: I64,
     RAWDICT_SF: F64,
+    RAWDICT_SJ: JSON,
 }  # kind -> value kind
-RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF)  # kinds with rawstr keys
+RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF, RAWDICT_SJ)  # kinds with rawstr keys
 # class instance: an opaque heap block of 8-byte field slots (the
 # class name lives in the compile-time _var_class side table, never
 # in the object itself - Rust struct layout, no vtable, no header)
@@ -329,6 +357,8 @@ for _k in RAWDICT_KINDS:
     RAW_STORAGE_KINDS[_k] = RAWDICT_KINDS[_k]
 RAW_STORAGE_KINDS[RAWSTR] = RAWSTR
 RAW_STORAGE_KINDS[INSTANCE] = INSTANCE
+RAW_STORAGE_KINDS[JSON] = JSON  # tagged block pointer, null-initialized
+RAW_STORAGE_KINDS[RAWDICT_SJ] = RAWDICT_SJ
 LLVM_KIND_TYPES = {
     I64: ir.IntType(64),
     F64: ir.DoubleType(),
@@ -337,6 +367,9 @@ LLVM_KIND_TYPES = {
     RAWLIST_I: ir.PointerType(ir.IntType(8)),
     RAWLIST_F: ir.PointerType(ir.IntType(8)),
     RAWLIST_S: ir.PointerType(ir.IntType(8)),
+    RAWLIST_JSON: ir.PointerType(ir.IntType(8)),
+    JSON: ir.PointerType(ir.IntType(8)),  # tagged block pointer
+    RAWDICT_SJ: ir.PointerType(ir.IntType(8)),
     RAWDICT_II: ir.PointerType(ir.IntType(8)),
     RAWDICT_IF: ir.PointerType(ir.IntType(8)),
     RAWDICT_SI: ir.PointerType(ir.IntType(8)),

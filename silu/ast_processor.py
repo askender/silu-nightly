@@ -518,6 +518,16 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             raise NotImplementedError("bare raise is not supported")
         raise exc
 
+    @staticmethod
+    def _annotation_str(node: Any) -> Any:
+        """Best-effort textual form of an annotation node."""
+        import ast as _ast
+
+        try:
+            return _ast.unparse(node)
+        except Exception:
+            return None
+
     def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
         """Visit an annotated assignment node."""
         if not isinstance(node.target, ast.Name):
@@ -526,7 +536,16 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
             )
         target = node.target.id
         value = self.visit(node.value) if node.value else None
-        annotation = self.visit(node.annotation) if node.annotation else None
+        annotation = None
+        if node.annotation is not None:
+            # an annotation is metadata; an unknown name in it (Json,
+            # user classes) must not fail interpretation
+            try:
+                annotation = self.visit(node.annotation)
+            except NameError:
+                annotation = None
+        if annotation is None and node.annotation is not None:
+            annotation = self._annotation_str(node.annotation)
         self._ann_assign_has_value = node.value is not None
         return self.process_ann_assign(target, value, annotation)
 

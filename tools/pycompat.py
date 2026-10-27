@@ -68,12 +68,41 @@ def run(path):
     tree = expand_imports_tree(
         source, os.path.dirname(os.path.abspath(path))
     )
+    def _json_tag(v):
+        if v is None:
+            return 0
+        if isinstance(v, bool):
+            return 3
+        if isinstance(v, int):
+            return 1
+        if isinstance(v, float):
+            return 2
+        if isinstance(v, str):
+            return 4
+        if isinstance(v, list):
+            return 5
+        if isinstance(v, dict):
+            return 6
+        raise TypeError("not a Json value")
+    def _unwrap(want, label):
+        def f(v):
+            if type(v) is not want:
+                raise TypeError(f"json_{label}: wrong member")
+            return v
+        return f
     g = {
         "__name__": "__silu__",
         "Enum": Enum,
         "read_stdin": read_stdin,
         "read_file": read_file,
         "file_exists": os.path.exists,
+        "Json": object,  # annotation placeholder; values stay native
+        "json_tag": _json_tag,
+        "json_int": _unwrap(int, "int"),
+        "json_float": _unwrap(float, "float"),
+        "json_bool": _unwrap(bool, "bool"),
+        "json_str": _unwrap(str, "str"),
+        "json_free": lambda v: 0,
     }
     # LOAD_BUILD_CLASS reads __build_class__ from builtins (a class
     # statement ignores the surrounding globals for this name)
