@@ -139,14 +139,37 @@ parameters are never freed by the callee.
   double-free probe test; symbolic invariant proof of
   `tagged_free` acyclicity-by-construction (roadmap Phase 1 tie-in).
 
-## 7. Expected outcome
+## 7. Expected outcome - REVISED after S0 (2026-10-27)
 
+S0 probe result (tools/probes/): tagged construction is **1.96x**
+faster than pyobj (93.4ms vs 47.7ms for 3M values, 11-run median) -
+meets the go bar on the construction loop itself.
+
+However, the same day's attribution study revised the jsonparse
+projection. Construction (instances + containers) is only ~12% of
+jsonparse's runtime (16.24ms full vs 14.60ms without instance
+wrapping vs 14.34ms without containers); the dominant cost is the
+per-character 1-byte str allocation of `ch = s[i]` (~62ns/char x 87k
+chars ~= 5.4ms, matching the whole 5.2ms gap to Rust; an ord()-
+rewrite probe scans 2.7x faster). So:
+
+- Landing tagged unions alone moves jsonparse by ~0.9ms
+  (0.5x -> ~0.55x), NOT the 1.0-1.2x originally projected here.
+- The jsonparse gap's main lever is character-access
+  zero-allocation (extending RAWCHAR_VIEW emission to subscript
+  reads, `s[i] == "c"` comparison folding) - tracked separately.
+- Tagged unions remain the right call for the language's expressive
+  completeness (heterogeneous containers get a typed home, all
+  parser/AST programs), and their 2x construction win compounds once
+  character access is fixed. Delivery order: character access first
+  (bigger, cheaper), tagged unions second.
+
+The original projection is kept below for the record:
 jsonparse: pyobj box (2 mallocs + payload indirection per value) ->
 one 16-byte block (str leaves still need their data block) and
 typed containers. Prediction from the wordcount arithmetic (85ns ->
 ~27ns per eliminated box): 10.7ms -> ~5-6ms, i.e. 1.0-1.2x vs the
-Rust serde_json baseline. Secondary: any parser/AST-walk program in
-user space gets the same representation for free.
+Rust serde_json baseline.
 
 ## 8. Risks / open questions
 

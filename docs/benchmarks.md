@@ -15,7 +15,7 @@
 | fannkuch | n=10 排列 | 0.057s | 0.034s | 0.0032s | 0.0032s | **1.0×** |
 | fib | fib(24) 递归 | 1.842s | 0.036s | 0.0055s | 0.0045s | 0.8× |
 | float | 200k 浮点运算 | 3.794s | 0.055s | 0.0061s | 0.0057s | 0.9× |
-| jsonparse | 87KB JSON 解析 | 1.781s | 0.050s | 0.0107s | 0.0047s | 0.4× |
+| jsonparse | 87KB JSON 解析 | 1.815s | 0.051s | 0.0098s | 0.0046s | 0.5× |
 | knucleotide | DNA k-mer 计数 | 15.852s | 0.832s | 0.0114s | 0.0163s | **1.4×** |
 | list | 30k append+遍历 | 0.491s | 0.036s | 0.0031s | 0.0036s | **1.2×** |
 | mandelbrot | 80×24 ASCII | 1.283s | 0.045s | 0.0038s | 0.0032s | 0.9× |
@@ -56,17 +56,22 @@ siluc 与 rustc 差距 1.06×，剩余部分全在 clang 用户段+链接本体
 
 两个已归因的剩余短板（按需再战）：
 
-- **jsonparse 0.4×**：变体树的 pyobj 容器构造——根治需 sum-type
-  数据模型（RFC `docs/rfc_sum_types.md`，3-4 周级）。arena 分配器已实测否定
-  （malloc 仅占 ~2%，瓶颈在 pyobj 派发常数）。
+- **jsonparse 0.5×（10-27 复测：9.8ms vs rust 4.6ms）**：归因已修正——
+  构造（instance+容器）仅占 12%（16.24→14.60→14.34ms 三层变体分解），
+  **大头是 `ch = s[i]` 的单字符 str 分配**：62ns/字符 × 87k ≈ 5.4ms，
+  与 5.2ms 总差距吻合；`ord(s[i])` 改写版同扫描快 2.7× 是铁证。
+  根治 = 字符访问零分配化（RAWCHAR_VIEW 发射扩展到下标读 +
+  `s[i] == "c"` 常量比较折叠）——比 sum-type 便宜且收益约 5×。
+  sum-type 本身的 S0 探针已做（tools/probes/）：构造 1.96× 达标，
+  但对 jsonparse 整体仅 ~0.9ms（构造占比所限）；RFC 预期已修订。
 - **wordcount 0.6×（10-27 复测）**：v1.11.3 的下标类型推断消除了
   `w = vocab[i]` 的 pyobj 装箱（`.ll` 调用序列验证），但暴露了更深
   一层：`rawlist_str_get` 是**拷贝语义**（slots own copies），每次
   读取 malloc 新块 + free 旧槽，两次堆操作反而贵过单次装箱。
   A/B 实测（旧 `.ll` 21.2ms vs 新 24.3ms，各 15 次取最小值）。
   根治 = 借用读（不可变元素下标返回借用指针）或缓冲复用
-  （`rawstr_copy_into`，Rust `clone_from` 思路）——即 RFC 的 S4
-  所有权议题；int/dict 场景的推断收益已落地（消除装箱纯赢）。
+  （`rawstr_copy_into`，Rust `clone_from` 思路）——与 jsonparse 的
+  字符访问是**同一族不可变值拷贝语义问题**，可一并治理。
 
 ## 四、方法学要点
 
