@@ -4,6 +4,22 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.11.2
+quality pass: dead code, docs archive, symbolic roadmap, subprocess coverage, _convert_call split
+
+- dead code: 24 verified-unreferenced functions removed (AST-precise
+  scan; visit_*/_execute_* protocol families and llvmlite_text's
+  .si-plane references correctly exempted)
+- docs: 8 superseded snapshots -> docs/history/; symbolic execution
+  kept by decision with docs/symbolic_roadmap.md (Phase 1 raw-family
+  invariant proofs, Phase 2 'silu verify', Phase 3 transform
+  equivalence)
+- coverage: subprocess measurement wired through gates (conftest sets
+  COVERAGE_PROCESS_START, repo-root sitecustomize.py) -
+  static_gate 0->100%, llvmlite_text 0->84%, runtime_cache 0->72%
+- modularization: _convert_call 961 -> 61 lines + 4 _call_* methods
+  (byte-identical; fall-through branches via None sentinel)
+
 ### v1.11.1
 quality pass six-pack: emitters split, metadata, CI layers
 
