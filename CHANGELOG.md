@@ -4,6 +4,26 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.11.3
+subscript type inference + sum-type RFC + symbolic phase 1
+
+- type inference: element/value kinds for subscript reads of
+  annotated containers (list[int][i] is an int, xs[1:] is a
+  container, s[i] a 1-byte str); int/dict paths lose the pyobj box;
+  honest negative: the str-element path got slower (0.66x -> 0.61x
+  on wordcount) because it exposed rawlist_str_get's copy semantics
+  - two heap ops vs one; root fix is borrowed reads / buffer reuse,
+  folded into the RFC
+- rfc: docs/rfc_sum_types.md - tagged unions for heterogeneous
+  containers (16-byte single-block values, rawlist/rawdict tagged
+  element families, v1.7.1 borrow discipline generalized), staged
+  S0-S4 with a >=2x go/no-go probe
+- symbolic phase 1 (roadmap): invariant proofs for the raw families
+  - rawstr_append capacity (incl. cap0==0 bootstrap), rawdict slot
+  discipline (in-table first probe at every width, 3:2 load trigger
+  with doubling, sentinel-safe encoding), utf8 cp bounds; mutation-
+  checked
+
 ### v1.11.2
 quality pass: dead code, docs archive, symbolic roadmap, subprocess coverage, _convert_call split
 
