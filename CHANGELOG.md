@@ -4,6 +4,21 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.12.0
+sum-type runtime, stage S1: the tagged emitters land (lazy, byte-identical)
+
+- _emit_tagged_core/_emit_tagged_frees: 8 functions over the
+  16-byte {tag, payload} block; three-tag dispatch frees; recursive
+  list/dict teardowns modeled on rawdict_str_clear
+- storage reuses rawlist/rawdict slots element-wise (8-byte
+  patterns) - the RFC's rawlist_tagged family collapses to two
+  free-walks
+- lazy _ensure_tagged_runtime with a base-__init__ sentinel
+  (getattr is not dual-valid); corpus 16/16 unchanged
+- probe tests build/read/tear-down int+str+list trees and a dict
+  tree; the probe caught a dispatch-chain bug (missing dict check
+  segfaulted scalar frees) before any gate could
+
 ### v1.11.5
 view materialization pooled: s[i] at parity with hand-written ord()
 
