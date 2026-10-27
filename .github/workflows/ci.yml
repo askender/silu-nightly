@@ -54,7 +54,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install llvmlite pycparser z3-solver loguru pytest
-      - name: Self-hosting gates (fixed points + parity)
+      - name: Self-hosting gates (fixed points + parity, subprocess coverage)
         run: >
           pytest tests/test_selfhost_fixed_point.py
           tests/test_pipeline_fixed_point.py
@@ -64,4 +64,4 @@ jobs:
           tests/test_selfhost_m1.py
           tests/test_selfhost_m2.py
           tests/test_selfhost_m3.py
-          tests/test_selfhost_m4.py -q
+          tests/test_selfhost_m4.py -q --cov=silu --cov-report=term

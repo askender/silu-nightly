@@ -35,5 +35,13 @@ testpaths = ["tests"]
 # (typed_helpers.__all__ feeds the converter family; flatten inlines it)
 ignore = ["F403", "F405"]
 
+[tool.coverage.run]
+# subprocess coverage: pytest-cov sets COVERAGE_PROCESS_START, the
+# repo-root sitecustomize.py calls coverage.process_startup() in every
+# child `python -m silu` process, children write .coverage.* shards
+source = ["silu"]
+parallel = true
+sigterm = true
+
 [dependency-groups]
 dev = ["pytest>=7.0.1", "pytest-cov>=4.0.0"]
