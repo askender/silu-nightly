@@ -99,6 +99,9 @@ def test_siluc_monolith_matches_split_chain():
     reference plane."""
     # `siluc` is now the C DRIVER (file-in, binary-out); the stdin->
     # .ll monolith lives on as siluc1
+    shb.ensure_siluc()  # stale siluc1 vs fresh fe2/conv2 once caused
+    #                    # a phantom divergence here (mtime check only
+    #                    # runs inside selfhost_build, not on raw use)
     siluc1 = shb.SILUC1_BIN
     fe2 = os.path.join(CACHE, "silu_fe2")
     conv2 = os.path.join(CACHE, "silu_conv2")

@@ -15,7 +15,7 @@
 | fannkuch | n=10 排列 | 0.057s | 0.034s | 0.0032s | 0.0032s | **1.0×** |
 | fib | fib(24) 递归 | 1.842s | 0.036s | 0.0055s | 0.0045s | 0.8× |
 | float | 200k 浮点运算 | 3.794s | 0.055s | 0.0061s | 0.0057s | 0.9× |
-| jsonparse | 87KB JSON 解析 | 1.815s | 0.051s | 0.0098s | 0.0046s | 0.5× |
+| jsonparse | 87KB JSON 解析 | 1.770s | 0.051s | 0.0090s | 0.0044s | 0.5× |
 | knucleotide | DNA k-mer 计数 | 15.852s | 0.832s | 0.0114s | 0.0163s | **1.4×** |
 | list | 30k append+遍历 | 0.491s | 0.036s | 0.0031s | 0.0036s | **1.2×** |
 | mandelbrot | 80×24 ASCII | 1.283s | 0.045s | 0.0038s | 0.0032s | 0.9× |
@@ -56,14 +56,17 @@ siluc 与 rustc 差距 1.06×，剩余部分全在 clang 用户段+链接本体
 
 两个已归因的剩余短板（按需再战）：
 
-- **jsonparse 0.5×（10-27 复测：9.8ms vs rust 4.6ms）**：归因已修正——
+- **jsonparse 0.5×（10-27 复测：9.0ms vs rust 4.4ms，池化后）**：归因已修正——
   构造（instance+容器）仅占 12%（16.24→14.60→14.34ms 三层变体分解），
-  **大头是 `ch = s[i]` 的单字符 str 分配**：62ns/字符 × 87k ≈ 5.4ms，
-  与 5.2ms 总差距吻合；`ord(s[i])` 改写版同扫描快 2.7× 是铁证。
-  根治 = 字符访问零分配化（RAWCHAR_VIEW 发射扩展到下标读 +
-  `s[i] == "c"` 常量比较折叠）——比 sum-type 便宜且收益约 5×。
-  sum-type 本身的 S0 探针已做（tools/probes/）：构造 1.96× 达标，
-  但对 jsonparse 整体仅 ~0.9ms（构造占比所限）；RFC 预期已修订。
+  **大头是 `ch = s[i]` 的单字符 str 分配**：62ns/字符 × 87k ≈ 5.4ms；
+  `ord(s[i])` 改写版同扫描快 2.7× 是铁证。
+  **v1.11.4 已落地 CPython 式单字符缓存**（256 项惰性池 + cap=-1
+  永生哨兵，rawstr_free 跳过）：分配与释放归零，扫描探针
+  12.75→10.8ms，jsonparse 9.8→9.0ms。**剩余瓶颈是每字符 3 个不内联
+  的函数调用**（char_at + rawstr_eq + rawstr_free，clang -O2/-O3 均不
+  内联多块运行时函数）——下一层是 alwaysinline 发射或热点展开。
+  sum-type S0 探针（tools/probes/）：构造 1.96× 达标但对整体仅
+  ~0.9ms；RFC 预期已修订。
 - **wordcount 0.6×（10-27 复测）**：v1.11.3 的下标类型推断消除了
   `w = vocab[i]` 的 pyobj 装箱（`.ll` 调用序列验证），但暴露了更深
   一层：`rawlist_str_get` 是**拷贝语义**（slots own copies），每次

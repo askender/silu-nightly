@@ -1247,6 +1247,20 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         # equals code point semantics.
         self.rawstr_struct_type = ir.LiteralStructType([i64, i64, i8p, i64])
 
+        # Single-code-point cache, the CPython latin-1 model:
+        # _char1_pool[i] is the shared one-byte rawstr for code point
+        # i in 0..255, filled lazily by rawstr_char_at. Pool blocks
+        # carry cap = -1, the immortal sentinel rawstr_free refuses to
+        # free, so slots may rebind them freely. The one-byte data
+        # buffer is a private 2-byte allocation (byte + NUL), owned by
+        # the immortal block and never freed.
+        self._char1_pool_gv = ir.gvar_(
+            self.module, ir.ArrayType(i8p, 256), "char1_pool"
+        )
+        self._char1_pool_gv.initializer = ir.const_(
+            ir.ArrayType(i8p, 256), None
+        )
+
         if self.realloc is None:
             self.realloc = ir.func_(
                 self.module, ir.FunctionType(i8p, [i8p, i64], False), 'realloc'
@@ -1366,6 +1380,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         free_struct = builder.bitcast(
             free_arg, ir.PointerType(self.rawstr_struct_type)
         )
+        # cap < 0 marks an immortal cache block (the single-code-point
+        # pool): nothing to free, the buffer is a constant global
+        is_immortal = builder.icmp_signed(
+            "<", builder.load(_struct_gep(builder, free_struct, 1)), zero64
+        )
+        do_free_block = self.rawstr_free.append_basic_block("real_free")
+        builder.cbranch(is_immortal, done_block, do_free_block)
+
+        builder.position_at_end(do_free_block)
         builder.call(self.free, [_rawstr_load_data(builder, free_struct)])
         builder.call(self.free, [free_arg])
         builder.branch(done_block)
@@ -1793,6 +1816,54 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         char_off.add_incoming(walked_off, walk_block)
         lead = builder.load(builder.gep(s_data, [char_off]))
         seq = builder.select(is_ascii, one64, self._emit_seq_len(builder, lead))
+        # one-byte code point: serve from the shared pool - no malloc,
+        # no memcpy, no per-read free (the CPython latin-1 cache).
+        # Multi-byte code points keep the copy path.
+        is_one = builder.icmp_signed("==", seq, one64)
+        pool_block = self.rawstr_char_at.append_basic_block("pool_probe")
+        cp_block = self.rawstr_char_at.append_basic_block("cp_copy")
+        builder.cbranch(is_one, pool_block, cp_block)
+
+        builder.position_at_end(pool_block)
+        byte_idx = builder.zext(lead, i64)
+        pool_slot = builder.gep(self._char1_pool_gv, [zero64, byte_idx])
+        cached = builder.load(pool_slot)
+        cache_hit = self.rawstr_char_at.append_basic_block("cache_hit")
+        cache_fill = self.rawstr_char_at.append_basic_block("cache_fill")
+        builder.cbranch(
+            builder.icmp_signed(
+                "!=", builder.ptrtoint(cached, i64), zero64
+            ),
+            cache_hit,
+            cache_fill,
+        )
+
+        builder.position_at_end(cache_fill)
+        fill_buf = builder.call(self.malloc, [ir.const_(i64, 2)])
+        builder.store(lead, fill_buf)
+        builder.store(
+            ir.const_(ir.IntType(8), 0),
+            builder.gep(fill_buf, [one64]),
+        )
+        fill_struct = builder.bitcast(
+            builder.call(self.malloc, [ir.const_(i64, 32)]),
+            ir.PointerType(self.rawstr_struct_type),
+        )
+        builder.store(
+            one64, _struct_gep(builder, fill_struct, 0)
+        )
+        builder.store(
+            ir.const_(i64, -1), _struct_gep(builder, fill_struct, 1)
+        )
+        builder.store(fill_buf, _struct_gep(builder, fill_struct, 2))
+        builder.store(one64, _struct_gep(builder, fill_struct, 3))
+        builder.store(builder.bitcast(fill_struct, i8p), pool_slot)
+        builder.ret(builder.bitcast(fill_struct, i8p))
+
+        builder.position_at_end(cache_hit)
+        builder.ret(cached)
+
+        builder.position_at_end(cp_block)
         char_buf = builder.call(self.malloc, [seq])
         builder.call(
             self.memcpy,

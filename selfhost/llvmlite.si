@@ -348,6 +348,10 @@ def const_reference(c):
         return "undef"
     v = c.constant
     if v is None:
+        # aggregates spell zero as zeroinitializer; scalars and
+        # pointers are null (real llvmlite behavior)
+        if c.type.kind in ("array", "struct"):
+            return "zeroinitializer"
         return "null"
     if c.latin1:
         return 'c"' + _escape_latin1(v) + '"'
