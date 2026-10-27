@@ -1,0 +1,166 @@
+# RFC: Typed Sum Types (tagged unions) for heterogeneous containers
+
+Status: draft for review (2026-10-27). Target: close the last
+benchmark gap (jsonparse 0.4x vs Rust) by giving heterogeneous
+containers a typed representation, and give the language the one
+Rust-core feature it still lacks next to move-class narrowing.
+
+## 1. Problem
+
+`items: list` cannot be given a type parameter when the elements are
+mixed (int/str/list/dict in a JSON tree). Such containers stay pyobj:
+every element costs a `{tag, ptr}` box allocation, every read a tag
+check plus unbox, and container operations go through the dynamic
+list/dict runtime. jsonparse spends 6ms of its 10.7ms on this
+(pyobj construction is the residual vs Rust's serde_json::Value).
+
+The pyobj box is already a tagged union - the problem is that it is
+heap-allocated per value with a payload pointer indirection, and that
+containers holding it are fully dynamic. What is missing is a
+user-declarable sum type with a compact single-block layout and
+typed containers over it.
+
+## 2. Proposed surface syntax
+
+A union is declared with a new `union` statement (subclassing the
+established "no inheritance, annotated fields only" class model):
+
+```
+union Json:
+    null
+    bool
+    int
+    float
+    str
+    list[Json]
+    dict[str, Json]
+
+def parse_value(s: str, pos: list[int]) -> Json:
+    ...
+    return [v for ...]          # list[Json] construction
+
+def sum_tree(v: Json) -> int:
+    match v:
+        case int:        # narrow + unbox in one branch
+            return v + 1
+        case list[Json]:
+            total = 0
+            for item in v:
+                total += sum_tree(item)
+            return total
+```
+
+- `union Name:` members are kinds, not fields. Members supported in
+  v1: `null`, `bool`, `int`, `float`, `str`, `list[T]`, `dict[K, V]`
+  where T/V may be the union itself (the recursive case JSON needs).
+- The annotation `x: Json` / `list[Json]` / `dict[str, Json]` drives
+  everything downstream - same authority model as existing
+  annotations.
+
+## 3. Representation
+
+A value of union type is one heap block:
+
+```
+{i32 tag, i64 payload}   # 16 bytes, one malloc per value
+```
+
+- scalar members carry the value inline (bool as i1-in-i64, int i64,
+  float bits)
+- `str` carries a rawstr* in the payload (owned; freed recursively)
+- `list[T]` carries a rawlist-of-payload-pointer* (elements are
+  union blocks: `rawlist_tagged` - a new rawlist family whose element
+  width is 8 and whose slot owns each element block)
+- `dict[K, V]` carries a rawdict variant with tagged value pointers
+  (`rawdict_str_tagged` / `rawdict_int_tagged`)
+
+Tag numbering is declaration order, 0 = first member. The nullary
+member (`null`) needs no payload.
+
+This is serde_json::Value's design: enum + Box'd Vec/Map, except our
+containers reuse the existing rawlist/rawdict open-addressing
+machinery (the emitter families `_emit_rawlist_*` / `_emit_rawdict_*`
+grow two element families rather than a new container runtime).
+
+## 4. Runtime surface (emitted, `_emit_tagged_*` family)
+
+- `tagged_new_scalar(tag, bits) -> blk*`
+- `tagged_new_str(tag, rawstr*) -> blk*`
+- `tagged_new_list(tag, rawlist_tagged*) -> blk*`   (dict same)
+- `tagged_tag(blk*) -> i32`
+- `tagged_bits(blk*) -> i64`          (scalar unbox; narrow-verified)
+- `tagged_str(blk*) -> rawstr*`       (borrowed read)
+- `tagged_list(blk*) -> rawlist_tagged*` (borrowed read)
+- `tagged_free(blk*)`                 (recursive; JSON is a tree, no
+                                       cycles by construction)
+- `rawlist_tagged_push/get/set/clear` (slot owns blocks)
+
+Borrow discipline follows the v1.7.1 rules verbatim: reads are
+borrowed pointers, rebinding an owned slot frees the old block only
+when the slot is owned (`_owned_strs` generalizes to
+`_owned_tagged`), function-exit drops owned slots, borrowed
+parameters are never freed by the callee.
+
+## 5. Codegen paths
+
+1. IR: `union Json: ...` desugars to a class_def whose "fields" are
+   member descriptors; the front end records
+   `union_members["Json"] = [(name, member_kind), ...]`.
+2. `_annotation_kind`: `Json` resolves to kind `"tagged:Json"` (new
+   kind family, carried as a string like the raw kinds);
+   `list[Json]` -> `rawlist_tagged`, `dict[str, Json]` ->
+   `rawdict_str_tagged`.
+3. Construction: a list literal with element kind tagged emits
+   per-element `tagged_new_*` + `rawlist_tagged` build (same shape as
+   the existing comprehension desugar).
+4. Narrowing: `match v: case int:` reuses the v1.7 match-class
+   narrowing - the case tests `tagged_tag` against the member's tag
+   constant, then the body sees `v` re-typed to the member kind
+   (scalar slots load `tagged_bits`, str slots `tagged_str`).
+5. Subscript/iteration over `list[Json]` yields kind `"tagged:Json"`
+   through the same `RAWLIST_KINDS` table used by the v1.11.3
+   subscript inference (one new row).
+
+## 6. Staged delivery (byte-gate discipline)
+
+- S0 probe: hand-write the `tagged_new/tagged_tag/tagged_bits`
+  emitter + a 20-line .si using inline IR calls, measure a
+  construction loop vs pyobj. Go/no-go on >=2x.
+- S1 runtime: full `_emit_tagged_*` family + `rawlist_tagged`
+  element family (emitters only; corpus byte-identical since no
+  program reaches them).
+- S2 front end + annotations: union parse, kind resolution,
+  construction/narrowing emission; new tests; corpus unchanged
+  (opt-in syntax).
+- S3 four-plane: flatten/`.si` subset for any new dual-valid idioms;
+  fixed points rebuilt; jsonparse.si rewritten to the Json union
+  (benchmark change, output-verified against the pyobj version).
+- S4 ownership audit: borrowed-read rules, exit drops, a
+  double-free probe test; symbolic invariant proof of
+  `tagged_free` acyclicity-by-construction (roadmap Phase 1 tie-in).
+
+## 7. Expected outcome
+
+jsonparse: pyobj box (2 mallocs + payload indirection per value) ->
+one 16-byte block (str leaves still need their data block) and
+typed containers. Prediction from the wordcount arithmetic (85ns ->
+~27ns per eliminated box): 10.7ms -> ~5-6ms, i.e. 1.0-1.2x vs the
+Rust serde_json baseline. Secondary: any parser/AST-walk program in
+user space gets the same representation for free.
+
+## 8. Risks / open questions
+
+- Representation freeze: 16-byte blocks are hard to change after
+  C-ABI export; keep `tagged_*` out of `@export` until S3 lands.
+- Error mode: narrowing a wrong tag must abort loudly (same policy
+  as subscript bounds) - not return a default.
+- Only one union per element type family in v1 (Json-shaped); user
+  unions with arbitrary members are deliberately phase 2.
+- Recursive `dict[str, Json]` values inside rawdict need an owned-
+  slot clear hook (`rawdict_str_tagged_clear` frees value blocks) -
+  one more emitter, same recipe.
+
+## 9. Non-goals
+
+- Generics over unions, C-ABI tagged exports, cycle collection
+  (union values are trees by construction).
