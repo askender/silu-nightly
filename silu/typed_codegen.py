@@ -5458,12 +5458,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self._store_rawstr(name, coerced[1])
         self._char_aliases.clear()
 
-    def _char_alias_read(self, name: str):
-        """Replay a live alias as a fresh view (re-runs bounds check and
-        offset arithmetic - register work, no allocation)."""
-        str_tv, index_node = self._char_aliases[name]
-        return self._emit_char_view(str_tv[1], index_node)
-
     def _entry_alloca(self, ty: Any, name: str):
         """Allocate in the function entry block (a mid-block alloca in a
         loop would grow the stack per iteration)."""
@@ -5626,13 +5620,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 )
                 return self._rawstr_finish(temp, (RAWSTR, joined))
         return self._rawstr_finish(temp, None)
-
-    def _rawdict_key_from_tv(self, kind: str, key_tv: Tuple[str, Any]):
-        """Dict key materialization: rawstr pointer for str keys (the
-        set path copies it into the dict), machine word for int keys."""
-        if kind in RAWDICT_STR_KINDS:
-            return self._coerce(key_tv, RAWSTR)[1]
-        return self._coerce(key_tv, I64)[1]
 
     def _rawstr_stack_view(self, data_ptr: Any, byte_len: Any):
         """A stack rawstr struct pointing at borrowed bytes - heap-free
@@ -7522,27 +7509,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             kinds.append(kind)
         return kinds
 
-    def _static_signature(self, func_def: list):
-        """Return (param_kinds, ret_kind) when fully annotated numeric."""
-        param_annotations = func_def[4] if len(func_def) > 4 else ()
-        ret_annotation = func_def[5] if len(func_def) > 5 else None
-        params = func_def[2]
-        kinds = []
-        for index, _param in enumerate(params):
-            annotation = (
-                param_annotations[index] if index < len(param_annotations) else None
-            )
-            kind = self._annotation_kind(annotation)
-            if kind is None:
-                return None, None
-            kinds.append(kind)
-        if ret_annotation is None:
-            return None, None
-        ret_kind = self._annotation_kind(ret_annotation)
-        if ret_kind is None:
-            return None, None
-        return kinds, ret_kind
-
     def _collect_ctor_returns(self):
         """Record functions whose every return expression is a
         constructor of one same class - their call results then resolve
@@ -8395,9 +8361,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             # (instances are pointers; null = None)
             left = self._convert_node(node[1])
             right = self._convert_node(node[2])
-
-            def as_i1(tv):
-                return self._to_i1_cond(tv)
 
             def is_null(tv):
                 if _is_inst(tv[0]):
@@ -10110,13 +10073,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         if node[0] == "name" and node[1] in self.var_kinds:
             return self.var_kinds[node[1]]
         return OBJ
-
-    def _instance_expr_kind(self, node: Any) -> bool:
-        """True when node statically evaluates to a class instance
-        (constructor call, or a name already bound to an instance)."""
-        if self._constructor_call_class(node) is not None:
-            return True
-        return self._class_of_node(node) is not None
 
     def _convert_for(self, node: list) -> Tuple[str, Any]:
         target_node, iter_node, body_stmts = node[1], node[2], node[3]

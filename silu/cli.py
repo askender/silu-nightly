@@ -102,58 +102,6 @@ def check_interpreter_tree(tree, **kwargs) -> tuple[bool, str]:
         return False, str(e)
 
 
-def check_interpreter(source_code: str, **kwargs) -> tuple[bool, str]:
-    """Check if the source code can be interpreted by Silu without errors.
-
-    Returns:
-        tuple[bool, str]: (success, error_reason) where success is True if the code
-        can be interpreted successfully, and error_reason is a description of the failure.
-    """
-    import io
-    import contextlib
-
-    try:
-        from silu.importer import parse_with_imports
-        from silu.interpreter import SiluInterpreter
-
-        tree = parse_with_imports(source_code)
-        interpreter = SiluInterpreter(**kwargs)
-
-        # Suppress all output during interpretation
-        with (
-            contextlib.redirect_stdout(io.StringIO()),
-            contextlib.redirect_stderr(io.StringIO()),
-        ):
-            interpreter.visit(tree)
-
-        return True, ""
-    except SyntaxError as e:
-        return False, f"syntax error: {e.msg} at line {e.lineno}"
-    except NotImplementedError as e:
-        return False, f"unsupported feature: {str(e)}"
-    except AttributeError as e:
-        error_msg = str(e)
-        if "has no attribute" in error_msg:
-            return False, f"unsupported operation: {error_msg}"
-        return False, f"attribute error: {error_msg}"
-    except NameError as e:
-        return False, f"name error: {str(e)}"
-    except TypeError as e:
-        return False, f"type error: {str(e)}"
-    except ValueError as e:
-        return False, f"value error: {str(e)}"
-    except ZeroDivisionError:
-        return False, "runtime error: division by zero"
-    except IndexError as e:
-        return False, f"index error: {str(e)}"
-    except KeyError as e:
-        return False, f"key error: {str(e)}"
-    except Exception as e:
-        # Generic catch-all for other errors
-        error_type = type(e).__name__
-        return False, f"{error_type.lower()}: {str(e)}"
-
-
 def run_check(filename: str) -> None:
     """Check if a file can be interpreted by Silu and print result."""
     try:

@@ -840,19 +840,6 @@ class IRToSourceConverter:
             parts.append(operand_str)
         return f" {op} ".join(parts)
 
-    def _bool_op_binary_legacy(self, ir_node: Tuple) -> str:
-        op, left, right = ir_node
-        left_str = self.convert_to_source(left)
-        right_str = self.convert_to_source(right)
-
-        # Add parentheses only if operands need them based on precedence
-        if self._needs_parentheses(left, op, side="left"):
-            left_str = f"({left_str})"
-        if self._needs_parentheses(right, op, side="right"):
-            right_str = f"({right_str})"
-
-        return f"{left_str} {op} {right_str}"
-
     def _convert_unary_op(self, ir_node: Tuple) -> str:
         """Convert unary operation IR to source code."""
         op, operand = ir_node

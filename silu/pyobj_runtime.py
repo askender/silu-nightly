@@ -1656,13 +1656,6 @@ class PyobjRuntimeMixin:
         builder.position_at_end(error_block)
         builder.ret(ir.const_(pyobj_ptr, None))
 
-    def _create_boxed_str_affix(self):
-        """i1 str_starts_with / str_ends_with(PObj* s, PObj* p) - the
-        boxed twins of the rawstr affix probes (emitted by the typed
-        subclass; here we only declare wrappers when they exist)."""
-        # emitted lazily by the typed subclass; nothing to do in base
-        return None
-
     def _create_list_and_str_method_runtime(self):
         """Runtime for list methods and string methods/equality."""
         i32 = ir.IntType(32)

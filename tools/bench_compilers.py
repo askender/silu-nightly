@@ -16,7 +16,6 @@ Stage breakdown measured separately on each program.
 import os
 import statistics
 import subprocess
-import sys
 import time
 
 REPO = "/Users/askender/aix1/silu"
@@ -87,18 +86,6 @@ def build_self_cached_oneproc(si, bin_):
     # clang (python only orchestrates); binaries rebuild on source
     # change, so steady-state runs are pure execution
     return sh([PY, SELFHOST_BUILD, si, "-o", bin_])
-
-
-def build_siluc(si, bin_):
-    # monolith variant: ONE native compiler process (fe + converter
-    # import-inlined) + clang - kept side by side for comparison
-    ir = subprocess.run([SILUC], stdin=open(si, "r"),
-                        stdout=subprocess.PIPE, cwd=REPO).stdout
-    sys.path.insert(0, REPO)
-    from silu import runtime_cache
-
-    runtime_cache.build_with_cache(None, bin_, full_text=ir.decode())
-    return subprocess.CompletedProcess([SILUC], 0)
 
 
 def link_cached(ll, bin_):

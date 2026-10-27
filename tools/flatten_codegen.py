@@ -81,10 +81,6 @@ def method_blocks(tree, class_name):
     return out, cls
 
 
-def lines_of(path):
-    return open(path).read().split("\n")
-
-
 def _debase(ls):
     """Base module code may self-reference the old class name."""
     out = []
@@ -476,11 +472,6 @@ def si_main():
         def visit_ClassDef(self, node):
             self.generic_visit(node)
             node.body = self._strip_doc(node.body)
-            return node
-
-        def _strip_default_args(self, node):
-            node.args.defaults = []
-            node.args.kw_defaults = []
             return node
 
         def visit_FunctionDef(self, node):

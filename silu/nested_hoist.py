@@ -45,13 +45,6 @@ def _is_node(x):
     return isinstance(x, (list, tuple)) and len(x) > 0 and isinstance(x[0], str)
 
 
-def _children(node):
-    """All tuple/list children of an IR node (opcode included)."""
-    if isinstance(node, (list, tuple)):
-        for x in node:
-            yield x
-
-
 def _mentions_name(node, name):
     """Does the tree contain ("name", name)? Descends through both IR
     nodes and statement/argument lists (tuples whose head is not a

@@ -347,38 +347,3 @@ def create_builtin_functions_dict(current_path=None):
             simplify_display_func=simplify_args_display,
         ),
     }
-
-
-def is_builtin_function(name: str) -> bool:
-    """Check if a name refers to a builtin function we handle"""
-    builtins = {
-        "int",
-        "float",
-        "str",
-        "bool",
-        "type",
-        "isinstance",
-        "len",
-        "abs",
-        "max",
-        "min",
-        "range",
-        "sqrt",
-        "print",
-    }
-    return name in builtins
-
-
-def get_builtin_function(name: str, current_path=None):
-    """
-    Get a symbolic implementation of a builtin function
-
-    Args:
-        name: Name of the builtin function
-        current_path: Current execution path (optional)
-
-    Returns:
-        Symbolic function implementation or None if not found
-    """
-    builtins_dict = create_builtin_functions_dict(current_path)
-    return builtins_dict.get(name)

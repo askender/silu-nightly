@@ -677,14 +677,6 @@ class LoopHandler(IRNodeHandler):
                 return expr[1]
         return expr
 
-    def _is_valid_iteration(self, k: int, start: Any, stop: Any, step: Any) -> bool:
-        """Check if iteration k is valid for the given range"""
-        if not all(isinstance(x, int) for x in [start, stop, step]):
-            return k < 3  # Fallback for symbolic values
-
-        current_val = start + k * step
-        return (step > 0 and current_val < stop) or (step < 0 and current_val > stop)
-
     def _execute_loop_body(self, executor, body_ir):
         """Execute loop body statements"""
         if isinstance(body_ir, (tuple, list)) and len(body_ir) > 0:
@@ -739,53 +731,5 @@ class LoopHandler(IRNodeHandler):
             and executor.current_path not in executor.path_manager.paths
         ):
             executor.path_manager.add_path(executor.current_path)
-
-        return create_concrete_value(None)
-
-    def _handle_c_for_loop(self, executor, condition, update, body, loop_node):
-        """Handle C-style for loop with enhanced analysis"""
-        max_iterations = getattr(executor, "max_loop_iterations", 10)
-        iterations = 0
-        loop_id = f"c_for_{id(loop_node)}"
-
-        try:
-            while iterations < max_iterations:
-                # Check loop condition
-                if condition:
-                    cond_result = executor._execute_ir(condition)
-                    if hasattr(cond_result, "value") and not cond_result.value:
-                        break
-
-                    # TODO: Generate Z3 constraints for condition if available
-                    # if executor.z3_available:
-                    #     try:
-                    #         z3_cond = executor._generate_z3_constraint(condition)
-                    #         if z3_cond is not None:
-                    #             executor.current_constraints.append(z3_cond)
-                    #     except Exception as e:
-                    #         raise
-                    # Continue without Z3 constraint
-
-                # Execute loop body
-                executor._execute_ir(body)
-
-                # Execute update statement
-                if update:
-                    executor._execute_ir(update)
-
-                iterations += 1
-
-                # Track iterations in path
-                if executor.current_path:
-                    executor.current_path.loop_iterations[loop_id] = iterations
-
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            if executor.current_path:
-                executor.current_path.add_statement(f"Loop error: {str(e)}")
-
-        # Record final iteration count
-        if executor.current_path:
-            executor.current_path.loop_iterations[loop_id] = iterations
 
         return create_concrete_value(None)

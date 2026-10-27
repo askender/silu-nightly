@@ -15,7 +15,6 @@ __all__ = [
     "_rawlist_elem_size",
     "_rawdict_call_fn",
     "_extract_i64_const",
-    "_kind_of_llvm_type",
     "_targets_parent",
     "_all_name_parts",
     "_all_of_kind",
@@ -131,12 +130,6 @@ def _extract_i64_const(value: Any) -> Optional[int]:
     ) and value.type.width == 64:
         return int(value.constant)
     return None
-
-
-def _kind_of_llvm_type(kind: str) -> ir.Type:
-    if kind == OBJ:
-        return ir.PointerType(ir.IntType(8))  # placeholder, unused
-    return LLVM_KIND_TYPES[kind]
 
 
 def _targets_parent(target_node, parent_names) -> bool:
