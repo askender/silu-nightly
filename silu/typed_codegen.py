@@ -4007,6 +4007,295 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.ret_void()
         self._create_boxed_str_join()
 
+    def _emit_tagged_core(self):
+        """Sum-type runtime (RFC docs/rfc_sum_types.md, S1): values
+        are single 16-byte blocks {i32 tag, i64 payload}. Scalar
+        members carry the value inline; str/list/dict members carry
+        the pointer as bits. Container storage REUSES the existing
+        rawlist_i64 / rawdict_si machinery element-wise (8-byte
+        slots holding block pointers) - only the recursive frees are
+        new here. Emitted lazily (_ensure_tagged_runtime): S1 has no
+        front-end trigger, so the corpus .ll is unchanged."""
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        self.tagged_struct_type = ir.LiteralStructType([i32, i64])
+
+        # i8* tagged_new_scalar(i32 tag, i64 bits)
+        self.tagged_new_scalar = ir.func_(
+            self.module, ir.FunctionType(i8p, [i32, i64], False),
+            'tagged_new_scalar',
+        )
+        builder = ir.builder_(self.tagged_new_scalar.append_basic_block("entry"))
+        tag_a, bits_a = self.tagged_new_scalar.args
+        blk = builder.bitcast(
+            builder.call(self.malloc, [ir.const_(i64, 16)]),
+            ir.PointerType(self.tagged_struct_type),
+        )
+        builder.store(tag_a, _struct_gep(builder, blk, 0))
+        builder.store(bits_a, _struct_gep(builder, blk, 1))
+        builder.ret(builder.bitcast(blk, i8p))
+
+        # i8* tagged_new_ptr(i32 tag, i8* p) - str/list/dict members
+        self.tagged_new_ptr = ir.func_(
+            self.module, ir.FunctionType(i8p, [i32, i8p], False),
+            'tagged_new_ptr',
+        )
+        builder = ir.builder_(self.tagged_new_ptr.append_basic_block("entry"))
+        tag_a, ptr_a = self.tagged_new_ptr.args
+        blk = builder.bitcast(
+            builder.call(self.malloc, [ir.const_(i64, 16)]),
+            ir.PointerType(self.tagged_struct_type),
+        )
+        builder.store(tag_a, _struct_gep(builder, blk, 0))
+        builder.store(
+            builder.ptrtoint(ptr_a, i64), _struct_gep(builder, blk, 1)
+        )
+        builder.ret(builder.bitcast(blk, i8p))
+
+        # i32 tagged_tag(i8* b)
+        self.tagged_tag = ir.func_(
+            self.module, ir.FunctionType(i32, [i8p], False), 'tagged_tag',
+        )
+        builder = ir.builder_(self.tagged_tag.append_basic_block("entry"))
+        (b_arg,) = self.tagged_tag.args
+        builder.ret(
+            builder.load(
+                _struct_gep(builder, builder.bitcast(b_arg, ir.PointerType(self.tagged_struct_type)), 0)
+            )
+        )
+
+        # i64 tagged_bits(i8* b) - scalar unbox
+        self.tagged_bits = ir.func_(
+            self.module, ir.FunctionType(i64, [i8p], False), 'tagged_bits',
+        )
+        builder = ir.builder_(self.tagged_bits.append_basic_block("entry"))
+        (b_arg,) = self.tagged_bits.args
+        builder.ret(
+            builder.load(
+                _struct_gep(builder, builder.bitcast(b_arg, ir.PointerType(self.tagged_struct_type)), 1)
+            )
+        )
+
+        # i8* tagged_ptr(i8* b) - borrowed str/list/dict read
+        self.tagged_ptr = ir.func_(
+            self.module, ir.FunctionType(i8p, [i8p], False), 'tagged_ptr',
+        )
+        builder = ir.builder_(self.tagged_ptr.append_basic_block("entry"))
+        (b_arg,) = self.tagged_ptr.args
+        builder.ret(
+            builder.inttoptr(
+                builder.load(
+                    _struct_gep(builder, builder.bitcast(b_arg, ir.PointerType(self.tagged_struct_type)), 1)
+                ),
+                i8p,
+            )
+        )
+    def _emit_tagged_frees(self):
+        """Sum-type recursive frees (RFC S1). The three tag arguments
+        say which members own str/list/dict payloads; every other tag
+        is a scalar (or null) and only the block itself is freed.
+        Union wrappers emitted in S2 can specialize these to
+        constants. Trees only - unions are cycle-free by
+        construction."""
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
+        # forward declarations first: the three frees call each other
+        # recursively (list -> free -> list), so every function
+        # object exists before any body is emitted
+        self.tagged_free = ir.func_(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i32, i32, i32], False),
+            'tagged_free',
+        )
+        self.tagged_list_free = ir.func_(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i32, i32, i32], False),
+            'tagged_list_free',
+        )
+        self.tagged_dict_free = ir.func_(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i32, i32, i32], False),
+            'tagged_dict_free',
+        )
+
+        entry = self.tagged_list_free.append_basic_block("entry")
+        cond = self.tagged_list_free.append_basic_block("cond")
+        body = self.tagged_list_free.append_basic_block("body")
+        skip = self.tagged_list_free.append_basic_block("skip")
+        free_el = self.tagged_list_free.append_basic_block("free_el")
+        done = self.tagged_list_free.append_basic_block("done")
+        builder = ir.builder_(entry)
+        rl_a, str_a, list_a, dict_a = self.tagged_list_free.args
+        rl_ptr = builder.bitcast(
+            rl_a, ir.PointerType(self.raw_list_struct_type)
+        )
+        items = builder.load(
+            _struct_gep(builder, rl_ptr, 2)
+        )
+        n = builder.load(_struct_gep(builder, rl_ptr, 0))
+        i_ptr = builder.alloca(i64, None, 'tl_i')
+        builder.store(zero64, i_ptr)
+        builder.branch(cond)
+
+        builder.position_at_end(cond)
+        idx = builder.load(i_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, n), body, done
+        )
+
+        builder.position_at_end(body)
+        elem = builder.load(
+            builder.gep(builder.bitcast(items, ir.PointerType(i64)), [idx])
+        )
+        builder.cbranch(
+            builder.icmp_signed("!=", elem, zero64), free_el, skip
+        )
+
+        builder.position_at_end(free_el)
+        builder.call(
+            self.tagged_free,
+            [builder.inttoptr(elem, i8p), str_a, list_a, dict_a],
+        )
+        builder.branch(skip)
+
+        builder.position_at_end(skip)
+        builder.store(builder.add(idx, one64), i_ptr)
+        builder.branch(cond)
+
+        builder.position_at_end(done)
+        builder.call(self.free, [items])
+        builder.call(self.free, [rl_a])
+        builder.ret_void()
+
+        entry = self.tagged_dict_free.append_basic_block("entry")
+        cond = self.tagged_dict_free.append_basic_block("cond")
+        body = self.tagged_dict_free.append_basic_block("body")
+        skip = self.tagged_dict_free.append_basic_block("skip")
+        free_entry = self.tagged_dict_free.append_basic_block("free_entry")
+        done = self.tagged_dict_free.append_basic_block("done")
+        builder = ir.builder_(entry)
+        d_a, str_a, list_a, dict_a = self.tagged_dict_free.args
+        d_ptr = builder.bitcast(
+            d_a, ir.PointerType(self.raw_dict_struct_type)
+        )
+        filled = builder.load(_struct_gep(builder, d_ptr, 1))
+        keys = builder.load(
+            _struct_gep(builder, d_ptr, 5)
+        )
+        vals = builder.load(
+            _struct_gep(builder, d_ptr, 4)
+        )
+        i_ptr = builder.alloca(i64, None, 'td_i')
+        builder.store(zero64, i_ptr)
+        builder.branch(cond)
+
+        builder.position_at_end(cond)
+        idx = builder.load(i_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, filled), body, done
+        )
+
+        builder.position_at_end(body)
+        key_bits = builder.load(
+            builder.gep(builder.bitcast(keys, ir.PointerType(i64)), [idx])
+        )
+        val_bits = builder.load(
+            builder.gep(builder.bitcast(vals, ir.PointerType(i64)), [idx])
+        )
+        builder.cbranch(
+            builder.icmp_signed("!=", key_bits, zero64), free_entry, skip
+        )
+
+        builder.position_at_end(free_entry)
+        builder.call(self.rawstr_free, [builder.inttoptr(key_bits, i8p)])
+        builder.call(
+            self.tagged_free,
+            [builder.inttoptr(val_bits, i8p), str_a, list_a, dict_a],
+        )
+        builder.branch(skip)
+
+        builder.position_at_end(skip)
+        builder.store(builder.add(idx, one64), i_ptr)
+        builder.branch(cond)
+
+        builder.position_at_end(done)
+        builder.call(self.free, [builder.bitcast(keys, i8p)])
+        builder.call(self.free, [builder.bitcast(vals, i8p)])
+        builder.call(self.free, [d_a])
+        builder.ret_void()
+
+        entry = self.tagged_free.append_basic_block("entry")
+        chk_str = self.tagged_free.append_basic_block("chk_str")
+        chk_list = self.tagged_free.append_basic_block("chk_list")
+        drop_str = self.tagged_free.append_basic_block("drop_str")
+        drop_list = self.tagged_free.append_basic_block("drop_list")
+        drop_dict = self.tagged_free.append_basic_block("drop_dict")
+        drop_block = self.tagged_free.append_basic_block("drop_block")
+        builder = ir.builder_(entry)
+        b_a, str_a, list_a, dict_a = self.tagged_free.args
+        builder.cbranch(
+            builder.icmp_signed("==", builder.ptrtoint(b_a, i64), zero64),
+            drop_block,
+            chk_str,
+        )
+
+        builder.position_at_end(chk_str)
+        blk_s = builder.bitcast(
+            b_a, ir.PointerType(self.tagged_struct_type)
+        )
+        tag_v = builder.load(_struct_gep(builder, blk_s, 0))
+        ptr_v = builder.inttoptr(
+            builder.load(_struct_gep(builder, blk_s, 1)), i8p
+        )
+        builder.cbranch(
+            builder.icmp_signed("==", tag_v, str_a), drop_str, chk_list
+        )
+
+        builder.position_at_end(chk_list)
+        chk_dict = self.tagged_free.append_basic_block("chk_dict")
+        builder.cbranch(
+            builder.icmp_signed("==", tag_v, list_a), drop_list, chk_dict
+        )
+
+        builder.position_at_end(chk_dict)
+        builder.cbranch(
+            builder.icmp_signed("==", tag_v, dict_a), drop_dict, drop_block
+        )
+
+        builder.position_at_end(drop_str)
+        builder.call(self.rawstr_free, [ptr_v])
+        builder.branch(drop_block)
+
+        builder.position_at_end(drop_list)
+        builder.call(
+            self.tagged_list_free, [ptr_v, str_a, list_a, dict_a]
+        )
+        builder.branch(drop_block)
+
+        builder.position_at_end(drop_dict)
+        builder.call(
+            self.tagged_dict_free, [ptr_v, str_a, list_a, dict_a]
+        )
+        builder.branch(drop_block)
+
+        builder.position_at_end(drop_block)
+        builder.call(self.free, [b_a])
+        builder.ret_void()
+
+    def _ensure_tagged_runtime(self):
+        """Emit the sum-type runtime once, on first use (S2 wires the
+        trigger from union annotations; S1 callers are tests only)."""
+        if self.tagged_emitted:
+            return
+        self.tagged_emitted = True
+        self._emit_tagged_core()
+        self._emit_tagged_frees()
+
     def _emit_rawdict_probe(self, name, ret_type, arg_types, on_hit, on_miss):
         """Shared tombstone-skipping probe for rawdict helpers.
 

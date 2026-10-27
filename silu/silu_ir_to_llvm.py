@@ -120,6 +120,8 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
     def __init__(self):
         # created lazily by whichever runtime builder runs first
         self.realloc = None
+        # sum-type runtime emitted on first use (RFC S1/S2)
+        self.tagged_emitted = False
         # Initialize LLVM (llvmlite >= 0.44 initializes automatically and
         # its explicit initialize() raises; older versions require it)
         try:
