@@ -4,6 +4,23 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.15.2
+distribution + prove v2 + transform equivalence: the roadmap closes
+
+- silu bootstrap: one command builds the zero-Python toolchain from
+  the package's own sources (mtime-incremental); prebuilt binaries
+  ship on GitHub Releases (4 platforms), NOT pip'd; tools/ +
+  selfhost/ join the wheel - clean-venv end-to-end verified
+- prove v2 path sensitivity: obligations carry direction-applied
+  path conditions + live env bindings; gcd's guarded a%b went
+  false-positive -> PROVED SAFE; over-suppression checked both ways
+- transform-equivalence proofs (roadmap Phase 3): borrowed-str
+  callee contract + rawlist writeback guard discharged over Z3,
+  mutation-verified - the three-phase symbolic roadmap is fully
+  delivered
+- legacy bare-word CLI layer now knows all subcommands (bootstrap
+  was being eaten as a filename)
+
 ### v1.15.1
 prove v1.1: real-code ready + release smoke
 
