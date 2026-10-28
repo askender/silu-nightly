@@ -695,6 +695,13 @@ Examples:
     )
     prove_parser.add_argument("file", help="Silu source file")
 
+    # One-time self-hosted toolchain build (siluc1 + siluc driver)
+    subparsers.add_parser(
+        "bootstrap",
+        help="Build the zero-Python toolchain (siluc) from this "
+        "package's own sources, once (~25s)",
+    )
+
     # Symbolic execution subcommand
     symbolic_parser = subparsers.add_parser(
         "symbolic", help="Perform symbolic execution"
@@ -743,8 +750,10 @@ Examples:
 
 def validate_arguments(args) -> None:
     """Validate command line arguments."""
-    if args.mode == "prove":
-        if not args.file or not Path(args.file).exists():
+    if args.mode in ("prove", "bootstrap"):
+        if args.mode == "prove" and (
+            not args.file or not Path(args.file).exists()
+        ):
             print(f"Error: File '{args.file}' does not exist.", file=sys.stderr)
             sys.exit(1)
         return
@@ -812,7 +821,11 @@ def handle_legacy_usage(args) -> bool:
     if (
         len(sys.argv) == 2
         and not sys.argv[1].startswith("-")
-        and sys.argv[1] not in ["interpret", "ir", "exec", "symbolic", "to-source"]
+        and sys.argv[1]
+        not in [
+            "interpret", "ir", "exec", "symbolic", "to-source",
+            "prove", "bootstrap", "check", "verify", "build", "llvm",
+        ]
     ):
         filename = sys.argv[1]
         try:
@@ -858,6 +871,46 @@ def main() -> None:
         except Exception as e:
             print(f"Unexpected error: {e}", file=sys.stderr)
             sys.exit(1)
+        return
+
+    if args.mode == "bootstrap":
+        import shutil as _shutil
+
+        if _shutil.which("clang") is None:
+            print(
+                "Error: clang is required (Xcode Command Line "
+                "Tools on macOS, 'apt install clang' on Linux).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        import os as _os
+
+        try:
+            import tools.selfhost_build as shb
+        except ModuleNotFoundError:
+            repo = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            sys.path.insert(0, repo)
+            try:
+                import tools.selfhost_build as shb
+            except ModuleNotFoundError:
+                print(
+                    "Error: the self-hosted build scripts (tools/) "
+                    "are not available in this install; install from "
+                    "the repository or use 'pip install -e .'.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        siluc = shb.ensure_siluc()
+        fe = shb.ensure_frontend()
+        print("bootstrapped the self-hosted toolchain:")
+        print(f"  {siluc}   # file-in binary-out, zero Python (~0.13s)")
+        print(f"  {fe}       # stdin .si -> IR JSON")
+        print(
+            "Try: ./siluc program.si -o program\n"
+            "Re-run after upgrades or when sources change; the build "
+            "is incremental (mtime-cached)."
+        )
         return
 
     # Get source code for other modes

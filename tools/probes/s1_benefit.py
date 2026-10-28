@@ -125,7 +125,8 @@ def med(exe, n=9):
 
 
 def main():
-    import tempfile, os
+    import tempfile
+    import os
 
     with tempfile.TemporaryDirectory() as td:
         results = {}

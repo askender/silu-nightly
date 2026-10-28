@@ -99,6 +99,7 @@ print(greet("Silu Programming"))
 | `silu build program.si -o program` | One-command native executable |
 | `silu verify program.si` | Diff compiled output against the interpreter |
 | `silu prove program.si` | Z3 panic-free proof: can any function abort (div/mod by zero, index, literal KeyError)? reachable aborts come with witness values |
+| `silu bootstrap` | One-time build of the zero-Python toolchain (`siluc`, ~25s, incremental); prebuilt binaries also ship on GitHub Releases |
 
 ### The Self-Hosted Compiler (siluc)
 

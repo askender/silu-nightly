@@ -25,7 +25,11 @@ silu = "silu.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["silu*"]
+include = ["silu*", "tools*", "selfhost*"]
+
+[tool.setuptools.package-data]
+tools = ["*.si", "*.c"]
+selfhost = ["*.si"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

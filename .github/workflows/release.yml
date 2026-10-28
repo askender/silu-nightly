@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  binaries:
+    # Pre-built siluc for people who want the zero-Python toolchain
+    # without bootstrapping. The pip package stays pure Python; these
+    # artifacts are the binaries' proper channel. siluc needs clang at
+    # RUNTIME on the user machine (Xcode CLT / apt install clang).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-13
+            platform: macos-x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+          - os: ubuntu-latest
+            platform: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install llvmlite pycparser z3-solver loguru
+      - name: Bootstrap the toolchain
+        run: python -m silu bootstrap
+      - name: Smoke (compile + run fib)
+        run: |
+          ./siluc benchmarks/fib.si -o /tmp/fib && /tmp/fib
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist/siluc-${{ matrix.platform }}
+          cp siluc siluc1 silu_fe dist/siluc-${{ matrix.platform }}/
+          clang -O2 tools/siluc_main.c -o dist/siluc-${{ matrix.platform }}/siluc-driver-src-check || true
+          rm dist/siluc-${{ matrix.platform }}/siluc-driver-src-check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: siluc-${{ matrix.platform }}
+          path: dist/
+
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifacts@v4
+        with:
+          path: dist/
+      - name: Create release with binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*/siluc*
+          generate_release_notes: true
