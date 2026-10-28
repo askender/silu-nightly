@@ -90,7 +90,17 @@ symbolic next-byte model); each of the three abort sites has a
 positive test (a program where the abort IS reachable and the tool
 says so, with the witness).
 
-### Phase 3 — transform-equivalence proofs (hard, later)
+### Phase 3 — transform-equivalence proofs (DONE v1.15.2, tests/test_transform_equivalence.py)
+
+Discharged 2026-10-28: T1 borrowed-str callee contract (reads
+indistinguishable from a copy; rebind += never mutates the caller)
+and T2 the rawlist writeback guard (length-preserved keeps element
+identity, growth replaces the pointer, branches mutually exclusive,
+post-call state equals the callee's final content). Obligation-
+discharge over Z3; the mutation check (guard removed) flips the
+suite red. The original plan text follows.
+
+### Phase 3 (original plan) — transform-equivalence proofs (hard, later)
 
 The byte-identical gates prove build reproducibility, not semantic
 correctness of the optimizations themselves. The two transforms with
