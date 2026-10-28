@@ -9,7 +9,6 @@ evaluates on the linear path - branch-forked rebindings are v2).
 import subprocess
 import sys
 
-import pytest
 
 from silu.verify import verify_source
 
@@ -80,3 +79,77 @@ def test_guarded_divide_false_positive_is_documented():
         "def g(x: int) -> int:\n    if x == 0:\n        x = 1\n    return 10 / x\n"
     )
     assert not ok  # known v1 limitation; flip in v2 (path sensitivity)
+
+
+class TestV11BoundsAndKeys:
+    """v1.1: subscript bounds (statically-known lengths) and literal
+    KeyError obligations; assignments now evaluate their RHS (the
+    stock AssignmentHandler only knew the C-style 4-tuple assign, so
+    checked operations inside Silu assignments were invisible)."""
+
+    def test_bounds_reachable_with_witness(self):
+        ok, rep = verify_source(
+            "def pick(i: int) -> int:\n    return [10, 20, 30][i]\n"
+        )
+        assert not ok
+        assert "index out of range [0, 3)" in rep[0]
+        assert "i=" in rep[0]
+
+    def test_bounds_proved_safe_by_modulo(self):
+        ok, rep = verify_source(
+            "def safe_pick(i: int) -> int:\n    return [10, 20, 30][i % 3]\n"
+        )
+        assert ok and "proved safe" in rep[0]
+
+    def test_literal_index_overflow(self):
+        ok, _ = verify_source("def bad() -> int:\n    return [7][9]\n")
+        assert not ok
+
+    def test_empty_container_read(self):
+        ok, _ = verify_source("def e() -> int:\n    return [][0]\n")
+        assert not ok
+
+    def test_keyerror_missing_literal_key(self):
+        ok, rep = verify_source(
+            'def k() -> int:\n    d: dict[str, int] = {"a": 1}\n    return d["b"]\n'
+        )
+        assert not ok
+        assert "KeyError" in rep[0]
+
+    def test_keyerror_present_key_ok(self):
+        ok, _ = verify_source(
+            'def k() -> int:\n    d: dict[str, int] = {"a": 1}\n    return d["a"]\n'
+        )
+        assert ok
+
+    def test_division_inside_assignment_now_visible(self):
+        """the assign pre-hook: t = a / b records the obligation."""
+        ok, rep = verify_source(
+            "def f(a: int, b: int) -> int:\n    t: int = a / b\n    return t\n"
+        )
+        assert not ok
+        assert "division by zero" in rep[0]
+
+    def test_division_inside_loop_body_visible(self):
+        ok, rep = verify_source(
+            "def f(a: int, b: int, n: int) -> int:\n"
+            "    i: int = 0\n    while i < n:\n"
+            "        t: int = a / b\n        i = i + 1\n    return 0\n"
+        )
+        assert not ok  # conservative (guard is loop-dependent); v2 refines
+
+    def test_real_parser_function_proves_clean(self):
+        """roadmap Phase 2 exit criterion material: the jsonparse
+        scanner functions analyze without crashing and prove ok."""
+        src = (
+            "def digit_value(ch: str) -> int:\n"
+            '    if ch == "0":\n        return 0\n'
+            "    return ord(ch) - 48\n\n"
+            "def parse_number(s: str, pos: list[int]) -> int:\n"
+            "    n: int = 0\n"
+            '    while pos[0] < len(s) and s[pos[0]] >= "0" and s[pos[0]] <= "9":\n'
+            "        n = n * 10 + digit_value(s[pos[0]])\n"
+            "        pos[0] += 1\n    return n\n"
+        )
+        ok, rep = verify_source(src)
+        assert ok, rep

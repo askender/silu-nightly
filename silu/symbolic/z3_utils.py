@@ -329,17 +329,15 @@ class PathSatisfiabilityChecker:
                                 # Convert to boolean comparison (non-zero = True)
                                 constraint = constraint != 0
                         else:
-                            # logger.debug(f"Constraint is not a Z3 expression: {constraint}")
-                            raise ValueError(
-                                f"Constraint is not a Z3 expression: {constraint}"
-                            )
+                            # unparseable condition text: skip the
+                            # constraint (conservative - fewer
+                            # constraints can only over-approximate
+                            # reachability, never hide an abort)
+                            continue
 
                         solver.add(constraint)
                     else:
-                        # logger.debug(f"Constraint is not a Z3 expression: {constraint}")
-                        raise ValueError(
-                            f"Constraint is not a Z3 expression: {constraint}"
-                        )
+                        continue
 
                 # except Exception as e:
                 #     logger.error(f"Error adding constraint for '{condition_str}': {e}")
@@ -404,8 +402,59 @@ class PathSatisfiabilityChecker:
         return model_values
 
 
+def _tuple_tree_to_infix(expr_str: str) -> str:
+    """PathCondition stores expression trees as str(('>=', lhs, rhs));
+    recover an infix Python expression so ast.parse can read it.
+    Unknown ops fall back to the original text (the caller's parser
+    then returns None and the constraint is skipped - conservative)."""
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(expr_str.strip(), mode="eval").body
+    except (ValueError, SyntaxError, TypeError):
+        return expr_str
+    text = expr_str
+
+    def rebuild(node):
+        nonlocal text
+        if isinstance(node, _ast.Tuple) and node.elts:
+            first = node.elts[0]
+            if isinstance(first, _ast.Constant) and isinstance(first.value, str):
+                op = first.value
+                if op in (">", "<", ">=", "<=", "==", "!=") and len(node.elts) == 3:
+                    lh = rebuild(node.elts[1])
+                    rh = rebuild(node.elts[2])
+                    return f"({lh} {op} {rh})"
+                if op in ("And", "and") and len(node.elts) >= 2:
+                    return "(" + " and ".join(rebuild(e) for e in node.elts[1:]) + ")"
+                if op in ("Or", "or") and len(node.elts) >= 2:
+                    return "(" + " or ".join(rebuild(e) for e in node.elts[1:]) + ")"
+                if op == "Not" and len(node.elts) == 2:
+                    return "(not " + rebuild(node.elts[1]) + ")"
+            # fall through: try to rebuild operands and keep tuple text
+            return "(" + ", ".join(rebuild(e) for e in node.elts) + ")"
+        # a nested SymbolicValue renders as SymbolicValue(type=..., value=...)
+        # style text that ast.parse cannot read - guard with try in caller
+        return _ast.unparse(node) if hasattr(_ast, "unparse") else _ast.dump(node)
+
+    try:
+        rebuilt = rebuild(tree)
+        _ast.parse(rebuilt, mode="eval")
+        return rebuilt
+    except Exception:
+        return text
+
+
 def to_z3_expr_new(expr_str, env):
-    node = ast.parse(expr_str, mode="eval").body
+    expr_str = _tuple_tree_to_infix(expr_str)
+    try:
+        node = ast.parse(expr_str, mode="eval").body
+    except (ValueError, SyntaxError, TypeError):
+        # not Python source (raw expression-tree text, symbolic-value
+        # reprs, ...): skip the constraint. Skipping is conservative
+        # for abort-reachability: fewer constraints can only make an
+        # abort look MORE reachable, never hide one.
+        return None
 
     def convert(n, bool_context=False):
         if isinstance(n, ast.BinOp):

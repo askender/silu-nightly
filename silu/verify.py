@@ -29,7 +29,6 @@ from silu.symbolic_executor import SymbolicExecutor
 from silu.symbolic.builtin_utils import (
     SymbolicValue,
     SymbolicValueType,
-    create_symbolic_value,
 )
 
 _ABORT_OPS = ("/", "//", "%")
@@ -115,15 +114,130 @@ class VerifyExecutor(SymbolicExecutor):
         # (op, line, divisor SymbolicValue, path-condition snapshot)
         self.abort_obligations: List[Tuple[str, Optional[int], SymbolicValue, list]] = []
         self.current_line: Optional[int] = None
+        # literal-container tracking: name -> ("list", len) or
+        # ("dict", {keys}); invalidated conservatively on any
+        # subscript-assign into the name
+        self.literal_containers: Dict[str, Tuple[str, Any]] = {}
 
     def _execute_ir(self, ir_node: Any) -> SymbolicValue:
+        if (
+            isinstance(ir_node, (list, tuple))
+            and ir_node
+            and ir_node[0] in ("assign", "ann_assign")
+            and len(ir_node) >= 3
+            and isinstance(ir_node[1], str)
+        ):
+            # the stock AssignmentHandler only knows the C-style
+            # 4-tuple assign; Silu assign/ann_assign falls through
+            # the dispatch table and the RHS is never evaluated
+            # (checked operations inside assignments were invisible).
+            # Evaluate here so obligations record, then bind.
+            self._track_literal_container(ir_node[1], ir_node[2])
+            value = self._execute_ir(ir_node[2])
+            try:
+                self.current_env.set_variable(ir_node[1], value)
+            except Exception:
+                pass
+            if self.current_path is not None:
+                try:
+                    self.current_path.variables[ir_node[1]] = value
+                except Exception:
+                    pass
+            return value
         if (
             isinstance(ir_node, (list, tuple))
             and len(ir_node) >= 2
             and ir_node[0] == "line"
         ):
             self.current_line = ir_node[1]
+        elif (
+            isinstance(ir_node, (list, tuple))
+            and len(ir_node) >= 3
+            and ir_node[0] == "subscript"
+        ):
+            self._record_bounds_obligation(ir_node)
+        elif (
+            isinstance(ir_node, (list, tuple))
+            and ir_node
+            and ir_node[0] in ("subscript_assign", "subscript_aug_assign")
+            and len(ir_node) >= 2
+            and isinstance(ir_node[1], (list, tuple))
+            and len(ir_node[1]) >= 2
+            and ir_node[1][0] == "name"
+        ):
+            self.literal_containers.pop(ir_node[1][1], None)
         return super()._execute_ir(ir_node)
+
+    def _track_literal_container(self, name: str, value_ir) -> None:
+        if not isinstance(value_ir, (list, tuple)) or not value_ir:
+            return
+        if value_ir[0] == "list":
+            self.literal_containers[name] = (
+                "list", len(value_ir[1]) if len(value_ir) > 1 else 0
+            )
+        elif value_ir[0] == "dict":
+            keys = set()
+            for pair in value_ir[1] if len(value_ir) > 1 else []:
+                if (
+                    isinstance(pair, (list, tuple))
+                    and len(pair) >= 2
+                    and isinstance(pair[0], (list, tuple))
+                    and len(pair[0]) >= 2
+                    and pair[0][0] == "const"
+                    and isinstance(pair[0][1], str)
+                ):
+                    keys.add(pair[0][1])
+            self.literal_containers[name] = ("dict", keys)
+
+    def _record_bounds_obligation(self, ir_node) -> None:
+        """subscript abort obligation, v1.1: recorded when the
+        container length is STATICALLY KNOWN (literal lists/str
+        constants). Symbolic-length containers stay silent - flagging
+        every xs[i] would drown the signal; the docstring pins this
+        scope."""
+        base_ir, index_ir = ir_node[1], ir_node[2]
+        if not isinstance(base_ir, (list, tuple)) or not base_ir:
+            return
+        # a slice index is not a bounds-abort site in the same sense
+        if (
+            isinstance(index_ir, (list, tuple))
+            and len(index_ir) >= 4
+            and index_ir[0] == "slice"
+        ):
+            return
+        length = None
+        known_keys = None
+        if base_ir[0] == "list":
+            length = len(base_ir[1]) if len(base_ir) > 1 else 0
+        elif base_ir[0] == "const" and isinstance(base_ir[1], str):
+            length = len(base_ir[1])
+        elif base_ir[0] == "name":
+            info = self.literal_containers.get(base_ir[1])
+            if info is not None:
+                if info[0] == "list":
+                    length = info[1]
+                else:
+                    known_keys = info[1]
+        if length is None and known_keys is None:
+            return
+        if known_keys is not None:
+            key_ir = index_ir
+            if (
+                isinstance(key_ir, (list, tuple))
+                and len(key_ir) >= 2
+                and key_ir[0] == "const"
+                and isinstance(key_ir[1], str)
+                and key_ir[1] not in known_keys
+            ):
+                self.abort_obligations.append(
+                    ("KeyError", self.current_line, None, [], None)
+                )
+            return
+        index = self._execute_ir(index_ir)
+        snapshot = list(getattr(self.current_path, "conditions", []))
+        self.abort_obligations.append(
+            ("index", self.current_line, index, snapshot, length)
+        )
 
     def _execute_binary_op(self, ir_node: Tuple) -> SymbolicValue:  # type: ignore[override]
         op = ir_node[0]
@@ -199,7 +313,6 @@ def verify_source(source: str) -> Tuple[bool, List[str]]:
 
     for func_def in _func_defs(ir_program):
         name, params, fbody = func_def[0], func_def[1], func_def[2]
-        kinds = _param_kinds(func_def)
         ex = VerifyExecutor()
         ex._current_fn = name
         try:
@@ -217,18 +330,39 @@ def verify_source(source: str) -> Tuple[bool, List[str]]:
             continue
 
         fn_ok = True
-        for op, line, divisor, snapshot in ex.abort_obligations:
+        checked = 0
+        for entry in ex.abort_obligations:
+            op, line, operand, snapshot = entry[0], entry[1], entry[2], entry[3]
+            length = entry[4] if len(entry) > 4 else None
             solver = z3.Solver()
             for cond in _path_z3(snapshot):
                 solver.add(cond)
-            dz = _z3_of(divisor)
-            if dz is None:
+            if op == "KeyError":
                 report.append(
-                    f"{name}: unknown (divisor not expressible at line {line})"
+                    f"{name}: POSSIBLE ABORT - KeyError: literal key missing at line {line} []"
                 )
                 fn_ok = False
                 continue
-            solver.add(dz == 0)
+            if op == "index":
+                iz = _z3_of(operand)
+                if iz is None:
+                    checked += 1
+                    continue
+                # obligation: i < 0 or i >= length (abort condition)
+                solver.add(z3.Or(iz < 0, iz >= length))
+                label = f"index out of range [0, {length})"
+            else:
+                dz = _z3_of(operand)
+                if dz is None:
+                    report.append(
+                        f"{name}: unknown (operand not expressible at line {line})"
+                    )
+                    fn_ok = False
+                    continue
+                solver.add(dz == 0)
+                label = (
+                    "division" if op in ("/", "//") else "modulo"
+                ) + " by zero"
             res = solver.check()
             if res == z3.sat:
                 model = solver.model()
@@ -236,17 +370,17 @@ def verify_source(source: str) -> Tuple[bool, List[str]]:
                     f"{str(d)}={model[d]}" for d in model
                 )
                 report.append(
-                    f"{name}: POSSIBLE ABORT - {'division' if op in ('/', '//') else 'modulo'} by zero at line {line} [{witness}]"
+                    f"{name}: POSSIBLE ABORT - {label} at line {line} [{witness}]"
                 )
                 fn_ok = False
             elif res == z3.unsat:
-                continue
+                checked += 1
             else:
                 report.append(f"{name}: unknown (solver timeout, line {line})")
                 fn_ok = False
         if fn_ok:
             report.append(
-                f"{name}: ok ({len(ex.abort_obligations)} checked divide(s) proved safe)"
+                f"{name}: ok ({checked} checked abort site(s) proved safe)"
             )
         else:
             ok = False
