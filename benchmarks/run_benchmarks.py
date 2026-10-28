@@ -144,7 +144,7 @@ def main():
             # input file; generation is scaffolding, not measured work
             stdin_path = Path(tmp) / "shared_input.txt"
             stdin_arg = None
-            if program.stem == "jsonparse":
+            if program.stem in ("jsonparse", "jsonparse_json"):
                 gen = REPO / "scripts" / "gen_json_input.py"
                 gen_result = run([CPYTHON, gen])
                 if gen_result.returncode != 0:

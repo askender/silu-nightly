@@ -139,6 +139,29 @@ parameters are never freed by the callee.
   double-free probe test; symbolic invariant proof of
   `tagged_free` acyclicity-by-construction (roadmap Phase 1 tie-in).
 
+## 7c. S3 result (2026-10-28): landed on every plane, measured honestly
+
+benchmarks/jsonparse_json.si - the full parser rewritten over the
+built-in Json type (blocks riding raw containers, json_* builtins,
+recursive json_free of the whole tree). All four planes agree on the
+87KB document, byte-identical to the class-based twin and to the
+Rust serde_json twin: 4498500 3000 22890 3000.
+
+The id/name "emission bug" from the S3 WIP was NOT an emission bug:
+tagged_dict_free read field 4 (the open-addressing TABLE - small
+entry indices!) as the value array; freeing table entries as block
+pointers segfaults exactly when a dict has two live keys. vals is
+field 6. One-line fix.
+
+Performance (official harness, this machine): class twin 8.9ms,
+Json twin 10.1ms - the Json version is NET 1.2ms SLOWER. The ~0.3ms
+construction saving (as the 7b measurement predicted) is outweighed
+by consumption-side costs the model missed: every read pays a
+tagged_tag dispatch plus a checked unwrap call (~25ns x thousands
+of reads). Expression-value completeness landed; performance parity
+with the class twin would need inline tag checks at narrow points -
+a separate, optional optimization.
+
 ## 7b. S1 benefit measurement (2026-10-27, tools/probes/s1_benefit.py)
 
 With the REAL S1 emitters (not the S0 hand-rolled malloc shapes), a

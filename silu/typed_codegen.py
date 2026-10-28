@@ -4188,7 +4188,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             _struct_gep(builder, d_ptr, 5)
         )
         vals = builder.load(
-            _struct_gep(builder, d_ptr, 4)
+            _struct_gep(builder, d_ptr, 6)
         )
         i_ptr = builder.alloca(i64, None, 'td_i')
         builder.store(zero64, i_ptr)

@@ -49,4 +49,6 @@ def test_frontend_corpus_parity():
         )
         checked += 1
     # 14 benchmarks + calc + ir_interp + silu_fe + flat converter
-    assert checked == 18
+    # 15 benchmarks (incl. the Json-sum jsonparse twin) + calc
+    # + ir_interp + silu_fe + flat converter
+    assert checked == 19
