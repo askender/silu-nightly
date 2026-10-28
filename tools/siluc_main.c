@@ -8,6 +8,8 @@
  * shared ~350KB runtime prefix (compiled once into a cached .o),
  * synthesizes the external declarations the user part needs, then
  * clang compiles the ~KB user part and links against the cached
+ * runtime as LTO bitcode (-flto -O2 at link time lets the runtime
+ * inline into hot loops: spectral 4.4ms -> 3.5ms, +20ms link)
  * runtime object. No Python anywhere.
  *
  * Cache layout (~/.cache/silu-runtime/driver/):
@@ -342,7 +344,7 @@ int main(int argc, char **argv) {
             } else fputc(*a++, lf);
         }
         fclose(lf);
-        const char *c1[] = { "clang", "-O2", "-c", lifted_path, "-o", rt_o_path, NULL };
+        const char *c1[] = { "clang", "-O2", "-flto", "-c", lifted_path, "-o", rt_o_path, NULL };
         if (run_quiet(c1) != 0) die("clang failed on the runtime");
     }
 
@@ -551,9 +553,9 @@ int main(int argc, char **argv) {
     char user_o_path[] = "/tmp/siluc_userXXXXXX.o";
     int ofd = mkstemps(user_o_path, 2);
     close(ofd);
-    const char *c2[] = { "clang", "-O2", "-c", user_ll_path, "-o", user_o_path, NULL };
+    const char *c2[] = { "clang", "-O2", "-flto", "-c", user_ll_path, "-o", user_o_path, NULL };
     if (run_quiet(c2) != 0) die("clang failed on the user module");
-    const char *c3[] = { "clang", user_o_path, rt_o_path, "-o", out, "-Wl,-dead_strip", NULL };
+    const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-Wl,-dead_strip", NULL };
     if (run_quiet(c3) != 0) die("link failed");
 
     /* unlink(user_ll_path); unlink(user_o_path); */
