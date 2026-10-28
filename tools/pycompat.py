@@ -102,6 +102,8 @@ def run(path):
         "json_float": _unwrap(float, "float"),
         "json_bool": _unwrap(bool, "bool"),
         "json_str": _unwrap(str, "str"),
+        "json_list": _unwrap(list, "list"),
+        "json_dict": _unwrap(dict, "dict"),
         "json_free": lambda v: 0,
     }
     # LOAD_BUILD_CLASS reads __build_class__ from builtins (a class

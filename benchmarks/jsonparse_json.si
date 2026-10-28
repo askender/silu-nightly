@@ -1,0 +1,108 @@
+# JSON parsing over the tagged-union representation (RFC S3): every
+# value is a 16-byte {tag, payload} block - the Rust serde_json::Value
+# shape. The per-element work rides the json_* builtins (checked
+# unwrapping) and the raw containers underneath (list[Json] slots hold
+# block pointers; dict[str, Json] the same in value slots).
+def digit_value(ch: str) -> int:
+    if ch == "0":
+        return 0
+    if ch == "1":
+        return 1
+    if ch == "2":
+        return 2
+    if ch == "3":
+        return 3
+    if ch == "4":
+        return 4
+    if ch == "5":
+        return 5
+    if ch == "6":
+        return 6
+    if ch == "7":
+        return 7
+    if ch == "8":
+        return 8
+    return 9
+
+
+def parse_string(s: str, pos: list[int]) -> str:
+    pos[0] += 1
+    start: int = pos[0]
+    while s[pos[0]] != '"':
+        pos[0] += 1
+    out: str = s[start:pos[0]]
+    pos[0] += 1
+    return out
+
+
+def parse_number(s: str, pos: list[int]) -> int:
+    n: int = 0
+    while pos[0] < len(s) and s[pos[0]] >= "0" and s[pos[0]] <= "9":
+        n = n * 10 + digit_value(s[pos[0]])
+        pos[0] += 1
+    return n
+
+
+def parse_value(s: str, pos: list[int]) -> Json:
+    ch = s[pos[0]]
+    if ch == "{":
+        return parse_object(s, pos)
+    if ch == "[":
+        return parse_array(s, pos)
+    if ch == '"':
+        return parse_string(s, pos)
+    return parse_number(s, pos)
+
+
+def parse_array(s: str, pos: list[int]) -> Json:
+    items: list[Json] = []
+    pos[0] += 1
+    while s[pos[0]] != "]":
+        items.append(parse_value(s, pos))
+        if s[pos[0]] == ",":
+            pos[0] += 1
+    pos[0] += 1
+    return items
+
+
+def parse_object(s: str, pos: list[int]) -> Json:
+    o: dict[str, Json] = {}
+    pos[0] += 1
+    while s[pos[0]] != "}":
+        key = parse_string(s, pos)
+        pos[0] += 1
+        o[key] = parse_value(s, pos)
+        if s[pos[0]] == ",":
+            pos[0] += 1
+    pos[0] += 1
+    return o
+
+
+doc: str = input()
+
+names: list[str] = []
+total: int = 0
+count: int = 0
+data: Json = parse_value(doc, [0])
+if json_tag(data) == 5:
+    items: list[Json] = json_list(data)
+    i: int = 0
+    while i < len(items):
+        it = items[i]
+        if json_tag(it) == 6:
+            o: dict[str, Json] = json_dict(it)
+            n1 = o["id"]
+            if json_tag(n1) == 1:
+                total += json_int(n1)
+            w = o["name"]
+            if json_tag(w) == 4:
+                names.append(json_str(w))
+        i += 1
+    count = len(items)
+json_free(data)
+checksum: int = 0
+i = 0
+while i < len(names):
+    checksum += len(names[i])
+    i += 1
+print(total, count, checksum, len(names))

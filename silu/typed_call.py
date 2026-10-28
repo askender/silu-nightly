@@ -11,7 +11,7 @@ from typing import Any, Tuple
 
 from silu.ir_iface import ir
 from silu.typed_helpers import (
-    F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, LLVM_KIND_TYPES, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
+    F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, RAWLIST_JSON, RAWDICT_SJ, LLVM_KIND_TYPES, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
 )
 
 
@@ -813,6 +813,14 @@ class TypedCallMixin:
             jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
             borrowed = self.current_builder.call(self.json_unwrap_str, [jv])
             return (RAWSTR, self.current_builder.call(self.rawstr_copy, [borrowed]))
+        if func_name == "json_list" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            ptr = self.current_builder.call(self.json_unwrap_list, [jv])
+            return (RAWLIST_JSON, ptr)
+        if func_name == "json_dict" and len(args_node) == 1:
+            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            ptr = self.current_builder.call(self.json_unwrap_dict, [jv])
+            return (RAWDICT_SJ, ptr)
         if func_name == "bool" and len(args_node) == 1:
             return self._convert_node(
                 ["call", ["name", "_builtin_bool"], [args_node[0]], []]

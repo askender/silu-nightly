@@ -4408,6 +4408,56 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self._emit_panic(b, msg)
         b.position_at_end(ok)
         b.ret(b.inttoptr(b.load(_struct_gep(b, blk, 1)), i8p))
+
+        self.json_unwrap_list = ir.func_(
+            self.module, ir.FunctionType(i8p, [i8p], False),
+            'json_unwrap_list',
+        )
+        b = ir.builder_(self.json_unwrap_list.append_basic_block("entry"))
+        ok = self.json_unwrap_list.append_basic_block("ok")
+        bad = self.json_unwrap_list.append_basic_block("bad")
+        blk = b.bitcast(
+            self.json_unwrap_list.args[0],
+            ir.PointerType(self.tagged_struct_type),
+        )
+        tag_v = b.load(_struct_gep(b, blk, 0))
+        b.cbranch(
+            b.icmp_signed("==", tag_v, ir.const_(i32, JSON_TAG_LIST)),
+            ok,
+            bad,
+        )
+        b.position_at_end(bad)
+        msg = b.gep(
+            self._json_typeerr, [ir.const_(i32, 0), ir.const_(i32, 0)]
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(ok)
+        b.ret(b.inttoptr(b.load(_struct_gep(b, blk, 1)), i8p))
+
+        self.json_unwrap_dict = ir.func_(
+            self.module, ir.FunctionType(i8p, [i8p], False),
+            'json_unwrap_dict',
+        )
+        b = ir.builder_(self.json_unwrap_dict.append_basic_block("entry"))
+        ok = self.json_unwrap_dict.append_basic_block("ok")
+        bad = self.json_unwrap_dict.append_basic_block("bad")
+        blk = b.bitcast(
+            self.json_unwrap_dict.args[0],
+            ir.PointerType(self.tagged_struct_type),
+        )
+        tag_v = b.load(_struct_gep(b, blk, 0))
+        b.cbranch(
+            b.icmp_signed("==", tag_v, ir.const_(i32, JSON_TAG_DICT)),
+            ok,
+            bad,
+        )
+        b.position_at_end(bad)
+        msg = b.gep(
+            self._json_typeerr, [ir.const_(i32, 0), ir.const_(i32, 0)]
+        )
+        self._emit_panic(b, msg)
+        b.position_at_end(ok)
+        b.ret(b.inttoptr(b.load(_struct_gep(b, blk, 1)), i8p))
     def _emit_rawdict_probe(self, name, ret_type, arg_types, on_hit, on_miss):
         """Shared tombstone-skipping probe for rawdict helpers.
 
@@ -5309,6 +5359,22 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     self.current_builder.call(
                         self.tagged_new_ptr,
                         [ir.const_(ir.IntType(32), JSON_TAG_STR), owned],
+                    ),
+                )
+            if kind == RAWLIST_JSON:
+                return (
+                    JSON,
+                    self.current_builder.call(
+                        self.tagged_new_ptr,
+                        [ir.const_(ir.IntType(32), JSON_TAG_LIST), value],
+                    ),
+                )
+            if kind == RAWDICT_SJ:
+                return (
+                    JSON,
+                    self.current_builder.call(
+                        self.tagged_new_ptr,
+                        [ir.const_(ir.IntType(32), JSON_TAG_DICT), value],
                     ),
                 )
             if kind == JSON:
@@ -6455,6 +6521,18 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if name in candidates:
                 return candidates[name]
             return self.var_kinds.get(name)
+        if op == "call" and len(node) >= 2:
+            callee = node[1]
+            if (
+                isinstance(callee, list)
+                and len(callee) >= 2
+                and callee[0] == "name"
+                and callee[1] in func_ret
+            ):
+                # a user function with a declared return annotation is
+                # authoritative (Json-sum constructors especially)
+                return func_ret[callee[1]]
+            return None
         if op == "subscript" and len(node) >= 3:
             # element/value kind of an annotated container is
             # authoritative: list[str][i] is a str, dict[str,int][k]
@@ -6632,7 +6710,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
     def _add_kind_candidate(self, name: str, kind: Optional[str], annotations: Dict[str, str], candidates: Dict[str, Optional[str]]):
         if name in annotations:
             return  # declared kind always wins
-        if kind not in (I64, F64, I1, RAWSTR, RAWLIST_S):
+        if kind not in (I64, F64, I1, RAWSTR, RAWLIST_S, JSON):
             kind = None
         if name not in candidates:
             candidates[name] = kind
@@ -7671,6 +7749,53 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         str constant targetting Json builds the tagged block over a
         copy of the constant (constants re-evaluate harmlessly, calls
         do not - value must be the single evaluation)."""
+        if (
+            kind == JSON
+            and isinstance(node, list)
+            and len(node) >= 1
+            and node[0] == "list"
+        ):
+            inner = self._build_raw_list(node[1], RAWLIST_JSON)
+            return (
+                JSON,
+                self.current_builder.call(
+                    self.tagged_new_ptr,
+                    [
+                        ir.const_(ir.IntType(32), JSON_TAG_LIST),
+                        inner[1],
+                    ],
+                ),
+            )
+        if (
+            kind == JSON
+            and isinstance(node, list)
+            and len(node) >= 1
+            and node[0] == "dict"
+        ):
+            raw_ptr = self.current_builder.call(self.rawdict_new, [])
+            for pair_node in node[1]:
+                val_tv = self._convert_node_to_kind(
+                    pair_node[1],
+                    self._convert_node(pair_node[1]),
+                    JSON,
+                )
+                self._rawdict_key_call(
+                    RAWDICT_SJ, raw_ptr, pair_node[0],
+                    self.rawdict_set, self.rawdict_str_set,
+                    (self.current_builder.ptrtoint(
+                        val_tv[1], ir.IntType(64)
+                    ),),
+                )
+            return (
+                JSON,
+                self.current_builder.call(
+                    self.tagged_new_ptr,
+                    [
+                        ir.const_(ir.IntType(32), JSON_TAG_DICT),
+                        raw_ptr,
+                    ],
+                ),
+            )
         if (
             kind == JSON
             and isinstance(node, list)

@@ -232,6 +232,8 @@ class Environment:
         self.set("json_float", lambda v: _json_unwrap(v, float, "float"))
         self.set("json_bool", lambda v: _json_unwrap(v, bool, "bool"))
         self.set("json_str", lambda v: _json_unwrap(v, str, "str"))
+        self.set("json_list", lambda v: _json_unwrap(v, list, "list"))
+        self.set("json_dict", lambda v: _json_unwrap(v, dict, "dict"))
         self.set("json_free", lambda v: 0)
         self.set("zip", zip)
         self.set("any", any)
