@@ -36,6 +36,22 @@
 未引用的运行时函数（fib 二进制 35KB vs 单体 113KB），"按程序选
 择运行时"的瘦身项就此关闭——链接器免费做掉了。
 
+**jsonparse 五方对比**（安静环境 31 次取 min，87KB 文档，输出五方逐字节一致）：
+
+| 平面 | min | 备注 |
+|---|---|---|
+| C（clang -O2，同构树+realloc，`benchmarks/c/jsonparse.c`） | 2.7ms | **中位数不稳**（10-27ms 摆动，malloc 敏感） |
+| Rust（serde_json 形状） | 3.6ms | 稳定 |
+| Silu class 孪生 | 6.5ms | 稳定 |
+| Silu Json 孪生 | 6.7ms | 稳定 |
+| CPython（pycompat） | 42ms | |
+| Silu 解释器 | 1735ms | |
+
+**LTO 抹平了 RFC 7c 的 1.2ms**：Json 孪生与 class 孪生现已持平
+（unwrap/tag 派发被 -flto 内联进热循环），RFC 7c 的"消费端开销"
+结论由 LTO 默认路径自动修正。剩余 vs Rust/C 的差距仍归因构造端
+（J1 三层分解的 ~1.9ms instance+容器）。
+
 ※ spectral 高方差注记（v1.14.0 复测）：同一二进制三次环境测得
 4.5–7.4ms 摆动（几 ms 级程序的毫秒抖动即百分比大幅摆动）；且
 **链接策略成本已单独测得**——同一 `.ll` 单体 clang 直编
