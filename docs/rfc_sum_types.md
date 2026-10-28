@@ -229,6 +229,42 @@ Rust serde_json baseline.
   slot clear hook (`rawdict_str_tagged_clear` frees value blocks) -
   one more emitter, same recipe.
 
+## 8b. S4 ownership audit (2026-10-28): reference model, explicit frees
+
+Emitted-call census (static, in tests/test_tagged_ownership.py):
+every tagged_free in generated code enters through exactly ONE
+user-facing path - the json_free builtin - and the recursive trio
+(list_free -> free -> list_free, dict_free -> free -> dict_free)
+closes internally. No other emitter reaches a free.
+
+Ownership semantics, decided from the shape of the channels:
+
+- Construction points (coerce wrapping of scalars/str/containers,
+  literal specials) each malloc a fresh block: OWNED at birth.
+- `y = x` on Json slots coerces JSON->JSON as the same tv: two slots
+  SHARE the block (Python reference semantics - unlike RAWSTR,
+  whose slot-to-slot coercion copies). Container reads (items[i],
+  o[k]) and json_list/json_dict results are BORROWED views into a
+  tree the tree itself owns.
+- Therefore COMPILER-EMITTED per-slot drops are UNSOUND: a shared
+  block has no single owning slot, and a borrowed read must never
+  free. The S4 "exit drops" idea from the original staging is
+  formally rejected here.
+
+The model that ships: EXPLICIT free with move discipline. json_free
+is a move (the caller relinquishes; use-after-free is documented
+UB, same class as Rust's mem::forget + dangling). The FIRST slot a
+constructed tree lands in is its owner and owes the free; reads and
+pass-through assignments are observers. Un-freed trees are
+reclaimed at process exit (the pyobj discipline). Long-lived
+services free roots explicitly - the jsonparse_json.si twin shows
+the pattern (one json_free(data) tears the whole tree down, names
+kept as independent str copies stay alive).
+
+Future direction (not promised): a `unique` slot annotation or
+static owner inference could restore automatic drops; the reference
+semantics make that a breaking change, so it would be opt-in.
+
 ## 9. Non-goals
 
 - Generics over unions, C-ABI tagged exports, cycle collection

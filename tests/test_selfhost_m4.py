@@ -561,7 +561,13 @@ def test_m5_self_hosted_toolchain(fe_bin, ir2c_bin):
 
 # ---- M5 coverage: benchmarks through the Silu-written backend ----
 
-BENCHMARK_SKIP = {"jsonparse.si"}  # heterogeneous dynamic program, known gap
+BENCHMARK_SKIP = {
+    "jsonparse.si",  # heterogeneous dynamic program, known gap
+    # Json sum-type twin: the json_* builtins are not in the ir2c
+    # plane (C runtime has no tagged-block library); its four-plane
+    # verification lives in tests/test_json_type.py instead
+    "jsonparse_json.si",
+}
 
 
 def test_m5_benchmarks_match_cpython(ir2c_bin):

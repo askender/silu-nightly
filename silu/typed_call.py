@@ -785,11 +785,11 @@ class TypedCallMixin:
             return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
         if func_name == "json_tag" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             tag = self.current_builder.call(self.tagged_tag, [jv])
             return (I64, self.current_builder.sext(tag, ir.IntType(64)))
         if func_name == "json_free" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             self.current_builder.call(
                 self.tagged_free,
                 [
@@ -801,24 +801,24 @@ class TypedCallMixin:
             )
             return (I64, ir.const_(ir.IntType(64), 0))
         if func_name == "json_int" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             return (I64, self.current_builder.call(self.json_unwrap_int, [jv]))
         if func_name == "json_float" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             return (F64, self.current_builder.call(self.json_unwrap_float, [jv]))
         if func_name == "json_bool" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             return (I1, self.current_builder.call(self.json_unwrap_bool, [jv]))
         if func_name == "json_str" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             borrowed = self.current_builder.call(self.json_unwrap_str, [jv])
             return (RAWSTR, self.current_builder.call(self.rawstr_copy, [borrowed]))
         if func_name == "json_list" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             ptr = self.current_builder.call(self.json_unwrap_list, [jv])
             return (RAWLIST_JSON, ptr)
         if func_name == "json_dict" and len(args_node) == 1:
-            jv = self._coerce(self._convert_node(args_node[0]), JSON)[1]
+            jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             ptr = self.current_builder.call(self.json_unwrap_dict, [jv])
             return (RAWDICT_SJ, ptr)
         if func_name == "bool" and len(args_node) == 1:

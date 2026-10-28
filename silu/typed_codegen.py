@@ -11279,7 +11279,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             [ir.const_(ir.IntType(64), elem_size)],
         )
         for element_node in element_nodes:
-            elem = self._coerce(self._convert_node(element_node), elem_kind)
+            elem = self._convert_node_to_kind(
+                element_node,
+                self._convert_node(element_node),
+                elem_kind,
+            )
             elem_bits = elem[1]
             if elem_kind == F64:
                 elem_bits = self.current_builder.bitcast(elem[1], ir.IntType(64))
