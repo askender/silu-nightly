@@ -4,6 +4,20 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.13.1
+S3: jsonparse over the Json sum type, four planes agree
+
+- the id/name WIP bug solved: tagged_dict_free read field 4 (the
+  open-addressing table - small entry indices) as the value array;
+  vals is field 6; freeing table entries as pointers segfaults on
+  two-live-key dicts
+- benchmarks/jsonparse_json.si: full parser on tagged blocks, all
+  four planes (incl. the Rust twin) byte-agree on the 87KB doc
+- measured honestly: Json twin 10.1ms vs class twin 8.9ms - net
+  1.2ms SLOWER; per-read tag dispatch + checked unwrap outweigh
+  the construction saving (RFC 7c); inline tag checks are the
+  optional follow-up
+
 ### v1.13.0
 S2: the built-in Json sum type lands on every plane
 
