@@ -4,6 +4,20 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.15.0
+performance parity + panic-free proofs: copy-into endgame, silu prove
+
+- P1 copy-semantics endgame: rawlist_str_copy_into (dst.cap >=
+  src.byte_len verdict, geometric grow, null-dst allocate); wordcount
+  24.8 -> 8.8ms = 1.74x vs Rust; suite geomean 1.0x vs Rust.
+  Negative-index underflow bug in rawlist_str_get fixed en route
+- P2 silu prove (Phase 2 v1): Z3 panic-free proofs for division/
+  modulo; reachable aborts carry witness parameter values;
+  a/(b*b+1) proved safe by algebraic reasoning; sound-in-safety-
+  direction with the guard limitation pinned by test
+- P3: exec plane json_* builtins (last plane gap closed); CI gates
+  weekly; runtime slimming closed by LTO+dead_strip evidence
+
 ### v1.14.0
 S4: sum-type ownership settled - reference model, explicit frees, Z3 pairing proofs
 
