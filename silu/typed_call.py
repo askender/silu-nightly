@@ -784,6 +784,9 @@ class TypedCallMixin:
                 )
             return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
+        if func_name == "require" and args_node:
+            # proof-time contract: compiles to no runtime work
+            return (I1, ir.const_(ir.IntType(1), True))
         if func_name == "json_tag" and len(args_node) == 1:
             jv = self._convert_node_to_kind(args_node[0], self._convert_node(args_node[0]), JSON)[1]
             tag = self.current_builder.call(self.tagged_tag, [jv])

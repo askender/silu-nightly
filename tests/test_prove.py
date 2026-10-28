@@ -162,3 +162,87 @@ class TestV11BoundsAndKeys:
         )
         ok, rep = verify_source(src)
         assert ok, rep
+
+
+class TestContracts:
+    """require() contracts: a function's proof stands alone under
+    its DECLARED domain (never under caller narrowing - removing a
+    caller never invalidates anything); call sites are separately
+    checked to respect the domain."""
+
+    def test_require_makes_division_safe_standalone(self):
+        ok, rep = verify_source(
+            "def safe_div(a: int, b: int) -> int:\n"
+            "    require(b != 0)\n"
+            "    return a / b\n"
+        )
+        assert ok, rep
+        assert "proved safe" in rep[0]
+
+    def test_caller_satisfying_contract_ok(self):
+        ok, _ = verify_source(
+            "def safe_div(a: int, b: int) -> int:\n"
+            "    require(b != 0)\n"
+            "    return a / b\n"
+            "def caller(x: int) -> int:\n"
+            "    return safe_div(10, x * x + 1)\n"
+        )
+        assert ok  # x*x+1 >= 1 > 0 always
+
+    def test_caller_violating_contract_caught(self):
+        ok, rep = verify_source(
+            "def safe_div(a: int, b: int) -> int:\n"
+            "    require(b != 0)\n"
+            "    return a / b\n"
+            "def caller(x: int) -> int:\n"
+            "    return safe_div(10, x - x)\n"
+        )
+        assert not ok
+        text = "\n".join(rep)
+        assert "CONTRACT VIOLATION" in text and "safe_div" in text
+
+    def test_spectral_with_contract_proves_clean(self):
+        """the interprocedural story: spectral's a(i,j) genuinely
+        divides by zero on unconstrained ints (i=-1,j=0) but its
+        call sites only pass i,j >= 0 - the require declares that
+        domain, a() proves safe STANDALONE, and the whole file goes
+        green."""
+        src = (
+            "def a(i: int, j: int) -> float:\n"
+            "    require(i >= 0 and j >= 0)\n"
+            "    return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)\n"
+        )
+        ok, rep = verify_source(src)
+        assert ok, rep
+        assert "proved safe" in rep[0]
+
+    def test_no_caller_narrowing_function_stands_alone(self):
+        """removing every caller leaves the function's proof intact:
+        a() with require is safe regardless of who calls it. This is
+        the modular-composition property the design chose contracts
+        over call-site narrowing for."""
+        with_caller = (
+            "def f(x: int) -> int:\n    require(x > 0)\n    return 10 / x\n"
+            "def g(y: int) -> int:\n    return f(y + 1)\n"
+        )
+        without_caller = "def f(x: int) -> int:\n    require(x > 0)\n    return 10 / x\n"
+        ok1, rep1 = verify_source(with_caller)
+        ok2, rep2 = verify_source(without_caller)
+        # f proves identically in both; ok differs only by g's site
+        assert "proved safe" in rep1[0] and "proved safe" in rep2[0]
+
+    def test_require_concrete_false_is_definite_abort(self):
+        ok, rep = verify_source(
+            "def f(x: int) -> int:\n    require(0 != 0)\n    return x\n"
+        )
+        assert not ok
+        assert "unsatisfiable" in rep[0] or "require(false)" in rep[0]
+
+    def test_empty_domain_is_vacuously_safe(self):
+        """require(x != x) declares an empty domain: under it no
+        abort is reachable (vacuous truth). A symbolic-but-empty
+        domain is handled by the solver when obligations exist."""
+        ok, _ = verify_source(
+            "def f(x: int) -> int:\n    require(x != x)\n    return x\n"
+        )
+        assert ok

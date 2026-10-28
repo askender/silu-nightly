@@ -105,6 +105,7 @@ def run(path):
         "json_list": _unwrap(list, "list"),
         "json_dict": _unwrap(dict, "dict"),
         "json_free": lambda v: 0,
+        "require": lambda *a: None,
     }
     # LOAD_BUILD_CLASS reads __build_class__ from builtins (a class
     # statement ignores the surrounding globals for this name)

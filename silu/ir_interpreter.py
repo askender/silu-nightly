@@ -76,6 +76,7 @@ class IRInterpreter:
             "json_list": self._builtin_json_list,
             "json_dict": self._builtin_json_dict,
             "json_free": lambda v: 0,
+            "require": lambda *a: 0,
             "sqrt": self._builtin_sqrt,
             "ord": ord,
             "chr": chr,

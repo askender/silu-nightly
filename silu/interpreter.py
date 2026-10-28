@@ -235,6 +235,9 @@ class Environment:
         self.set("json_list", lambda v: _json_unwrap(v, list, "list"))
         self.set("json_dict", lambda v: _json_unwrap(v, dict, "dict"))
         self.set("json_free", lambda v: 0)
+        # proof-time contract marker: a no-op in every plane except
+        # silu prove (docs/symbolic_roadmap.md contracts)
+        self.set("require", lambda *a: None)
         self.set("zip", zip)
         self.set("any", any)
         self.set("all", all)

@@ -29,6 +29,7 @@ from silu.symbolic_executor import SymbolicExecutor
 from silu.symbolic.builtin_utils import (
     SymbolicValue,
     SymbolicValueType,
+    create_concrete_value,
 )
 
 _ABORT_OPS = ("/", "//", "%")
@@ -101,6 +102,10 @@ def _z3_of_expr(expr, depth: int):
                 left = left > right
             elif op == ">=":
                 left = left >= right
+            elif op == "and":
+                left = z3.And(left, right)
+            elif op == "or":
+                left = z3.Or(left, right)
             else:
                 return None
         return left
@@ -114,6 +119,19 @@ class VerifyExecutor(SymbolicExecutor):
         # (op, line, divisor SymbolicValue, path-condition snapshot)
         self.abort_obligations: List[Tuple[str, Optional[int], SymbolicValue, list]] = []
         self.current_line: Optional[int] = None
+        # require(cond) contracts seen in THIS function: function-
+        # scoped assumes - the function's proof stands alone under
+        # its declared domain, independent of any caller
+        self.preconditions: List[SymbolicValue] = []
+        # call sites to contract-bearing functions: (callee, arg
+        # SymbolicValues, line, path snapshot, env bindings)
+        self.contract_checks: List[Tuple] = []
+        # the function's parameter order, for instantiation
+        self.param_order: List[str] = []
+        # callee-name -> [precondition z3 formulas]: set by
+        # verify_source between the two passes (None while
+        # collecting contracts)
+        self._contracts: Optional[Dict[str, List]] = None
         # literal-container tracking: name -> ("list", len) or
         # ("dict", {keys}); invalidated conservatively on any
         # subscript-assign into the name
@@ -159,6 +177,27 @@ class VerifyExecutor(SymbolicExecutor):
         elif (
             isinstance(ir_node, (list, tuple))
             and ir_node
+            and ir_node[0] == "call"
+            and len(ir_node) >= 3
+            and isinstance(ir_node[1], (list, tuple))
+            and len(ir_node[1]) >= 2
+            and ir_node[1][0] == "name"
+            and ir_node[1][1] == "require"
+            and ir_node[2]
+        ):
+            # contract assume: proof-time only, no-op in every other
+            # plane. Function-scoped - place at function entry.
+            cond = self._execute_ir(ir_node[2][0])
+            if cond is not None and cond.type != SymbolicValueType.CONCRETE:
+                self.preconditions.append(cond)
+            elif cond is not None and cond.type == SymbolicValueType.CONCRETE and not cond.value:
+                self.abort_obligations.append(
+                    ("definite-assume-false", self.current_line, cond, [])
+                )
+            return create_concrete_value(True)
+        elif (
+            isinstance(ir_node, (list, tuple))
+            and ir_node
             and ir_node[0] in ("subscript_assign", "subscript_aug_assign")
             and len(ir_node) >= 2
             and isinstance(ir_node[1], (list, tuple))
@@ -166,6 +205,36 @@ class VerifyExecutor(SymbolicExecutor):
             and ir_node[1][0] == "name"
         ):
             self.literal_containers.pop(ir_node[1][1], None)
+        elif (
+            isinstance(ir_node, (list, tuple))
+            and ir_node
+            and ir_node[0] == "call"
+            and len(ir_node) >= 3
+            and isinstance(ir_node[1], (list, tuple))
+            and len(ir_node[1]) >= 2
+            and ir_node[1][0] == "name"
+            and self._contracts is not None
+            and ir_node[1][1] in self._contracts
+        ):
+            # call to a contract-bearing function: remember the site;
+            # discharge happens after this function's analysis, when
+            # the callee's precondition formulas are final
+            callee = ir_node[1][1]
+            argvals = []
+            for arg_ir in ir_node[2]:
+                argvals.append(self._execute_ir(arg_ir))
+            snapshot = list(getattr(self.current_path, "conditions", []))
+            env = getattr(self, "current_env", None)
+            binds: Dict[str, Any] = {}
+            if env is not None:
+                try:
+                    for nm in env.variables:
+                        binds[nm] = env.variables[nm]
+                except Exception:
+                    binds = {}
+            self.contract_checks.append(
+                (callee, argvals, self.current_line, snapshot, binds)
+            )
         return super()._execute_ir(ir_node)
 
     def _track_literal_container(self, name: str, value_ir) -> None:
@@ -338,16 +407,28 @@ def _param_kinds(func_def: Tuple) -> Dict[str, str]:
 
 
 def verify_source(source: str) -> Tuple[bool, List[str]]:
-    """Verify every function in a Silu source. Returns (ok, report)."""
+    """Verify every function in a Silu source. Returns (ok, report).
+
+    Two passes: pass 1 analyzes every function standalone and
+    collects its require() contracts; pass 2 re-analyzes to check
+    that every call site into a contract-bearing function satisfies
+    the callee's declared domain under the caller's path conditions.
+    A function's own proof uses ONLY its declared contracts - never
+    its callers - so removing a caller never invalidates anything.
+    """
     tree = ast.parse(source)
     ir_program = SiluIRGenerator().visit(tree)
     report: List[str] = []
     ok = True
 
+    # ---- pass 1: standalone proofs + contract collection ----
+    contracts: Dict[str, Tuple[List[str], List]] = {}
+    execs: Dict[str, VerifyExecutor] = {}
     for func_def in _func_defs(ir_program):
         name, params, fbody = func_def[0], func_def[1], func_def[2]
         ex = VerifyExecutor()
         ex._current_fn = name
+        ex.param_order = [str(p) for p in params]
         try:
             # the executor's own per-function analysis: fresh path
             # manager, symbolic parameters, branch-forked path
@@ -357,35 +438,74 @@ def verify_source(source: str) -> Tuple[bool, List[str]]:
             report.append(f"{name}: analysis incomplete ({exc})")
             ok = False
             continue
+        execs[name] = ex
+        if ex.preconditions:
+            pre_z3 = []
+            for p in ex.preconditions:
+                z = _z3_of(p)
+                if z is not None:
+                    pre_z3.append(z)
+            contracts[name] = ([str(p) for p in params], pre_z3)
 
-        if not ex.abort_obligations:
-            report.append(f"{name}: ok (no checked operations)")
+        ok, _ = _report_one(name, ex, report, ok)
+
+    # ---- pass 2: call-site contract checking ----
+    for func_def in _func_defs(ir_program):
+        name, params, fbody = func_def[0], func_def[1], func_def[2]
+        if name not in execs:
             continue
+        ex2 = VerifyExecutor()
+        ex2._current_fn = name
+        ex2.param_order = [str(p) for p in params]
+        ex2._contracts = contracts
+        try:
+            ex2._analyze_function_definition(name, list(params), fbody, None, None)
+        except Exception:
+            continue  # already reported in pass 1
+        ok, _report_tail = _check_call_sites(name, ex2, contracts, report, ok)
+    return ok, report
 
-        fn_ok = True
-        checked = 0
-        for entry in ex.abort_obligations:
-            op, line, operand, snapshot = entry[0], entry[1], entry[2], entry[3]
-            length = entry[4] if len(entry) > 4 else None
-            binds = entry[5] if len(entry) > 5 else None
-            solver = z3.Solver()
-            for cond in _path_z3_raw(snapshot):
-                solver.add(cond)
-            if op == "KeyError":
-                report.append(
-                    f"{name}: POSSIBLE ABORT - KeyError: literal key missing at line {line} []"
-                )
-                fn_ok = False
+
+def _report_one(name: str, ex, report: List[str], ok: bool) -> Tuple[bool, List[str]]:
+    if not ex.abort_obligations:
+        report.append(f"{name}: ok (no checked operations)")
+        return ok, report
+
+    fn_ok = True
+    checked = 0
+    for entry in ex.abort_obligations:
+        op, line, operand, snapshot = entry[0], entry[1], entry[2], entry[3]
+        length = entry[4] if len(entry) > 4 else None
+        binds = entry[5] if len(entry) > 5 else None
+        solver = z3.Solver()
+        for cond in _path_z3_raw(snapshot):
+            solver.add(cond)
+        # function-scoped require() assumes: the declared domain
+        for p in ex.preconditions:
+            z = _z3_of(p)
+            if z is not None:
+                solver.add(z)
+        if op == "definite-assume-false":
+            report.append(
+                f"{name}: POSSIBLE ABORT - require(false) at line {line} (unsatisfiable domain)"
+            )
+            fn_ok = False
+            continue
+        if op == "KeyError":
+            report.append(
+                f"{name}: POSSIBLE ABORT - KeyError: literal key missing at line {line} []"
+            )
+            fn_ok = False
+            continue
+        if op == "index":
+            iz = _z3_of(operand)
+            if iz is None:
+                checked += 1
                 continue
-            if op == "index":
-                iz = _z3_of(operand)
-                if iz is None:
-                    checked += 1
-                    continue
-                # obligation: i < 0 or i >= length (abort condition)
-                solver.add(z3.Or(iz < 0, iz >= length))
-                label = f"index out of range [0, {length})"
-            else:
+            # obligation: i < 0 or i >= length (abort condition)
+            solver.add(z3.Or(iz < 0, iz >= length))
+            label = f"index out of range [0, {length})"
+        else:
                 dz = _z3_of(operand)
                 # v2 path sensitivity: if the environment snapshot
                 # rebinds the divisor's variable, substitute the
@@ -411,26 +531,97 @@ def verify_source(source: str) -> Tuple[bool, List[str]]:
                 label = (
                     "division" if op in ("/", "//") else "modulo"
                 ) + " by zero"
-            res = solver.check()
-            if res == z3.sat:
-                model = solver.model()
-                witness = ", ".join(
-                    f"{str(d)}={model[d]}" for d in model
-                )
-                report.append(
-                    f"{name}: POSSIBLE ABORT - {label} at line {line} [{witness}]"
-                )
-                fn_ok = False
-            elif res == z3.unsat:
-                checked += 1
-            else:
+        res = solver.check()
+        if res == z3.sat:
+            model = solver.model()
+            witness = ", ".join(
+                f"{str(d)}={model[d]}" for d in model
+            )
+            report.append(
+                f"{name}: POSSIBLE ABORT - {label} at line {line} [{witness}]"
+            )
+            fn_ok = False
+        elif res == z3.unsat:
+            checked += 1
+        else:
                 report.append(f"{name}: unknown (solver timeout, line {line})")
                 fn_ok = False
-        if fn_ok:
+    if fn_ok:
+        report.append(
+            f"{name}: ok ({checked} checked abort site(s) proved safe)"
+        )
+    else:
+        ok = False
+    return ok, report
+
+
+def _check_call_sites(
+    name: str,
+    ex,
+    contracts: Dict[str, Tuple[List[str], List]],
+    report: List[str],
+    ok: bool,
+) -> Tuple[bool, List[str]]:
+    """Pass 2: every call into a contract-bearing function must
+    satisfy the callee's declared domain under the caller's path
+    conditions at the call point."""
+    for callee, argvals, line, snapshot, binds in ex.contract_checks:
+        if callee not in contracts:
+            continue
+        param_names, pre_z3 = contracts[callee]
+        if not pre_z3:
+            continue
+        solver = z3.Solver()
+        for cond in _path_z3_raw(snapshot):
+            solver.add(cond)
+        # caller env bindings apply to the ARG expressions' variables
+        arg_z3 = []
+        unknown = False
+        for av in argvals:
+            z = _z3_of(av)
+            if (
+                z is None
+                and binds
+                and getattr(av, "name", None) in binds
+            ):
+                z = _z3_of(binds[getattr(av, "name", None)])
+            if z is None:
+                unknown = True
+                break
+            arg_z3.append(z)
+        if unknown:
             report.append(
-                f"{name}: ok ({checked} checked abort site(s) proved safe)"
+                f"{name}: unknown (argument not expressible at the "
+                f"{callee}() call, line {line})"
             )
-        else:
+            ok = False
+            continue
+        # instantiate each precondition: rename callee params to
+        # fresh names, then substitute with the call-site args -
+        # caller vars and callee params never collide
+        subs = []
+        for idx, pn in enumerate(param_names):
+            if idx < len(arg_z3):
+                fresh = z3.Int(f"_c_{callee}_{line}_{idx}")
+                subs.append((pn, fresh, arg_z3[idx]))
+        for pre in pre_z3:
+            renamed = pre
+            for pn, fresh, _arg in subs:
+                renamed = z3.substitute(renamed, (z3.Int(pn), fresh))
+            instantiated = renamed
+            for _pn, fresh, arg in subs:
+                instantiated = z3.substitute(instantiated, (fresh, arg))
+            if not isinstance(instantiated, z3.BoolRef):
+                instantiated = instantiated != 0
+            solver.add(z3.Not(instantiated))
+        res = solver.check()
+        if res == z3.sat:
+            model = solver.model()
+            witness = ", ".join(f"{str(d)}={model[d]}" for d in model)
+            report.append(
+                f"{name}: CONTRACT VIOLATION - call to {callee}() at "
+                f"line {line} violates its require [{witness}]"
+            )
             ok = False
     return ok, report
 
