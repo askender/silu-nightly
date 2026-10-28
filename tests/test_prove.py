@@ -71,14 +71,23 @@ def test_cli_exit_codes(tmp_path):
     assert "POSSIBLE ABORT" in r2.stdout
 
 
-def test_guarded_divide_false_positive_is_documented():
-    """v1 is path-insensitive on branch rebindings: this guarded
-    divide is flagged even though it cannot abort. The test pins the
-    LIMITATION so v2's improvement flips it deliberately."""
-    ok, _rep = verify_source(
+def test_guarded_divide_path_sensitive_v2():
+    """v2: the x==0 branch rebinds x to 1 before the divide, and the
+    x!=0 branch excludes zero by its path condition - the guard is
+    now honored instead of conservatively flagged."""
+    ok, rep = verify_source(
         "def g(x: int) -> int:\n    if x == 0:\n        x = 1\n    return 10 / x\n"
     )
-    assert not ok  # known v1 limitation; flip in v2 (path sensitivity)
+    assert ok, rep
+    assert "proved safe" in rep[0]
+
+
+def test_guarded_divide_still_catches_real_zero():
+    """path sensitivity must not OVER-suppress: an unguarded symbolic
+    divide still reports with a witness."""
+    ok, rep = verify_source("def f(x: int) -> int:\n    return 1 / x\n")
+    assert not ok
+    assert "x=0" in rep[0]
 
 
 class TestV11BoundsAndKeys:

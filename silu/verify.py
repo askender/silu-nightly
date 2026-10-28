@@ -254,8 +254,18 @@ class VerifyExecutor(SymbolicExecutor):
                 # obligation at all
             else:
                 snapshot = list(getattr(self.current_path, "conditions", []))
+                # v2: also snapshot the live environment bindings so
+                # guarded rebindings (x = 1 on the x==0 branch) apply
+                env = getattr(self, "current_env", None)
+                binds: Dict[str, Any] = {}
+                if env is not None:
+                    try:
+                        for nm in env.variables:
+                            binds[nm] = env.variables[nm]
+                    except Exception:
+                        binds = {}
                 self.abort_obligations.append(
-                    (op, self.current_line, right, snapshot)
+                    (op, self.current_line, right, snapshot, None, binds)
                 )
         return super()._execute_binary_op(ir_node)
 
@@ -270,6 +280,29 @@ def _path_z3(conditions: list) -> List[z3.ExprRef]:
             z = _z3_of(expr)
             if z is not None:
                 out.append(z)
+    return out
+
+
+def _path_z3_raw(conditions: list) -> List[z3.ExprRef]:
+    """v2 path conditions: prefer raw_expression (the live symbolic
+    tree) with the path's truth DIRECTION applied - a false branch
+    contributes the negation."""
+    out: List[z3.ExprRef] = []
+    for cond in conditions:
+        raw = getattr(cond, "raw_expression", None)
+        z = None
+        if isinstance(raw, SymbolicValue):
+            z = _z3_of(raw)
+        elif isinstance(raw, z3.ExprRef):
+            z = raw
+        if z is None:
+            legacy = _path_z3([cond])
+            if legacy:
+                out.append(legacy[0])
+            continue
+        if getattr(cond, "is_true", True) is False:
+            z = z3.Not(z)
+        out.append(z)
     return out
 
 
@@ -334,8 +367,9 @@ def verify_source(source: str) -> Tuple[bool, List[str]]:
         for entry in ex.abort_obligations:
             op, line, operand, snapshot = entry[0], entry[1], entry[2], entry[3]
             length = entry[4] if len(entry) > 4 else None
+            binds = entry[5] if len(entry) > 5 else None
             solver = z3.Solver()
-            for cond in _path_z3(snapshot):
+            for cond in _path_z3_raw(snapshot):
                 solver.add(cond)
             if op == "KeyError":
                 report.append(
@@ -353,12 +387,26 @@ def verify_source(source: str) -> Tuple[bool, List[str]]:
                 label = f"index out of range [0, {length})"
             else:
                 dz = _z3_of(operand)
+                # v2 path sensitivity: if the environment snapshot
+                # rebinds the divisor's variable, substitute the
+                # rebinding (the guard x = 1 on the x==0 branch makes
+                # the divisor concrete there)
+                if (
+                    dz is not None
+                    and binds
+                    and getattr(operand, "name", None) in binds
+                ):
+                    rz = _z3_of(binds[getattr(operand, "name", None)])
+                    if rz is not None:
+                        dz = rz
                 if dz is None:
                     report.append(
                         f"{name}: unknown (operand not expressible at line {line})"
                     )
                     fn_ok = False
                     continue
+                if not isinstance(dz, z3.ArithRef):
+                    dz = z3.If(dz, z3.IntVal(1), z3.IntVal(0))
                 solver.add(dz == 0)
                 label = (
                     "division" if op in ("/", "//") else "modulo"
