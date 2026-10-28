@@ -4,6 +4,23 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.15.1
+prove v1.1: real-code ready + release smoke
+
+- assignment visibility: Silu assign/ann_assign fell through the
+  executor's C-style AssignmentHandler - checked operations inside
+  assignments were invisible; now evaluated and recorded everywhere
+- loop-condition crash fixed: tuple-tree conditions converted back
+  to infix before ast.parse; unparseable conditions skipped
+  (conservative direction)
+- two new abort families: subscript bounds (statically-known
+  lengths, witness i=-1 / proved-safe i%3) and literal KeyError
+- parse_number (the real jsonparse scanner) analyzes cleanly and
+  proves ok - roadmap Phase 2 exit criterion material; prove suite
+  7 -> 16
+- release: clean-venv pip smoke (interpret/ir/prove/build), version
+  drift fixed (1.15.0 everywhere), README gains the prove row
+
 ### v1.15.0
 performance parity + panic-free proofs: copy-into endgame, silu prove
 
