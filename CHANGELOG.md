@@ -4,6 +4,25 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.14.0
+S4: sum-type ownership settled - reference model, explicit frees, Z3 pairing proofs
+
+- ownership audit (RFC 8b): construction = owned, y = x = shared
+  reference, container reads = borrowed; per-slot compiler drops
+  formally rejected as unsound; json_free ships as move discipline
+- static census pins every tagged_free to json_free or the
+  recursive trio; probes cover pool-sentinel sharing, deep-tree
+  teardown, borrowed-read survival
+- Z3 pairing proofs: list walk frees exactly the pushed slots,
+  dict walk exactly the live entries (tombstones never fire),
+  dispatch routes each tag to exactly its own teardown -
+  mutation-verified (the S1 dispatch-bug shape goes red)
+- json_* argument paths and _build_raw_list route through the
+  single-evaluation helper (str-constant elements were boxing);
+  m4/ir2c plane skips the Json twin - closing the S3 round's
+  'phantom' full-suite failure (it was this, not a race)
+- full suite 1268 passed, zero failures
+
 ### v1.13.1
 S3: jsonparse over the Json sum type, four planes agree
 
