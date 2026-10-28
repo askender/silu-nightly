@@ -37,8 +37,18 @@
 **链接策略成本已单独测得**——同一 `.ll` 单体 clang 直编
 3.86ms（**1.17× 反超 Rust**），而 siluc 的"程序.o + rt.o"分离
 链接 5.58ms（0.81×）：跨翻译单元边界阻止了运行时函数内联。
-LTO 单体验证 3.89ms 可复原该收益，但驱动集成（dead_strip 与
-LTO 的交互）留待专门轮次——这是全局几何均值最便宜的提升路径。
+LTO 单体验证 3.89ms 可复原该收益。
+
+**已落地（f475966）**：LTO 链接现为 siluc 默认——rt.o 改存
+LLVM bitcode（一次性 0.15s），用户模块同编 bitcode，链接
+`clang -flto -O2 -Wl,-dead_strip`（无冲突）。成本账：每次链接
++20ms（0.05 vs 0.03s），siluc 总时长温态维持 0.11-0.12s。收益
+（安静环境手测，vs Rust）：spectral 4.66→4.15ms、fib 1.08×、
+dict 1.04×、arith 1.03×；启动基线减半（4.1→2.1ms）。
+首次集成失败的两个教训：诊断须用 rt-lifted.ll（internal
+global 已提升），spectral 跨分钟摆动 4.15-6.8ms 使套件轮均值
+不可作单一依据（三轮 0.9×→0.7×→0.8×，binary 与 rust 双侧
+同抖）——单项手测 A/B 是本机可靠口径。
 领先 1.4× 为最大）；两块已归因的短板见文末。
 
 ## 二、编译速度：siluc vs rustc vs clang
