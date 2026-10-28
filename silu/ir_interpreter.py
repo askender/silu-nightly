@@ -68,6 +68,14 @@ class IRInterpreter:
             "max": self._builtin_max,
             "round": self._builtin_round,
             "strlen": self._builtin_strlen,
+            "json_tag": self._builtin_json_tag,
+            "json_int": self._builtin_json_int,
+            "json_float": self._builtin_json_float,
+            "json_bool": self._builtin_json_bool,
+            "json_str": self._builtin_json_str,
+            "json_list": self._builtin_json_list,
+            "json_dict": self._builtin_json_dict,
+            "json_free": lambda v: 0,
             "sqrt": self._builtin_sqrt,
             "ord": ord,
             "chr": chr,
@@ -1967,6 +1975,60 @@ class IRInterpreter:
         if ndigits is None:
             return round(number)
         return round(number, ndigits)
+
+    @staticmethod
+    def _builtin_json_tag(v):
+        if v is None:
+            return 0
+        if isinstance(v, bool):
+            return 3
+        if isinstance(v, int):
+            return 1
+        if isinstance(v, float):
+            return 2
+        if isinstance(v, str):
+            return 4
+        if isinstance(v, list):
+            return 5
+        if isinstance(v, dict):
+            return 6
+        raise TypeError("not a Json value")
+
+    @staticmethod
+    def _builtin_json_int(v):
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise TypeError("json_int: wrong member")
+        return v
+
+    @staticmethod
+    def _builtin_json_float(v):
+        if not isinstance(v, float):
+            raise TypeError("json_float: wrong member")
+        return v
+
+    @staticmethod
+    def _builtin_json_bool(v):
+        if not isinstance(v, bool):
+            raise TypeError("json_bool: wrong member")
+        return v
+
+    @staticmethod
+    def _builtin_json_str(v):
+        if not isinstance(v, str):
+            raise TypeError("json_str: wrong member")
+        return v
+
+    @staticmethod
+    def _builtin_json_list(v):
+        if not isinstance(v, list):
+            raise TypeError("json_list: wrong member")
+        return v
+
+    @staticmethod
+    def _builtin_json_dict(v):
+        if not isinstance(v, dict):
+            raise TypeError("json_dict: wrong member")
+        return v
 
     def _builtin_strlen(self, s: str) -> int:
         """Built-in strlen function - returns length of string."""

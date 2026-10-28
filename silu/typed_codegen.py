@@ -3011,7 +3011,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         adj_phi = builder.phi(i64)
         adj_phi.add_incoming(index_arg, entry)
         adj_phi.add_incoming(adjusted, neg_block)
-        in_range = builder.icmp_signed("<", adj_phi, length)
+        # BOTH bounds: a negative index below -len adjusts to a
+        # negative effective index - that must panic, not wrap the
+        # signed compare (the int-list inline path always had this)
+        above0 = builder.icmp_signed(">=", adj_phi, zero64)
+        below = builder.icmp_signed("<", adj_phi, length)
+        in_range = builder.and_(above0, below)
         if self.checks:
             builder.cbranch(in_range, ok_block, error_block)
         else:
@@ -3031,6 +3036,140 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self.rawstr_copy, [builder.inttoptr(bits, i8p)]
         )
         builder.ret(copy)
+
+        # i8* rawlist_str_copy_into(i8* list, i64 index, i8* dst) - the
+        # buffer-reuse element read (the copy-semantics endgame, Rust
+        # String::clone_from's shape): bounds like rawlist_str_get,
+        # then copy the borrowed element into DST's existing buffer
+        # when capacity permits; realloc only on a genuine grow. A
+        # null dst (fresh slot) allocates. Steady state in a read
+        # loop: zero heap traffic.
+        self.rawlist_str_copy_into = ir.func_(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i64, i8p], False),
+            'rawlist_str_copy_into',
+        )
+        entry = self.rawlist_str_copy_into.append_basic_block("entry")
+        neg_block = self.rawlist_str_copy_into.append_basic_block("negative")
+        bounds_block = self.rawlist_str_copy_into.append_basic_block("bounds")
+        ok_block = self.rawlist_str_copy_into.append_basic_block("ok")
+        error_block = self.rawlist_str_copy_into.append_basic_block("index_error")
+        fresh_block = self.rawlist_str_copy_into.append_basic_block("fresh")
+        fit_block = self.rawlist_str_copy_into.append_basic_block("fit")
+        grow_block = self.rawlist_str_copy_into.append_basic_block("grow")
+        copy_block = self.rawlist_str_copy_into.append_basic_block("copy")
+        builder = ir.builder_(entry)
+        list_arg, index_arg, dst_arg = self.rawlist_str_copy_into.args
+        struct_ptr = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        length = builder.load(_struct_gep(builder, struct_ptr, 0))
+        builder.cbranch(
+            builder.icmp_signed("<", index_arg, zero64), neg_block, bounds_block
+        )
+
+        builder.position_at_end(neg_block)
+        adjusted = builder.add(index_arg, length)
+        builder.branch(bounds_block)
+
+        builder.position_at_end(bounds_block)
+        adj_phi = builder.phi(i64)
+        adj_phi.add_incoming(index_arg, entry)
+        adj_phi.add_incoming(adjusted, neg_block)
+        above0 = builder.icmp_signed(">=", adj_phi, zero64)
+        below = builder.icmp_signed("<", adj_phi, length)
+        builder.cbranch(
+            builder.and_(above0, below), ok_block, error_block
+        )
+
+        builder.position_at_end(error_block)
+        msg = self._create_global_string_with_builder(
+            "IndexError: list index out of range", builder
+        )
+        self._emit_panic(builder, msg)
+
+        builder.position_at_end(ok_block)
+        items = builder.load(_struct_gep(builder, struct_ptr, 2))
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        elem = builder.inttoptr(
+            builder.load(builder.gep(items_i64, [adj_phi])), i8p
+        )
+        elem_s = builder.bitcast(
+            elem, ir.PointerType(self.rawstr_struct_type)
+        )
+        elem_len = builder.load(_struct_gep(builder, elem_s, 0))
+        elem_cp = builder.load(_struct_gep(builder, elem_s, 3))
+        elem_data = builder.load(_struct_gep(builder, elem_s, 2))
+        builder.cbranch(
+            builder.icmp_signed(
+                "==", builder.ptrtoint(dst_arg, ir.IntType(64)),
+                ir.const_(ir.IntType(64), 0),
+            ),
+            fresh_block,
+            fit_block,
+        )
+
+        builder.position_at_end(fresh_block)
+        fresh_data = builder.call(self.malloc, [elem_len])
+        builder.call(
+            self.memcpy,
+            [fresh_data, elem_data, elem_len, ir.const_(ir.IntType(1), 0)],
+        )
+        fresh_s = builder.bitcast(
+            builder.call(self.malloc, [ir.const_(ir.IntType(64), 32)]),
+            ir.PointerType(self.rawstr_struct_type),
+        )
+        builder.store(elem_len, _struct_gep(builder, fresh_s, 0))
+        builder.store(elem_len, _struct_gep(builder, fresh_s, 1))
+        builder.store(fresh_data, _struct_gep(builder, fresh_s, 2))
+        builder.store(elem_cp, _struct_gep(builder, fresh_s, 3))
+        builder.ret(builder.bitcast(fresh_s, i8p))
+
+        builder.position_at_end(fit_block)
+        dst_s = builder.bitcast(
+            dst_arg, ir.PointerType(self.rawstr_struct_type)
+        )
+        dst_cap = builder.load(_struct_gep(builder, dst_s, 1))
+        # capacity verdict: dst.cap >= src.byte_len (bytes, not cps)
+        builder.cbranch(
+            builder.icmp_signed(">=", dst_cap, elem_len),
+            copy_block,
+            grow_block,
+        )
+
+        builder.position_at_end(grow_block)
+        if self.realloc is None:
+            self.realloc = ir.func_(
+                self.module,
+                ir.FunctionType(i8p, [i8p, i64], False), 'realloc',
+            )
+        doubled = builder.mul(dst_cap, ir.const_(ir.IntType(64), 2))
+        new_cap = builder.select(
+            builder.icmp_signed(">=", doubled, elem_len),
+            doubled,
+            elem_len,
+        )
+        grown_data = builder.call(
+            self.realloc,
+            [builder.load(_struct_gep(builder, dst_s, 2)), new_cap],
+        )
+        builder.store(grown_data, _struct_gep(builder, dst_s, 2))
+        builder.store(new_cap, _struct_gep(builder, dst_s, 1))
+        builder.branch(copy_block)
+
+        builder.position_at_end(copy_block)
+        builder.call(
+            self.memcpy,
+            [
+                builder.load(_struct_gep(builder, dst_s, 2)),
+                elem_data,
+                elem_len,
+                ir.const_(ir.IntType(1), 0),
+            ],
+        )
+        builder.store(elem_len, _struct_gep(builder, dst_s, 0))
+        builder.store(elem_cp, _struct_gep(builder, dst_s, 3))
+        builder.ret(dst_arg)
 
         # i8* rawlist_str_ptr(i8* list, i64 index) - borrowed pointer for
         # view positions (dict keys); no copy, no bounds re-check beyond
@@ -9864,6 +10003,38 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self._declare_var(target, annotation_kind)
             self.current_builder.store(raw_ptr, self.variables[target])
             return (annotation_kind, raw_ptr)
+        if (
+            isinstance(target, str)
+            and (
+                self.var_kinds.get(target) == RAWSTR
+                or (
+                    self.var_kinds.get(target) is None
+                    and self._inferred_kinds.get(target) == RAWSTR
+                )
+            )
+            and isinstance(value_node, list)
+            and len(value_node) >= 3
+            and value_node[0] == "subscript"
+        ):
+            base_tv = self._convert_node(value_node[1])
+            if base_tv[0] == RAWLIST_S:
+                # w = words[i]: bounds + borrowed read + copy into w's
+                # OWN buffer (zero steady-state heap traffic). Placed
+                # BEFORE the value conversion so no dead materialized
+                # read is emitted. A first assignment declares the
+                # slot here; the null-initialized buffer makes
+                # copy_into allocate.
+                self._declare_var(target, RAWSTR)
+                index = self._coerce(
+                    self._convert_node(value_node[2]), I64
+                )[1]
+                dst_val = self.current_builder.load(self.variables[target])
+                res = self.current_builder.call(
+                    self.rawlist_str_copy_into,
+                    [base_tv[1], index, dst_val],
+                )
+                self.current_builder.store(res, self.variables[target])
+                return (RAWSTR, res)
         value = self._convert_node(value_node)
         if isinstance(target, str) and value[1] is not None:
             if _is_inst(value[0]) and annotation_kind in (None, OBJ):

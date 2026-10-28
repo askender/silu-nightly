@@ -688,6 +688,13 @@ Examples:
         )
         verify_parser.add_argument("file", help="Silu source file to verify")
 
+    # Panic-free proof subcommand (roadmap Phase 2)
+    prove_parser = subparsers.add_parser(
+        "prove",
+        help="Z3 panic-free proof: can any function abort (div/mod by zero)?",
+    )
+    prove_parser.add_argument("file", help="Silu source file")
+
     # Symbolic execution subcommand
     symbolic_parser = subparsers.add_parser(
         "symbolic", help="Perform symbolic execution"
@@ -736,6 +743,11 @@ Examples:
 
 def validate_arguments(args) -> None:
     """Validate command line arguments."""
+    if args.mode == "prove":
+        if not args.file or not Path(args.file).exists():
+            print(f"Error: File '{args.file}' does not exist.", file=sys.stderr)
+            sys.exit(1)
+        return
     if args.mode == "check":
         # For check mode, only file is required (no --source support)
         if not args.file:
@@ -756,7 +768,7 @@ def validate_arguments(args) -> None:
             print(f"Error: File '{args.file}' does not exist.", file=sys.stderr)
             sys.exit(1)
         # Don't check file existence here for check mode - let run_check handle it
-    elif args.mode in ["exec", "symbolic", "to-source", "llvm"]:
+    elif args.mode in ["exec", "symbolic", "to-source", "llvm", "prove"]:
         # For exec/symbolic/to-source/llvm modes, either file or --source is required
         if not args.file and not args.source:
             if args.mode == "exec":
@@ -930,6 +942,10 @@ def main() -> None:
                 static_only=getattr(args, "static", False),
             )
 
+        elif args.mode == "prove":
+            from silu.verify import verify_file
+
+            sys.exit(verify_file(args.file))
         elif args.mode == "verify":
             # Differential verification: interpreter vs compiled binary
             run_verify(args.file)
