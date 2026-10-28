@@ -4,6 +4,21 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.16.0
+interprocedural contracts: require() - modular proof composition
+
+- require(cond): a no-op in every runtime plane, proof-time only;
+  the typed backend compiles it to constant true
+- a function's proof stands ALONE under its declared domain - no
+  caller narrowing, removing a caller never invalidates anything;
+  call sites are separately verified against the contract
+  (fresh-name instantiation, caller path conditions)
+- spectral with require goes green end to end: a() proves safe
+  under i>=0,j>=0; the loop-bound call sites satisfy the contract;
+  safe_div(10, x-x) is a CONTRACT VIOLATION with witness
+- and/or in the Z3 expression converter; empty domains are
+  vacuously safe (pinned); prove suite 7 -> 24
+
 ### v1.15.2
 distribution + prove v2 + transform equivalence: the roadmap closes
 
