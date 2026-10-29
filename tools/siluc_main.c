@@ -498,7 +498,7 @@ int main(int argc, char **argv) {
             fputs(full_ll, mf);
         }
         fclose(mf);
-        const char *co[] = { "clang", "-O2", "-c", obj_ll, "-o", out, NULL };
+        const char *co[] = { "clang", "-O2", "-fPIC", "-c", obj_ll, "-o", out, NULL };
         if (run_quiet(co) != 0) die("clang failed on the object module");
         unlink(obj_ll);
 

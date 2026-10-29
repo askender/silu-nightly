@@ -6,6 +6,8 @@ link and call them.
 """
 
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -46,6 +48,9 @@ LIB_SRC = (
 
 @pytest.fixture(scope="module")
 def lib(tmp_path_factory):
+    from tools.selfhost_build import ensure_siluc
+
+    ensure_siluc()
     d = tmp_path_factory.mktemp("cab")
     src = d / "lib.si"
     src.write_text(LIB_SRC)
@@ -61,9 +66,8 @@ def test_object_and_header_exist(lib):
     syms = subprocess.run(
         ["nm", obj], capture_output=True, text=True
     ).stdout
-    assert " T _fib" in syms
-    assert " T _circle_area" in syms
-    assert " T _safe_mul" in syms
+    for name in ("fib", "circle_area", "safe_mul"):
+        assert re.search(rf"\bT\s+_?{name}\b", syms), (name, syms)
     # non-exported runtime stays present but that is fine; the
     # exported names must be GLOBAL (T), not local (t)
     hdr = open(obj + ".h").read()
@@ -92,10 +96,14 @@ def test_c_host(lib):
 
 
 def test_rust_host(lib):
+    rustc = shutil.which("rustc")
+    if rustc is None:
+        pytest.skip("rustc not installed")
     obj, d = lib
-    dylib = os.path.join(str(d), "libsilu_ffi.dylib")
+    extension = "dylib" if sys.platform == "darwin" else "so"
+    dylib = os.path.join(str(d), "libsilu_ffi." + extension)
     r = subprocess.run(
-        ["clang", "-shared", obj, "-o", dylib],
+        ["clang", "-shared", obj, "-lm", "-o", dylib],
         capture_output=True, text=True,
     )
     assert r.returncode == 0, r.stderr
@@ -107,10 +115,12 @@ def test_rust_host(lib):
     )
     exe = os.path.join(str(d), "host_rs")
     r = subprocess.run(
-        [os.path.expanduser("~/.cargo/bin/rustc"),
+        [rustc,
          "-C", "opt-level=3", rs, "-o", exe,
          "-C", f"link-arg=-L{os.path.dirname(dylib)}",
-         "-C", "link-arg=-lsilu_ffi"],
+         "-C", "link-arg=-lsilu_ffi",
+         "-C", f"link-arg=-Wl,-rpath,{os.path.dirname(dylib)}",
+         "-C", "link-arg=-lm"],
         capture_output=True, text=True,
     )
     assert r.returncode == 0, r.stderr
