@@ -249,6 +249,7 @@ ir_generator_for_c.py    # C → Silu IR (pycparser-based)
 - [LLVM IR Generation](docs/llvm_ir_generation.md) — native compilation via LLVM
 - [Interpreter Specification](docs/interpreter_spec.md) — core implementation details
 - [Development Guide](docs/development.md) — setup, testing, and contributing
+- [Repository & Release Topology](docs/distribution.md) — private source, public showcase, paused legacy remote, and binary promotion
 - [C Interop & Self-Hosted Toolchain](docs/interop.md) — @export / from c import / siluc driver
 - [Speed Benchmarks](docs/benchmarks.md) — the full 15-program table (run + compile), evolution timeline, methodology
 - [Memory Management](docs/memory.md) — Rust-style ownership on typed paths, leak-by-design pyobj world, and why no borrow checker is needed
