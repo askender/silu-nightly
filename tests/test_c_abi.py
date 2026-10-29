@@ -87,7 +87,7 @@ def test_c_host(lib):
     )
     exe = os.path.join(str(d), "host")
     r = subprocess.run(
-        ["clang", "-O2", "-I", d, host, obj, "-o", exe],
+        ["clang", "-O2", "-I", d, host, obj, "-lm", "-o", exe],
         capture_output=True, text=True,
     )
     assert r.returncode == 0, r.stderr
