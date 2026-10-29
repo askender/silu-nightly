@@ -9,7 +9,10 @@ jobs:
     # Prove the self-hosting fixed points on the exact tag before any
     # binary is packaged. Push-event runs have proven reliable where
     # workflow_dispatch runners were shut down mid-run.
-    runs-on: ubuntu-latest
+    # ubuntu-latest runners were repeatedly reclaimed mid-run today
+    # ("runner received a shutdown signal", random 1-46 min marks);
+    # pin a specific image while that pool is unstable.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
