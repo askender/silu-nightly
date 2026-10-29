@@ -2,31 +2,26 @@
 
 [English](README.md) | **简体中文**
 
-**Python 语法进，原生二进制出。** Silu（斯路）采用 Python 兼容的语法子集，
-让同一个程序拥有三种运行方式：参考语义解释器、基于 Z3 的符号执行器，
-以及 LLVM 编译器——其产物运行速度达到手写 Rust 的水平。
+**简明 Python 语法的自举编译型语言。** Silu（斯路）接受文档明确说明的
+Python 语法子集，提供参考解释器、基于 Z3 的符号执行与证明器，以及
+LLVM 原生编译器。
 
-| 程序 | CPython | silu 二进制 | Rust |
-|---|---|---|---|
-| n-body（5 万步） | 0.21s | 0.0065s | 0.0075s |
-| spectral-norm（n=300） | 0.29s | 0.0068s | 0.0056s |
-| string（4.8 万次拼接） | 0.049s | 0.0032s | 0.0031s |
-| mandelbrot（80x24） | 0.044s | 0.0034s | 0.0033s |
+## 性能
 
-在 14 个基准程序（含 5 个 Benchmarks Game 经典与 3 个真实风格负载）上，编译产物平均达到
-**手写 Rust 的约 1.0 倍、CPython 的约 16 倍、树遍历解释器的约 600 倍**——
-完整数据与方法见 [benchmarks/README.md](benchmarks/README.md)。
+v1.9.0 报告（2026-10-25，Apple Silicon）覆盖 15 个程序（含 Json 孪生），
+几何平均为 **CPython 的 15.6 倍、参考解释器的 515 倍**。同报告对手写
+Rust 孪生整体为 0.9 倍——部分程序更快，部分更慢。后续工具链变化见
+[完整评测与方法](docs/benchmarks.md)。
 
 ## 为什么选择 Silu
 
-- **Rust 速度的原生编译** — 类型注解直接驱动非装箱的机器表示
+- **原生编译** — 类型注解直接驱动非装箱的机器表示
   （`int`/`float`/`bool` 标量、`list[int]`/`list[float]` 数组、
   `dict[int, int]`/`dict[int, float]` 哈希表、`str` 为 Rust String 风格的
   独占缓冲），保守的类型推断在可证明安全时让未注解代码享受同样待遇；
   证明不到的地方完整保留 Python 语义。
-- **内置符号执行** — 自动探索函数的所有执行路径，用 Z3 生成路径约束，
-  并自动产生命中每条路径的具体测试输入。在 Python 子集编译器中，
-  这种"速度 + 形式化分析"的组合是独一无二的。
+- **证明与反例** — `silu prove` 用 Z3 检查除零、下标边界和字典键，
+  而非抽样测试。循环按有限界验证；未证明的义务会明确报告，不会静默视为安全。
 - **一份 IR，多个后端** — 所有程序都会降级到一种轻量的元组式中间表示（IR），
   它可以直接解释执行、反向转回源码、做符号分析，也可以经 LLVM 编译为原生代码。
 - **Python 语法子集** — Silu 直接复用 Python 的解析器，大多数简单的
@@ -47,7 +42,7 @@ pip install -e .
 uv sync && uv pip install -e .
 ```
 
-运行时依赖：`llvmlite`、`pycparser`、`z3-solver`、`loguru`、`mlir`。
+运行时依赖：`llvmlite`、`pycparser`、`z3-solver`、`loguru`。
 
 ## 快速开始
 
@@ -214,7 +209,7 @@ silu/                    # 语言实现包
 ├── symbolic_executor.py # 符号执行引擎（含 silu/symbolic/）
 ├── typed_codegen.py     # Silu IR → LLVM IR（typed 主后端）
 └── silu_ir_to_llvm.py   # Silu IR → LLVM IR（动态基础运行时）
-tests/                   # 630+ 个 pytest 测试
+tests/                   # 1100+ 快速测试及自举门禁
 benchmarks/              # 11 个程序的基准套件（对比 CPython 与 Rust 镜像）
 docs/                    # 技术文档
 examples/                # 示例程序

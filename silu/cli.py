@@ -294,12 +294,12 @@ def _compile_to_binary(source_file: str, out_path: str,
         ll_path = os.path.join(tmpdir, "program.ll")
         with open(ll_path, "w", encoding="utf-8") as handle:
             handle.write(llvm_ir)
+        link_flags = (["-Wl,-dead_strip"] if sys.platform == "darwin"
+                      else ["-Wl,--gc-sections"])
         result = subprocess.run(
-            # dead_strip drops the unreferenced runtime functions the
-            # converter embeds in every module (fib keeps 1 of 178);
-            # verified behavior-identical, binary ~3x smaller
-            [clang, "-O2", ll_path, "-o", out_path,
-             "-Wl,-dead_strip", "-lm"],
+            # Strip unreferenced runtime functions without assuming the
+            # macOS-only dead_strip linker flag on Linux.
+            [clang, "-O2", ll_path, "-o", out_path, "-lm"] + link_flags,
             capture_output=True,
             text=True,
         )
@@ -883,34 +883,17 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        import os as _os
-
         try:
-            import tools.selfhost_build as shb
-        except ModuleNotFoundError:
-            repo = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-            sys.path.insert(0, repo)
-            try:
-                import tools.selfhost_build as shb
-            except ModuleNotFoundError:
-                print(
-                    "Error: the self-hosted build scripts (tools/) "
-                    "are not available in this install; install from "
-                    "the repository or use 'pip install -e .'.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
-        siluc = shb.ensure_siluc()
-        fe = shb.ensure_frontend()
+            from tools.bootstrap import ensure_toolchain
+            siluc, fe = ensure_toolchain()
+        except Exception as e:
+            print(f"Error bootstrapping the toolchain: {e}", file=sys.stderr)
+            sys.exit(1)
         print("bootstrapped the self-hosted toolchain:")
         print(f"  {siluc}   # file-in binary-out, zero Python (~0.13s)")
         print(f"  {fe}       # stdin .si -> IR JSON")
-        print(
-            "Try: ./siluc program.si -o program\n"
-            "Re-run after upgrades or when sources change; the build "
-            "is incremental (mtime-cached)."
-        )
+        print(f'Try: "{siluc}" program.si -o program\n'
+              "Generated files are cached per user; re-run after upgrades.")
         return
 
     # Get source code for other modes

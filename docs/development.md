@@ -4,7 +4,7 @@ This guide covers installation, development setup, testing, and contributing to 
 
 ## Prerequisites
 
-- Python 3.6 or later
+- Python 3.11 or later
 - `uv` (recommended) or `pip` for package management
 
 ## Installation
@@ -117,7 +117,9 @@ silu interpret --source "print('Hello')"
 
 #### Cleaning Build Artifacts
 ```bash
-make clean        # Remove cache files and build artifacts
+make rm          # Remove Python bytecode caches
+# Native build artifacts live in the repository or the user cache;
+# remove them manually only when you intend to rebuild.
 ```
 
 ## Testing
@@ -307,8 +309,7 @@ uv pip install -e .
 
 #### Test Failures
 ```bash
-# Clean and reinstall
-make clean
+# Reinstall the development checkout
 uv sync
 make test
 ```

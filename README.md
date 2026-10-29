@@ -2,38 +2,34 @@
 
 **English** | [简体中文](README_zh.md)
 
-**Python syntax in, native binaries out.** Silu (斯路) takes a
-Python-compatible syntax subset and gives the same program three
-runtimes: a reference interpreter, a Z3-backed symbolic executor, and
-an LLVM compiler whose output runs at hand-written-Rust speed.
+**A concise, self-hosted compiled language with Python syntax.** Silu
+(斯路) accepts a documented Python-syntax subset and provides a reference
+interpreter, a Z3-backed symbolic executor and prover, and an LLVM
+native compiler.
 
-| program | CPython | silu binary | Rust |
-|---|---|---|---|
-| n-body (50k steps) | 0.21s | 0.0065s | 0.0075s |
-| spectral-norm (n=300) | 0.29s | 0.0068s | 0.0056s |
-| string (48k concats) | 0.049s | 0.0032s | 0.0031s |
-| mandelbrot (80x24) | 0.044s | 0.0034s | 0.0033s |
+## Performance
 
-Across 14 benchmarks (including five Benchmarks Game classics and
-three real-world-flavored workloads) the
-compiled binaries average **~1.0x hand-written Rust, ~16x CPython,
-and ~600x the tree-walking interpreter** —
-[benchmarks/README.md](benchmarks/README.md) has the full table and
-methodology.
+The v1.9.0 report (2026-10-25, Apple Silicon) covers 15 programs
+(including a Json twin) and reports **15.6× CPython and 515× the
+reference interpreter** in geometric mean. Against the hand-written
+Rust twins, the same report is 0.9× overall — some programs faster,
+some slower. Later toolchain changes are described in the
+[benchmark report](docs/benchmarks.md), which includes the full table
+and methodology.
 
 ## Why Silu
 
-- **Rust-speed native compilation** — Type annotations drive unboxed
+- **Native compilation** — Type annotations drive unboxed
   machine representations (`int`/`float`/`bool` scalars,
   `list[int]`/`list[float]` arrays, `dict[int, int]`/`dict[int, float]`
   hash maps, `str` as Rust-String-style owned buffers), and a
   conservative inference gives unannotated code the same treatment
   whenever it is provably safe. Python semantics are preserved
   everywhere the proof does not reach.
-- **Symbolic execution built in** — Explore all execution paths of a
-  function, generate path conditions with Z3, and produce concrete
-  test inputs automatically. No other Python-subset compiler ships
-  this combination of speed and formal analysis.
+- **Proofs and counterexamples** — `silu prove` checks division by
+  zero, index bounds and dictionary keys, using Z3 rather than input
+  sampling. Loops have a finite verification bound; unproved
+  obligations are reported rather than assumed safe.
 - **One IR, many backends** — Every program lowers to a small
   tuple-based IR that can be interpreted, converted back to source,
   symbolically analyzed, or compiled to native code via LLVM.
@@ -56,7 +52,7 @@ pip install -e .
 uv sync && uv pip install -e .
 ```
 
-Runtime dependencies: `llvmlite`, `pycparser`, `z3-solver`, `loguru`, `mlir`.
+Runtime dependencies: `llvmlite`, `pycparser`, `z3-solver`, `loguru`.
 
 ## Quick Start
 
@@ -235,8 +231,8 @@ silu/                    # The language implementation package
 ├── symbolic_executor.py # Symbolic execution engine (+ silu/symbolic/)
 ├── typed_codegen.py     # Silu IR → LLVM IR (typed backend, main)
 └── silu_ir_to_llvm.py   # Silu IR → LLVM IR (dynamic base runtime)
-tests/                   # 630+ pytest tests
-benchmarks/              # 14-program suite vs CPython and Rust mirrors
+tests/                   # 1100+ fast tests plus self-hosting gates
+benchmarks/              # 15-program suite vs CPython and Rust mirrors
 docs/                    # Technical documentation
 examples/                # Demo programs
 ir_generator_for_c.py    # C → Silu IR (pycparser-based)
@@ -254,7 +250,7 @@ ir_generator_for_c.py    # C → Silu IR (pycparser-based)
 - [Interpreter Specification](docs/interpreter_spec.md) — core implementation details
 - [Development Guide](docs/development.md) — setup, testing, and contributing
 - [C Interop & Self-Hosted Toolchain](docs/interop.md) — @export / from c import / siluc driver
-- [Speed Benchmarks](docs/benchmarks.md) — the full 14-program table (run + compile), evolution timeline, methodology
+- [Speed Benchmarks](docs/benchmarks.md) — the full 15-program table (run + compile), evolution timeline, methodology
 - [Memory Management](docs/memory.md) — Rust-style ownership on typed paths, leak-by-design pyobj world, and why no borrow checker is needed
 
 ## Vision & AI Roadmap

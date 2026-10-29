@@ -5,4 +5,4 @@ Importers stay lazy: this module must not pull in submodules at import
 time (the CLI lazy-import work, v1.5.1).
 """
 
-__version__ = "1.15.0"
+__version__ = "1.16.1"

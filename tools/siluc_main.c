@@ -20,6 +20,7 @@
  *   rt.o     - the compiled runtime object
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +28,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <libgen.h>
+#ifdef __APPLE__
 #include <mach-o/dyld.h>
+#endif
 #include <fcntl.h>
 
 #define MAX_LL (64 * 1024 * 1024)
@@ -36,6 +39,23 @@
 
 static char g_exe_dir[4096];
 static char g_cache_dir[4096];
+
+static void die(const char *msg);
+
+static void make_cache_dirs(const char *path) {
+    char partial[4096];
+    size_t n = strlen(path);
+    if (n >= sizeof partial) die("cache path too long");
+    memcpy(partial, path, n + 1);
+    for (char *p = partial + 1; *p; p++) {
+        if (*p == '/') {
+            *p = 0;
+            if (mkdir(partial, 0755) != 0 && errno != EEXIST) die("creating cache directory");
+            *p = '/';
+        }
+    }
+    if (mkdir(partial, 0755) != 0 && errno != EEXIST) die("creating cache directory");
+}
 
 static void die(const char *msg) {
     fprintf(stderr, "siluc: %s\n", msg);
@@ -242,12 +262,14 @@ int main(int argc, char **argv) {
     ssize_t n = readlink("/proc/self/exe", g_exe_dir, sizeof g_exe_dir);
     if (n < 0) {
         /* macOS */
+#ifdef __APPLE__
         char tmp[4096];
         uint32_t sz = sizeof tmp;
         if (_NSGetExecutablePath(tmp, &sz) == 0) {
             strcpy(g_exe_dir, tmp);
             n = strlen(g_exe_dir);
         }
+#endif
     }
     if (n < 0 || (size_t)n >= sizeof g_exe_dir) die("locating self");
     g_exe_dir[n] = 0;
@@ -257,8 +279,12 @@ int main(int argc, char **argv) {
 
     /* cache dir */
     const char *home = getenv("HOME");
-    snprintf(g_cache_dir, sizeof g_cache_dir, "%s/.cache/silu-runtime/driver", home ? home : ".");
-    mkdir(g_cache_dir, 0755);
+    const char *xdg = getenv("XDG_CACHE_HOME");
+    if (xdg && *xdg)
+        snprintf(g_cache_dir, sizeof g_cache_dir, "%s/silu-runtime/driver", xdg);
+    else
+        snprintf(g_cache_dir, sizeof g_cache_dir, "%s/.cache/silu-runtime/driver", home ? home : ".");
+    make_cache_dirs(g_cache_dir);
 
     char rt_ll_path[4096], rt_o_path[4096], rt_syms_path[4096];
     snprintf(rt_ll_path, sizeof rt_ll_path, "%s/rt.ll", g_cache_dir);
@@ -344,7 +370,7 @@ int main(int argc, char **argv) {
             } else fputc(*a++, lf);
         }
         fclose(lf);
-        const char *c1[] = { "clang", "-O2", "-flto", "-c", lifted_path, "-o", rt_o_path, NULL };
+        const char *c1[] = { "clang", "-O2", "-flto", "-ffunction-sections", "-fdata-sections", "-c", lifted_path, "-o", rt_o_path, NULL };
         if (run_quiet(c1) != 0) die("clang failed on the runtime");
     }
 
@@ -434,15 +460,19 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* 6. user .ll = fixed header + header declares + synth decls + body */
+    /* 6. user .ll preserves the host target emitted by siluc1 */
     char user_ll_path[] = "/tmp/siluc_userXXXXXX.ll";
     int ufd = mkstemps(user_ll_path, 3);
     FILE *uf = ufd >= 0 ? fdopen(ufd, "w") : NULL;
     if (!uf) die("cannot create user .ll");
-    fputs("; ModuleID = \"silu_user\"\n"
-          "target triple = \"arm64-apple-darwin24.6.0\"\n"
-          "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-"
-          "i64:64-i128:128-n32:64-S128-Fn32\"\n\n", uf);
+    const char *header_end = strstr(full_ll, "\ndefine ");
+    const char *declare_end = strstr(full_ll, "\ndeclare ");
+    const char *global_end = strstr(full_ll, "\n@");
+    if (declare_end && (!header_end || declare_end < header_end)) header_end = declare_end;
+    if (global_end && (!header_end || global_end < header_end)) header_end = global_end;
+    if (!header_end || header_end > body) die("invalid module header");
+    fwrite(full_ll, 1, header_end - full_ll + 1, uf);
+    fputc('\n', uf);
     if (header_decls[0]) { fputs(header_decls, uf); fputc('\n', uf); }
     if (decls[0]) { fputs(decls, uf); fputc('\n', uf); }
     fputs(body, uf);
@@ -553,11 +583,16 @@ int main(int argc, char **argv) {
     char user_o_path[] = "/tmp/siluc_userXXXXXX.o";
     int ofd = mkstemps(user_o_path, 2);
     close(ofd);
-    const char *c2[] = { "clang", "-O2", "-flto", "-c", user_ll_path, "-o", user_o_path, NULL };
+    const char *c2[] = { "clang", "-O2", "-flto", "-ffunction-sections", "-fdata-sections", "-c", user_ll_path, "-o", user_o_path, NULL };
     if (run_quiet(c2) != 0) die("clang failed on the user module");
-    const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-Wl,-dead_strip", NULL };
+#ifdef __APPLE__
+    const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,-dead_strip", NULL };
+#else
+    const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,--gc-sections", NULL };
+#endif
     if (run_quiet(c3) != 0) die("link failed");
 
-    /* unlink(user_ll_path); unlink(user_o_path); */
+    unlink(user_ll_path);
+    unlink(user_o_path);
     return 0;
 }

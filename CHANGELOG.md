@@ -4,6 +4,17 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.16.1
+release readiness: reproducible CI and a relocatable binary toolchain
+
+- pin the lint contract and use project dependencies in CI; manual
+  self-hosting gates are now actually dispatchable
+- installed-wheel bootstrap generates sources and native tools in a
+  per-user cache, never in the package installation directory
+- portable native linking and target triples for Linux and x86_64;
+  cold driver cache creation and artifact packaging fixed
+- public binary archives, examples and bilingual release documentation
+
 ### v1.16.0
 interprocedural contracts: require() - modular proof composition
 

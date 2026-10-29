@@ -36,7 +36,11 @@ CONV_DEPS = [CONV_MAIN, CONV_FLAT, os.path.join(SELFHOST, "llvmlite.si")] + [
     for n in (
         "typed_codegen.py", "typed_helpers.py",
         "pyobj_runtime.py", "silu_ir_to_llvm.py",
+        "typed_expr.py", "typed_match.py", "typed_call.py",
     )
+] + [
+    os.path.join(REPO, "tools", "flatten_codegen.py"),
+    os.path.join(REPO, "tools", "flatten_si_tail.si"),
 ]
 
 SILUC_SRC = os.path.join(SELFHOST, "siluc.si")

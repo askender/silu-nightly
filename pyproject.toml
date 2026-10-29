@@ -2,8 +2,8 @@
 requires = ["setuptools>=45", "wheel"]
 [project]
 name = "pysilu"
-version = "1.15.0"
-description = "A simple AI programming language"
+version = "1.16.1"
+description = "A self-hosted compiled language with Python syntax"
 readme = "README.md"
 authors = [{ name = "askender", email = "askender43@gmail.com" }]
 license = "MIT"
@@ -20,6 +20,11 @@ dependencies = [
  "loguru>=0.7.2",
 ]
 
+[project.urls]
+Homepage = "https://silu.askender.xyz/"
+Documentation = "https://silu.askender.xyz/language.html"
+Repository = "https://github.com/askender/silu-lang"
+
 [project.scripts]
 silu = "silu.cli:main"
 
@@ -35,6 +40,9 @@ selfhost = ["*.si"]
 testpaths = ["tests"]
 
 [tool.ruff.lint]
+# Keep the lint contract explicit: an unconstrained new Ruff release
+# must not silently turn a working development tree into a red CI gate.
+select = ["E4", "E7", "E9", "F"]
 # F403/F405: star imports are the dual-valid single-source pattern
 # (typed_helpers.__all__ feeds the converter family; flatten inlines it)
 ignore = ["F403", "F405"]
@@ -48,4 +56,4 @@ parallel = true
 sigterm = true
 
 [dependency-groups]
-dev = ["pytest>=7.0.1", "pytest-cov>=4.0.0"]
+dev = ["pytest>=7.0.1", "pytest-cov>=4.0.0", "ruff==0.11.12"]

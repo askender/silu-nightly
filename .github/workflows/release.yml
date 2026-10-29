@@ -6,10 +6,8 @@ on:
 
 jobs:
   binaries:
-    # Pre-built siluc for people who want the zero-Python toolchain
-    # without bootstrapping. The pip package stays pure Python; these
-    # artifacts are the binaries' proper channel. siluc needs clang at
-    # RUNTIME on the user machine (Xcode CLT / apt install clang).
+    # Each archive carries the driver and its adjacent compiler. Python
+    # is needed only for the build; end users need a C toolchain (clang).
     strategy:
       fail-fast: false
       matrix:
@@ -30,34 +28,40 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install llvmlite pycparser z3-solver loguru
+        run: pip install -e . build
       - name: Bootstrap the toolchain
-        run: python -m silu bootstrap
+        run: python -c 'from tools.selfhost_build import ensure_siluc; ensure_siluc()'
       - name: Smoke (compile + run fib)
         run: |
           ./siluc benchmarks/fib.si -o /tmp/fib && /tmp/fib
-      - name: Stage artifacts
+      - name: Verify wheel bootstrap in a clean environment
         run: |
-          mkdir -p dist/siluc-${{ matrix.platform }}
-          cp siluc siluc1 silu_fe dist/siluc-${{ matrix.platform }}/
-          clang -O2 tools/siluc_main.c -o dist/siluc-${{ matrix.platform }}/siluc-driver-src-check || true
-          rm dist/siluc-${{ matrix.platform }}/siluc-driver-src-check
+          python -m build --wheel
+          python -m venv /tmp/silu-wheel-venv
+          /tmp/silu-wheel-venv/bin/pip install dist/pysilu-*-py3-none-any.whl
+          chmod -R a-w /tmp/silu-wheel-venv/lib
+          cd /tmp
+          HOME=/tmp/silu-wheel-home XDG_CACHE_HOME=/tmp/silu-wheel-cache \
+            /tmp/silu-wheel-venv/bin/silu bootstrap
+      - name: Stage versioned archive
+        env:
+          TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+          pkg="siluc-${TAG#v}-${PLATFORM}"
+          mkdir -p "dist/$pkg"
+          cp siluc siluc1 "dist/$pkg/"
+          cp benchmarks/fib.si "dist/$pkg/fib.si"
+          cp examples/hello.si "dist/$pkg/hello.si"
+          cp tools/release_README.md "dist/$pkg/README.md"
+          cd dist
+          tar -czf "$pkg.tar.gz" "$pkg"
+          shasum -a 256 "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: siluc-${{ matrix.platform }}
-          path: dist/
-
-  release:
-    needs: binaries
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifacts@v4
-        with:
-          path: dist/
-      - name: Create release with binaries
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*/siluc*
-          generate_release_notes: true
+          path: dist/*.tar.gz*
+      # Release artifacts are promoted to the public showcase with
+      # tools/promote_release.sh after the private CI gate is green.
+      # No cross-repository write token is needed in this workflow.

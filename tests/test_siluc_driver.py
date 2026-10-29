@@ -18,9 +18,11 @@ SILUC1_SRC = os.path.join(REPO, "selfhost", "siluc.si")
 
 @pytest.fixture(scope="module")
 def driver():
-    # use the in-repo driver in place: it locates siluc1 next to
-    # itself, so a copy would need siluc1 copied too
-    return DRIVER
+    # The driver locates siluc1 beside itself, so build the pair in the
+    # repository rather than copying just the launcher into tmp_path.
+    import tools.selfhost_build as shb
+
+    return shb.ensure_siluc()
 
 
 BENCH = [
@@ -67,6 +69,23 @@ def test_driver_jsonparse_with_stdin(tmp_path, driver):
     )
     total, count, checksum, names = r.stdout.split()
     assert (int(count), int(names), int(checksum)) == (3000, 3000, 22890)
+
+
+def test_driver_cold_cache_creates_parents(tmp_path, driver):
+    """A released binary must work with no pre-existing cache at all."""
+    import tools.selfhost_build as shb
+
+    if any(shb._newer(d, shb.SILUC_BIN) for d in [DRIVER_SRC, shb.SILUC1_BIN]):
+        shb.ensure_siluc()
+    env = dict(os.environ)
+    env["XDG_CACHE_HOME"] = str(tmp_path / "nested" / "cache")
+    out = str(tmp_path / "fib")
+    result = subprocess.run(
+        [driver, os.path.join(REPO, "benchmarks", "fib.si"), "-o", out],
+        capture_output=True, text=True, cwd=REPO, env=env, timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    assert subprocess.run([out], capture_output=True, text=True).returncode == 0
 
 
 def test_driver_compile_speed():

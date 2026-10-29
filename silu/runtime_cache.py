@@ -20,11 +20,13 @@ only; the .ll split path never runs in the byte-identity gates).
 import hashlib
 import os
 import re
+import platform
 import subprocess
 import tempfile
 
 _CACHE_DIR = os.path.join(
-    os.path.expanduser("~"), ".cache", "silu-runtime"
+    os.environ.get("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")),
+    "silu-runtime",
 )
 
 _HEADER_RE = re.compile(
@@ -38,6 +40,7 @@ _HEADER_RE = re.compile(
 _TEXT_SOURCES = (
     "typed_codegen.py", "typed_helpers.py",
     "pyobj_runtime.py", "silu_ir_to_llvm.py",
+    "typed_expr.py", "typed_match.py", "typed_call.py",
 )
 
 
@@ -139,12 +142,11 @@ def split(full_text, rt_text=None):
     header_declares = re.findall(
         r'^declare\s+[^\n]+$', _body(full_text), re.M
     )
-    header = (
-        '; ModuleID = "silu_user"\n'
-        'target triple = "arm64-apple-darwin24.6.0"\n'
-        'target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-'
-        'i64:64-i128:128-n32:64-S128-Fn32"\n\n'
-    )
+    # Keep the converter's actual target: a hard-coded ARM64 Darwin
+    # triple would poison Linux and Intel-Mac user modules.
+    header = full_text[:_HEADER_RE.match(full_text).end()]
+    if "target triple" not in header:
+        header = '; ModuleID = "silu_user"\n\n'
     user_ll = (
         header
         + "\n".join(header_declares)
@@ -209,6 +211,7 @@ def build_with_cache(source_ir_json, out_path, opt="-O2", cache_dir=None,
         # dead_strip keeps only referenced runtime functions in the
         # final binary (a static program links 1 of the 178; verified
         # behavior-identical, ~3x smaller)
-        _run(["clang", user_obj, rt_obj, "-o", out_path,
-              "-Wl,-dead_strip", "-lm"])
+        link_flags = (["-Wl,-dead_strip"] if platform.system() == "Darwin"
+                      else ["-Wl,--gc-sections"])
+        _run(["clang", user_obj, rt_obj, "-o", out_path, "-lm"] + link_flags)
     return full_text
