@@ -5,7 +5,33 @@ on:
     tags: ["v*"]
 
 jobs:
+  gates:
+    # Prove the self-hosting fixed points on the exact tag before any
+    # binary is packaged. Push-event runs have proven reliable where
+    # workflow_dispatch runners were shut down mid-run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -e . pytest
+      - name: Self-hosting gates
+        run: >
+          pytest tests/test_selfhost_fixed_point.py
+          tests/test_pipeline_fixed_point.py
+          tests/test_si_converter_native_parity.py
+          tests/test_frontend_parity_corpus.py
+          tests/test_siluc_driver.py
+          tests/test_selfhost_m1.py
+          tests/test_selfhost_m2.py
+          tests/test_selfhost_m3.py
+          tests/test_selfhost_m4.py -q
+
   binaries:
+    needs: gates
     # Each archive carries the driver and its adjacent compiler. Python
     # is needed only for the build; end users need a C toolchain (clang).
     strategy:
