@@ -22,7 +22,7 @@ and unrelated commit history.
 git push nightly main
 
 # Public documentation and examples: use the separate silu-lang checkout
-cd /tmp/silu-lang
+cd ~/aix1/silu-lang
 git push origin main
 ```
 
