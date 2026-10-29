@@ -7,6 +7,14 @@ RUN_ID=${2:?successful release run id required}
 DEST=$(mktemp -d)
 trap 'rm -rf "$DEST"' EXIT
 
+actual=$(gh run view "$RUN_ID" --repo askender/silu-nightly \
+    --json name,status,conclusion,headBranch \
+    --jq '[.name,.status,.conclusion,.headBranch]|join(" ")')
+[ "$actual" = "release completed success $TAG" ] || {
+    echo "not a successful release run for $TAG: $actual"
+    exit 1
+}
+
 gh run download "$RUN_ID" --repo askender/silu-nightly --dir "$DEST"
 set -- "$DEST"/*/*.tar.gz "$DEST"/*/*.tar.gz.sha256
 [ "$#" -eq 8 ] || { echo "expected four archives and four checksums"; exit 1; }
