@@ -43,6 +43,9 @@ jobs:
           cd /tmp
           HOME=/tmp/silu-wheel-home XDG_CACHE_HOME=/tmp/silu-wheel-cache \
             /tmp/silu-wheel-venv/bin/silu bootstrap
+          toolchain=$(find /tmp/silu-wheel-cache -name siluc -type f -print -quit)
+          "$toolchain" "$GITHUB_WORKSPACE/examples/hello.si" -o /tmp/silu-wheel-hello
+          /tmp/silu-wheel-hello | grep -qx 'Hello, Silu!'
       - name: Stage versioned archive
         env:
           TAG: ${{ github.ref_name }}

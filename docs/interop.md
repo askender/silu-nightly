@@ -18,12 +18,13 @@ python -m silu build program.si -o program
 
 # ④ 完全手动、零 Python 的底层管道（会全量编译运行时，慢）
 ./silu_fe < program.si | ./silu_conv > program.ll
-clang -O2 program.ll -o program
+clang -O2 program.ll -lm -o program
 ```
 
-`siluc` 与 `siluc1` 由 `python tools/selfhost_build.py` 按源码
-mtime 自动重建；首次构建约 25s，之后复用。运行时 .o 缓存在
-`~/.cache/silu-runtime/driver/`，冷缓存一次性 ~0.4s。
+`silu bootstrap` 在用户缓存中构建并复用自举工具链；仓库内的
+固定点测试另行管理开发用二进制。运行时 .o 缓存在
+`$XDG_CACHE_HOME/silu-runtime/driver/`（未设置时为
+`~/.cache/silu-runtime/driver/`），冷缓存一次性 ~0.4s。
 
 ## 方向 1：Silu → C 库（@export）
 
@@ -66,7 +67,7 @@ int main(void) {
 ```
 
 ```bash
-clang -O2 host.c libfib.o -o host && ./host
+clang -O2 host.c libfib.o -lm -o host && ./host
 ```
 
 **Rust 宿主**：
@@ -78,8 +79,8 @@ fn main() { unsafe { println!("{}", fib(24)); } }
 ```
 
 ```bash
-clang -shared libfib.o -o libfib.dylib
-rustc -C opt-level=3 host.rs -o host -C link-arg=-L/dir -C link-arg=-lfib
+clang -shared libfib.o -lm -o libfib.dylib
+rustc -C opt-level=3 host.rs -o host -C link-arg=-L/dir -C link-arg=-lfib -C link-arg=-lm
 ```
 
 **类型映射**：`int ↔ int64_t`、`float ↔ double`、`bool ↔ bool`；

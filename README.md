@@ -200,7 +200,7 @@ def fib(n: int) -> int:
 
 ```bash
 ./siluc lib.si -o libfib.o --object   # produces libfib.o + libfib.o.h
-clang -O2 host.c libfib.o -o host      # C host: fib(24) -> 46368
+clang -O2 host.c libfib.o -lm -o host   # C host: fib(24) -> 46368
 ```
 
 A Rust host links the same object with `extern "C" { fn fib(...) }`.

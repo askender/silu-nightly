@@ -178,7 +178,7 @@ def fib(n: int) -> int:
 
 ```bash
 ./siluc lib.si -o libfib.o --object   # 产出 libfib.o + libfib.o.h
-clang -O2 host.c libfib.o -o host      # C 宿主：fib(24) -> 46368
+clang -O2 host.c libfib.o -lm -o host  # C 宿主：fib(24) -> 46368
 ```
 
 Rust 宿主用 `extern "C" { fn fib(...) }` 链接同一对象。
