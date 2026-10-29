@@ -148,7 +148,7 @@ def test_raise_ir2c_build(source, before, exc_line, code, tmp_path):
     assert c.returncode == 0, c.stderr
     with open(c_file, "w") as h:
         h.write(c.stdout)
-    subprocess.run(["clang", "-O2", c_file, "-o", binary], check=True)
+    subprocess.run(["clang", "-O2", c_file, "-lm", "-o", binary], check=True)
     r = subprocess.run([binary], capture_output=True, text=True, timeout=60)
     assert r.returncode == code
     want = before + ((exc_line + "\n") if exc_line else "")

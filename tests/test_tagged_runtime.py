@@ -111,7 +111,7 @@ def test_probe_main_builds_reads_and_frees(tmp_path):
     src.write_text(text)
     exe = tmp_path / "probe"
     build = subprocess.run(
-        ["clang", "-O1", str(src), "-o", str(exe)],
+        ["clang", "-O1", str(src), "-lm", "-o", str(exe)],
         capture_output=True, text=True,
     )
     assert build.returncode == 0, build.stderr[:2000]
@@ -166,7 +166,7 @@ def test_dict_probe_frees_through_entries(tmp_path):
     src.write_text(text)
     exe = tmp_path / "dprobe"
     build = subprocess.run(
-        ["clang", "-O1", str(src), "-o", str(exe)],
+        ["clang", "-O1", str(src), "-lm", "-o", str(exe)],
         capture_output=True, text=True,
     )
     assert build.returncode == 0, build.stderr[:2000]

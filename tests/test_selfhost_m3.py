@@ -78,7 +78,7 @@ def test_m3_full_pipeline(ir2c_bin, source, expected):
 
     # 3. system compiler: C -> binary
     cc = subprocess.run(
-        ["clang", c_file, "-o", bin_file],
+        ["clang", c_file, "-lm", "-o", bin_file],
         capture_output=True, text=True,
     )
     assert cc.returncode == 0, cc.stderr

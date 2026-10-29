@@ -206,6 +206,6 @@ def test_dict_ops_ir2c_build(source, expected, tmp_path):
     assert c.returncode == 0, c.stderr
     with open(c_file, "w") as h:
         h.write(c.stdout)
-    subprocess.run(["clang", "-O2", c_file, "-o", binary], check=True)
+    subprocess.run(["clang", "-O2", c_file, "-lm", "-o", binary], check=True)
     r = subprocess.run([binary], capture_output=True, text=True, timeout=60)
     assert r.stdout == expected

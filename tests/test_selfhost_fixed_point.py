@@ -49,7 +49,7 @@ def fixed_point_artifacts(tmp_path_factory):
 
     binary = tmp / "flat_conv"
     build = subprocess.run(
-        ["clang", "-O2", str(ref_ll), "-o", str(binary)],
+        ["clang", "-O2", str(ref_ll), "-lm", "-o", str(binary)],
         capture_output=True, text=True,
     )
     assert build.returncode == 0, build.stderr

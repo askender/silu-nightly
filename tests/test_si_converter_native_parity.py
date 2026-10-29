@@ -101,7 +101,7 @@ def native_converter(tmp_path_factory):
     # generated runtime - list_insert leaving capacity stale - not a
     # clang issue)
     build = subprocess.run(
-        ["clang", "-O2", str(conv_ll), "-o", str(binary)],
+        ["clang", "-O2", str(conv_ll), "-lm", "-o", str(binary)],
         capture_output=True,
         text=True,
     )

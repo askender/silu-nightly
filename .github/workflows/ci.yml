@@ -5,12 +5,19 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      gates:
+        description: Run only the self-hosting gates (skip the fast suite)
+        required: false
+        type: boolean
+        default: true
   schedule:
     # the self-hosting gates weekly (Mondays 03:00 UTC)
     - cron: "0 3 * * 1"
 
 jobs:
   fast:
+    if: github.event_name != 'workflow_dispatch' || inputs.gates != true
     # The fast layer: lint + the full test suite minus the self-hosting
     # gates (fixed points, native parity, frontend corpus, the siluc
     # driver) - those compile the toolchain natively several times over
@@ -46,7 +53,7 @@ jobs:
     # The slow layer: the byte-identity self-hosting gates. Requires
     # clang (preinstalled on ubuntu runners). Runs on demand only -
     # `gh workflow run ci.yml -f gates=true` or via the Actions UI.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.gates)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
