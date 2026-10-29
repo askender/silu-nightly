@@ -1,20 +1,33 @@
+import ast
+import json
 import sys
 from pathlib import Path
 
 # Add parent directory to path to import Silu modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from silu.ir_generator import SiluIRGenerator
 from silu.symbolic_executor import ExecutionPathState
 from silu.symbolic_executor_wrapper import execute_symbolic_from_file_with_executor
 
 """Test symbolic execution on symbolic_demo1.si.ir.json file."""
 
 
-def test_symbolic_demo1_paths():
-    """Test that symbolic_demo1.si.ir.json has the expected paths and conditions."""
-    # Path to the IR file
-    ir_file = Path(__file__).parent.parent / "tests" / "symbolic_demo1.si.ir.json"
-    assert ir_file.exists(), f"Test file {ir_file} not found"
+def test_symbolic_demo1_paths(tmp_path):
+    """Generate the IR fixture explicitly; do not rely on ignored files."""
+    source = '''def classify_number(x):
+    if x > 0:
+        if x > 10:
+            return "large_positive"
+        return "small_positive"
+    else:
+        if x < 0:
+            return "negative"
+        return "zero"
+'''
+    ir_file = tmp_path / "symbolic_demo1.si.ir.json"
+    ir = SiluIRGenerator().visit(ast.parse(source))
+    ir_file.write_text(json.dumps(ir))
 
     # Execute symbolic analysis
     ir_executor_result = execute_symbolic_from_file_with_executor(
@@ -96,8 +109,3 @@ def test_symbolic_demo1_paths():
 
     # Verify test inputs for zero (x == 0)
     assert zero_path.test_inputs["x"] == 0
-
-
-if __name__ == "__main__":
-    # pytest.main(["-xvs", __file__])
-    test_symbolic_demo1_paths()
