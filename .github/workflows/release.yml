@@ -9,10 +9,14 @@ jobs:
     # Prove the self-hosting fixed points on the exact tag before any
     # binary is packaged. Push-event runs have proven reliable where
     # workflow_dispatch runners were shut down mid-run.
-    # ubuntu-latest runners were repeatedly reclaimed mid-run today
-    # ("runner received a shutdown signal", random 1-46 min marks);
-    # pin a specific image while that pool is unstable.
-    runs-on: ubuntu-24.04
+    # The ubuntu pools (latest and 24.04) reclaimed every gates runner
+    # mid-run today ("runner received a shutdown signal", 1-46 min in)
+    # while short fast-suite runs passed. macOS is a separate fleet and
+    # these same gates are green locally; the Linux-specific surface
+    # (target triple, libm, gc-sections) is covered by the fast CI that
+    # runs on every push, and each binaries job smoke-compiles and runs
+    # real programs on its platform.
+    runs-on: macos-14
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
