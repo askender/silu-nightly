@@ -18,6 +18,9 @@ release readiness: reproducible CI and a relocatable binary toolchain
   reference, Apple Clang 16 rejected it as an array element type
   mismatch (dual-valid FormattedConstant + fn_const_bitcast on both
   planes, plus a .ll-shape regression test)
+- split-module runtime declarations now carry real signatures (balanced
+  -paren extraction) instead of vararg `(...)` placeholders, which Apple
+  Clang 16 rejected against the runtime's fixed-signature definitions
 - public binary archives, examples and bilingual release documentation
 
 ### v1.16.0

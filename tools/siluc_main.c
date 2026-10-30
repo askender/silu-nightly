@@ -434,18 +434,37 @@ int main(int argc, char **argv) {
             if (s && !user_defines(body, nm, len)) {
                 char one[LINE + 300];
                 if (s->kind == 'f') {
-                    /* declare <ret> @"name"(...) - the return type is
-                       the text between 'define ' and ' @"' */
-                    const char *ret = s->sig + 7;
-                    const char *at = strstr(s->sig, " @\"");
-                    if (at && at > ret) {
-                        size_t rl = at - ret;
-                        char rbuf[LINE];
+                    /* declare with the REAL signature: a vararg (...)
+                       decl clashes with the runtime's fixed-signature
+                       definition under Apple Clang 16. sig holds the
+                       whole define line: "define [internal ]ret
+                       @"name"(params)...". */
+                    const char *rp = s->sig + 7;   /* skip "define " */
+                    if (strncmp(rp, "internal ", 9) == 0) rp += 9;
+                    const char *at = strstr(rp, " @\"");
+                    const char *lp = at ? strchr(at, '(') : NULL;
+                    const char *rparen = NULL;
+                    if (lp) {
+                        /* balanced-paren scan: a function-pointer
+                           parameter nests parens in the signature */
+                        int depth = 0;
+                        for (const char *q = lp; *q && *q != '\n'; q++) {
+                            if (*q == '(') depth++;
+                            else if (*q == ')') {
+                                depth--;
+                                if (depth == 0) { rparen = q; break; }
+                            }
+                        }
+                    }
+                    if (at && at > rp && lp && rparen) {
+                        char rbuf[LINE], pbuf[LINE];
+                        size_t rl = at - rp, pl = rparen - lp + 1;
                         if (rl > LINE - 1) rl = LINE - 1;
-                        memcpy(rbuf, ret, rl);
-                        rbuf[rl] = 0;
-                        snprintf(one, sizeof one, "declare %s @\"%s\"(...)\n",
-                                 rbuf, s->name);
+                        if (pl > LINE - 1) pl = LINE - 1;
+                        memcpy(rbuf, rp, rl); rbuf[rl] = 0;
+                        memcpy(pbuf, lp, pl); pbuf[pl] = 0;
+                        snprintf(one, sizeof one, "declare %s @\"%s\"%s\n",
+                                 rbuf, s->name, pbuf);
                     } else {
                         continue;
                     }

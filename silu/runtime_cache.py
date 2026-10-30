@@ -110,12 +110,29 @@ def split(full_text, rt_text=None):
         )
     user_body = fb[len(rb):]
 
-    # every symbol the runtime defines: functions + globals
+    # every symbol the runtime defines: functions + globals. Function
+    # declarations must carry the REAL signature: a vararg `(...)` decl
+    # clashes with the runtime's fixed-signature definition under Apple
+    # Clang 16 ("defined with type void (...)* but expected void (i8*)*").
     rt_fns = {}
     for m in re.finditer(
-        r'^define\s+(.+?)\s+@"([A-Za-z0-9_.$]+)"\s*\(', rb, re.M
+        r'^define\s+(?:internal\s+)?(.+?)\s+@"([A-Za-z0-9_.$]+)"\s*\(', rb, re.M
     ):
-        rt_fns[m.group(2)] = m.group(1)
+        # balanced-paren scan: a function-pointer parameter would nest
+        # parens, so a naive [^)]* cut would truncate the signature
+        lp = m.end() - 1
+        depth = 0
+        for i in range(lp, len(rb)):
+            if rb[i] == "(":
+                depth += 1
+            elif rb[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    params = rb[lp:i + 1]
+                    rt_fns[m.group(2)] = (
+                        f'declare {m.group(1)} @"{m.group(2)}"{params}'
+                    )
+                    break
     rt_globals = {}
     for m in re.finditer(
         r'^@"([A-Za-z0-9_.$]+)"\s*=\s*(?:internal\s+)?'
@@ -134,7 +151,7 @@ def split(full_text, rt_text=None):
     decls = []
     for name in sorted(referenced - user_defined):
         if name in rt_fns:
-            decls.append(f"declare {rt_fns[name]} @{name}(...)")
+            decls.append(rt_fns[name])
         elif name in rt_globals:
             decls.append(f'@"{name}" = external global {rt_globals[name]}')
     # external declares (printf, intrinsics) live in the full text's
