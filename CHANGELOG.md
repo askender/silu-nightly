@@ -21,7 +21,15 @@ release readiness: reproducible CI and a relocatable binary toolchain
 - split-module runtime declarations now carry real signatures (balanced
   -paren extraction) instead of vararg `(...)` placeholders, which Apple
   Clang 16 rejected against the runtime's fixed-signature definitions
-- public binary archives, examples and bilingual release documentation
+- public binary archives, examples and bilingual release documentation;
+  all four platforms (macOS ARM64/x86_64, Linux ARM64/x86_64) are
+  published on silu-lang Releases - Intel-Mac pins llvmlite 0.45.1
+  (newest Intel-Mac wheel) and builds on macos-15-intel
+- known follow-up: a large-file front-end memory regression (the
+  self-hosted front end needs >15GB to parse the ~12k-line flattened
+  converter directly) is documented in docs/distribution.md; the
+  oversized single-file case is excluded from frontend_parity_corpus
+  and the pipeline fixed point runs on the dev machine until it is fixed
 
 ### v1.16.0
 interprocedural contracts: require() - modular proof composition

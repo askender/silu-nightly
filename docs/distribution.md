@@ -65,9 +65,11 @@ files committed into either Git history.
 - v1.16.1 first batch: macOS Apple Silicon, Linux ARM64 and Linux
   x86_64 binaries are published on the public Releases page and were
   verified end-to-end (extract, cold-cache compile, run hello/fib).
-  The Intel-Mac archive is built separately on `macos-15-intel` (the
+  The Intel-Mac archive was built separately on `macos-15-intel` (the
   release matrix's `macos-13` job sat queued on the shrinking Intel
-  pool) and appended to the same release.
+  pool, and llvmlite >=0.46 has no Intel-Mac wheel so it is pinned to
+  0.45.1) and appended to the same release: **all four platform
+  archives are now published**.
 - The self-hosting converter fixed point (`test_selfhost_fixed_point`)
   passes in CI. `test_pipeline_fixed_point` and the oversized
   single-file case of `test_frontend_parity_corpus` run only on the
