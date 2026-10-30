@@ -25,7 +25,7 @@ def _attach(cls):
 for _cls in (T.Value, T.Type, T.Scope, T.TypeInfo, T._Undefined,
              T.Constant, T.Argument, T.Block, T.Instr,
              T.GlobalVariable, T.Function, T.Module, T.IRBuilder,
-             T.AttrSet):
+             T.AttrSet, T.FormattedConstant):
     _attach(_cls)
 
 

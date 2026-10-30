@@ -13,6 +13,11 @@ release readiness: reproducible CI and a relocatable binary toolchain
   per-user cache, never in the package installation directory
 - portable native linking and target triples for Linux and x86_64;
   cold driver cache creation and artifact packaging fixed
+- funcref tables now emit constant-expression bitcasts for their i8*
+  elements: newer clang silently accepted the raw signatured function
+  reference, Apple Clang 16 rejected it as an array element type
+  mismatch (dual-valid FormattedConstant + fn_const_bitcast on both
+  planes, plus a .ll-shape regression test)
 - public binary archives, examples and bilingual release documentation
 
 ### v1.16.0

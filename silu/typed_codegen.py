@@ -7450,7 +7450,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         gv.linkage = "internal"
         elems = []
         for t_fn in self._fn_table:
-            elems.append(t_fn)
+            # i8* table elements must be constant-expression bitcasts:
+            # newer clang accepts a raw signatured function reference,
+            # Apple Clang 16 rejects it as a type mismatch
+            elems.append(ir.fn_const_bitcast(t_fn, i8p))
         gv.initializer = ir.const_(table_ty, elems)
         self.silu_fn_table = gv
 

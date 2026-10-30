@@ -39,3 +39,10 @@ else:
         return str(m)
 
     ir.module_str = module_str
+
+    def _fn_const_bitcast(fn, ty):
+        # constant-expression bitcast of a function pointer for i8*
+        # funcref tables (real llvmlite exposes Function.bitcast)
+        return fn.bitcast(ty)
+
+    ir.fn_const_bitcast = _fn_const_bitcast

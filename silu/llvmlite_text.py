@@ -343,10 +343,27 @@ def _double_bits(value):
     return s
 
 
+class FormattedConstant:
+    type: object
+    text: str
+
+
+def fn_const_bitcast(fn, ty):
+    # constant-expression bitcast of a function pointer into an i8*
+    # table: Apple Clang 16 rejects the raw signatured reference
+    return FormattedConstant(
+        ty, "bitcast (" + fn.ftype.text + "* "
+        + _quote_ref("@", fn.name) + " to " + ty.text + ")")
+
+
 def const_reference(c):
+    if isinstance(c, FormattedConstant):
+        return c.text
     if c.is_undef:
         return "undef"
     v = c.constant
+    if isinstance(v, FormattedConstant):
+        return v.text
     if v is None:
         # aggregates spell zero as zeroinitializer; scalars and
         # pointers are null (real llvmlite behavior)

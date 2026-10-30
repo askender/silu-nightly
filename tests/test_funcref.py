@@ -93,3 +93,39 @@ def test_funcref_matches(source, expected, tmp_path):
         pytest.skip("clang not available")
     out = _build_and_run(source, str(tmp_path / "prog"))
     assert out == expected
+
+
+def test_fn_table_uses_bitcast_elements(tmp_path):
+    """i8* funcref table entries must be constant-expression bitcasts.
+
+    Apple Clang 16 rejects a raw signatured function reference inside an
+    i8* array, while newer clang silently accepts it - pin the .ll shape
+    so the table stays portable across clang versions."""
+    source = (
+        "def add1(x: int) -> int:\n    return x + 1\n"
+        "def halve(x: float) -> float:\n    return x / 2.0\n"
+        "f = add1\ng = halve\nprint(f(41))\nprint(g(21.0))\n"
+    )
+    si = tmp_path / "p.si"
+    si.write_text(source)
+    ir_json = tmp_path / "p.ir.json"
+    ll = tmp_path / "p.ll"
+    r = subprocess.run(
+        [PY, "-m", "silu", "ir", str(si), "-o", str(ir_json)],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert r.returncode == 0, r.stderr
+    r = subprocess.run(
+        [PY, "-m", "silu", "llvm", str(ir_json), "-o", str(ll)],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    assert r.returncode == 0, r.stderr
+    table = [
+        line for line in ll.read_text().splitlines()
+        if 'silu_fn_table" = internal global' in line
+    ]
+    assert table, "expected a funcref table for two aliased functions"
+    line = table[0]
+    assert "i8* bitcast (" in line
+    # no raw signatured function reference remains as an array element
+    assert ", {i32, i8*}* (" not in line
