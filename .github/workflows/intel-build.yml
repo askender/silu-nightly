@@ -1,0 +1,50 @@
+name: intel-build
+
+# Build only the Intel-Mac (x86_64) toolchain for an existing tag. The
+# main release workflow's macos-13 Intel job can sit queued for a long
+# time on GitHub's shrinking Intel pool; macos-15-intel is the supported
+# Intel image. This keeps the published tag and the other platforms'
+# artifacts untouched - the produced archive is appended to the release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Source tag to build (e.g. v1.16.1)
+        required: true
+        default: v1.16.1
+
+jobs:
+  intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -e . build
+      - name: Bootstrap the toolchain
+        run: python -c 'from tools.selfhost_build import ensure_siluc; ensure_siluc()'
+      - name: Smoke (compile + run fib)
+        run: ./siluc benchmarks/fib.si -o /tmp/fib && /tmp/fib
+      - name: Stage versioned archive
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          pkg="siluc-${TAG#v}-macos-x86_64"
+          mkdir -p "dist/$pkg"
+          cp siluc siluc1 "dist/$pkg/"
+          cp benchmarks/fib.si "dist/$pkg/fib.si"
+          cp examples/hello.si "dist/$pkg/hello.si"
+          cp tools/release_README.md "dist/$pkg/README.md"
+          cd dist
+          tar -czf "$pkg.tar.gz" "$pkg"
+          shasum -a 256 "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: siluc-macos-x86_64
+          path: dist/*.tar.gz*
