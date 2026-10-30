@@ -25,7 +25,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install deps
-        run: pip install -e . build
+        # llvmlite >=0.46 ships no macOS x86_64 wheel (source build
+        # fails); 0.45.1 is the newest release with an Intel-Mac wheel.
+        run: |
+          pip install "llvmlite==0.45.1"
+          pip install -e . build
       - name: Bootstrap the toolchain
         run: python -c 'from tools.selfhost_build import ensure_siluc; ensure_siluc()'
       - name: Smoke (compile + run fib)
