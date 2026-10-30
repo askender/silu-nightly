@@ -60,6 +60,30 @@ The public tag and the private source tag share a version name but live
 in independent repositories. Binary archives are Release assets, not
 files committed into either Git history.
 
+## Release status and known limitations
+
+- v1.16.1 first batch: macOS Apple Silicon, Linux ARM64 and Linux
+  x86_64 binaries are published on the public Releases page and were
+  verified end-to-end (extract, cold-cache compile, run hello/fib).
+  The Intel-Mac archive is built separately on `macos-15-intel` (the
+  release matrix's `macos-13` job sat queued on the shrinking Intel
+  pool) and appended to the same release.
+- The self-hosting converter fixed point (`test_selfhost_fixed_point`)
+  passes in CI. `test_pipeline_fixed_point` and the oversized
+  single-file case of `test_frontend_parity_corpus` run only on the
+  dev machine: the self-hosted front end has a **known memory
+  regression** when parsing one very large source file directly
+  (~12k-line `typed_codegen_flat.si` needs >15GB and is OOM-killed on
+  both the dev machine and standard runners; an October 27 front end
+  handled it in ~0.6GB). The normal bootstrap path parses only the
+  small import skeleton while the converter expands the large module,
+  so self-hosting and ordinary compilation are unaffected. The
+  flattened file is excluded from `frontend_parity_corpus` until the
+  regression is fixed.
+- Follow-up (high priority): bisect `typed_codegen` to find the
+  large-file memory regression, then restore the flattened file in
+  `frontend_parity_corpus` and the pipeline fixed point in CI.
+
 ## Installed-toolchain outputs
 
 `silu bootstrap` treats installed package sources as read-only. Generated
