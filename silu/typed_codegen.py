@@ -50,6 +50,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         # OBJ kind's LLVM type is per-module (the PyObject struct
         # pointer); register it once the runtime layout exists
         LLVM_KIND_TYPES[OBJ] = ir.PointerType(self.pyobj.pyobj_type)
+        # null constants for `x is None`: precomputed on self because
+        # the is_null nested function in _convert_node_scoped must not
+        # capture the ir module or LLVM_KIND_TYPES (Rust no-capture
+        # semantics in the flattened .si)
+        self._inst_null = ir.const_(LLVM_KIND_TYPES[INSTANCE], None)
+        self._pyobj_null = ir.const_(
+            ir.PointerType(self.pyobj.pyobj_type), None
+        )
         self._class_ids = {}
         self._fn_dispatch_cache = {}
         self._fn_table: list = []
@@ -1162,15 +1170,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         def box_int_key(b, bits):
             return b.call(self.create_int, [bits])
 
-        for tag, make_key, make_value in (
-            ("ii", box_int_key, lambda b, bits: b.call(self.create_int, [bits])),
-            (
-                "if",
-                box_int_key,
-                lambda b, bits: b.call(
-                    self.create_float, [b.bitcast(bits, ir.DoubleType())]
-                ),
-            ),
+        # value boxing goes through a method: nested functions in the
+        # flattened .si follow Rust no-capture semantics, so the lambdas
+        # may not reference the ir module (types) directly
+        for tag, make_key, value_is_float in (
+            ("ii", box_int_key, False),
+            ("if", box_int_key, True),
         ):
             func = ir.func_(
                 self.module,
@@ -1217,8 +1222,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             key_box = make_key(
                 builder, builder.load(builder.gep(keys_now, [entry_index]))
             )
-            val_box = make_value(
-                builder, builder.load(builder.gep(vals_now, [entry_index]))
+            val_box = self._pydict_value_box(
+                builder, builder.load(builder.gep(vals_now, [entry_index])),
+                value_is_float,
             )
             builder.call(self.dict_set, [result, key_box, val_box])
             builder.branch(loop_step)
@@ -1230,6 +1236,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.position_at_end(loop_done)
             builder.ret(result)
             self.rawdict_to_pydict[tag] = func
+
+    def _pydict_value_box(self, b, bits, is_float):
+        """Value box for rawdict_to_pydict: int passthrough or float
+        bit reinterpretation. A method (not a nested function) so the
+        ir module reference needs no capture."""
+        if is_float:
+            return b.call(
+                self.create_float, [b.bitcast(bits, ir.DoubleType())]
+            )
+        return b.call(self.create_int, [bits])
 
     def _emit_rawstr_core(self):
         i32 = ir.IntType(32)
@@ -3507,14 +3523,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
 
         # i1 rawdict_str_has(i8* d, i8* key)
+        # constants ride on self: nested functions in the flattened
+        # .si have Rust no-capture semantics (self is the only legal
+        # channel, exactly like box_int_key above)
+        self._has_true = ir.const_(ir.IntType(1), 1)
+        self._has_false = ir.const_(ir.IntType(1), 0)
         self.rawdict_str_has = self._emit_rawdict_str_probe(
             "rawdict_str_has",
             ir.IntType(1),
             [i8p, i8p],
-            lambda b, func, entry_index, _slot, _table: b.ret(
-                ir.const_(ir.IntType(1), 1)
-            ),
-            lambda b, func: b.ret(ir.const_(ir.IntType(1), 0)),
+            lambda b, func, entry_index, _slot, _table: b.ret(self._has_true),
+            lambda b, func: b.ret(self._has_false),
         )
 
         # i64 rawdict_str_get_or(i8* d, i8* key, i64 default_bits)
@@ -3884,16 +3903,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         # PyObject* rawdict_to_pydict_{si,sf}(i8* d) - str keys box
         # through rawstr_to_pystr; built here because it needs the
-        # rawstr runtime (forward reference from the dict section)
-        for tag, make_value in (
-            ("si", lambda b, bits: b.call(self.create_int, [bits])),
-            (
-                "sf",
-                lambda b, bits: b.call(
-                    self.create_float, [b.bitcast(bits, ir.DoubleType())]
-                ),
-            ),
-        ):
+        # rawstr runtime (forward reference from the dict section).
+        # Value boxing goes through _pydict_value_box: nested functions
+        # in the flattened .si have Rust no-capture semantics, so the
+        # lambdas may not reference the ir module.
+        for tag, value_is_float in (("si", False), ("sf", True)):
             func = ir.func_(
                 self.module,
                 ir.FunctionType(
@@ -3938,8 +3952,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             key_box = builder.call(
                 self.rawstr_to_pystr, [builder.inttoptr(key_bits, i8p)]
             )
-            val_box = make_value(
-                builder, builder.load(builder.gep(vals_now, [entry_index]))
+            val_box = self._pydict_value_box(
+                builder, builder.load(builder.gep(vals_now, [entry_index])),
+                value_is_float,
             )
             builder.call(self.dict_set, [result, key_box, val_box])
             builder.branch(loop_step)
@@ -5161,6 +5176,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         """unbox helpers for the typed -> dynamic -> typed boundary."""
         i64 = ir.IntType(64)
 
+        # types ride on self: the flattened .si's nested functions have
+        # Rust no-capture semantics, so the lambdas must not reference
+        # the ir module
+        self._f64_ty = ir.DoubleType()
+        self._f64_ptr_ty = ir.PointerType(ir.DoubleType())
+        self._tag_is_float = ir.const_(ir.IntType(32), 1)
+        self._i64_zero = ir.const_(ir.IntType(64), 0)
         self.unbox_int = self._emit_unbox(
             "unbox_int",
             i64,
@@ -5169,12 +5191,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
         self.unbox_float = self._emit_unbox(
             "unbox_float",
-            ir.DoubleType(),
+            self._f64_ty,
             "TypeError: expected a float value",
             lambda b, tag, as_i64, data: b.select(
-                b.icmp_signed("==", tag, ir.const_(ir.IntType(32), 1)),
-                b.load(b.bitcast(data, ir.PointerType(ir.DoubleType()))),
-                b.sitofp(as_i64, ir.DoubleType()),
+                b.icmp_signed("==", tag, self._tag_is_float),
+                b.load(b.bitcast(data, self._f64_ptr_ty)),
+                b.sitofp(as_i64, self._f64_ty),
             ),
         )
         self.unbox_bool = self._emit_unbox(
@@ -5182,7 +5204,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             ir.IntType(1),
             "TypeError: expected a bool value",
             lambda b, tag, as_i64, data: b.icmp_signed(
-                "!=", as_i64, ir.const_(ir.IntType(64), 0)
+                "!=", as_i64, self._i64_zero
             ),
         )
 
@@ -9172,15 +9194,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             def is_null(tv):
                 if _is_inst(tv[0]):
                     return self.current_builder.icmp_signed(
-                        "==",
-                        tv[1],
-                        ir.const_(LLVM_KIND_TYPES[INSTANCE], None),
+                        "==", tv[1], self._inst_null
                     )
                 boxed = self._box(tv)
                 return self.current_builder.icmp_signed(
-                    "==",
-                    boxed,
-                    ir.const_(ir.PointerType(self.pyobj.pyobj_type), None),
+                    "==", boxed, self._pyobj_null
                 )
 
             left_is_none = (
@@ -10018,7 +10036,18 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             and isinstance(value_node, list)
             and len(value_node) >= 3
             and value_node[0] == "subscript"
+            and isinstance(value_node[1], (list, tuple))
+            and len(value_node[1]) >= 2
+            and value_node[1][0] == "name"
+            and self.var_kinds.get(value_node[1][1]) == RAWLIST_S
         ):
+            # The base must be a statically-known list[str] NAME before
+            # any IR is emitted: converting the base eagerly for other
+            # subscript shapes (self.src[a:b] field slices, dict keys)
+            # materializes a full copy-on-read of the base that this
+            # branch then discards - a leaked whole-source copy per
+            # iteration that made the self-hosted front end quadratic
+            # on large files.
             base_tv = self._convert_node(value_node[1])
             if base_tv[0] == RAWLIST_S:
                 # w = words[i]: bounds + borrowed read + copy into w's

@@ -4,6 +4,27 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.16.2
+large-file frontend memory regression fixed - full self-hosting CI restored
+
+- root cause: v1.15.0's copy-into assign wiring converted the subscript
+  BASE eagerly for any `x = <subscript>` with a str target and used it
+  only for list[str] bases - every other shape (the lexer's
+  self.src[a:b] lookahead slices) leaked a whole-source rawstr_copy per
+  iteration: the self-hosted front end needed >15GB (OOM-killed) on its
+  own ~12k-line converter; the matcher now requires a statically-known
+  list[str] name before emitting anything
+- measured: full flat.si through the self-hosted front end 20GB/OOM ->
+  1.0GB, rc=0, IR byte-identical to the python plane
+- companion fixes for the restored full-corpus parity: nested functions
+  in the flattened converter no longer capture the ir module (Rust
+  no-capture semantics) - rawdict value boxing and is-None constants
+  route through self; three module-capture lambdas removed
+- typed_codegen_flat.si returns to the frontend parity corpus (19
+  files) and test_pipeline_fixed_point returns to the release gates;
+  regression guards added (no dead base copy in the .ll, AST scan for
+  module captures in nested functions, end-to-end flat.si parse)
+
 ### v1.16.1
 release readiness: reproducible CI and a relocatable binary toolchain
 

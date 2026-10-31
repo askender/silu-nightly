@@ -70,21 +70,14 @@ files committed into either Git history.
   pool, and llvmlite >=0.46 has no Intel-Mac wheel so it is pinned to
   0.45.1) and appended to the same release: **all four platform
   archives are now published**.
-- The self-hosting converter fixed point (`test_selfhost_fixed_point`)
-  passes in CI. `test_pipeline_fixed_point` and the oversized
-  single-file case of `test_frontend_parity_corpus` run only on the
-  dev machine: the self-hosted front end has a **known memory
-  regression** when parsing one very large source file directly
-  (~12k-line `typed_codegen_flat.si` needs >15GB and is OOM-killed on
-  both the dev machine and standard runners; an October 27 front end
-  handled it in ~0.6GB). The normal bootstrap path parses only the
-  small import skeleton while the converter expands the large module,
-  so self-hosting and ordinary compilation are unaffected. The
-  flattened file is excluded from `frontend_parity_corpus` until the
-  regression is fixed.
-- Follow-up (high priority): bisect `typed_codegen` to find the
-  large-file memory regression, then restore the flattened file in
-  `frontend_parity_corpus` and the pipeline fixed point in CI.
+- v1.16.2 fixes the large-file frontend memory regression (the
+  copy-into assign matcher leaked a whole-source copy per field-slice
+  assignment): the self-hosted front end parses its own ~12k-line
+  converter in ~1GB again (was OOM-killed at >15GB), and the full
+  self-hosting CI is restored - `typed_codegen_flat.si` is back in the
+  frontend parity corpus and `test_pipeline_fixed_point` is back in the
+  release gates. Use v1.16.2+ binaries; v1.16.1 binaries are correct
+  but memory-hungry on very large single source files.
 
 ## Installed-toolchain outputs
 

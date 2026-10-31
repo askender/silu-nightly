@@ -2,7 +2,7 @@
 requires = ["setuptools>=45", "wheel"]
 [project]
 name = "pysilu"
-version = "1.16.1"
+version = "1.16.2"
 description = "A self-hosted compiled language with Python syntax"
 readme = "README.md"
 authors = [{ name = "askender", email = "askender43@gmail.com" }]

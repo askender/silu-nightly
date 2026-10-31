@@ -26,14 +26,9 @@ jobs:
       - name: Install deps
         run: pip install -e . pytest
       - name: Self-hosting gates
-        # The converter fixed point (selfhost_fixed_point) is the core
-        # self-hosting proof and stays. test_pipeline_fixed_point needs
-        # >7GB while the converter expands the ~12k-line module (a known
-        # large-file memory regression), so it runs on the dev machine
-        # instead of the standard runners; frontend_parity_corpus skips
-        # only that oversized single-file parse (see the test's NOTE).
         run: >
           pytest tests/test_selfhost_fixed_point.py
+          tests/test_pipeline_fixed_point.py
           tests/test_si_converter_native_parity.py
           tests/test_frontend_parity_corpus.py
           tests/test_siluc_driver.py
