@@ -215,27 +215,64 @@ static const Sym *find_sym(const char *name, size_t len) {
 }
 
 /* does the user body define this symbol itself? */
-static int user_defines(const char *body, const char *name, size_t len) {
-    const char *p = body;
-    while ((p = strstr(p, "@\"")) != NULL) {
-        if (strncmp(p + 2, name, len) == 0 && p[2 + len] == '"') {
-            /* check it is a definition: preceded by define at line
-               start, or '=' for globals */
-            const char *bol = p;
-            while (bol > body && bol[-1] != '\n') bol--;
-            size_t plen = p - bol;
-            if ((plen >= 7 && strncmp(bol, "define ", 7) == 0))
-                return 1;
-            const char *after = p + 2 + len + 1;
-            while (*after == ' ') after++;
-            if (*after == '=') return 1;
-        }
-        p += 2;
+/* user-defined symbol set: one pass over the body collects every
+   @"name" that IS a definition (a define line's function name or a
+   global with '='), membership is then O(1). The previous per-
+   reference full-body scan was O(refs x body) - ~570s on the 17MB
+   self-host .ll, dwarfing every clang stage. */
+#define UDEF_CAP (1 << 18)
+static const char *udef_key[UDEF_CAP];
+static size_t udef_len[UDEF_CAP];
+
+static unsigned udef_hash(const char *s, size_t len) {
+    unsigned h = 2166136261u;
+    for (size_t i = 0; i < len; i++) { h ^= (unsigned char)s[i]; h *= 16777619u; }
+    return h;
+}
+
+static void udef_add(const char *s, size_t len) {
+    if (len == 0 || len > 255) return;
+    unsigned i = udef_hash(s, len) & (UDEF_CAP - 1);
+    while (udef_key[i]) {
+        if (udef_len[i] == len && strncmp(udef_key[i], s, len) == 0) return;
+        i = (i + 1) & (UDEF_CAP - 1);
+    }
+    udef_key[i] = s; udef_len[i] = len;
+}
+
+static int udef_has(const char *s, size_t len) {
+    unsigned i = udef_hash(s, len) & (UDEF_CAP - 1);
+    while (udef_key[i]) {
+        if (udef_len[i] == len && strncmp(udef_key[i], s, len) == 0) return 1;
+        i = (i + 1) & (UDEF_CAP - 1);
     }
     return 0;
 }
 
+static void udef_collect(const char *body) {
+    const char *p = body;
+    while ((p = strstr(p, "@\"")) != NULL) {
+        const char *nm = p + 2;
+        const char *close = strchr(nm, '"');
+        if (!close) break;
+        const char *bol = p;
+        while (bol > body && bol[-1] != '\n') bol--;
+        int is_def = 0;
+        if (bol[0] == 'd' && (size_t)(p - bol) >= 7 &&
+            strncmp(bol, "define ", 7) == 0)
+            is_def = 1;
+        else {
+            const char *after = close + 1;
+            while (*after == ' ') after++;
+            if (*after == '=') is_def = 1;
+        }
+        if (is_def) udef_add(nm, (size_t)(close - nm));
+        p = close;
+    }
+}
+
 static int g_object_mode = 0;
+static int g_no_lto = 0;
 
 /* map an LLVM type token to the C type for the header */
 static const char *c_type_of(const char *ll_ty) {
@@ -251,10 +288,11 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) out = argv[++i];
         else if (strcmp(argv[i], "--object") == 0) g_object_mode = 1;
+        else if (strcmp(argv[i], "--no-lto") == 0) g_no_lto = 1;
         else if (argv[i][0] != '-') src = argv[i];
     }
     if (!src || !out) {
-        fprintf(stderr, "usage: siluc file.si -o output [--object]\n");
+        fprintf(stderr, "usage: siluc file.si -o output [--object] [--no-lto]\n");
         return 2;
     }
 
@@ -288,7 +326,10 @@ int main(int argc, char **argv) {
 
     char rt_ll_path[4096], rt_o_path[4096], rt_syms_path[4096];
     snprintf(rt_ll_path, sizeof rt_ll_path, "%s/rt.ll", g_cache_dir);
-    snprintf(rt_o_path, sizeof rt_o_path, "%s/rt.o", g_cache_dir);
+    /* separate objects per link mode: LTO bitcode cannot link in a
+       plain -O2 link and vice versa */
+    snprintf(rt_o_path, sizeof rt_o_path, "%s/%s", g_cache_dir,
+             g_no_lto ? "rt-nolto.o" : "rt.o");
     snprintf(rt_syms_path, sizeof rt_syms_path, "%s/rt.syms", g_cache_dir);
 
     struct stat st;
@@ -370,8 +411,13 @@ int main(int argc, char **argv) {
             } else fputc(*a++, lf);
         }
         fclose(lf);
-        const char *c1[] = { "clang", "-O2", "-flto", "-ffunction-sections", "-fdata-sections", "-c", lifted_path, "-o", rt_o_path, NULL };
-        if (run_quiet(c1) != 0) die("clang failed on the runtime");
+        if (g_no_lto) {
+            const char *c1[] = { "clang", "-O2", "-ffunction-sections", "-fdata-sections", "-c", lifted_path, "-o", rt_o_path, NULL };
+            if (run_quiet(c1) != 0) die("clang failed on the runtime");
+        } else {
+            const char *c1[] = { "clang", "-O2", "-flto", "-ffunction-sections", "-fdata-sections", "-c", lifted_path, "-o", rt_o_path, NULL };
+            if (run_quiet(c1) != 0) die("clang failed on the runtime");
+        }
     }
 
     /* 4. split user body (skip header lines before the first
@@ -421,6 +467,7 @@ int main(int argc, char **argv) {
 
     /* 5. synthesized declarations: every @"sym" the body references
           that the runtime defines and the body does not */
+    udef_collect(body);
     char decls[262144];
     decls[0] = 0;
     {
@@ -431,7 +478,7 @@ int main(int argc, char **argv) {
             if (!close) break;
             size_t len = close - nm;
             const Sym *s = find_sym(nm, len);
-            if (s && !user_defines(body, nm, len)) {
+            if (s && !udef_has(nm, len)) {
                 char one[LINE + 300];
                 if (s->kind == 'f') {
                     /* declare with the REAL signature: a vararg (...)
@@ -598,18 +645,36 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* 7. clang user + link */
+    /* 7. clang user + link. --no-lto: plain -O2 objects - the LTO link
+          of a huge module dominates wall time (measured 567s LTO vs 5.4s
+          plain on the 17MB self-host .ll); the trade is the runtime no
+          longer inlines into the user's hot loops. */
     char user_o_path[] = "/tmp/siluc_userXXXXXX.o";
     int ofd = mkstemps(user_o_path, 2);
     close(ofd);
-    const char *c2[] = { "clang", "-O2", "-flto", "-ffunction-sections", "-fdata-sections", "-c", user_ll_path, "-o", user_o_path, NULL };
-    if (run_quiet(c2) != 0) die("clang failed on the user module");
+    if (g_no_lto) {
+        const char *c2[] = { "clang", "-O2", "-ffunction-sections", "-fdata-sections", "-c", user_ll_path, "-o", user_o_path, NULL };
+        if (run_quiet(c2) != 0) die("clang failed on the user module");
 #ifdef __APPLE__
-    const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,-dead_strip", NULL };
+        const char *c3[] = { "clang", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,-dead_strip", NULL };
 #else
-    const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,--gc-sections", NULL };
+        const char *c3[] = { "clang", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,--gc-sections", NULL };
 #endif
-    if (run_quiet(c3) != 0) die("link failed");
+        if (run_quiet(c3) != 0) die("link failed");
+    } else {
+        if (full_len > 4 * 1024 * 1024)
+            fprintf(stderr, "siluc: note: large module (%.1fMB .ll) - LTO "
+                    "linking may take minutes; --no-lto links in seconds\n",
+                    full_len / 1048576.0);
+        const char *c2[] = { "clang", "-O2", "-flto", "-ffunction-sections", "-fdata-sections", "-c", user_ll_path, "-o", user_o_path, NULL };
+        if (run_quiet(c2) != 0) die("clang failed on the user module");
+#ifdef __APPLE__
+        const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,-dead_strip", NULL };
+#else
+        const char *c3[] = { "clang", "-flto", "-O2", user_o_path, rt_o_path, "-o", out, "-lm", "-Wl,--gc-sections", NULL };
+#endif
+        if (run_quiet(c3) != 0) die("link failed");
+    }
 
     unlink(user_ll_path);
     unlink(user_o_path);
