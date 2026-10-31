@@ -73,6 +73,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         # len(_class_layouts): additions change the length)
         self._sorted_cls_cache = None
         self._sorted_cls_len = -1
+        # the 28-entry method dispatch map in _call_method, built once
+        # on first use (its values need the runtime emitters finished)
+        self._method_map_cache = None
         self._module_kinds = set()
         self._module_vars: set = set()
         # names this function scope declared itself: a slot we created

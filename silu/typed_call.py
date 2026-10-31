@@ -281,7 +281,13 @@ class TypedCallMixin:
             if handled is not None:
                 return handled
         obj = self._box(raw_obj_tv)
-        method_map = {
+        # built once, then cached: this 28-entry dict was rebuilt on
+        # EVERY method call - one fresh pyobj dict (with its rehash
+        # chain) per call was the converter's single largest
+        # allocation (629MB on its own IR). Values are self-runtime
+        # attributes fixed after emitter init.
+        if self._method_map_cache is None:
+            self._method_map_cache = {
             "append": (self.list_append, 1, True),
             "reverse": (self.list_reverse, 0, True),
             "insert": (self.list_insert, 2, True),
@@ -310,8 +316,9 @@ class TypedCallMixin:
             "pop": (self.pyobj_pop_dispatch, 1, True),
             "__getitem__": (self.dict_get_or, 2, True),
             "__setitem__": (self.dict_set, 2, False),
-            "__delitem__": (self.dict_pop, 1, False),
+            "__delitem__": (self.dict_pop, 2, False),
         }
+        method_map = self._method_map_cache
         entry = method_map.get(method_name)
         user_method = self._dyn_member_classes(method_name, True)
         if obj is not None and entry and not user_method:
