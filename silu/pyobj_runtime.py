@@ -1656,6 +1656,61 @@ class PyobjRuntimeMixin:
         builder.position_at_end(error_block)
         builder.ret(ir.const_(pyobj_ptr, None))
 
+        # i64 pyobj_len_raw(PyObject* obj) - the same tag dispatch with
+        # a RAW result: len() feeds loop bounds (`while i < len(xs)`)
+        # and subscripts almost exclusively, and the boxed form made
+        # every iteration allocate one int box AND forced the compare
+        # through pyobj_lt (one bool box more). Unsupported tags give
+        # 0 (valid programs never reach them).
+        self.pyobj_len_raw = ir.func_(
+            self.module, ir.FunctionType(ir.IntType(64), [pyobj_ptr], False),
+            'pyobj_len_raw',
+        )
+        entry = self.pyobj_len_raw.append_basic_block("rlr_entry")
+        list_block = self.pyobj_len_raw.append_basic_block("rlr_list")
+        str_check = self.pyobj_len_raw.append_basic_block("rlr_str_chk")
+        str_block = self.pyobj_len_raw.append_basic_block("rlr_str")
+        dict_check = self.pyobj_len_raw.append_basic_block("rlr_dict_chk")
+        dict_block = self.pyobj_len_raw.append_basic_block("rlr_dict")
+        zero_block = self.pyobj_len_raw.append_basic_block("rlr_zero")
+        builder = ir.builder_(entry)
+        obj_arg = self.pyobj_len_raw.args[0]
+        tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
+        is_list = builder.or_(
+            builder.icmp_signed("==", tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", tag, ir.const_(i32, 8)),
+        )
+        builder.cbranch(is_list, list_block, str_check)
+        builder.position_at_end(list_block)
+        struct_ptr = self._load_list_struct(builder, obj_arg)
+        builder.ret(builder.load(builder.gep(struct_ptr, [zero32, zero32])))
+        builder.position_at_end(str_check)
+        builder.cbranch(
+            builder.icmp_signed("==", tag, ir.const_(i32, 2)),
+            str_block, dict_check,
+        )
+        builder.position_at_end(str_block)
+        data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        str_struct = builder.bitcast(
+            data, ir.PointerType(self.pyobj.string_type)
+        )
+        builder.ret(
+            builder.sext(builder.load(builder.gep(str_struct, [zero32, zero32])), i64)
+        )
+        builder.position_at_end(dict_check)
+        builder.cbranch(
+            builder.icmp_signed("==", tag, ir.const_(i32, 5)),
+            dict_block, zero_block,
+        )
+        builder.position_at_end(dict_block)
+        dict_data = builder.load(builder.gep(obj_arg, [zero32, one32]))
+        dict_struct_ptr = builder.bitcast(
+            dict_data, ir.PointerType(self.dict_struct_type)
+        )
+        builder.ret(builder.load(builder.gep(dict_struct_ptr, [zero32, zero32])))
+        builder.position_at_end(zero_block)
+        builder.ret(ir.const_(i64, 0))
+
     def _create_list_and_str_method_runtime(self):
         """Runtime for list methods and string methods/equality."""
         i32 = ir.IntType(32)

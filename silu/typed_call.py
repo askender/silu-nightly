@@ -770,18 +770,19 @@ class TypedCallMixin:
                     )
                 boxed = self._box(arg_tv)
                 # len(()) and len({}) compile to pyobj_len on real
-                # objects; null constants (unsupported exprs) degrade
+                # objects; null constants (unsupported exprs) degrade.
+                # RAW result: len() feeds loop bounds and subscripts -
+                # the boxed form allocated an int box per call and
+                # forced `i < len(x)` through pyobj_lt (a bool box per
+                # iteration). Dynamic consumers box at their boundary.
                 if not isinstance(boxed, ir.Constant):
                     return (
-                        OBJ,
-                        self.current_builder.call(self.pyobj_len, [boxed]),
+                        I64,
+                        self.current_builder.call(
+                            self.pyobj_len_raw, [boxed]
+                        ),
                     )
-                return (
-                    OBJ,
-                    self.current_builder.call(
-                        self.create_int, [ir.const_(ir.IntType(64), 0)]
-                    ),
-                )
+                return (I64, ir.const_(ir.IntType(64), 0))
             return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
         if func_name == "require" and args_node:
