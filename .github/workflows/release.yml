@@ -77,6 +77,12 @@ jobs:
         run: |
           python -m build --wheel
           python -m venv /tmp/silu-wheel-venv
+          # pre-install the platform's llvmlite pin: resolving the wheel's
+          # dependency fresh would pick the newest llvmlite, which has no
+          # macOS x86_64 wheel and fails a source build
+          if [ -n "${{ matrix.llvmlite }}" ]; then
+            /tmp/silu-wheel-venv/bin/pip install "llvmlite==${{ matrix.llvmlite }}"
+          fi
           /tmp/silu-wheel-venv/bin/pip install dist/pysilu-*-py3-none-any.whl
           chmod -R a-w /tmp/silu-wheel-venv/lib
           cd /tmp
