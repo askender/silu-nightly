@@ -66,6 +66,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self._static_thunks: Dict[str, Any] = {}
         self._unbox_inst_cache = None
         self._char_idxerr = None
+        # memoized _param_shared_names (None = not built yet; the .si
+        # twin declares fields through these init assignments)
+        self._shared_names_cache = None
         self._module_kinds = set()
         self._module_vars: set = set()
         # names this function scope declared itself: a slot we created
@@ -6784,7 +6787,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
     def _param_shared_names(self) -> set:
         """Names that appear as a parameter of more than one function:
         their boxed list is shared across frames, so per-function slot
-        promotion would fork the cursor."""
+        promotion would fork the cursor. Memoized: function_defs is
+        collected once before conversion starts, but this ran per
+        function AND per nested scope - rebuilding the dict (a pyobj
+        dict whose str-key probes allocate one bool box per pyobj_eq)
+        millions of times dominated the converter's memory churn."""
+        if self._shared_names_cache is not None:
+            return self._shared_names_cache
         seen: Dict[str, int] = {}
         for func_def in self.function_defs.values():
             for param in func_def[2] if len(func_def) > 2 else ():
@@ -6793,6 +6802,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         for name, count in seen.items():
             if count > 1:
                 repeated.add(name)
+        self._shared_names_cache = repeated
         return repeated
 
     def _infer_cursors(
