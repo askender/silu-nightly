@@ -5,166 +5,150 @@ class IRParseError:
 
 
 class JsonR:
-    src: object
-    pos: object
+    src: str
+    pos: int
 
-
-def jr_ws(j):
-    while j.pos < len(j.src):
-        ch = j.src[j.pos]
-        if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
-            j.pos += 1
-        else:
-            return None
-    return None
-
-
-def jr_value(j):
-    jr_ws(j)
-    ch = j.src[j.pos]
-    if ch == "[":
-        return jr_array(j)
-    if ch == "{":
-        return jr_object(j)
-    if ch == '"':
-        return jr_string(j)
-    if ch == "t":
-        j.pos += 4
-        return True
-    if ch == "f":
-        j.pos += 5
-        return False
-    if ch == "n":
-        j.pos += 4
-        return None
-    return jr_number(j)
-
-
-def jr_string(j):
-    j.pos += 1
-    out = ""
-    while j.pos < len(j.src):
-        ch = j.src[j.pos]
-        if ch == '"':
-            j.pos += 1
-            return out
-        if ch == "\\":
-            esc = j.src[j.pos + 1]
-            if esc == "n":
-                out += "\n"
-            elif esc == "t":
-                out += "\t"
-            elif esc == "r":
-                out += "\r"
-            elif esc == "u":
-                hexs = j.src[j.pos + 2:j.pos + 6]
-                j.pos += 4
-                cp = 0
-                mul = 4096
-                for hc in hexs:
-                    d = ord(hc)
-                    if d >= 48 and d <= 57:
-                        d = d - 48
-                    elif d >= 97 and d <= 102:
-                        d = d - 87
-                    else:
-                        d = d - 55
-                    cp += d * mul
-                    mul = mul // 16
-                out += chr(cp)
+    def jr_ws(self) -> int:
+        # returns 0 (never None): the int annotation must hold, the
+        # return value itself is unused
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+                self.pos += 1
             else:
-                out += esc
-            j.pos += 2
-        else:
-            out += ch
-            j.pos += 1
-    return out
+                return 0
+        return 0
 
+    def jr_value(self) -> object:
+        self.jr_ws()
+        ch = self.src[self.pos]
+        if ch == "[":
+            return self.jr_array()
+        if ch == "{":
+            return self.jr_object()
+        if ch == '"':
+            return self.jr_string()
+        if ch == "t":
+            self.pos += 4
+            return True
+        if ch == "f":
+            self.pos += 5
+            return False
+        if ch == "n":
+            self.pos += 4
+            return None
+        return self.jr_number()
 
-def jr_digits(j):
-    out = ""
-    while j.pos < len(j.src):
-        ch = j.src[j.pos]
-        if ch >= "0" and ch <= "9":
-            out += ch
-            j.pos += 1
-        else:
-            return out
-    return out
+    def jr_string(self) -> str:
+        self.pos += 1
+        out = ""
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == '"':
+                self.pos += 1
+                return out
+            if ch == "\\":
+                esc = self.src[self.pos + 1]
+                if esc == "n":
+                    out += "\n"
+                elif esc == "t":
+                    out += "\t"
+                elif esc == "r":
+                    out += "\r"
+                elif esc == "u":
+                    hexs = self.src[self.pos + 2:self.pos + 6]
+                    self.pos += 4
+                    cp = 0
+                    mul = 4096
+                    for hc in hexs:
+                        d = ord(hc)
+                        if d >= 48 and d <= 57:
+                            d = d - 48
+                        elif d >= 97 and d <= 102:
+                            d = d - 87
+                        else:
+                            d = d - 55
+                        cp += d * mul
+                        mul = mul // 16
+                    out += chr(cp)
+                else:
+                    out += esc
+                self.pos += 2
+            else:
+                out += ch
+                self.pos += 1
+        return out
 
-
-def jr_number(j):
-    neg = False
-    if j.src[j.pos] == "-":
-        neg = True
-        j.pos += 1
-    text = ""
-    while j.pos < len(j.src):
-        ch = j.src[j.pos]
-        if (ch >= "0" and ch <= "9") or ch == "." or ch == "e" or ch == "E" or ch == "+" or ch == "-":
-            text += ch
-            j.pos += 1
-        else:
-            break
-    if "." not in text and "e" not in text and "E" not in text:
-        iv = 0
-        if neg:
-            # accumulate NEGATIVELY: i64::MIN's magnitude (one past
-            # MAX) cannot be held positive, but MIN itself is in range
+    def jr_number(self) -> object:
+        neg = False
+        if self.src[self.pos] == "-":
+            neg = True
+            self.pos += 1
+        text = ""
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if (ch >= "0" and ch <= "9") or ch == "." or ch == "e" or ch == "E" or ch == "+" or ch == "-":
+                text += ch
+                self.pos += 1
+            else:
+                break
+        if "." not in text and "e" not in text and "E" not in text:
+            iv = 0
+            if neg:
+                # accumulate NEGATIVELY: i64::MIN's magnitude (one past
+                # MAX) cannot be held positive, but MIN itself is in range
+                for dc in text:
+                    d = ord(dc) - 48
+                    if iv < -922337203685477580 or (iv == -922337203685477580 and d > 8):
+                        raise ValueError("integer literal out of i64 range in JSON")
+                    iv = iv * 10 - d
+                return iv
             for dc in text:
                 d = ord(dc) - 48
-                if iv < -922337203685477580 or (iv == -922337203685477580 and d > 8):
+                if iv > 922337203685477580 or (iv == 922337203685477580 and d > 7):
                     raise ValueError("integer literal out of i64 range in JSON")
-                iv = iv * 10 - d
+                iv = iv * 10 + d
             return iv
-        for dc in text:
-            d = ord(dc) - 48
-            if iv > 922337203685477580 or (iv == 922337203685477580 and d > 7):
-                raise ValueError("integer literal out of i64 range in JSON")
-            iv = iv * 10 + d
-        return iv
-    fv = float(text)
-    if neg:
-        fv = -fv
-    return fv
+        fv = float(text)
+        if neg:
+            fv = -fv
+        return fv
 
+    def jr_array(self) -> object:
+        self.pos += 1
+        out = []
+        while self.pos < len(self.src):
+            self.jr_ws()
+            if self.src[self.pos] == "]":
+                self.pos += 1
+                return out
+            out.append(self.jr_value())
+            self.jr_ws()
+            if self.src[self.pos] == ",":
+                self.pos += 1
+        return out
 
-def jr_array(j):
-    j.pos += 1
-    out = []
-    while j.pos < len(j.src):
-        jr_ws(j)
-        if j.src[j.pos] == "]":
-            j.pos += 1
-            return out
-        out.append(jr_value(j))
-        jr_ws(j)
-        if j.src[j.pos] == ",":
-            j.pos += 1
-    return out
-
-
-def jr_object(j):
-    j.pos += 1
-    out = {}
-    while j.pos < len(j.src):
-        jr_ws(j)
-        if j.src[j.pos] == "}":
-            j.pos += 1
-            return out
-        k = jr_string(j)
-        jr_ws(j)
-        j.pos += 1
-        out[k] = jr_value(j)
-        jr_ws(j)
-        if j.src[j.pos] == ",":
-            j.pos += 1
-    return out
+    def jr_object(self) -> object:
+        self.pos += 1
+        out = {}
+        while self.pos < len(self.src):
+            self.jr_ws()
+            if self.src[self.pos] == "}":
+                self.pos += 1
+                return out
+            k = self.jr_string()
+            self.jr_ws()
+            self.pos += 1
+            out[k] = self.jr_value()
+            self.jr_ws()
+            if self.src[self.pos] == ",":
+                self.pos += 1
+        return out
 
 
 def parse_ir_from_json_string(text):
     j = JsonR(text, 0)
-    return jr_value(j)
+    return j.jr_value()
 
 
 def conv_convert(ir_json: str) -> str:
