@@ -69,6 +69,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         # memoized _param_shared_names (None = not built yet; the .si
         # twin declares fields through these init assignments)
         self._shared_names_cache = None
+        # memoized sorted class list for _dyn_member_classes (keyed on
+        # len(_class_layouts): additions change the length)
+        self._sorted_cls_cache = None
+        self._sorted_cls_len = -1
         self._module_kinds = set()
         self._module_vars: set = set()
         # names this function scope declared itself: a slot we created
@@ -7491,9 +7495,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
     def _dyn_member_classes(self, attr, methods):
         """Classes having attr as a field (or method name), sorted for
-        deterministic emission."""
+        deterministic emission. The sorted class list is memoized on
+        len(_class_layouts): classes are only ever added, so an
+        unchanged length means an unchanged set - re-sorting per call
+        (the bubble-sort twin did one pyobj_lt box per comparison,
+        ~57M of them) dominated the converter's allocation churn."""
+        if self._sorted_cls_len != len(self._class_layouts):
+            self._sorted_cls_cache = sorted(self._class_layouts)
+            self._sorted_cls_len = len(self._class_layouts)
         out = []
-        for cls_name in sorted(self._class_layouts):
+        for cls_name in self._sorted_cls_cache:
             layout = self._class_layouts[cls_name]
             if methods:
                 if attr in layout["methods"]:
