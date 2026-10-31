@@ -95,3 +95,18 @@ for the promoted-static function prologue:
 - line-marker stores (`store i64 L, i64* @"__silu_line"`) precede
   each statement group; panic pairs append `.N` suffixes on repeat
   within the function (panic_bad, panic_bad.1, ...).
+
+## R2 spec: THE slot mechanism (authoritative, supersedes the formula)
+
+llvmlite_text._mk_instr registers a scope name for EVERY instruction,
+including void/terminator ones (store, br, cbr, ret, void call,
+unreachable): they consume a ".N" slot but never print it. Block
+appends register their (named) label and consume nothing unnamed.
+
+This decomposes every observed gap exactly (fib trace): cbr=.17,
+call-void-silu_panic=.19, unreachable=.20; and the prologue formula
+2N+2 = N arg names + 1 return slot + N param stores + 1 first
+line-marker store. main's two leading line stores explain its
+first value .4. Implementation rule for the Rust text layer: give
+every instruction an anonymous registration, print only non-void
+results; the .N allocation then matches by construction.
