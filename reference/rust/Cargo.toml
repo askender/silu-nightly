@@ -1,0 +1,11 @@
+[package]
+name = "silu-fe"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "silu-fe"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 1
