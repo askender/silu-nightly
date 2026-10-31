@@ -110,3 +110,26 @@ line-marker store. main's two leading line stores explain its
 first value .4. Implementation rule for the Rust text layer: give
 every instruction an anonymous registration, print only non-void
 results; the .N allocation then matches by construction.
+
+## R2 spec: arith-grade constructs (differential findings, code pending)
+
+Probed against siluc1 on benchmarks/arith.si; the Rust converter
+reached 508 bytes byte-identical before the block-model refactor:
+
+- MODULE BINDINGS CONSUME STRING SLOTS: every module-level func_def /
+  ann_assign consumes exactly one str-counter slot before user strings
+  start (base 297 + count: bare print=297, fib(+1 def)=298,
+  arith(+2 ann_assign)=299). Mechanism undocumented; rule empirical.
+- PANIC-OK CONTINUATION: inside a while body, the FIRST checked op's
+  cbr ends the while_body block; while_end is emitted IMMEDIATELY
+  after it (block list = creation order), and ALL subsequent body
+  statements plus the back edge live in the deferred panic_ok.<n>
+  blocks at the end of the function. A line-vector model cannot express
+  this - the converter needs a real block list with builder positioning.
+- MODULE GLOBALS: emitted at the START of the tail globals block
+  (`@"total" = global i64 0`) before all str_N entries.
+- PYTHON % AND //: srem/sdiv + sign fixup (icmp ne/xor/and/select/add,
+  constants inlined); each division carries an icmp-eq-zero check
+  against the (possibly constant) divisor BEFORE the panic pair.
+- aug_assign on a module global: load, checked op, store - the checked
+  pair is the generic one; the % fixup result feeds it as rhs.
