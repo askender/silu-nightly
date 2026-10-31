@@ -380,6 +380,26 @@ class TypedExprMixin:
             return isinstance(n, (list, tuple)) and len(n) >= 2 and \
                 n[0] == "const" and isinstance(n[1], str)
 
+        if op in ("==", "!=") and (
+            (left[0] == OBJ and _is_str_const(right_node))
+            or (right[0] == OBJ and _is_str_const(left_node))
+        ):
+            # a dynamic box against a string constant: tag-check +
+            # memcmp with zero allocation (the IR-tree dispatch shape,
+            # node[0] == "assign" - boxed pyobj_eq leaks one bool per
+            # comparison in the never-freeing dynamic world)
+            if left[0] == OBJ:
+                box_tv, const_node = left, right_node
+            else:
+                box_tv, const_node = right, left_node
+            text = const_node[1]
+            cdata = self._create_global_string(text)
+            clen = ir.const_(ir.IntType(64), len(text.encode("utf-8")))
+            eq = self.current_builder.call(
+                self.pyobj_str_eq_cstr, [box_tv[1], cdata, clen]
+            )
+            return (I1, eq if op == "==" else self.current_builder.not_(eq))
+
         if (
             (left[0] == RAWSTR or right[0] == RAWSTR)
             and (left[0] != OBJ or _is_str_const(left_node))

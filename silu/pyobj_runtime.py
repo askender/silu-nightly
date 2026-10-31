@@ -4676,6 +4676,64 @@ class PyobjRuntimeMixin:
         b.position_at_end(ss_done)
         b.ret(ir.const_(ir.IntType(1), 1))
 
+        # i1 pyobj_str_eq_cstr(PObj* obj, i8* cstr, i64 clen) - a box
+        # compared against a string constant with ZERO allocation:
+        # non-string/null boxes are simply unequal (exactly pyobj_eq's
+        # mixed-type answer), strings compare by length + memcmp. The
+        # IR-tree dispatch shape (`node[0] == "assign"`) runs millions
+        # of times in the self-hosted converter; the boxed pyobj_eq
+        # path allocated one never-freed bool per comparison.
+        i8p = ir.PointerType(ir.IntType(8))
+        self.pyobj_str_eq_cstr = ir.func_(
+            self.module,
+            ir.FunctionType(
+                ir.IntType(1), [pyobj_ptr, i8p, ir.IntType(64)], False
+            ),
+            'pyobj_str_eq_cstr',
+        )
+        sec_entry = self.pyobj_str_eq_cstr.append_basic_block("sec_entry")
+        sec_nn = self.pyobj_str_eq_cstr.append_basic_block("sec_nn")
+        sec_len_ok = self.pyobj_str_eq_cstr.append_basic_block("sec_len_ok")
+        sec_mem = self.pyobj_str_eq_cstr.append_basic_block("sec_mem")
+        sec_out = self.pyobj_str_eq_cstr.append_basic_block("sec_out")
+        cb = ir.builder_(sec_entry)
+        sec_obj, sec_cdata, sec_clen = self.pyobj_str_eq_cstr.args
+        # null boxes (IR optional slots) are simply unequal - pyobj_eq
+        # answers None == "x" as False; the tag load must never touch a
+        # null pointer, so the checks are separate blocks (LLVM's and_
+        # evaluates both operands - no short-circuit)
+        cb.cbranch(
+            cb.icmp_signed("!=", sec_obj, ir.const_(pyobj_ptr, None)),
+            sec_nn, sec_out,
+        )
+        cb.position_at_end(sec_nn)
+        sec_is_str = cb.icmp_signed(
+            "==", cb.load(cb.gep(sec_obj, [zero32, zero32])),
+            ir.const_(i32, 2),
+        )
+        cb.cbranch(sec_is_str, sec_len_ok, sec_out)
+        cb.position_at_end(sec_len_ok)
+        sec_len32, sec_chars = self._pyobj_string_parts(
+            cb, sec_obj, zero32, ir.const_(i32, 1)
+        )
+        cb.cbranch(
+            cb.icmp_signed(
+                "==", cb.sext(sec_len32, ir.IntType(64)), sec_clen
+            ),
+            sec_mem, sec_out,
+        )
+        cb.position_at_end(sec_mem)
+        sec_m = cb.call(self.memcmp, [sec_chars, sec_cdata, sec_clen])
+        sec_eq = cb.icmp_signed("==", sec_m, ir.const_(i32, 0))
+        cb.branch(sec_out)
+        cb.position_at_end(sec_out)
+        sec_r = cb.phi(ir.IntType(1))
+        sec_r.add_incoming(ir.const_(ir.IntType(1), 0), sec_entry)
+        sec_r.add_incoming(ir.const_(ir.IntType(1), 0), sec_nn)
+        sec_r.add_incoming(ir.const_(ir.IntType(1), 0), sec_len_ok)
+        sec_r.add_incoming(sec_eq, sec_mem)
+        cb.ret(sec_r)
+
         self.pyobj_cmp = {}
         for name, pred in predicates.items():
             self.pyobj_cmp[pred] = self._create_bool_result_function(name, pred)
