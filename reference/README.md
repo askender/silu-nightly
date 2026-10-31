@@ -78,3 +78,20 @@ common-prefix extraction:
   only at line end.
 - Promoted static functions compile `internal ... alwaysinline` with
   raw-ABI params (fib: `define internal i64 @"fib"(i64 %".1")`).
+
+## R2 spec extraction: function prologue rules (empirically pinned)
+
+Probed with minimal programs (f/g/h/k, 0-3 params), byte-exact rules
+for the promoted-static function prologue:
+
+- scope prelude consumes exactly `2N + 2` unnamed slots for N params
+  (N arg names + 1 return slot + N+1 phantom registrations with no
+  printed value); the first body value is therefore `.{2N+3}`.
+  - 0 params -> first value %".3"; 1 -> %".5"; 2 -> %".7"; 3 -> %".8"+
+- param allocas are emitted in REVERSE declaration order (k(a,b,c)
+  declares %"c", %"b", %"a"), param stores in FORWARD order.
+- promoted static signature: `define internal <ret> @"name"(<ty>
+  %".k", ...) alwaysinline`; raw-ABI params by annotation.
+- line-marker stores (`store i64 L, i64* @"__silu_line"`) precede
+  each statement group; panic pairs append `.N` suffixes on repeat
+  within the function (panic_bad, panic_bad.1, ...).
