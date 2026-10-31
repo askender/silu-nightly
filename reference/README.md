@@ -55,3 +55,26 @@ language's behavior. It exists to answer three questions with data:
 - R2: Rust typed converter + embedded runtime prefix; .ll byte-parity.
 - R3: calibration report (line counts per component, verbosity
   hotspots, found-bug list, language-design recommendations).
+
+## R2 groundwork (verified anatomy of the pinned build)
+
+The full .ll layout, confirmed constant-across-corpus by cross-file
+common-prefix extraction:
+
+    [ const 365,264 bytes: module header + 27 extern declares +
+      __silu_line + ALL runtime functions and runtime string globals ]
+    [ variable: user function defines, main, user string globals ]
+
+- `rust/const_prefix.ll` is the constant (regenerate for a new pin by
+  compiling two different corpus files and taking the common prefix).
+- User string globals continue the module-wide counter (fib starts at
+  str_298 for this pin; runtime consumed 0..297).
+- Naming rules that byte-parity depends on (llvmlite_text layer):
+  per-function NameScope; unnamed values dedupe as ".N"; block names
+  dedupe with ".N" suffix on repeat within the function; empty-name
+  registrations still consume a ".N" slot (a function with no args
+  still burns 3 slots before its first visible value); instruction
+  formatting keeps llvmlite's trailing separator spaces, rstripped
+  only at line end.
+- Promoted static functions compile `internal ... alwaysinline` with
+  raw-ABI params (fib: `define internal i64 @"fib"(i64 %".1")`).
