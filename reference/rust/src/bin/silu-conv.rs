@@ -653,6 +653,7 @@ impl FnB {
 thread_local! {
     static F_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static FUNC_DEFS: RefCell<Vec<Val>> = RefCell::new(Vec::new());
+    static MAIN_ALLOCAS: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
 fn is_declared(name: &str) -> bool {
@@ -1060,8 +1061,12 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
             let dl = b.nx();
             b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", dl, obj));
             let fs = F_SLOTS.with(|f| f.borrow().clone());
-            let kv = eval_mod(b, &st.get(2), &fs, sc);
-            let kr = to_raw(b, kv, sc);
+            let kr = if let Some((bname, sl)) = as_slice_sub(&st.get(2)) {
+                emit_slice_view(b, &bname, &sl, sc)
+            } else {
+                let kv = eval_mod(b, &st.get(2), &fs, sc);
+                to_raw(b, kv, sc)
+            };
             let gargs = val.get(1).get(2).items();
             if gargs.len() != 2
                 || !matches!(gargs[1].get(1), Val::Int(_)) { bail("get idiom default"); }
@@ -1345,8 +1350,19 @@ fn walk_module(stmts: &[Val], sc: &mut usize) -> Vec<Val> {
     conv_block(&mut b, stmts, &mut loops, sc);
     b.silent(); // ret
     b.line("  ret i32 0".into());
+    let mut out = b.render("define i32 @\"main\"()\n");
+    let mut alloca_lines = String::new();
+    MAIN_ALLOCAS.with(|m| {
+        for vn in m.borrow().iter().rev() {
+            alloca_lines.push_str(&format!(
+                "  %\"{}\" = alloca {{i64, i64, i8*, i64}}\n", vn));
+        }
+    });
+    if let Some(epos) = out.find("entry:\n") {
+        out.insert_str(epos + "entry:\n".len(), &alloca_lines);
+    }
     unsafe {
-        MAIN_OUT = Some(b.render("define i32 @\"main\"()\n"));
+        MAIN_OUT = Some(out);
     }
     FUNC_DEFS.with(|f| f.borrow().clone())
 }
@@ -1585,8 +1601,13 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 let l = b.nx();
                 b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
                 if dct_key_ty(&n) == "str" {
-                    let kv = eval_expr(b, &e.get(2), slot_i, slot_f, sc, fslots);
-                    let kr = to_raw(b, kv, sc);
+                    let kr = if let Some((bname, sl)) = as_slice_sub(&e.get(2)) {
+                        let bn = if bname.is_empty() { n.clone() } else { bname };
+                        emit_slice_view(b, &bn, &sl, sc)
+                    } else {
+                        let kv = eval_expr(b, &e.get(2), slot_i, slot_f, sc, fslots);
+                        to_raw(b, kv, sc)
+                    };
                     let c = b.nx();
                     b.line(format!(
                         "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* %\"{}\", i8* {})",
@@ -1920,6 +1941,162 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
         "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p2, g2));
 }
 
+// dna[s:e] as a dict key: rawstr_slice_parts + a temp str_view
+// struct (alloca hoisted to the function's entry) + bitcast to i8*
+// dna[s:e] arrives as subscript(dna, slice(...)): unwrap to (base, slice)
+// const str key in d.get("K", def): create_str, TAG CHECK pair
+// (key_str_ok/key_str_err), unpack the pystr payload into a str_view,
+// rawdict_str_get_or(dict, view, def)
+fn emit_const_key_get(b: &mut FnB, dl: &str, text: &str, def: i64,
+                      sc: &mut usize) -> String {
+    let gname = add_str(sc, text);
+    let blen = text.chars().count();
+    let g = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+        g, blen + 1, blen + 1, gname));
+    let cs = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call {{i32, i8*}}* @\"create_str\"(i8* %\"{}\", i32 {})",
+        cs, g, blen));
+    let gp0 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 0",
+        gp0, cs));
+    let tg = b.nx();
+    b.line(format!(
+        "  %\"{}\" = load i32, i32* %\"{}\"", tg, gp0));
+    let eq = b.nx();
+    b.line(format!(
+        "  %\"{}\" = icmp eq i32 %\"{}\", 2", eq, tg));
+    let ok_lbl = b.uniq_label("key_str_ok");
+    let err_lbl = b.uniq_label("key_str_err");
+    b.silent();
+    b.line(format!(
+        "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+        eq, ok_lbl, err_lbl));
+    let ob = b.add_block(&ok_lbl);
+    b.pos(ob);
+    let eb = b.add_block(&err_lbl);
+    b.emit_panic_body(eb, "TypeError: expected str key", sc);
+    b.pos(ob);
+    // unpack: field1 -> payload {i32,i8*}*, its field1 = chars, field0 = len
+    let gp1 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 1",
+        gp1, cs));
+    let pay = b.nx();
+    b.line(format!(
+        "  %\"{}\" = load i8*, i8** %\"{}\"", pay, gp1));
+    let pbc = b.nx();
+    b.line(format!(
+        "  %\"{}\" = bitcast i8* %\"{}\" to {{i32, i8*}}*", pbc, pay));
+    let pc1 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 1",
+        pc1, pbc));
+    let chars = b.nx();
+    b.line(format!(
+        "  %\"{}\" = load i8*, i8** %\"{}\"", chars, pc1));
+    let pc0 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 0",
+        pc0, pbc));
+    let len32 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = load i32, i32* %\"{}\"", len32, pc0));
+    let sx = b.nx();
+    b.line(format!(
+        "  %\"{}\" = sext i32 %\"{}\" to i64", sx, len32));
+    // str_view build
+    let vn = b.uniq_label("str_view");
+    b.reg_names.push(vn.clone());
+    if IN_FN.with(|v| *v.borrow()) {
+        FN_ALLOCAS.with(|f| f.borrow_mut().push((vn.clone(), "view".into())));
+    } else {
+        MAIN_ALLOCAS.with(|m| m.borrow_mut().push(vn.clone()));
+    }
+    for fld in [0u32, 1, 3] {
+        let g = b.nx();
+        b.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 {}",
+            g, vn, fld));
+        b.silent();
+        b.line(format!("  store i64 %\"{}\", i64* %\"{}\"", sx, g));
+    }
+    let g2 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+        g2, vn));
+    b.silent();
+    b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", chars, g2));
+    let vbc = b.nx();
+    b.line(format!(
+        "  %\"{}\" = bitcast {{i64, i64, i8*, i64}}* %\"{}\" to i8*",
+        vbc, vn));
+    let res = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i64 @\"rawdict_str_get_or\"(i8* {}, i8* %\"{}\", i64 {})",
+        res, dl, vbc, def));
+    format!("%\"{}\"", res)
+}
+
+fn as_slice_sub(v: &Val) -> Option<(String, Val)> {
+    if v.head() == "subscript" && v.get(1).head() == "name"
+        && v.get(2).head() == "slice" {
+        Some((v.get(1).get(1).str_of(), v.get(2).clone()))
+    } else if v.head() == "slice" {
+        Some((String::new(), v.clone())) // base decided by caller
+    } else { None }
+}
+
+fn emit_slice_view(b: &mut FnB, base: &str, sl: &Val, sc: &mut usize) -> String {
+    let fs = F_SLOTS.with(|f| f.borrow().clone());
+    let l = b.nx();
+    b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, base));
+    unsafe { SC_PTR = sc; }
+    let sv = eval_expr(b, &sl.get(1), &global_slot, &global_slot, sc, &fs);
+    let Typed::I64(sref) = sv else { bail("slice start") };
+    let ev = eval_expr(b, &sl.get(2), &global_slot, &global_slot, sc, &fs);
+    let Typed::I64(eref) = ev else { bail("slice end") };
+    let sp = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call {{i8*, i64}} @\"rawstr_slice_parts\"(i8* %\"{}\", i64 {}, i64 {})",
+        sp, l, sref, eref));
+    let d = b.nx();
+    b.line(format!(
+        "  %\"{}\" = extractvalue {{i8*, i64}} %\"{}\", 0", d, sp));
+    let ln = b.nx();
+    b.line(format!(
+        "  %\"{}\" = extractvalue {{i8*, i64}} %\"{}\", 1", ln, sp));
+    let vn = b.uniq_label("str_view");
+    b.reg_names.push(vn.clone());
+    if IN_FN.with(|v| *v.borrow()) {
+        FN_ALLOCAS.with(|f| f.borrow_mut().push((vn.clone(), "view".into())));
+    } else {
+        MAIN_ALLOCAS.with(|m| m.borrow_mut().push(vn.clone()));
+    }
+    for fld in [0u32, 1, 3] {
+        let g = b.nx();
+        b.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 {}",
+            g, vn, fld));
+        b.silent();
+        b.line(format!("  store i64 %\"{}\", i64* %\"{}\"", ln, g));
+    }
+    let g2 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+        g2, vn));
+    b.silent();
+    b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", d, g2));
+    let bc = b.nx();
+    b.line(format!(
+        "  %\"{}\" = bitcast {{i64, i64, i8*, i64}}* %\"{}\" to i8*",
+        bc, vn));
+    format!("%\"{}\"", bc)
+}
+
 fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
     if e.head() == "name" {
         let n = e.get(1).str_of();
@@ -2034,8 +2211,18 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
         let dl = b.nx();
         b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", dl, d));
         let fs = F_SLOTS.with(|f| f.borrow().clone());
-        let kv = eval_mod(b, &args[0], &fs, sc);
-        let kr = to_raw(b, kv, sc);
+        if args[0].head() == "const" && matches!(args[0].get(1), Val::Str(_)) {
+            let text = args[0].get(1).str_of();
+            let def = args[1].get(1).int_of();
+            let r = emit_const_key_get(b, &format!("%\"{}\"", dl), &text, def, sc);
+            return Typed::I64(r);
+        }
+        let kr = if let Some((bname, sl)) = as_slice_sub(&args[0]) {
+            emit_slice_view(b, &bname, &sl, sc)
+        } else {
+            let kv = eval_mod(b, &args[0], &fs, sc);
+            to_raw(b, kv, sc)
+        };
         if !matches!(args[1].get(1), Val::Int(_)) { bail("get default"); }
         let en = b.nx();
         b.line(format!(
