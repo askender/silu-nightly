@@ -116,18 +116,25 @@ fn escape_bytes(data: &[u8]) -> String {
 }
 
 thread_local! {
-    static STRS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // tail globals in strict CREATION order: strings and module var
+    // declarations interleave as they are first emitted (list.si find)
+    static TAIL: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static STR_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static PRE_GLOBAL_STRS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static LST_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new()); // list-typed globals
+    static DCT_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new()); // dict-typed globals
+}
+
+fn tail_push(line: String) {
+    TAIL.with(|t| t.borrow_mut().push(line));
 }
 
 fn add_str(counter: &mut usize, text: &str) -> String {
     let name = format!("str_{}", counter);
     *counter += 1;
     let bytes = format!("{}\x00", text);
-    STRS.with(|s| s.borrow_mut().push(format!(
+    tail_push(format!(
         "@\"{}\" = constant [{} x i8] c\"{}\"",
-        name, bytes.len(), escape_bytes(bytes.as_bytes()))));
+        name, bytes.len(), escape_bytes(bytes.as_bytes())));
     name
 }
 
@@ -169,6 +176,13 @@ impl FnB {
         self.blocks.len() - 1
     }
     fn pos(&mut self, i: usize) { self.cur = i; }
+    // llvmlite duplicate-name rule: same-base blocks get .1, .2, ...
+    fn uniq_label(&self, base: &str) -> String {
+        let n = self.blocks.iter().filter(|(l, _)| {
+            l == base || l.starts_with(&format!("{}.", base))
+        }).count();
+        if n == 0 { base.to_string() } else { format!("{}.{}", base, n) }
+    }
     fn line(&mut self, l: String) { self.blocks[self.cur].1.push(l); }
     fn nx(&mut self) -> String { self.anon += 1; format!(".{}", self.anon) }
     fn silent(&mut self) { self.anon += 1; }
@@ -323,6 +337,21 @@ impl FnB {
                 format!("%\"{}\"", l)
             }
             "const" if matches!(e.get(1), Val::Int(_)) => e.get(1).int_of().to_string(),
+            "subscript" => {
+                // d[k] read: load obj, eval key, valued rawdict_get
+                if e.get(1).head() != "name" { bail("subscript base"); }
+                let n = e.get(1).get(1).str_of();
+                if !DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
+                    bail("subscript read type");
+                }
+                let l = self.nx();
+                self.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+                let k = self.expr_i64(&e.get(2), slot_ref);
+                let c = self.nx();
+                self.line(format!(
+                    "  %\"{}\" = call i64 @\"rawdict_get\"(i8* %\"{}\", i64 {})", c, l, k));
+                format!("%\"{}\"", c)
+            }
             "%" => {
                 let a = self.expr_i64(&e.get(1), slot_ref);
                 let b = self.expr_i64(&e.get(2), slot_ref);
@@ -401,12 +430,10 @@ impl FnB {
     }
 }
 
-// module-level walk (main body). Returns (fn_defs, module_globals).
-fn walk_module(stmts: &[Val], sc: &mut usize)
-              -> (Vec<Val>, Vec<String>, String) {
+// module-level walk (main body). Returns fn_defs; globals land in TAIL.
+fn walk_module(stmts: &[Val], sc: &mut usize) -> Vec<Val> {
     let mut b = FnB::new(1); // .1 = main ret slot
     let mut func_defs: Vec<Val> = Vec::new();
-    let mut module_globals: Vec<String> = Vec::new();
     let mut fslots: Vec<String> = Vec::new(); // float-typed global names
     let mut sslots: Vec<String> = Vec::new(); // str-typed global names
 
@@ -420,18 +447,49 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
                 let name = st.get(1).str_of();
                 let init = st.get(2);
                 let anno = st.get(3).get(1).str_of();
-                if anno == "str" {
+                if st.get(3).head() == "subscript"
+                    && st.get(3).get(1).get(1).str_of() == "dict" {
+                    // d: dict[int, int] = {} -> rawdict_new() (no args)
+                    let tp = st.get(3).get(2);
+                    let tv = tp.items().get(1).cloned().unwrap_or(Val::Null);
+                    let ok_types = tp.head() == "tuple"
+                        && matches!(&tv, Val::List(vs) if vs.len() == 2
+                            && vs.iter().all(|v| v.get(1).str_of() == "int"));
+                    if !ok_types { bail("dict elem types"); }
+                    if init.head() != "dict"
+                        || !matches!(init.items().get(1), Some(Val::List(v)) if v.is_empty()) {
+                        bail("dict init");
+                    }
+                    *sc += 1; // module binding consumes a slot
+                    DCT_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    let c = b.nx();
+                    b.line(format!("  %\"{}\" = call i8* @\"rawdict_new\"()", c));
+                    b.silent();
+                    b.line(format!("  store i8* %\"{}\", i8** @\"{}\"", c, name));
+                    tail_push(format!("@\"{}\" = global i8* null", name));
+                } else if st.get(3).head() == "subscript"
+                    && st.get(3).get(1).get(1).str_of() == "list" {
+                    // l: list[int] = [] -> rawlist_new(8), i8* global
+                    let elem = st.get(3).get(2).get(1).str_of();
+                    if elem != "int" { bail("list elem type"); }
+                    if init.head() != "list"
+                        || !matches!(init.items().get(1), Some(Val::List(v)) if v.is_empty()) {
+                        bail("list init");
+                    }
+                    *sc += 1; // module binding consumes a slot
+                    LST_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    let c = b.nx();
+                    b.line(format!("  %\"{}\" = call i8* @\"rawlist_new\"(i64 8)", c));
+                    b.silent();
+                    b.line(format!("  store i8* %\"{}\", i8** @\"{}\"", c, name));
+                    tail_push(format!("@\"{}\" = global i8* null", name));
+                } else if anno == "str" {
                     sslots.push(name.clone());
                     STR_SLOTS.with(|sl| sl.borrow_mut().push(name.clone()));
                     let text = match &init.items()[1] { Val::Str(v) => v.clone(),
                                                         _ => String::new() };
                     let gname = add_str(sc, &text);
                     *sc += 1; // the binding itself consumes a slot after the init const
-                    STRS.with(|st| {
-                        if let Some(line) = st.borrow().last().cloned() {
-                            PRE_GLOBAL_STRS.with(|p| p.borrow_mut().push(line));
-                        }
-                    });
 
                     let g = b.nx();
                     let blen = text.chars().count();
@@ -452,7 +510,7 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
                     b.line(format!("  call void @\"rawstr_free\"(i8* %\"{}\")", old));
                     b.silent();
                     b.line(format!("  store i8* %\"{}\", i8** @\"{}\"", pr, name));
-                    module_globals.push(format!("@\"{}\" = global i8* null", name));
+                    tail_push(format!("@\"{}\" = global i8* null", name));
                 } else if anno == "float" {
                     *sc += 1; // module binding consumes a slot (no init string)
                     fslots.push(name.clone());
@@ -460,8 +518,8 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
                         bail("float init");
                     }
                     let f = match &init.items()[1] { Val::Float(v) => *v, _ => 0.0 };
-                    module_globals.push(format!("@\"{}\" = global double {}",
-                                                name, double_bits(f)));
+                    tail_push(format!("@\"{}\" = global double {}",
+                                      name, double_bits(f)));
                     b.silent();
                     b.line(format!("  store double {}, double* @\"{}\"",
                                    double_bits(f), name));
@@ -470,7 +528,7 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
                     if !matches!(init.get(1), Val::Int(_)) || init.head() != "const" {
                         bail("ann_assign init");
                     }
-                    module_globals.push(format!("@\"{}\" = global i64 0", name));
+                    tail_push(format!("@\"{}\" = global i64 0", name));
                     b.silent();
                     b.line(format!("  store i64 {}, i64* @\"{}\"",
                                    init.get(1).int_of(), name));
@@ -479,12 +537,16 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
             "while" => {
                 let cond = st.get(1);
                 let body = st.get(2).items();
-                // create cond/body/end blocks (creation order = output)
-                let cond_b = b.add_block("while_cond");
-                let body_b = b.add_block("while_body");
-                let end_b = b.add_block("while_end");
+                // create cond/body/end blocks (creation order = output);
+                // duplicate bases get llvmlite's .N suffix
+                let cond_lbl = b.uniq_label("while_cond");
+                let cond_b = b.add_block(&cond_lbl);
+                let body_lbl = b.uniq_label("while_body");
+                let body_b = b.add_block(&body_lbl);
+                let end_lbl = b.uniq_label("while_end");
+                let end_b = b.add_block(&end_lbl);
                 b.silent();
-                b.line("  br label %\"while_cond\"".into());
+                b.line(format!("  br label %\"{}\"", cond_lbl));
                 b.pos(cond_b);
                 let pred = match cond.head() {
                     "<" => "slt", "<=" => "sle", ">" => "sgt", ">=" => "sge",
@@ -507,7 +569,7 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
                 }
                 b.silent();
                 b.line(format!(
-                    "  br i1 %\"{}\", label %\"while_body\", label %\"while_end\"", ic));
+                    "  br i1 %\"{}\", label %\"{}\", label %\"{}\"", ic, body_lbl, end_lbl));
                 b.pos(body_b);
                 // body statements flow through; checked ops move cur
                 let mut j = 0usize;
@@ -520,6 +582,40 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
                     }
                     if s.head() == "aug_assign" {
                         conv_aug_assign(&mut b, &s, sc, &global_slot);
+                        j += 1;
+                        continue;
+                    }
+                    if s.head() == "call" && s.get(1).head() == "attribute"
+                        && s.get(1).get(2).str_of() == "append" {
+                        let obj = s.get(1).get(1).get(1).str_of();
+                        if !LST_SLOTS.with(|t| t.borrow().iter()
+                                .any(|f| f == &obj)) { bail("append target"); }
+                        let args = s.get(2).items();
+                        if args.len() != 1 { bail("append arity"); }
+                        let l = b.nx(); // object load first, then arg eval
+                        b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, obj));
+                        let v = b.expr_i64_raw(&args[0], &global_slot, sc);
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 {})",
+                            c, l, v));
+                        j += 1;
+                        continue;
+                    }
+                    if s.head() == "subscript_assign" && s.get(1).head() == "name" {
+                        // d[k] = v: obj load, VALUE eval, key eval (panic pair
+                        // may intervene), void rawdict_set(obj, key, value)
+                        let obj = s.get(1).get(1).str_of();
+                        if !DCT_SLOTS.with(|t| t.borrow().iter()
+                                .any(|f| f == &obj)) { bail("subscript_assign target"); }
+                        let l = b.nx();
+                        b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, obj));
+                        let v = b.expr_i64_raw(&s.get(3), &global_slot, sc);
+                        let k = b.expr_i64_raw(&s.get(2), &global_slot, sc);
+                        b.silent();
+                        b.line(format!(
+                            "  call void @\"rawdict_set\"(i8* %\"{}\", i64 {}, i64 {})",
+                            l, k, v));
                         j += 1;
                         continue;
                     }
@@ -565,8 +661,115 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
                     bail("while body stmt");
                 }
                 b.silent();
-                b.line("  br label %\"while_cond\"".into());
+                b.line(format!("  br label %\"{}\"", cond_lbl));
                 b.pos(end_b);
+            }
+            "for" => {
+                // for x in <list global>: riter_{cond,body,incr,end} pattern.
+                // The target registers as a module binding: one string slot
+                // + a global decl, in creation order (list.si evidence).
+                if st.get(1).head() != "name" { bail("for target"); }
+                if st.get(2).head() != "name" { bail("for iter"); }
+                if !st.get(4).items().is_empty() { bail("for orelse"); }
+                let target = st.get(1).get(1).str_of();
+                let iname = st.get(2).get(1).str_of();
+                if !LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &iname)) {
+                    bail("for iter type");
+                }
+                if TAIL.with(|t| t.borrow().iter()
+                        .any(|g| g.contains(&format!("@\"{}\"", target)))) {
+                    bail("dup for target");
+                }
+                *sc += 1; // target binding consumes a module slot
+                tail_push(format!("@\"{}\" = global i64 0", target));
+                let body = st.get(3).items();
+
+                let l = b.nx();
+                b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, iname));
+                let idxn = b.uniq_label("riter_idx"); // alloca name, same rule
+                b.line(format!("  %\"{}\" = alloca i64", idxn)); // named, no slot
+                b.silent();
+                b.line(format!("  store i64 0, i64* %\"{}\"", idxn));
+                let lenc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i64 @\"rawlist_len\"(i8* %\"{}\")", lenc, l));
+                b.silent();
+                let rc_lbl = b.uniq_label("riter_cond");
+                b.line(format!("  br label %\"{}\"", rc_lbl));
+                let cond_b = b.add_block(&rc_lbl);
+                let rb_lbl = b.uniq_label("riter_body");
+                let body_b = b.add_block(&rb_lbl);
+                let ri_lbl = b.uniq_label("riter_incr");
+                let incr_b = b.add_block(&ri_lbl);
+                let re_lbl = b.uniq_label("riter_end");
+                let end_b = b.add_block(&re_lbl);
+                b.pos(cond_b);
+                let idx = b.nx();
+                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", idx, idxn));
+                let ic = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = icmp slt i64 %\"{}\", %\"{}\"", ic, idx, lenc));
+                b.silent();
+                b.line(format!(
+                    "  br i1 %\"{}\", label %\"{}\", label %\"{}\"", ic, rb_lbl, re_lbl));
+                b.pos(body_b);
+                // element load: {len, cap, i8* data} -> gep 2 -> i64* -> gep idx
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*}}*", bc, l));
+                let gp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr {{i64, i64, i8*}}, {{i64, i64, i8*}}* %\"{}\", i32 0, i32 2",
+                    gp, bc));
+                let dp = b.nx();
+                b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", dp, gp));
+                let bc2 = b.nx();
+                b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc2, dp));
+                let ep = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr i64, i64* %\"{}\", i64 %\"{}\"",
+                    ep, bc2, idx));
+                let el = b.nx();
+                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", el, ep));
+                b.silent();
+                b.line(format!("  store i64 %\"{}\", i64* @\"{}\"", el, target));
+                let mut j = 0usize;
+                while j < body.len() {
+                    let s = body[j].clone();
+                    if s.head() == "line" { b.line_store(s.get(1).int_of()); j += 1; continue; }
+                    if s.head() == "aug_assign" {
+                        conv_aug_assign(&mut b, &s, sc, &global_slot);
+                        j += 1;
+                        continue;
+                    }
+                    bail("for body stmt");
+                }
+                b.silent();
+                b.line(format!("  br label %\"{}\"", ri_lbl));
+                b.pos(incr_b);
+                let il = b.nx();
+                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", il, idxn));
+                let ia = b.nx();
+                b.line(format!("  %\"{}\" = add i64 %\"{}\", 1", ia, il));
+                b.silent();
+                b.line(format!("  store i64 %\"{}\", i64* %\"{}\"", ia, idxn));
+                b.silent();
+                b.line(format!("  br label %\"{}\"", rc_lbl));
+                b.pos(end_b);
+            }
+            "assign" => {
+                // plain reassign of an int module global: one silent store
+                let name = st.get(1).str_of();
+                let rhs = st.get(2);
+                let is_int = !fslots.iter().any(|f| f == &name)
+                    && !sslots.iter().any(|f| f == &name)
+                    && !LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &name))
+                    && !DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &name));
+                if !is_int || rhs.head() != "const"
+                    || !matches!(rhs.get(1), Val::Int(_)) { bail("module assign"); }
+                b.silent();
+                b.line(format!("  store i64 {}, i64* @\"{}\"",
+                               rhs.get(1).int_of(), name));
             }
             "func_def" => {
                 *sc += 1;
@@ -574,85 +777,53 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
             }
             "call" if st.get(1).head() == "name"
                      && st.get(1).get(1).str_of() == "print" => {
+                // generic multi-arg print: per arg, eval then %lld/%s printf,
+                // " " separator between args, "\n" at the end (interleaved)
                 let args = st.get(2).items();
-                if args.len() != 1 { bail("print arity"); }
-                let a = &args[0];
-                if a.head() == "call" && a.get(1).head() == "name"
-                    && a.get(1).get(1).str_of() == "len" {
-                    let arg = &a.get(2).items()[0];
-                    if STR_SLOTS.with(|sl| sl.borrow().iter()
-                        .any(|f| f == &arg.get(1).str_of())) && arg.head() == "name" {
-                        let nm = arg.get(1).str_of();
-                        let l = b.nx();
-                        b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, nm));
-                        let bc = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*",
-                            bc, l));
-                        let gp = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
-                            gp, bc));
-                        let ld = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = load i64, i64* %\"{}\"", ld, gp));
-                        let fmt = add_str(sc, "%lld");
-                        let gg = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
-                            gg, fmt));
-                        let p = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 %\"{}\")",
-                            p, gg, ld));
-                        let nl = add_str(sc, "\x0a");
-                        let g2 = b.nx();
+                if args.is_empty() { bail("print arity"); }
+                let n_args = args.len();
+                for (ai, a) in args.iter().enumerate() {
+                    let v_typed = eval_mod(&mut b, a, &fslots, sc);
+                    match v_typed {
+                        Typed::I64(v) => {
+                            let fmt = add_str(sc, "%lld");
+                            let g = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
+                                g, fmt));
+                            let p = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 {})",
+                                p, g, v));
+                        }
+                        Typed::F64(_) => {
+                            let r = to_f64(&mut b, v_typed);
+                            let cr = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"float_repr\"(double {})", cr, r));
+                            let fmt = add_str(sc, "%s");
+                            let g = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = getelementptr [3 x i8], [3 x i8]* @\"{}\", i32 0, i32 0",
+                                g, fmt));
+                            let p = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i8* %\"{}\")",
+                                p, g, cr));
+                        }
+                        Typed::Str(_) => bail("print str arg"),
+                    }
+                    if ai + 1 < n_args {
+                        let sep = add_str(sc, " ");
+                        let g = b.nx();
                         b.line(format!(
                             "  %\"{}\" = getelementptr [2 x i8], [2 x i8]* @\"{}\", i32 0, i32 0",
-                            g2, nl));
-                        let p2 = b.nx();
+                            g, sep));
+                        let p = b.nx();
                         b.line(format!(
-                            "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p2, g2));
-                        i += 1;
-                        continue;
+                            "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p, g));
                     }
                 }
-                let v_typed = eval_mod(&mut b, a, &fslots, sc);
-                if matches!(v_typed, Typed::F64(_)) {
-                    let r = to_f64(&mut b, v_typed);
-                    let cr = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"float_repr\"(double {})", cr, r));
-                    let fmt = add_str(sc, "%s");
-                    let g = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = getelementptr [3 x i8], [3 x i8]* @\"{}\", i32 0, i32 0",
-                        g, fmt));
-                    let p = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i8* %\"{}\")",
-                        p, g, cr));
-                    let nl = add_str(sc, "\x0a");
-                    let g2 = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = getelementptr [2 x i8], [2 x i8]* @\"{}\", i32 0, i32 0",
-                        g2, nl));
-                    let p2 = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p2, g2));
-                    i += 1;
-                    continue;
-                }
-                let Typed::I64(v) = v_typed else { bail("print type") };
-                let fmt = add_str(sc, "%lld");
-                let g = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
-                    g, fmt));
-                let p = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 {})",
-                    p, g, v));
                 let nl = add_str(sc, "\x0a");
                 let g2 = b.nx();
                 b.line(format!(
@@ -671,7 +842,7 @@ fn walk_module(stmts: &[Val], sc: &mut usize)
     unsafe {
         MAIN_OUT = Some(b.render("define i32 @\"main\"()\n"));
     }
-    (func_defs, module_globals, String::new())
+    func_defs
 }
 
 static mut MAIN_OUT: Option<String> = None;
@@ -952,6 +1123,50 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
         b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, n));
         return Typed::I64(format!("%\"{}\"", l));
     }
+    if e.head() == "call" && e.get(1).head() == "name"
+        && e.get(1).get(1).str_of() == "len" {
+        let ia = e.get(2).items();
+        if ia.len() != 1 || ia[0].head() != "name" { bail("len arg"); }
+        let n = ia[0].get(1).str_of();
+        if LST_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n)) {
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"rawlist_len\"(i8* %\"{}\")", c, l));
+            return Typed::I64(format!("%\"{}\"", c));
+        }
+        if DCT_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n)) {
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+            let bc = b.nx();
+            b.line(format!(
+                "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i64, i64, i64*, i64*, i64*}}*",
+                bc, l));
+            let gp = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr {{i64, i64, i64, i64, i64*, i64*, i64*}}, {{i64, i64, i64, i64, i64*, i64*, i64*}}* %\"{}\", i32 0, i32 0",
+                gp, bc));
+            let ld = b.nx();
+            b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, gp));
+            return Typed::I64(format!("%\"{}\"", ld));
+        }
+        if STR_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n)) {
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+            let bc = b.nx();
+            b.line(format!(
+                "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*", bc, l));
+            let gp = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                gp, bc));
+            let ld = b.nx();
+            b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, gp));
+            return Typed::I64(format!("%\"{}\"", ld));
+        }
+        bail("len target");
+    }
     if e.head() == "call" {
         let ia = e.get(2).items();
         if ia.len() != 1 || ia[0].head() != "const"
@@ -986,7 +1201,7 @@ fn main() {
     let stmts = module.get(1).items();
 
     let mut sc = STR_BASE;
-    let (func_defs, module_globals, _fs) = walk_module(&stmts, &mut sc);
+    let func_defs = walk_module(&stmts, &mut sc);
 
     let mut out = String::new();
     out.push_str(CONST_PREFIX);
@@ -996,40 +1211,15 @@ fn main() {
     unsafe {
         out.push_str(MAIN_OUT.as_ref().unwrap());
     }
-    // tail globals: module vars first, strings in creation order
-    // tail order = creation order: str-init constants created BEFORE
-    // their binding's global declaration, everything else after
-    let mut tail: Vec<String> = Vec::new();
-    STRS.with(|s| {
-        let all = s.borrow().clone();
-        for line in all.iter() {
-            // init constants ("" / "x" from ann_assign) precede globals;
-            // panic/print strings follow them. Heuristic: lines whose
-            // number < the highest global-slot are init constants.
-            tail.push(line.clone());
+    // tail globals: strict creation order (strings and vars interleaved)
+    TAIL.with(|t| {
+        let all = t.borrow();
+        let last = all.len();
+        for (i, line) in all.iter().enumerate() {
+            out.push_str(line);
+            if i + 1 < last { out.push('\n'); }
         }
     });
-    tail.splice(0..0, module_globals.clone());
-    // move only init constants (created before the FIRST binding slot)
-    // ahead of the globals; others stay after. Track by an explicit
-    // marker instead: PRE_GLOBAL_STRS captured at first binding.
-    tail = {
-        let mut pre: Vec<String> = PRE_GLOBAL_STRS.with(|p| p.borrow().clone());
-        let mut post: Vec<String> = Vec::new();
-        STRS.with(|s| {
-            for line in s.borrow().iter() {
-                if !pre.iter().any(|p| p == line) { post.push(line.clone()); }
-            }
-        });
-        pre.extend(module_globals.clone());
-        pre.extend(post);
-        pre
-    };
-    let last = tail.len();
-    for (i, line) in tail.iter().enumerate() {
-        out.push_str(line);
-        if i + 1 < last { out.push('\n'); }
-    }
     let so = std::io::stdout();
     let mut lock = so.lock();
     let _ = lock.write_all(out.as_bytes());
