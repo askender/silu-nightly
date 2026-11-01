@@ -121,6 +121,8 @@ thread_local! {
     static FN_I: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static FN_F: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static FN_ALLOCAS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+    static FN_PARAMS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+    static FN_L: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
     static IN_FN: RefCell<bool> = RefCell::new(false);
     static FN_RET: RefCell<String> = RefCell::new(String::new());
     static LST_ELEM: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
@@ -129,9 +131,18 @@ thread_local! {
 }
 
 fn lst_elem_ty(n: &str) -> String {
+    if let Some(t) = FN_L.with(|m| m.borrow().iter()
+            .find(|(k, _)| k == n).map(|(_, v)| v.clone())) { return t; }
     LST_ELEM.with(|m| m.borrow().iter()
         .find(|(k, _)| k == n).map(|(_, v)| v.clone())
         .unwrap_or_else(|| "int".into()))
+}
+
+// container slot: local alloca %x vs module global @x
+fn lst_slot(n: &str) -> String {
+    if FN_L.with(|m| m.borrow().iter().any(|(k, _)| k == n)) {
+        format!("%\"{}\"", n)
+    } else { format!("@\"{}\"", n) }
 }
 
 // name resolution: function locals shadow module globals
@@ -523,7 +534,7 @@ fn conv_aug_assign(b: &mut FnB, st: &Val, sc: &mut usize,
         let fs = F_SLOTS.with(|f| f.borrow().clone());
         let rhs_v = eval_expr(b, &rhs_e, slot_ref, slot_ref, sc, &fs);
         let l = b.nx();
-        b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+        b.line(format!("  %\"{}\" = load i8*, i8** {}", l, lst_slot(&n)));
         let k = b.expr_i64_raw(&st.get(1).get(2), slot_ref, sc);
         let bc = b.nx();
         b.line(format!(
@@ -712,18 +723,22 @@ fn emit_fill(b: &mut FnB, name: &str, fill: &Val, count_e: &Val, sc: &mut usize)
     b.line(format!(
         "  br i1 %\"{}\", label %\"{}\", label %\"{}\"", ic, fb_lbl, fe_lbl));
     b.pos(fb_b);
-    let lp = b.nx();
-    b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", lp, fln));
-    let pu = b.nx();
     if let Some(iv) = fill_int {
+        let lp = b.nx();
+        b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", lp, fln));
+        let pu = b.nx();
         b.line(format!(
             "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 {})",
             pu, lp, iv));
     } else {
+        // float fill: const bitcast, list load, then the push slot
         let fv = fill_flt.unwrap_or(0.0);
         let ib = b.nx();
         b.line(format!(
             "  %\"{}\" = bitcast double {} to i64", ib, double_bits(fv)));
+        let lp = b.nx();
+        b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", lp, fln));
+        let pu = b.nx();
         b.line(format!(
             "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 %\"{}\")",
             pu, lp, ib));
@@ -859,19 +874,34 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
             b.line(format!("  store i8* %\"{}\", i8** @\"{}\"", pr, name));
             tail_push(format!("@\"{}\" = global i8* null", name));
         } else if anno == "float" {
-            *sc += 1; // module binding consumes a slot (no init string)
             F_SLOTS.with(|f| f.borrow_mut().push(name.clone()));
-            let f = match &init.items()[1] { Val::Float(v) => *v, _ => 0.0 };
-            tail_push(format!("@\"{}\" = global double {}",
-                              name, double_bits(f)));
-            b.silent();
-            b.line(format!("  store double {}, double* @\"{}\"",
-                           double_bits(f), name));
+            let const_f = match &init.items()[1] {
+                Val::Float(v) => Some(*v), _ => None };
+            if let Some(f) = const_f {
+                *sc += 1;
+                tail_push(format!("@\"{}\" = global double {}",
+                                  name, double_bits(f)));
+                b.silent();
+                b.line(format!("  store double {}, double* @\"{}\"",
+                               double_bits(f), name));
+            } else {
+                // expression init: eval FIRST, then slot + store
+                let fs = F_SLOTS.with(|f| f.borrow().clone());
+                let v = eval_mod(b, &init, &fs, sc);
+                let r = to_f64(b, v);
+                *sc += 1;
+                tail_push(format!("@\"{}\" = global double {}",
+                                  name, double_bits(0.0)));
+                b.silent();
+                b.line(format!("  store double {}, double* @\"{}\"",
+                               r, name));
+            }
         } else {
-            // int binding: slot + global first, then init
-            *sc += 1; // module binding consumes a slot (no init string)
-            tail_push(format!("@\"{}\" = global i64 0", name));
+            // int binding: rhs eval first, then slot + global + store
+            // (spectral: rhs-created strings number before the slot)
             if init.head() == "const" && matches!(init.get(1), Val::Int(_)) {
+                *sc += 1;
+                tail_push(format!("@\"{}\" = global i64 0", name));
                 b.silent();
                 b.line(format!("  store i64 {}, i64* @\"{}\"",
                                init.get(1).int_of(), name));
@@ -879,12 +909,16 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
                 let src = init.get(1).str_of();
                 let l = b.nx();
                 b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, src));
+                *sc += 1;
+                tail_push(format!("@\"{}\" = global i64 0", name));
                 b.silent();
                 b.line(format!("  store i64 %\"{}\", i64* @\"{}\"", l, name));
             } else {
                 let fs = F_SLOTS.with(|f| f.borrow().clone());
                 let v = eval_mod(b, &init, &fs, sc);
                 let Typed::I64(r) = v else { bail("ann_assign type") };
+                *sc += 1;
+                tail_push(format!("@\"{}\" = global i64 0", name));
                 b.silent();
                 b.line(format!("  store i64 {}, i64* @\"{}\"", r, name));
             }
@@ -982,9 +1016,11 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         b.line(format!(
             "  call void @\"rawdict_set\"(i8* %\"{}\", i64 {}, i64 {})",
             l, k, v));
-    } else if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &obj)) {
+    } else if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &obj))
+        || FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &obj)) {
         let l = b.nx(); // obj load, then key eval, then value eval
-        b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, obj));
+        b.line(format!("  %\"{}\" = load i8*, i8** {}",
+            l, lst_slot(&obj)));
         let k = b.expr_i64_raw(&st.get(2), &global_slot, sc);
         let elem = lst_elem_ty(&obj);
         let fs = F_SLOTS.with(|f| f.borrow().clone());
@@ -1247,62 +1283,106 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
 
     let mut atys = Vec::new();
     for (p, a) in params.iter().zip(annos.iter()) {
-        let t = a.get(1).str_of();
-        if t != "int" && t != "float" { bail("param type"); }
         if p.str_of().is_empty() { bail("param name"); }
-        atys.push(t.to_string());
+        if a.head() == "name" {
+            let t = a.get(1).str_of();
+            if t != "int" && t != "float" { bail("param type"); }
+            atys.push(t.to_string());
+        } else if a.head() == "subscript"
+            && a.get(1).get(1).str_of() == "list" {
+            atys.push(format!("list:{}", a.get(2).get(1).str_of()));
+        } else { bail("param type"); }
     }
-    let rty = ret_anno.get(1).str_of();
-    if rty != "int" && rty != "float" { bail("ret type"); }
+    // missing return annotation -> silu none ({i32, i8*}*)
+    let rty = if matches!(ret_anno, Val::Null) { "none".to_string() }
+              else {
+                  let t = ret_anno.get(1).str_of();
+                  if t != "int" && t != "float" { bail("ret type"); }
+                  t.to_string()
+              };
 
     FN_I.with(|f| *f.borrow_mut() = Vec::new());
     FN_F.with(|f| *f.borrow_mut() = Vec::new());
+    FN_L.with(|f| *f.borrow_mut() = Vec::new());
     FN_ALLOCAS.with(|f| *f.borrow_mut() = Vec::new());
+    FN_PARAMS.with(|f| *f.borrow_mut() = Vec::new());
     FN_RET.with(|r| *r.borrow_mut() = rty.to_string());
     IN_FN.with(|v| *v.borrow_mut() = true);
 
     let n = params.len();
-    let rty_ll = if rty == "float" { "double" } else { "i64" };
+    let arg_ll = |t: &str| match t {
+        "float" => "double",
+        t if t.starts_with("list:") => "i8*",
+        _ => "i64",
+    };
+    let rty_ll = match rty.as_str() {
+        "float" => "double", "none" => "{i32, i8*}*", _ => "i64",
+    };
     let header = format!(
-        "define internal {} @\"{}\"({}) alwaysinline\n",
+        "define internal {} @\"{}\"({}){}\n",
         rty_ll, name,
         params.iter().zip(atys.iter()).enumerate()
             .map(|(i, (p, t))| format!("{} %\".{}\"",
-                if t == "float" { "double" } else { "i64" }, i + 1))
-            .collect::<Vec<_>>().join(", "));
+                arg_ll(t), i + 1))
+            .collect::<Vec<_>>().join(", "),
+        if rty == "none" { "" } else { " alwaysinline" });
 
     let mut b = FnB::new(n + 1); // .1..N args, .N+1 ret slot
-    for (p, t) in params.iter().zip(atys.iter()) {
-        FN_ALLOCAS.with(|f| f.borrow_mut()
-            .push((p.str_of(), t.clone())));
-        if t == "float" { FN_F.with(|f| f.borrow_mut().push(p.str_of())); }
-        else { FN_I.with(|f| f.borrow_mut().push(p.str_of())); }
+    // container params: alloca+store pairs in the splice, forward order
+    let mut container_pairs = String::new();
+    for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
+        if t.starts_with("list:") {
+            FN_L.with(|f| f.borrow_mut()
+                .push((p.str_of(), t.split(':').nth(1).unwrap_or("int").to_string())));
+            container_pairs.push_str(&format!(
+                "  %\"{}\" = alloca i8*\n  store i8* %\".{}\", i8** %\"{}\"\n",
+                p.str_of(), i + 1, p.str_of()));
+        } else {
+            FN_PARAMS.with(|f| f.borrow_mut()
+                .push((p.str_of(), t.clone())));
+            if t == "float" { FN_F.with(|f| f.borrow_mut().push(p.str_of())); }
+            else { FN_I.with(|f| f.borrow_mut().push(p.str_of())); }
+        }
     }
-    // param stores forward at body start (silent slots)
+    // param stores forward at body start (silent slots); container
+    // stores live in the splice but STILL consume their slot
     for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
         b.silent();
-        if t == "float" {
-            b.line(format!("  store double %\".{}\", double* %\"{}\"",
-                i + 1, p.str_of()));
-        } else {
-            b.line(format!("  store i64 %\".{}\", i64* %\"{}\"",
-                i + 1, p.str_of()));
-        }
+        if t.starts_with("list:") { continue; }
+        let ll = arg_ll(t);
+        b.line(format!("  store {} %\".{}\", {}* %\"{}\"",
+            ll, i + 1, ll, p.str_of()));
     }
 
     let mut loops: Vec<String> = Vec::new();
     let ended = conv_block(&mut b, &body, &mut loops, sc);
-    if !ended { bail("function without trailing return"); }
+    if !ended {
+        if rty != "none" { bail("function without trailing return"); }
+        b.silent();
+        b.line("  ret {i32, i8*}* null".into());
+    }
     IN_FN.with(|v| *v.borrow_mut() = false);
 
-    // allocas: reverse first-appearance order, spliced inside entry
+    // allocas: LOCALS reversed first, then PARAMS reversed (spectral)
     let mut alloca_lines = String::new();
+    let alloca_ty = |t: &str| match t {
+        "float" => "double",
+        t if t.starts_with("list:") => "i8*",
+        _ => "i64",
+    };
     FN_ALLOCAS.with(|f| {
         for (nm, ty) in f.borrow().iter().rev() {
             alloca_lines.push_str(&format!("  %\"{}\" = alloca {}\n",
-                nm, if ty == "float" { "double" } else { "i64" }));
+                nm, alloca_ty(ty)));
         }
     });
+    FN_PARAMS.with(|f| {
+        for (nm, ty) in f.borrow().iter().rev() {
+            alloca_lines.push_str(&format!("  %\"{}\" = alloca {}\n",
+                nm, alloca_ty(ty)));
+        }
+    });
+    alloca_lines.push_str(&container_pairs);
     let mut out = b.render(&header);
     if let Some(epos) = out.find("entry:\n") {
         out.insert_str(epos + "entry:\n".len(), &alloca_lines);
@@ -1396,10 +1476,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 b.line(format!(
                     "  %\"{}\" = call i64 @\"rawdict_get\"(i8* %\"{}\", i64 {})", c, l, kr));
                 return Typed::I64(format!("%\"{}\"", c));
-            } else if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
+            } else if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
+                || FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &n)) {
                 // list read: load obj, key, bounds-checked get_ok
                 let l = b.nx();
-                b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+                b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                    l, lst_slot(&n)));
                 format!("%\"{}\"", l)
             } else { bail("subscript read type"); };
             let kr = eval_expr(b, &e.get(2), slot_i, slot_f, sc, fslots);
@@ -1423,8 +1505,18 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let args = e.get(2).items();
             let mut parts = Vec::new();
             for (i, a) in args.iter().enumerate() {
-                let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
                 let ty = atys.get(i).map(|s| s.as_str()).unwrap_or("int");
+                if ty.starts_with("list:") {
+                    // container arg: load the i8* slot
+                    if a.head() != "name" { bail("call list arg"); }
+                    let nm = a.get(1).str_of();
+                    let l = b.nx();
+                    b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                        l, lst_slot(&nm)));
+                    parts.push(format!("i8* %\"{}\"", l));
+                    continue;
+                }
+                let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
                 match (av, ty) {
                     (Typed::I64(r), "int") => parts.push(format!("i64 {}", r)),
                     (v, "float") => {
@@ -1435,13 +1527,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 }
             }
             let c = b.nx();
-            if rty == "float" {
-                b.line(format!("  %\"{}\" = call double @\"{}\"({})",
-                    c, fname, parts.join(", ")));
-                return Typed::F64(format!("%\"{}\"", c));
-            }
-            b.line(format!("  %\"{}\" = call i64 @\"{}\"({})",
-                c, fname, parts.join(", ")));
+            let rll = match rty.as_str() {
+                "float" => "double", "none" => "{i32, i8*}*", _ => "i64",
+            };
+            b.line(format!("  %\"{}\" = call {} @\"{}\"({})",
+                c, rll, fname, parts.join(", ")));
+            if rty == "float" { return Typed::F64(format!("%\"{}\"", c)); }
             Typed::I64(format!("%\"{}\"", c))
         }
         "+" | "-" | "*" | "/" | "//" | "%" => {
@@ -1476,9 +1567,9 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 "%" => { let v = b.py_mod(&l, &r, sc); Typed::I64(v) }
                 "//" => { let v = b.py_floordiv(&l, &r, sc); Typed::I64(v) }
                 "/" => {
-                    // int / int is Python float division: sitofp both,
-                    // zero check, fdiv
-                    b.fzero_check(&r, sc);
+                    // int / int is Python float division: INT zero check
+                    // (icmp eq), then sitofp both, fdiv (spectral evidence)
+                    b.zero_check(&r, sc);
                     let lf = to_f64_ref(b, &l);
                     let rf = to_f64_ref(b, &r);
                     let d = b.nx();
@@ -1686,10 +1777,16 @@ fn main() {
     // signatures first: main may call functions defined later
     for st in stmts.iter() {
         if st.head() == "func_def" {
-            let atys: Vec<String> = st.get(4).items().iter()
-                .map(|a| a.get(1).str_of()).collect();
+            let atys: Vec<String> = st.get(4).items().iter().map(|a| {
+                if a.head() == "subscript"
+                    && a.get(1).get(1).str_of() == "list" {
+                    format!("list:{}", a.get(2).get(1).str_of())
+                } else { a.get(1).str_of() }
+            }).collect();
+            let rt = if matches!(st.get(5), Val::Null) { "none".to_string() }
+                     else { st.get(5).get(1).str_of() };
             FN_SIGS.with(|m| m.borrow_mut().push(
-                (st.get(1).str_of(), atys, st.get(5).get(1).str_of())));
+                (st.get(1).str_of(), atys, rt)));
         }
     }
     let func_defs = walk_module(&stmts, &mut sc);
