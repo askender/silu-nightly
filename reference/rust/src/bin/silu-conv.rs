@@ -130,6 +130,38 @@ thread_local! {
         RefCell::new(Vec::new()); // (name, arg types, ret type)
 }
 
+fn enum_val(enum_: &str, variant: &str) -> Option<i64> {
+    ENUMS.with(|m| m.borrow().iter().find(|(k, _)| k == enum_).and_then(
+        |(_, vs)| vs.iter().position(|v| v == variant).map(|i| i as i64)))
+}
+
+fn class_fields(cls: &str) -> Option<Vec<(String, String)>> {
+    CLASSES.with(|c| c.borrow().iter().find(|(k, _)| k == cls)
+        .map(|(_, fs)| fs.clone()))
+}
+
+fn is_local_s(n: &str) -> bool {
+    FN_S.with(|t| t.borrow().iter().any(|x| x == n))
+}
+
+fn fn_ty_of(n: &str) -> Option<String> {
+    FN_TY.with(|t| t.borrow().iter().find(|(k, _)| k == n)
+        .map(|(_, v)| v.clone()))
+}
+
+fn is_class(n: &str) -> bool {
+    CLASSES.with(|c| c.borrow().iter().any(|(k, _)| k == n))
+}
+
+fn is_enum(n: &str) -> bool {
+    ENUMS.with(|m| m.borrow().iter().any(|(k, _)| k == n))
+}
+
+// field LLVM type from its annotation
+fn field_ll_ty(t: &str) -> &'static str {
+    match t { "float" => "double", _ => "i64" } // int/Tok/instance/str-ptr slots
+}
+
 fn tv_valtype(tv: &Val) -> String {
     match tv { Val::List(vs) =>
         vs.first().map(|v| v.get(1).str_of()).unwrap_or_else(|| "int".into()),
@@ -491,6 +523,150 @@ impl FnB {
         self.line(format!("  store i64 {}, i64* %\"{}\"", vref, gep));
     }
 
+    // str char index s[i]: cv machinery (bounds pair + ascii/walk + phi
+    // + utf8 width selects + rawstr_char1) -> 1-char str (calc blueprint 5)
+    fn str_char_at(&mut self, objref: &str, idx: &str, sc: &mut usize) -> String {
+        let bc = self.nx();
+        self.line(format!(
+            "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*",
+            bc, objref));
+        let g3 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+            g3, bc));
+        let len = self.nx();
+        self.line(format!(
+            "  %\"{}\" = load i64, i64* %\"{}\"", len, g3));
+        let g0 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 0",
+            g0, bc));
+        let cap = self.nx();
+        self.line(format!(
+            "  %\"{}\" = load i64, i64* %\"{}\"", cap, g0));
+        let g2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+            g2, bc));
+        let chars = self.nx();
+        self.line(format!(
+            "  %\"{}\" = load i8*, i8** %\"{}\"", chars, g2));
+        let neg = self.nx();
+        self.line(format!(
+            "  %\"{}\" = icmp slt i64 {}, 0", neg, idx));
+        let sum = self.nx();
+        self.line(format!(
+            "  %\"{}\" = add i64 {}, %\"{}\"", sum, idx, len));
+        let adj = self.nx();
+        self.line(format!(
+            "  %\"{}\" = select  i1 %\"{}\", i64 %\"{}\", i64 {}",
+            adj, neg, sum, idx));
+        let ge = self.nx();
+        self.line(format!(
+            "  %\"{}\" = icmp sge i64 %\"{}\", 0", ge, adj));
+        let lt = self.nx();
+        self.line(format!(
+            "  %\"{}\" = icmp slt i64 %\"{}\", %\"{}\"", lt, adj, len));
+        let both = self.nx();
+        self.line(format!(
+            "  %\"{}\" = and i1 %\"{}\", %\"{}\"", both, ge, lt));
+        let ok_lbl = self.uniq_label("cv_ok");
+        let err_lbl = self.uniq_label("cv_err");
+        self.silent();
+        self.line(format!(
+            "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+            both, ok_lbl, err_lbl));
+        let ob = self.add_block(&ok_lbl);
+        self.pos(ob);
+        let eb = self.add_block(&err_lbl);
+        self.emit_panic_body(eb, "IndexError: string index out of range", sc);
+        // in cv_ok: ascii? check
+        let eqc = self.nx();
+        self.line(format!(
+            "  %\"{}\" = icmp eq i64 %\"{}\", %\"{}\"", eqc, cap, len));
+        let a_lbl = self.uniq_label("cv_ascii");
+        let w_lbl = self.uniq_label("cv_walk");
+        self.silent();
+        self.line(format!(
+            "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+            eqc, a_lbl, w_lbl));
+        let ab = self.add_block(&a_lbl);
+        let wb = self.add_block(&w_lbl);
+        let j_lbl = self.uniq_label("cv_join");
+        self.pos(ab);
+        self.silent();
+        self.line(format!("  br label %\"{}\"", j_lbl));
+        self.pos(wb);
+        let off = self.nx();
+        self.line(format!(
+            "  %\"{}\" = call i64 @\"rawutf8_cp_offset\"(i8* %\"{}\", i64 %\"{}\")",
+            off, chars, adj));
+        self.silent();
+        self.line(format!("  br label %\"{}\"", j_lbl));
+        let jb = self.add_block(&j_lbl);
+        self.pos(jb);
+        let ph = self.nx();
+        self.line(format!(
+            "  %\"{}\" = phi  i64 [%\"{}\", %\"{}\"], [%\"{}\", %\"{}\"]",
+            ph, adj, a_lbl, off, w_lbl));
+        let cp = self.nx();
+        self.line(format!(
+            "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 %\"{}\"", cp, chars, ph));
+        let ld = self.nx();
+        self.line(format!(
+            "  %\"{}\" = load i8, i8* %\"{}\"", ld, cp));
+        let a1 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = and i8 %\"{}\", 224", a1, ld));
+        let c1 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = icmp eq i8 %\"{}\", 192", c1, a1));
+        let a2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = and i8 %\"{}\", 240", a2, ld));
+        let c2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = icmp eq i8 %\"{}\", 224", c2, a2));
+        let a3 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = and i8 %\"{}\", 248", a3, ld));
+        let c3 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = icmp eq i8 %\"{}\", 240", c3, a3));
+        let s1 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = select  i1 %\"{}\", i64 4, i64 1", s1, c3));
+        let s2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = select  i1 %\"{}\", i64 3, i64 %\"{}\"", s2, c2, s1));
+        let s3 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = select  i1 %\"{}\", i64 2, i64 %\"{}\"", s3, c1, s2));
+        let s4 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = select  i1 %\"{}\", i64 1, i64 %\"{}\"", s4, eqc, s3));
+        let gp = self.nx();
+        self.line(format!(
+            "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 %\"{}\"", gp, chars, ph));
+        let iv1 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = insertvalue {{i8*, i64}} undef, i8* %\"{}\", 0", iv1, gp));
+        let iv2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = insertvalue {{i8*, i64}} %\"{}\", i64 %\"{}\", 1", iv2, iv1, s4));
+        let ev1 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = extractvalue {{i8*, i64}} %\"{}\", 0", ev1, iv2));
+        let ev2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = extractvalue {{i8*, i64}} %\"{}\", 1", ev2, iv2));
+        let ch = self.nx();
+        self.line(format!(
+            "  %\"{}\" = call i8* @\"rawstr_char1\"(i8* %\"{}\", i64 %\"{}\")",
+            ch, ev1, ev2));
+        format!("%\"{}\"", ch)
+    }
+
     // i64 value expression in the CURRENT block against a variable slot
     // kind (global @"x" or local %"x"); full arith via eval_expr
     fn expr_i64(&mut self, e: &Val, slot_ref: &dyn Fn(&str) -> String) -> String {
@@ -654,6 +830,12 @@ thread_local! {
     static F_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static FUNC_DEFS: RefCell<Vec<Val>> = RefCell::new(Vec::new());
     static MAIN_ALLOCAS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // dynamic-instance layer: enums, classes, method signatures
+    static ENUMS: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
+    static CLASSES: RefCell<Vec<(String, Vec<(String, String)>)>> =
+        RefCell::new(Vec::new()); // (class, [(field, ty)])
+    static FN_TY: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+    static FN_S: RefCell<Vec<String>> = RefCell::new(Vec::new()); // local strs
 }
 
 fn is_declared(name: &str) -> bool {
@@ -818,7 +1000,8 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
     } else if st.get(3).head() == "subscript"
         && st.get(3).get(1).get(1).str_of() == "list" {
         let elem = st.get(3).get(2).get(1).str_of();
-        if elem != "int" && elem != "float" && elem != "str" {
+        if elem != "int" && elem != "float" && elem != "str"
+            && !is_class(&elem) && !is_enum(&elem) {
             bail("list elem type");
         }
         *sc += 1; // module binding consumes a slot
@@ -972,7 +1155,7 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         let r = to_f64(b, v);
         b.silent();
         b.line(format!("  store double {}, double* @\"{}\"", r, name));
-    } else if is_s {
+    } else if is_s || is_local_s(&name) {
         if rhs.head() == "+" {
             // s = s + "lit" -> rawstr_append(s, lit, len)
             let lit = match &rhs.get(2).items()[1] {
@@ -989,7 +1172,21 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
             b.line(format!(
                 "  call void @\"rawstr_append\"(i8* %\"{}\", i8* %\"{}\", i64 {})",
                 l, g, blen));
-        } else { bail("str assign rhs"); }
+        } else {
+            // general str rhs: eval, free the old value, store new
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &rhs, &fs, sc);
+            let r = to_raw(b, v, sc);
+            let slot = if is_local_s(&name) { format!("%\"{}\"", name) }
+                       else { format!("@\"{}\"", name) };
+            let old = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** {}", old, slot));
+            b.silent();
+            b.line(format!(
+                "  call void @\"rawstr_free\"(i8* %\"{}\")", old));
+            b.silent();
+            b.line(format!("  store i8* {}, i8** {}", r, slot));
+        }
     } else {
         if LST_SLOTS.with(|t| t.borrow().iter().any(|x| x == &name))
             || DCT_SLOTS.with(|t| t.borrow().iter().any(|x| x == &name)) {
@@ -1332,6 +1529,118 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 b.line(format!("  br label %\"{}\"", end));
                 return true;
             }
+            "enum_def" => {
+                *sc += 1;
+                let variants: Vec<String> = st.get(2).items().iter()
+                    .map(|v| v.get(0).str_of()).collect();
+                ENUMS.with(|m| m.borrow_mut()
+                    .push((st.get(1).str_of(), variants)));
+            }
+            "class_def" => {
+                *sc += 1;
+                let cname = st.get(1).str_of();
+                let body = st.get(3).items();
+                let mut fields: Vec<(String, String)> = Vec::new();
+                for b in body.iter() {
+                    if b.head() == "ann_assign" {
+                        fields.push((b.get(1).str_of(),
+                                     b.get(3).get(1).str_of()));
+                    }
+                }
+                CLASSES.with(|c| c.borrow_mut().push((cname.clone(), fields)));
+                // methods: func_defs with self -> Class__method, self typed
+                for b in body.iter() {
+                    if b.head() == "func_def" {
+                        *sc += 1;
+                        let mname = format!("{}__{}", cname, b.get(1).str_of());
+                        let mut items = b.items();
+                        items[1] = Val::Str(mname);
+                        if let Val::List(annos) = &mut items[4] {
+                            if !annos.is_empty() {
+                                annos[0] = Val::List(vec![
+                                    Val::Str("name".into()),
+                                    Val::Str(cname.clone())]);
+                            }
+                        }
+                        FUNC_DEFS.with(|f| f.borrow_mut()
+                            .push(Val::List(items)));
+                    }
+                }
+            }
+            "match" => {
+                // scrutinee field/value read once, then a case_next chain
+                let scrut = st.get(1);
+                let fs = F_SLOTS.with(|f| f.borrow().clone());
+                let sv = eval_mod(b, &st.get(1), &fs, sc);
+                let Typed::I64(vref) = sv else { bail("match scrutinee") };
+                let cases = st.get(2).items();
+                let mut prev_next: Option<String> = None;
+                for (ci, c) in cases.iter().enumerate() {
+                    let pat = c.get(0);
+                    let cbody = c.get(2).items();
+                    let body_lbl = if ci == 0 { b.uniq_label("case_body") }
+                        else { b.uniq_label("case_body") };
+                    let next_lbl = b.uniq_label("case_next");
+                    let end_lbl = if ci == 0 {
+                        let e = b.uniq_label("match_end");
+                        // blocks: body, end, next (creation order case0)
+                        let bb = b.add_block(&body_lbl);
+                        let _ = bb;
+                        let eb = b.add_block(&e);
+                        let _ = eb;
+                        e
+                    } else { String::new() };
+                    let nb = b.add_block(&next_lbl);
+                    let _ = nb;
+                    if pat.head() == "match_value" {
+                        let mv = pat.get(1);
+                        let variant = mv.get(2).str_of();
+                        let enum_ = mv.get(1).get(1).str_of();
+                        let k = enum_val(&enum_, &variant)
+                            .unwrap_or_else(|| bail("enum variant"));
+                        let eq = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = icmp eq i64 {}, {}", eq, vref, k));
+                        b.silent();
+                        b.line(format!(
+                            "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+                            eq, body_lbl, next_lbl));
+                    } else {
+                        // wildcard: case_next just brs to the body
+                        b.silent();
+                        b.line(format!("  br label %\"{}\"", body_lbl));
+                    }
+                    let _ = end_lbl;
+                    let _ = prev_next.take();
+                    // position into the body block and convert it
+                    let bi = b.blocks.iter().position(|(l, _)| l == &body_lbl)
+                        .unwrap_or_else(|| bail("case body missing"));
+                    b.pos(bi);
+                    conv_block(b, &cbody, loops, sc);
+                    // continue in case_next
+                    let ni = b.blocks.iter().position(|(l, _)| l == &next_lbl)
+                        .unwrap_or_else(|| bail("case next missing"));
+                    b.pos(ni);
+                }
+                // match_end: typed zero default
+                let e_idx = b.blocks.iter()
+                    .position(|(l, _)| l == "match_end");
+                match e_idx {
+                    Some(i) => {
+                        b.pos(i);
+                        let rty = FN_RET.with(|r| r.borrow().clone());
+                        b.silent();
+                        if rty == "float" {
+                            b.line(format!("  ret double {}", double_bits(0.0)));
+                        } else if rty == "none" {
+                            b.line("  ret {i32, i8*}* null".into());
+                        } else {
+                            b.line("  ret i64 0".into());
+                        }
+                    }
+                    None => {}
+                }
+            }
             "func_def" => {
                 *sc += 1;
                 FUNC_DEFS.with(|f| f.borrow_mut().push(st.clone()));
@@ -1384,8 +1693,12 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
         if p.str_of().is_empty() { bail("param name"); }
         if a.head() == "name" {
             let t = a.get(1).str_of();
-            if t != "int" && t != "float" { bail("param type"); }
-            atys.push(t.to_string());
+            if t != "int" && t != "float" && !is_class(&t) && t != "str"
+                && !is_enum(&t) { bail("param type"); }
+            if is_class(&t) { atys.push(format!("inst:{}", t)); }
+            else if t == "str" { atys.push("str".into()); }
+            else if is_enum(&t) { atys.push("int".into()); }
+            else { atys.push(t.to_string()); }
         } else if a.head() == "subscript"
             && a.get(1).get(1).str_of() == "list" {
             atys.push(format!("list:{}", a.get(2).get(1).str_of()));
@@ -1393,15 +1706,23 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     }
     // missing return annotation -> silu none ({i32, i8*}*)
     let rty = if matches!(ret_anno, Val::Null) { "none".to_string() }
+              else if ret_anno.head() == "subscript"
+                  && ret_anno.get(1).get(1).str_of() == "list" {
+                  format!("list:{}", ret_anno.get(2).get(1).str_of())
+              }
               else {
                   let t = ret_anno.get(1).str_of();
-                  if t != "int" && t != "float" { bail("ret type"); }
-                  t.to_string()
+                  if t != "int" && t != "float" && !is_class(&t) && t != "str" {
+                      bail("ret type");
+                  }
+                  if is_class(&t) { format!("inst:{}", t) } else { t.to_string() }
               };
 
     FN_I.with(|f| *f.borrow_mut() = Vec::new());
     FN_F.with(|f| *f.borrow_mut() = Vec::new());
     FN_L.with(|f| *f.borrow_mut() = Vec::new());
+    FN_TY.with(|y| *y.borrow_mut() = Vec::new());
+    FN_S.with(|y| *y.borrow_mut() = Vec::new());
     FN_ALLOCAS.with(|f| *f.borrow_mut() = Vec::new());
     FN_PARAMS.with(|f| *f.borrow_mut() = Vec::new());
     FN_RET.with(|r| *r.borrow_mut() = rty.to_string());
@@ -1410,11 +1731,15 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let n = params.len();
     let arg_ll = |t: &str| match t {
         "float" => "double",
-        t if t.starts_with("list:") => "i8*",
+        t if t.starts_with("list:") || t.starts_with("inst:")
+            || t == "str" => "i8*",
         _ => "i64",
     };
     let rty_ll = match rty.as_str() {
-        "float" => "double", "none" => "{i32, i8*}*", _ => "i64",
+        "float" => "double", "none" => "{i32, i8*}*",
+        t if t.starts_with("inst:") || t == "str"
+            || t.starts_with("list:") => "i8*",
+        _ => "i64",
     };
     let header = format!(
         "define internal {} @\"{}\"({}){}\n",
@@ -1435,9 +1760,21 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
             container_pairs.push_str(&format!(
                 "  %\"{}\" = alloca i8*\n  store i8* %\".{}\", i8** %\"{}\"\n",
                 p.str_of(), i + 1, p.str_of()));
+        } else if t == "str" {
+            // str params: alloca + null-init + store pair
+            FN_S.with(|y| y.borrow_mut().push(p.str_of()));
+            FN_PARAMS.with(|f| f.borrow_mut()
+                .push((p.str_of(), t.clone())));
+            container_pairs.push_str(&format!(
+                "  %\"{}\" = alloca i8*\n  store i8* null, i8** %\"{}\"\n  store i8* %\".{}\", i8** %\"{}\"\n",
+                p.str_of(), p.str_of(), i + 1, p.str_of()));
         } else {
             FN_PARAMS.with(|f| f.borrow_mut()
                 .push((p.str_of(), t.clone())));
+            if let Some(cls) = t.strip_prefix("inst:") {
+                FN_TY.with(|y| y.borrow_mut()
+                    .push((p.str_of(), cls.to_string())));
+            }
             if t == "float" { FN_F.with(|f| f.borrow_mut().push(p.str_of())); }
             else { FN_I.with(|f| f.borrow_mut().push(p.str_of())); }
         }
@@ -1446,7 +1783,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     // stores live in the splice but STILL consume their slot
     for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
         b.silent();
-        if t.starts_with("list:") { continue; }
+        if t.starts_with("list:") || t == "str" { continue; }
         let ll = arg_ll(t);
         b.line(format!("  store {} %\".{}\", {}* %\"{}\"",
             ll, i + 1, ll, p.str_of()));
@@ -1465,7 +1802,8 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let mut alloca_lines = String::new();
     let alloca_ty = |t: &str| match t {
         "float" => "double",
-        t if t.starts_with("list:") => "i8*",
+        t if t.starts_with("list:") || t.starts_with("inst:")
+            || t == "str" => "i8*",
         _ => "i64",
     };
     FN_ALLOCAS.with(|f| {
@@ -1491,7 +1829,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
 }
 
 #[derive(Clone)]
-enum Typed { I64(String), F64(String), Str(String), PStr(String) }
+enum Typed { I64(String), F64(String), Str(String), PStr(String), Inst(String) }
 
 fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
              slot_f: &dyn Fn(&str) -> String, sc: &mut usize,
@@ -1531,6 +1869,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         "const" => match &e.items()[1] {
             Val::Int(v) => Typed::I64(v.to_string()),
             Val::Float(v) => Typed::F64(double_bits(*v)),
+            Val::Null => Typed::Inst("null".into()),
             _ => bail("const type"),
         },
         "name" => {
@@ -1576,6 +1915,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 }
                 Typed::I64(_) => bail("unary minus int"),
                 Typed::Str(_) | Typed::PStr(_) => bail("unary minus str"),
+                Typed::Inst(_) => bail("unary minus inst"),
             }
         }
         "**" => {
@@ -1591,6 +1931,60 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 }
                 _ => bail("pow exponent"),
             }
+        }
+        "attribute" if e.get(1).head() == "name" => {
+            // enum value Tok.NUM or instance field self.toks / node.kind
+            let base = e.get(1).get(1).str_of();
+            let fld = e.get(2).str_of();
+            if let Some(cls) = fn_ty_of(&base) {
+                let fields = class_fields(&cls)
+                    .unwrap_or_else(|| bail("class fields"));
+                let (off, fty) = fields.iter().position(|(f, _)| f == &fld)
+                    .map(|i| ((i * 8) as i64, fields[i].1.clone()))
+                    .unwrap_or_else(|| bail("field"));
+                let lv = b.nx();
+                let slot = if fn_ty_of(&base).is_some() {
+                    format!("%\"{}\"", base)
+                } else { format!("@\"{}\"", base) };
+                b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                    lv, slot));
+                let gp = b.nx();
+                b.line(format!("  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+                    gp, lv, off));
+                match fty.as_str() {
+                    "float" => {
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to double*", bc, gp));
+                        let ld = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load double, double* %\"{}\"", ld, bc));
+                        Typed::F64(format!("%\"{}\"", ld))
+                    }
+                    "int" => {
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, gp));
+                        let ld = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i64, i64* %\"{}\"", ld, bc));
+                        Typed::I64(format!("%\"{}\"", ld))
+                    }
+                    _ => { // str / instance fields load as i8*
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                        let ld = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
+                        Typed::Inst(format!("%\"{}\"", ld))
+                    }
+                }
+            } else if is_enum(&base) {
+                let k = enum_val(&base, &fld)
+                    .unwrap_or_else(|| bail("enum variant"));
+                Typed::I64(k.to_string())
+            } else { bail("attribute base") }
         }
         "subscript" => {
             if e.get(1).head() != "name" { bail("subscript base"); }
@@ -1627,6 +2021,17 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 b.line(format!("  %\"{}\" = load i8*, i8** {}",
                     l, lst_slot(&n)));
                 format!("%\"{}\"", l)
+            } else if STR_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
+                || is_local_s(&n) {
+                // str char read: cv machinery -> 1-char str
+                let l = b.nx();
+                let slot = if is_local_s(&n) { format!("%\"{}\"", n) }
+                           else { format!("@\"{}\"", n) };
+                b.line(format!("  %\"{}\" = load i8*, i8** {}", l, slot));
+                let kr = eval_expr(b, &e.get(2), slot_i, slot_f, sc, fslots);
+                let Typed::I64(k) = kr else { bail("str key type") };
+                let r = b.str_char_at(&format!("%\"{}\"", l), &k, sc);
+                return Typed::Str(r);
             } else { bail("subscript read type"); };
             let kr = eval_expr(b, &e.get(2), slot_i, slot_f, sc, fslots);
             let Typed::I64(k) = kr else { bail("list key type") };
@@ -1635,6 +2040,112 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             if elty == "float" { Typed::F64(r) } else { Typed::I64(r) }
         }
         "call" => {
+            // constructor: Class(args) -> inline malloc + field stores
+            if e.get(1).head() == "name" && is_class(&e.get(1).get(1).str_of()) {
+                let cls = e.get(1).get(1).str_of();
+                let fields = class_fields(&cls)
+                    .unwrap_or_else(|| bail("class fields"));
+                let args = e.get(2).items();
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"malloc\"(i64 {})",
+                    c, (fields.len() * 8) as i64));
+                for (i, (_, fty)) in fields.iter().enumerate() {
+                    let av = eval_expr(b, &args[i], slot_i, slot_f, sc, fslots);
+                    let gp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+                        gp, c, (i * 8) as i64));
+                    b.silent();
+                    match (av, fty.as_str()) {
+                        (Typed::I64(r), "int") => {
+                            let bc = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, gp));
+                            b.silent();
+                            b.line(format!("  store i64 {}, i64* %\"{}\"", r, bc));
+                        }
+                        (v, "float") => {
+                            let r = to_f64(b, v);
+                            let bc = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = bitcast i8* %\"{}\" to double*", bc, gp));
+                            b.silent();
+                            b.line(format!("  store double {}, double* %\"{}\"", r, bc));
+                        }
+                        (v, _) => { // str / instance / None -> i8* slot
+                            let r = match v {
+                                Typed::Inst(r) | Typed::Str(r) => r,
+                                Typed::PStr(_) => to_raw(b, v, sc),
+                                _ => bail("ctor field type"),
+                            };
+                            let bc = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                            b.silent();
+                            b.line(format!("  store i8* {}, i8** %\"{}\"", r, bc));
+                        }
+                    }
+                }
+                return Typed::Inst(format!("%\"{}\"", c));
+            }
+            // method call: obj.method(a) -> Class__method(obj, a)
+            if e.get(1).head() == "attribute" {
+                let base = e.get(1).get(1);
+                let mname = e.get(1).get(2).str_of();
+                if base.head() != "name" { bail("method base"); }
+                let bn = base.get(1).str_of();
+                let cls = fn_ty_of(&bn)
+                    .unwrap_or_else(|| bail("method base type"));
+                let target = format!("{}__{}", cls, mname);
+                let bv = eval_expr(b, &base, slot_i, slot_f, sc, fslots);
+                let Typed::Inst(or_) = bv else { bail("method base ref") };
+                let _ = &or_;
+                let sig = FN_SIGS.with(|m| m.borrow().iter()
+                    .find(|(k, _, _)| k == &target).cloned());
+                let (_, atys, rty) = match sig {
+                    Some(t) => t,
+                    None => (String::new(), vec!["int".to_string(); 99],
+                             "int".to_string()),
+                };
+                let args = e.get(2).items();
+                let mut parts = vec![format!("i8* {}", or_)];
+                for (i, a) in args.iter().enumerate() {
+                    let ty = atys.get(i + 1).map(|s| s.as_str()).unwrap_or("int");
+                    if ty.starts_with("inst:") || ty == "str" {
+                        let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
+                        match av {
+                            Typed::Inst(r) | Typed::Str(r) =>
+                                parts.push(format!("i8* {}", r)),
+                            Typed::PStr(_) => {
+                                let r = to_raw(b, av, sc);
+                                parts.push(format!("i8* {}", r));
+                            }
+                            _ => bail("method arg type"),
+                        }
+                        continue;
+                    }
+                    let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
+                    match av {
+                        Typed::I64(r) => parts.push(format!("i64 {}", r)),
+                        v => { let r = to_f64(b, v);
+                               parts.push(format!("double {}", r)); }
+                    }
+                }
+                let c = b.nx();
+                let rll = match rty.as_str() {
+                    "float" => "double",
+                    t if t.starts_with("inst:") || t == "str" => "i8*",
+                    _ => "i64",
+                };
+                b.line(format!("  %\"{}\" = call {} @\"{}\"({})",
+                    c, rll, target, parts.join(", ")));
+                if rty == "float" { return Typed::F64(format!("%\"{}\"", c)); }
+                if rty.starts_with("inst:") || rty == "str" {
+                    return Typed::Inst(format!("%\"{}\"", c));
+                }
+                return Typed::I64(format!("%\"{}\"", c));
+            }
             // user function call: eval args left to right, valued call;
             // arg/return types come from the collected signatures
             let fname = e.get(1).get(1).str_of();
@@ -1758,6 +2269,7 @@ fn to_f64(b: &mut FnB, t: Typed) -> String {
         Typed::F64(s) => s,
         Typed::I64(s) => to_f64_ref(b, &s),
         Typed::Str(_) | Typed::PStr(_) => bail("str where float expected"),
+        Typed::Inst(_) => bail("inst where float expected"),
     }
 }
 
@@ -1889,6 +2401,7 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
                         "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 %\"{}\", i8* %\"{}\")",
                         pr, fg, len, data));
                 }
+                Typed::Inst(_) => bail("print instance"),
                 Typed::Str(r) => {
                     // str NAME arg: %.*s with (len field 0, data field 2)
                     let bc = b.nx();
@@ -2101,6 +2614,14 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
     if e.head() == "name" {
         let n = e.get(1).str_of();
         let l = b.nx();
+        if is_local_s(&n) {
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
+            return Typed::Str(format!("%\"{}\"", l));
+        }
+        if fn_ty_of(&n).is_some() {
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
+            return Typed::Inst(format!("%\"{}\"", l));
+        }
         if is_local_f(&n) {
             b.line(format!("  %\"{}\" = load double, double* %\"{}\"", l, n));
             return Typed::F64(format!("%\"{}\"", l));
@@ -2148,9 +2669,12 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
             b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, gp));
             return Typed::I64(format!("%\"{}\"", ld));
         }
-        if STR_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n)) {
+        if STR_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n))
+            || is_local_s(&n) {
             let l = b.nx();
-            b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+            let slot = if is_local_s(&n) { format!("%\"{}\"", n) }
+                       else { format!("@\"{}\"", n) };
+            b.line(format!("  %\"{}\" = load i8*, i8** {}", l, slot));
             let bc = b.nx();
             b.line(format!(
                 "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*", bc, l));
