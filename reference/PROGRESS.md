@@ -7,92 +7,121 @@
 
 ```
 silu-fe  (Rust 前端)      : .si → IR JSON     ✅ 19/19 与 silu_fe 逐字节一致
-silu-conv (Rust 转换器)   : .si → 完整 .ll     ✅ 4/18 语料逐字节一致
+silu-conv (Rust 转换器)   : .si → 完整 .ll     ✅ 13/18 语料逐字节一致
 diff_harness.py           : 平面对拍基架       ✅ 自校验通过
 const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 ```
 
 - 位置：`reference/rust/`（cargo，零外部依赖，`src/main.rs` = silu-fe，
-  `src/bin/silu-conv.rs` = 转换器）
+  `src/bin/silu-conv.rs` = 转换器，~2,300 行）
 - 运行：`cd reference/rust && cargo build`；对拍 `python reference/diff_harness.py ll conv rustconv`
 - silu-conv 通过子进程调 silu-fe 取 IR（前端已独立验证）
 - **非目标**：不做产品编译器、不进自举链、不做同步镜像（版本快照神谕）
 
-## 当前状态：转换器 4/18
+## 当前状态：转换器 13/18
 
 | 文件 | 能力面 | 状态 |
 |---|---|---|
-| fib | 提升函数/if/递归/溢出检查/print(int) | ✅ |
-| arith | 模块全局/while/panic续体/%/ | ✅ |
-| float | F64算术/sitofp提升/fdiv检查/float_repr | ✅ |
-| string | rawstr全路径/append惯用法/len字段读 | ✅ |
-| 其余 14 | 容器/类/match/复杂程序 | 未实现（exit 3） |
+| fib/arith/float/string | 函数/if/while/panic对/typed算术/rawstr | ✅ |
+| list/dict/trees | rawlist/rawdict 容器 + for-in riter + 函数族 | ✅ |
+| fannkuch | 边界检查下标读写/负索引/`[0]*n` fill/裸赋值自动声明/break/if嵌套 | ✅ |
+| nbody | list[float]/函数内模块全局/float局部逆序alloca/`**`→sqrt/一元负号折叠 | ✅ |
+| spectral | list[float] 函数参数/none 返回类型/alloca 双轨(局部逆序+容器成对) | ✅ |
+| mandelbrot | print(str 变量)/体内 str 声明 | ✅ |
+| wordcount | str 层：PStr/pystr 拼接/str()/list[str]/dict[str,int] get 惯用法 | ✅ |
+| knucleotide | str 切片(str_view)/elif 链/const 键 get_or + 标签检查 | ✅ |
+| calc / jsonparse×2 | **动态实例层**（class/enum/方法/self） | 未实现 |
+| ir_interp / silu_fe | import 系 + 全特性 | 未实现 |
 
-最近提交：`05fd782`（string）。之前：`ea377e4` float、`a491739` 块列表重构、
-`2065595` fib、`dea0a70` arith 规约。
+最近提交（本轮 8 个）：`8428fc8` knucleotide、`7f31ccd` wordcount、
+`f9cc50b` mandelbrot、`2abfbb9` spectral、`aa69e5b` nbody、`9c06ce8` fannkuch、
+`12a6758` trees、`e6e2f5f` list+dict。更早：`05fd782` string 等。
 
 ## 核心实现模型（已在代码中验证）
 
-1. **FnBuilder 块列表**：块按创建序=输出序；游标定位；panic 对自动建
-   panic_bad/panic_ok 块且**续体流进 panic_ok**（循环体余下语句在续块里）。
-2. **槽位规则**：每条指令恰好消耗一个匿名槽；void 指令（store/br/cbr/
-   ret/void-call/unreachable）静默消耗。序言 = N参数名 + 1返回槽 + N参数
-   存储 + 1首行存储（2N+2 公式的分解）。
-3. **类型化求值**：`Typed::{I64,F64,Str}` 三态；int/float 混合经 sitofp 提升；
-   int/int `/` 产生 float（Python 语义）；str 名字查 STR_SLOTS 表。
-4. **字符串计数**：模块级绑定各耗一槽；**str 绑定先造 init 常量串再耗槽**；
-   函数体在模块遍历**之后**转换（print 串编号低于函数体 panic 串）。
-5. **尾部全局块 = 创建序**：str-init 常量先于其全局声明（PRE_GLOBAL_STRS），
-   模块全局随后，其余串跟随。最后一条后无换行。
-6. **常量前缀**：365,264B（头+29 extern+全部运行时函数+运行时字符串全局）
-   以 include_str! 嵌入，转换器只生成用户函数+main+用户全局。
-   用户串计数基数 297（runtime 用 0..296）。
+1. **conv_block 递归分发器**：while/for/if/break 嵌套任意深度；break =
+   直跳内层循环 end 标签（循环端标签栈）；if 空else仍建 if_else+br；
+   then支break后不再补 br if_merge（terminated 标志）。
+2. **槽位规则**：每条指令恰好消耗一个匿名槽；void 静默。函数序言 =
+   N参数 + 1函数名 + N参数存储（2N+1；容器参数存储在拼接区但**仍耗槽**）。
+   main 序言 = 1（函数名）。
+3. **函数统一**：convert_func 复用 conv_block；FN_I/FN_F/FN_L 局部注册表
+   （遮蔽模块全局）；alloca 提升 = 局部逆序 + **容器参数 alloca+store 成对
+   正序**（标量参数走逆序块）；无返回注解 → `{i32,i8*}*` none 型 +
+   隐式 `ret null` + **无 alwaysinline**。
+4. **类型化求值**：`Typed::{I64,F64,Str(裸),PStr(pystr域)}`；
+   拼接 = 双侧求值后依序 to_rawstr 再 rawstr_concat；str(int) =
+   create_int + pyobj_str_conv；**常量一元负号编译期折叠**（0xbff… hex），
+   名字用 fmul -1.0（非 fneg）。
+5. **字符串计数**：模块绑定各耗一槽；**int/float 声明的槽在 rhs 求值之后**
+   （spectral result 证据）；裸赋值未声明名 → rhs 后自动声明（fannkuch）；
+   但 list[str] 读的 w 赋值例外（目标先声明——copy_into 需要它）。
+6. **尾部全局 = 严格创建序**（字符串与变量交错）；最后一条无换行。
+7. **下标三态**：list int/float 读写走 get_ok/set_ok 边界检查对
+   （**ok 先建、err 后建**——与 panic 对的 bad→ok 相反！）；float 元素
+   i64 装载后 bitcast（写侧 bitcast 在 gep **之前**）；aug-subscript =
+   **无检查** RMW（gep field 2 直达）；dict str 键走 rawdict_str_* 族。
+8. **切片**：`dna[s:e]` = subscript(dna, slice) AST；rawstr_slice_parts +
+   str_view 临时结构体（4 字段存储 len,len,chars,len）+ bitcast；
+   view 的 alloca 提升到函数/主 entry（逆序）；const 键 .get 走
+   pystr 标签检查对（key_str_ok/err，`TypeError: expected str key`）+
+   rawstr_to... get_or。
+9. **常量前缀**：365,264B，include_str! 嵌入；用户串计数基数 297。
 
-## 已发现的隐式规约（19 项，全部差分实证）
+## 已发现的隐式规约（38 项，全部差分实证）
 
-strtod接受十六进制 / enum提取序 / 空名槽位 / 常量前缀边界 / 幻影槽公式 /
-**槽位机制（每指令一槽，权威）** / 字符串计数顺序 / panic后缀数标签定义行 /
-尾部无换行 / 模块绑定耗槽 / panic-ok续体 / 模块全局领先尾部 /
-Python mod-floordiv形状 / floordiv修正加在商上 / alloca在entry标签后 /
-llvmlite双精度hex空格填充 / str绑定先造常量再耗槽 /
-有值调用只耗一槽 / 创建序全局块。
+strtod十六进制 / enum提取序 / 空名槽位 / 常量前缀边界 / 幻影槽公式 /
+槽位机制 / 字符串计数顺序 / panic后缀数标签定义行 / 尾部无换行 /
+模块绑定耗槽 / panic-ok续体 / 模块全局领先尾部 / mod-floordiv形状 /
+floordiv修正加在商上 / alloca在entry后 / llvmlite hex空格填充 /
+str绑定先造常量再耗槽 / 有值调用一槽 / 创建序全局块 /
+**尾部严格创建序（串与变量交错）** / llvmlite 重复名 .N 后缀（块+alloca
+共享函数级命名空间） / while/if/for 标签独立计数 / for 目标耗槽+全局 /
+panic对 bad→ok vs 边界对 ok→err / 下标赋值序（list: obj,key,value+检查；
+dict: obj,value,key） / 负索引 select(Python语义) / fill 循环形状
+（new寄存器直存全局/自增不检查/float先bitcast后load） / 裸赋值自动声明
+（rhs先）/ in-body ann_assign 耗槽 / print 交错求值打印+空格分隔 /
+print str const = %.*s(len,gep) / print str 名 = 字段0+2 / 函数序言2N+1 /
+容器参数 alloca 成对正序 / none 型无 alwaysinline / int/int `/` 用
+**icmp** 零检查（浮点用 fcmp） / int/float 声明槽在 rhs 后 / 常量一元负号
+折叠 / aug-subscript 无检查 / 切片 str_view 逆序提升。
 
 ## TODO（优先级序）
 
-### T1 容器族（list.si → dict.si → trees.si …）
-- [ ] list.si：rawlist 运行时调用族（init/append/下标访问的调用形状从
-      参考尾直接读出：`./siluc1 < benchmarks/list.si` 后截取 const_prefix 之后）
-- [ ] dict.si：rawdict 族 + KeyError 检查
-- [ ] trees.si：class（记录类型）+ 方法调用
+### T2c 动态实例层（calc → jsonparse×2）——下一个大台阶
+- calc.si 参考：方法 → `Class__method(i8* self)` 独立函数；构造
+  `Token(...)`；实例字段读写；`__silu_user_main` 包装（main 调它）；
+  pyobj_input/truthy/rawstr_eq_cstr/isdigit/to_cstr 等运行时族
+- 读参考尾：`./siluc1 < selfhost/calc.si` 截 const_prefix 之后（51KB/1323行）
+- enum_def（Tok）/ class_def / match 语句形状待解剖
 
-### T2 复杂程序
-- [ ] jsonparse / spectral / mandelbrot / nbody / wordcount /
-      knucleotide / fannkuch / list / calc / ir_interp / silu_fe 自身
-- [ ] silu_fe.si 是最终关卡（2,183 行全特性）
+### T2d import 系（ir_interp → silu_fe 终关）
+- ir_interp: from_import；silu_fe: import + 2,183 行全特性
 
 ### T3 校准报告（R3）
-- [ ] 分组件行数对照表（前端已有：2509 Rust vs 2183 Silu +15%）
-- [ ] 省/费热点归因（enum+match 省 vs 所有权/错误处理样板费）
-- [ ] 发现的 bug 清单分诊（两侧任一 bug 或语料越界）
-- [ ] 语言设计建议（和类型/pattern match 的实测价值）
+- 分组件行数对照表（前端 2509 Rust vs 2183 Silu +15%；转换器对照待量）
+- 省/费热点归因；发现 bug 分诊；语言设计建议
 
 ### 方法提醒
-- 每个新文件：读参考尾 → 实现子集 → 差分迭代（1-3 轮可达）
-- 差分命令（单文件快速验证）：
+- 每个新文件：读参考尾 → 实现子集 → 差分迭代（本轮多数文件 1-2 轮可达）
+- 差分命令：
   ```bash
   cd reference/rust && cargo build
   ./target/debug/silu-conv ../../benchmarks/X.si > /tmp/r_X.ll
-  # 与 ./siluc1 < benchmarks/X.si | tail 对比（去 const_prefix 前缀后）
+  # 与 ./siluc1 < benchmarks/X.si 输出 cmp（前缀恒定可直接整文件比）
   ```
 - 未支持构造一律 `bail()` → exit 3（宁报 ERROR 不出错误字节）
-- python 补丁脚本注意：heredoc 内 `\n` 转义与 Rust 字符串字面量的
-  双层转义冲突是本轮多次返工的根源——补丁用 pyEOF heredoc 并断言锚点存在
+- **python 补丁脚本两大坑**（本轮反复返工）：heredoc `\\"` 与 Rust 字面量
+  双层转义（改用"提取区域→变换→回写"或 Edit 工具）；断言失败的批次
+  **全部未写入**（每个补丁独立写盘）。稳妥套路：`BS=chr(92); Q=BS+'"';
+  seg=Q+'{}'+Q` 构造含引号的 Rust 代码，先 `assert seg == '\\"{}\\"'`
+- 每文件过完立即跑全量 `diff_harness.py ll conv rustconv`（防回归）
 
 ## R0 以来产出
 
-- 差分基架 + 契约（4a3f446）
-- Rust 前端 19/19（b43a7cf）
-- .ll 解剖 + 常量前缀（fd2bef1）
-- 序言规约（751d6be）/ 槽位机制（101561c）
-- arith 规约（dea0a70）/ fib 里程碑（2065595）
-- 块列表重构（a491739）/ float（ea377e4）/ string（05fd782）
+- 差分基架 + 契约（4a3f446）/ Rust 前端 19/19（b43a7cf）
+- .ll 解剖 + 常量前缀（fd2bef1）/ 序言+槽位规约（751d6be、101561c）
+- arith/fib/float/string（dea0a70、2065595、a491739、ea377e4、05fd782）
+- T1 容器族：list+dict（e6e2f5f）、trees（12a6758）
+- T2 复杂程序：fannkuch（9c06ce8）、nbody（aa69e5b）、spectral（2abfbb9）、
+  mandelbrot（f9cc50b）、wordcount（7f31ccd）、knucleotide（8428fc8）
