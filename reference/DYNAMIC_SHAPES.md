@@ -70,6 +70,24 @@ cv_join: %p = phi i64 [adj, cv_ascii], [off, cv_walk]        ← 语料首个 ph
   [若赋给 str 局部：先 load 旧值 → rawstr_free(旧) → store 新]
 ```
 
+## 6a. and/or 短路 + truthy 机器（parse_mul: `t.kind==Tok.STAR or t.kind==Tok.SLASH` 已解剖）
+
+```
+sc_result = alloca {i32, i8*}*     // 命名临时，提升到 entry，多出现 .N 后缀
+A 求值 → i1 .22
+br .22 → sc_finish / sc_next       // or: A真→finish；and 应为 A假→finish
+sc_finish: %x = call {i32,i8*}* @"create_bool"(i1 .22); store sc_result; br sc_end
+sc_next:   B 求值（重新 load t/字段，无CSE）→ i1 → create_bool → store → br sc_end
+sc_end:    %p = load sc_result; icmp eq {i32,i8*}* %p, null
+           br → truthy_merge / truthy_call
+truthy_call: %t = call i1 @"pyobj_truthy"({i32,i8*}* %p); br truthy_merge
+truthy_merge: %b = phi i1 [0, %sc_end], [%t, %truthy_call]   ← 第二个 phi！
+           br %b → if_then / if_else（正常 if 机器）
+块创建序：sc_finish, sc_next, sc_end, truthy_call?, truthy_merge…（finish先）
+```
+`keep = A and B`（赋值给 bool 局部）与 `while keep:` 的形状待解剖。
+bool 局部 = `alloca i1`（tokenize keep）。
+
 ## 6. str 相等比较 + or 短路链（ch == " " or ch == "\t"）
 
 ```
@@ -124,7 +142,20 @@ node.right is None → load 字段 → icmp eq i8* null → if_then/if_else
 - str 赋值到已有 str 局部：load 旧 → rawstr_free(旧) → store 新
   （ch = src[pos] 与 line = input() 均此模式）
 
-## 12. 仍待解剖（实现时顺手读区段）
+## 12. 仍待解剖（下一窗口从这里继续）
+
+- **已提交骨架 9ea5fe7**：enum/class 收集、Typed::Inst 字段/构造器/方法
+  调用、str 参数成对+null、FN_S、cv 字符索引（含 phi）、match、
+  str 赋值 free-old。calc 现卡在 `keep = pos < n and src[pos].isdigit()`
+  （bail: assign type）→ 下一步实现 §6a and 变体 + isdigit 方法
+  （call i1 @"rawstr_isdigit"(str)）+ bool 局部/cond
+- str 切片 src[start:pos]（应复用 cv 机器 + rawstr_slice）
+- float(t.text)/int(result) 转换调用形状（str_318 ValueError 分支在旁）
+- input()（§11 已记）/ exit(i32) / str 局部 epilogue free 范围
+- __silu_user_main 包装 + 真 main 薄壳
+- jsonparse ×2 复用同层
+
+## 12b. 原"仍待解剖"
 
 - 方法调用 parser.parse_add()（应直调 Parser__parse_add(ptr)）
 - int(result)/float(t.text) 转换调用形状
