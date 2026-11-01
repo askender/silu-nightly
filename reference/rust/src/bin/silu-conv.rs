@@ -1653,7 +1653,35 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
                         "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i8* %\"{}\")",
                         p, g, cr));
                 }
-                Typed::Str(_) => bail("print str arg"),
+                Typed::Str(r) => {
+                    // str NAME arg: %.*s with (len field 0, data field 2)
+                    let bc = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*", bc, r));
+                    let gl = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 0",
+                        gl, bc));
+                    let len = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i64, i64* %\"{}\"", len, gl));
+                    let gd = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+                        gd, bc));
+                    let data = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", data, gd));
+                    let fmt = add_str(sc, "%.*s");
+                    let fg = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
+                        fg, fmt));
+                    let pr = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 %\"{}\", i8* %\"{}\")",
+                        pr, fg, len, data));
+                }
             }
         }
         if ai + 1 < n_args {
