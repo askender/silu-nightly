@@ -525,13 +525,20 @@ fn walk_module(stmts: &[Val], sc: &mut usize) -> Vec<Val> {
                                    double_bits(f), name));
                 } else {
                     *sc += 1; // module binding consumes a slot (no init string)
-                    if !matches!(init.get(1), Val::Int(_)) || init.head() != "const" {
-                        bail("ann_assign init");
-                    }
                     tail_push(format!("@\"{}\" = global i64 0", name));
-                    b.silent();
-                    b.line(format!("  store i64 {}, i64* @\"{}\"",
-                                   init.get(1).int_of(), name));
+                    if init.head() == "const" && matches!(init.get(1), Val::Int(_)) {
+                        b.silent();
+                        b.line(format!("  store i64 {}, i64* @\"{}\"",
+                                       init.get(1).int_of(), name));
+                    } else if init.head() == "name" {
+                        // depth: int = min_depth -> load + store
+                        let src = init.get(1).str_of();
+                        let l = b.nx();
+                        b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, src));
+                        b.silent();
+                        b.line(format!("  store i64 %\"{}\", i64* @\"{}\"",
+                                       l, name));
+                    } else { bail("ann_assign init"); }
                 }
             }
             "while" => {
@@ -599,6 +606,31 @@ fn walk_module(stmts: &[Val], sc: &mut usize) -> Vec<Val> {
                         b.line(format!(
                             "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 {})",
                             c, l, v));
+                        j += 1;
+                        continue;
+                    }
+                    if s.head() == "ann_assign" {
+                        // in-body int binding: consumes a module slot and
+                        // declares the global, stores the evaluated rhs
+                        let name = s.get(1).str_of();
+                        let anno = s.get(3).get(1).str_of();
+                        if anno != "int" { bail("body ann_assign anno"); }
+                        if TAIL.with(|t| t.borrow().iter()
+                                .any(|g| g.contains(&format!("@\"{}\"", name)))) {
+                            bail("dup body binding");
+                        }
+                        *sc += 1;
+                        tail_push(format!("@\"{}\" = global i64 0", name));
+                        let v = eval_mod(&mut b, &s.get(2), &fslots, sc);
+                        let Typed::I64(r) = v else { bail("body ann_assign type") };
+                        b.silent();
+                        b.line(format!("  store i64 {}, i64* @\"{}\"", r, name));
+                        j += 1;
+                        continue;
+                    }
+                    if s.head() == "call" && s.get(1).head() == "name"
+                        && s.get(1).get(1).str_of() == "print" {
+                        conv_print(&mut b, &s, &fslots, sc);
                         j += 1;
                         continue;
                     }
@@ -777,61 +809,7 @@ fn walk_module(stmts: &[Val], sc: &mut usize) -> Vec<Val> {
             }
             "call" if st.get(1).head() == "name"
                      && st.get(1).get(1).str_of() == "print" => {
-                // generic multi-arg print: per arg, eval then %lld/%s printf,
-                // " " separator between args, "\n" at the end (interleaved)
-                let args = st.get(2).items();
-                if args.is_empty() { bail("print arity"); }
-                let n_args = args.len();
-                for (ai, a) in args.iter().enumerate() {
-                    let v_typed = eval_mod(&mut b, a, &fslots, sc);
-                    match v_typed {
-                        Typed::I64(v) => {
-                            let fmt = add_str(sc, "%lld");
-                            let g = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
-                                g, fmt));
-                            let p = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 {})",
-                                p, g, v));
-                        }
-                        Typed::F64(_) => {
-                            let r = to_f64(&mut b, v_typed);
-                            let cr = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = call i8* @\"float_repr\"(double {})", cr, r));
-                            let fmt = add_str(sc, "%s");
-                            let g = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = getelementptr [3 x i8], [3 x i8]* @\"{}\", i32 0, i32 0",
-                                g, fmt));
-                            let p = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i8* %\"{}\")",
-                                p, g, cr));
-                        }
-                        Typed::Str(_) => bail("print str arg"),
-                    }
-                    if ai + 1 < n_args {
-                        let sep = add_str(sc, " ");
-                        let g = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = getelementptr [2 x i8], [2 x i8]* @\"{}\", i32 0, i32 0",
-                            g, sep));
-                        let p = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p, g));
-                    }
-                }
-                let nl = add_str(sc, "\x0a");
-                let g2 = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = getelementptr [2 x i8], [2 x i8]* @\"{}\", i32 0, i32 0",
-                    g2, nl));
-                let p2 = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p2, g2));
+                conv_print(&mut b, &st, &fslots, sc);
             }
             _ => bail(st.head()),
         }
@@ -910,12 +888,12 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
                 while k < then_body.len() {
                     let s = then_body[k].clone();
                     if s.head() == "line" { b.line_store(s.get(1).int_of()); k += 1; continue; }
-                    if s.head() == "return" && s.get(1).head() == "name" {
-                        let l = b.nx();
-                        b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"",
-                                       l, s.get(1).get(1).str_of()));
+                    if s.head() == "return" {
+                        let v = eval_expr(&mut b, &s.get(1), &local_slot,
+                                          &local_slot, sc, &[]);
+                        let Typed::I64(r) = v else { bail("then ret type") };
                         b.silent();
-                        b.line(format!("  ret i64 %\"{}\"", l));
+                        b.line(format!("  ret i64 {}", r));
                         k += 1;
                         continue;
                     }
@@ -928,45 +906,11 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
                 b.pos(merge_b);
             }
             "return" => {
-                let v = st.get(1);
-                match v.head() {
-                    "name" => {
-                        let l = b.nx();
-                        b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"",
-                                       l, v.get(1).str_of()));
-                        b.silent();
-                        b.line(format!("  ret i64 %\"{}\"", l));
-                    }
-                    "+" => {
-                        let lhs_e = v.get(1);
-                        let rhs_e = v.get(2);
-                        // lhs may be a call, rhs a checked sub or const
-                        let lhs = match lhs_e.head() {
-                            "call" => conv_call(&mut b, &lhs_e, sc),
-                            "name" => {
-                                let l = b.nx();
-                                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"",
-                                               l, lhs_e.get(1).str_of()));
-                                format!("%\"{}\"", l)
-                            }
-                            _ => bail("ret lhs"),
-                        };
-                        let rhs = match rhs_e.head() {
-                            "call" => conv_call(&mut b, &rhs_e, sc),
-                            "-" => {
-                                let a = expr_sub(&mut b, &rhs_e, sc);
-                                a
-                            }
-                            "const" if matches!(rhs_e.get(1), Val::Int(_)) =>
-                                rhs_e.get(1).int_of().to_string(),
-                            _ => bail("ret rhs"),
-                        };
-                        let res = b.checked_raw(&lhs, &rhs, "+", sc);
-                        b.silent();
-                        b.line(format!("  ret i64 {}", res));
-                    }
-                    _ => bail("return expr"),
-                }
+                let v = eval_expr(&mut b, &st.get(1), &local_slot,
+                                  &local_slot, sc, &[]);
+                let Typed::I64(r) = v else { bail("ret type") };
+                b.silent();
+                b.line(format!("  ret i64 {}", r));
             }
             _ => bail(st.head()),
         }
@@ -1037,13 +981,30 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         "name" => {
             let n = e.get(1).str_of();
             let l = b.nx();
-            let _ = slot_f;
             if fslots.iter().any(|f| f == &n) {
-                b.line(format!("  %\"{}\" = load double, double* @\"{}\"", l, n));
+                b.line(format!("  %\"{}\" = load double, double* {}", l, slot_f(&n)));
                 return Typed::F64(format!("%\"{}\"", l));
             }
-            b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, n));
+            b.line(format!("  %\"{}\" = load i64, i64* {}", l, slot_i(&n)));
             Typed::I64(format!("%\"{}\"", l))
+        }
+        "call" => {
+            // user function call: eval args left to right, valued call
+            let fname = e.get(1).get(1).str_of();
+            if e.get(1).head() != "name" { bail("call target"); }
+            let args = e.get(2).items();
+            let mut parts = Vec::new();
+            for a in args.iter() {
+                let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
+                match av {
+                    Typed::I64(r) => parts.push(format!("i64 {}", r)),
+                    _ => bail("call arg type"),
+                }
+            }
+            let c = b.nx();
+            b.line(format!("  %\"{}\" = call i64 @\"{}\"({})",
+                c, fname, parts.join(", ")));
+            Typed::I64(format!("%\"{}\"", c))
         }
         "+" | "-" | "*" | "/" | "//" | "%" => {
             let lt = eval_expr(b, &e.get(1), slot_i, slot_f, sc, fslots);
@@ -1108,6 +1069,84 @@ fn to_f64_ref(b: &mut FnB, i64_ref: &str) -> String {
 }
 
 
+// generic multi-arg print: per arg, eval then printf, " " between
+// args, "\n" at the end; int -> %lld, float -> float_repr %s,
+// str const -> %.*s with (len, gep) pair
+fn conv_print(b: &mut FnB, st: &Val, fslots: &[String], sc: &mut usize) {
+    let args = st.get(2).items();
+    if args.is_empty() { bail("print arity"); }
+    let n_args = args.len();
+    for (ai, a) in args.iter().enumerate() {
+        if a.head() == "const" && matches!(a.get(1), Val::Str(_)) {
+            let text = a.get(1).str_of();
+            let blen = text.chars().count();
+            let gname = add_str(sc, &text);
+            let g = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                g, blen + 1, blen + 1, gname));
+            let fmt = add_str(sc, "%.*s");
+            let fg = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
+                fg, fmt));
+            let p = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 {}, i8* %\"{}\")",
+                p, fg, blen, g));
+        } else {
+            let v_typed = eval_mod(b, a, fslots, sc);
+            match v_typed {
+                Typed::I64(v) => {
+                    let fmt = add_str(sc, "%lld");
+                    let g = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
+                        g, fmt));
+                    let p = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 {})",
+                        p, g, v));
+                }
+                Typed::F64(_) => {
+                    let r = to_f64(b, v_typed);
+                    let cr = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"float_repr\"(double {})", cr, r));
+                    let fmt = add_str(sc, "%s");
+                    let g = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr [3 x i8], [3 x i8]* @\"{}\", i32 0, i32 0",
+                        g, fmt));
+                    let p = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i8* %\"{}\")",
+                        p, g, cr));
+                }
+                Typed::Str(_) => bail("print str arg"),
+            }
+        }
+        if ai + 1 < n_args {
+            let sep = add_str(sc, " ");
+            let g = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr [2 x i8], [2 x i8]* @\"{}\", i32 0, i32 0",
+                g, sep));
+            let p = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p, g));
+        }
+    }
+    let nl = add_str(sc, "\x0a");
+    let g2 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = getelementptr [2 x i8], [2 x i8]* @\"{}\", i32 0, i32 0",
+        g2, nl));
+    let p2 = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p2, g2));
+}
+
 fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
     if e.head() == "name" {
         let n = e.get(1).str_of();
@@ -1167,15 +1206,24 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
         }
         bail("len target");
     }
-    if e.head() == "call" {
-        let ia = e.get(2).items();
-        if ia.len() != 1 || ia[0].head() != "const"
-            || !matches!(ia[0].get(1), Val::Int(_)) {
-            bail("print arg");
+    if e.head() == "call" && e.get(1).head() == "name"
+        && e.get(1).get(1).str_of() != "len" {
+        // user call with general args (const/name/expr), left to right
+        let fname = e.get(1).get(1).str_of();
+        let args = e.get(2).items();
+        let mut parts = Vec::new();
+        for a in args.iter() {
+            let v = eval_expr(b, a,
+                &|n: &str| format!("@\"{}\"", n),
+                &|n: &str| format!("@\"{}\"", n), sc, fslots);
+            match v {
+                Typed::I64(r) => parts.push(format!("i64 {}", r)),
+                _ => bail("call arg type"),
+            }
         }
         let c = b.nx();
-        b.line(format!("  %\"{}\" = call i64 @\"{}\"(i64 {})",
-            c, e.get(1).get(1).str_of(), ia[0].get(1).int_of()));
+        b.line(format!("  %\"{}\" = call i64 @\"{}\"({})",
+            c, fname, parts.join(", ")));
         return Typed::I64(format!("%\"{}\"", c));
     }
     eval_expr(b, e,
