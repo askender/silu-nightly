@@ -38,7 +38,16 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
 byte-identical 立即提交**。
 
-jsonparse 剩余规模（/tmp/jp_ref.ll 尾 77KB）：pyobj 动态层 = 值全走 {i32,i8*}*
+**jsonparse 蓝图已 100% 解剖**（reference/DYNAMIC_SHAPES.md 提交 9a7f325）：
+pyobj={i32,i8*}*（= none 型作值载体）、动态 ctor=malloc+pyobj字段+
+pyobj_make_instance(CID=class定义序)、match_class=pyobj_instance_cid==CID+
+instance_ptr+gep 捕获、动态容器 create_list/dict+list_append+
+pyobj_subscript(_set)+pyobj_len_raw、str 序比较融合 rawstr_at_cmp_cstr
+（>=/<= 不物化 char1，!= 仍走 char1+eq_cstr）。实现入口：加 Typed::Pyo
+变体贯穿（参照 Typed::Inst 的先例，涉及全部 match 臂）；判别规则 =
+untyped（无注解）值一律 pyobj。
+
+原始规模备注（/tmp/jp_ref.ll 尾 77KB）：pyobj 动态层 = 值全走 {i32,i8*}*
 装箱；匹配 class 用 pyobj_instance_cid(==类序号)+pyobj_instance_ptr+字段
 {i32,i8*}* 装载；len(装箱list) = pyobj_len_raw；下标 = create_int+
 pyobj_subscript；[0] 字面量实参 = create_list+create_int+list_append+
