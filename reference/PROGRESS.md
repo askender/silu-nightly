@@ -38,7 +38,16 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
 byte-identical 立即提交**。
 
-**jsonparse 蓝图已 100% 解剖**（reference/DYNAMIC_SHAPES.md 提交 9a7f325）：
+**jsonparse pyobj 层已实现到端到端转换**（提交 614c44a）：Typed::Pyo 全管线
+（动态类/DYN_CLASSES+CID ctor、match_class 捕获、pyobj len/subscript/set/append、
+无注解容器 create_list/dict、返回类型推断+PY_RETS 不动点、s[k] vs 常量融合比较
+at_eq/at_cmp_cstr）。当前 DIFF（非 ERROR）：442328 vs 428244 字节，首个差分 =
+digit_value 起始处字符串编号差 9（模块级槽位计数偏移——查模块级绑定消耗：
+类/函数/捕获/auto-decl 的 *sc 次序）。14/18 保持。差分迭代入口：
+`./reference/rust/target/debug/silu-conv benchmarks/jsonparse.si > /tmp/jp_rust.ll`
+对比 /tmp/jp_ref.ll（normalize 槽位号后看结构差）。
+
+**蓝图文档**（完整形状）（reference/DYNAMIC_SHAPES.md 提交 9a7f325）：
 pyobj={i32,i8*}*（= none 型作值载体）、动态 ctor=malloc+pyobj字段+
 pyobj_make_instance(CID=class定义序)、match_class=pyobj_instance_cid==CID+
 instance_ptr+gep 捕获、动态容器 create_list/dict+list_append+
