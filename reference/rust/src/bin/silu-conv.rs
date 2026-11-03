@@ -2932,14 +2932,38 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             for (i, a) in args.iter().enumerate() {
                 let ty = atys.get(i).map(|s| s.as_str()).unwrap_or("int");
                 if ty.starts_with("list:") {
-                    // container arg: load the i8* slot
-                    if a.head() != "name" { bail("call list arg"); }
-                    let nm = a.get(1).str_of();
-                    let l = b.nx();
-                    b.line(format!("  %\"{}\" = load i8*, i8** {}",
-                        l, lst_slot(&nm)));
-                    parts.push(format!("i8* %\"{}\"", l));
-                    continue;
+                    // container arg: name -> load slot; literal -> inline
+                    // rawlist_new + element pushes (jsonparse [0] evidence)
+                    if a.head() == "name" {
+                        let nm = a.get(1).str_of();
+                        let l = b.nx();
+                        b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                            l, lst_slot(&nm)));
+                        parts.push(format!("i8* %\"{}\"", l));
+                        continue;
+                    }
+                    if a.head() == "list" {
+                        let elems = a.items().get(1).cloned()
+                            .unwrap_or(Val::Null);
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"rawlist_new\"(i64 8)", c));
+                        if let Val::List(vs) = &elems {
+                            for el in vs.iter() {
+                                let ev = eval_expr(b, el, slot_i, slot_f,
+                                    sc, fslots);
+                                let Typed::I64(r) = ev else {
+                                    bail("list lit elem") };
+                                let pu = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 {})",
+                                    pu, c, r));
+                            }
+                        }
+                        parts.push(format!("i8* %\"{}\"", c));
+                        continue;
+                    }
+                    bail("call list arg");
                 }
                 let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
                 match (av, ty) {
@@ -3457,7 +3481,32 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
     if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() == "len" {
         let ia = e.get(2).items();
-        if ia.len() != 1 || ia[0].head() != "name" { bail("len arg"); }
+        if ia.len() != 1 { bail("len arg"); }
+        // len(subscript): list-element str read then header len load
+        if ia[0].head() == "subscript" && ia[0].get(1).head() == "name" {
+            let bn = ia[0].get(1).get(1).str_of();
+            if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn))
+                && lst_elem_ty(&bn) == "str" {
+                let l = b.nx();
+                b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, bn));
+                unsafe { SC_PTR = sc; }
+                let k = b.expr_i64(&ia[0].get(2), &global_slot);
+                let d = b.nx();
+                b.line(format!("  %\"{}\" = call i8* @\"rawlist_str_copy_into\"(i8* %\"{}\", i64 {}, i8* null)",
+                    d, l, k));
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*", bc, d));
+                let gl = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                    gl, bc));
+                let ld = b.nx();
+                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, gl));
+                return Typed::I64(format!("%\"{}\"", ld));
+            }
+        }
+        if ia[0].head() != "name" { bail("len arg"); }
         let n = ia[0].get(1).str_of();
         if LST_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n)) {
             let l = b.nx();
