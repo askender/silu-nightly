@@ -294,9 +294,14 @@ parse_string 有 slice ✓、parse_number 有 len(s) ✓、其余只有下标访
 待验证 + 实现时注意：pos 拆分形状 = 裸 alloca 进逆序块、store 追加在
 全部参数对之后（forward）。
 
-另一观察：jsonparse 的 cv 字符读取会**用到 str_view 临时**（parse_value
-有 str_view×2 但源码无切片）——与 calc 的 cv（直接 insertvalue +
-rawstr_char1）不同！下一步差分确认 cv 在此文件的真实形状。
+修正观察：parse_value 的 cv 仍是 calc 形状（insertvalue + extractvalue +
+rawstr_char1，无 str_view）。其 str_view×2 来自 `ch == '"'` 分支：
+`.84 create_str` + `.85/.86 extractvalue` + str_view 四字段 store +
+bitcast——**形如 knucleotide 的 emit_slice_view**（cv 输出对儿存进
+str_view 再 bitcast 传给 pyobj 调用，此处大概率是 JStr 构造或 pyobj
+键装箱）。即：**char1 结果要进 pyobj 域时走 str_view**，比较时直接
+char1+eq_cstr。下一差分点：`JStr(parse_string(...))` 构造链的确切形状
+（.78-.96 区段，含 epilogue free ch）。
 
 差分入口：`./reference/rust/target/debug/silu-conv benchmarks/jsonparse.si
 > /tmp/jp_rust.ll` 与 /tmp/jp_ref.ll 对比（槽位归一化）。
