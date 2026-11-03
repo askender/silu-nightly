@@ -492,6 +492,45 @@ impl FnB {
         format!("%\"{}\"", ld)
     }
 
+    // complete a paused view conversion: extract x2 + str_view stores
+    // + unused bitcast (jsonparse compare interleave, second half)
+    fn finish_view_split(&mut self, pair: &str) {
+        let ev1 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = extractvalue {{i8*, i64}} {}, 0", ev1, pair));
+        let ev2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = extractvalue {{i8*, i64}} {}, 1", ev2, pair));
+        let vn = self.uniq_label("str_view");
+        self.reg_names.push(vn.clone());
+        if IN_FN.with(|v| *v.borrow()) {
+            FN_ALLOCAS.with(|f| f.borrow_mut()
+                .push((vn.clone(), "view".into())));
+        } else {
+            MAIN_ALLOCAS.with(|m| m.borrow_mut().push(vn.clone()));
+        }
+        for fld in [0u32, 1, 3] {
+            let g = self.nx();
+            self.line(format!(
+                "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 {}",
+                g, vn, fld));
+            self.silent();
+            self.line(format!(
+                "  store i64 %\"{}\", i64* %\"{}\"", ev2, g));
+        }
+        let g2 = self.nx();
+        self.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+            g2, vn));
+        self.silent();
+        self.line(format!(
+            "  store i8* %\"{}\", i8** %\"{}\"", ev1, g2));
+        let vbc = self.nx();
+        self.line(format!(
+            "  %\"{}\" = bitcast {{i64, i64, i8*, i64}}* %\"{}\" to i8*",
+            vbc, vn));
+    }
+
     // list element WRITE: bounds-check chain + store. objref/keyref/valref
     // are ready (caller ordered: obj, key, value); cursor continues in
     // set_ok. Fresh IndexError string per write (47B variant).
@@ -704,6 +743,14 @@ impl FnB {
         let iv2 = self.nx();
         self.line(format!(
             "  %\"{}\" = insertvalue {{i8*, i64}} %\"{}\", i64 %\"{}\", 1", iv2, iv1, s4));
+        // interleaved order: the rhs const's gep+create_str sits
+        // BETWEEN insertvalue and extractvalue (jsonparse .100-.103).
+        // Pause right after the pair when a pending marker is requested.
+        if view && PENDING_PAIR.with(|c| c.borrow().is_some()) {
+            PENDING_PAIR.with(|c| *c.borrow_mut() =
+                Some(format!("%\"{}\"", iv2)));
+            return format!("%\"{}\"", iv2);
+        }
         let ev1 = self.nx();
         self.line(format!(
             "  %\"{}\" = extractvalue {{i8*, i64}} %\"{}\", 0", ev1, iv2));
@@ -983,6 +1030,8 @@ thread_local! {
     static TEMP_STRS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static COMPARE_VIEW: RefCell<bool> = RefCell::new(false);
     static SPLIT_FORM: RefCell<bool> = RefCell::new(false);
+    static PENDING_PAIR: RefCell<Option<String>> = RefCell::new(None);
+    static SLICE_NO_COPY: RefCell<bool> = RefCell::new(false);
     static DYN_CLASSES: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static PY_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static PY_RETS: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -1040,19 +1089,36 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
                     || is_local_s(&bn)
             };
             if fused_pattern {
-                // dead value conversion: cv -> str_view (result unused)
+                // dead value conversion pauses after insertvalue; the
+                // rhs const chain (gep+create_str) lands between the
+                // pair halves, then the view stores complete it
+                PENDING_PAIR.with(|c| *c.borrow_mut() =
+                    Some(String::new()));
                 COMPARE_VIEW.with(|c| *c.borrow_mut() = true);
             }
             let lt = eval_mod(b, &e.get(1), &fs, sc);
             COMPARE_VIEW.with(|c| *c.borrow_mut() = false);
             let rt = eval_mod(b, &e.get(2), &fs, sc);
+            let pending = PENDING_PAIR.with(|c| c.borrow().clone());
+            PENDING_PAIR.with(|c| *c.borrow_mut() = None);
+            if let Some(pr) = pending {
+                if !pr.is_empty() { b.finish_view_split(&pr); }
+            }
             // fused subscript-vs-const: s[k] op "c" (no char1/cv)
             if matches!(lt, Typed::Str(_))
                 && e.get(1).head() == "subscript"
                 && e.get(2).head() == "const"
                 && matches!(e.get(2).get(1), Val::Str(_))
                 && matches!(rt, Typed::PStr(_)) {
-                let sr = match lt { Typed::Str(r) => r, _ => unreachable!() };
+                let _old = match lt { Typed::Str(r) => r, _ => unreachable!() };
+                // fresh base load AFTER the dead chain (ref: load s)
+                let bn = e.get(1).get(1).get(1).str_of();
+                let bslot = if is_local_s(&bn) {
+                    format!("%\"{}\"", bn) } else { format!("@\"{}\"", bn) };
+                let sl = b.nx();
+                b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                    sl, bslot));
+                let sr = format!("%\"{}\"", sl);
                 let idxe = e.get(1).get(2);
                 let iv = eval_mod(b, &idxe, &fs, sc);
                 let Typed::I64(k) = iv else { bail("fused idx") };
@@ -1351,7 +1417,9 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
             FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "str".into())));
             FN_S.with(|y| y.borrow_mut().push(name.clone()));
             let fs = F_SLOTS.with(|f| f.borrow().clone());
+            SLICE_NO_COPY.with(|c| *c.borrow_mut() = true);
             let v = eval_mod(b, &init, &fs, sc);
+            SLICE_NO_COPY.with(|c| *c.borrow_mut() = false);
             let r = to_raw(b, v, sc);
             b.silent(); // value conversion slot (calc: .4 -> .6)
             TEMP_STRS.with(|t| t.borrow_mut().retain(|x| x != &r));
@@ -1501,7 +1569,9 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         if anno == "str" {
             STR_SLOTS.with(|sl| sl.borrow_mut().push(name.clone()));
             if !matches!(&init.items().get(1), Some(Val::Str(_))) {
-                // call/expr init: no init constant (doc = input())
+                // call/expr init: no init constant (doc = input());
+                // slice inits keep the slice's own buffer (no copy)
+                SLICE_NO_COPY.with(|c| *c.borrow_mut() = true);
                 *sc += 1;
                 tail_push(format!("@\"{}\" = global i8* null", name));
                 let fsx = F_SLOTS.with(|f| f.borrow().clone());
@@ -2283,6 +2353,26 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     b.silent();
                     b.line(format!(
                         "  ret {{i32, i8*}}* {}", r));
+                } else if rty == "str" && st.get(1).head() == "name"
+                    && is_local_s(&st.get(1).get(1).str_of()) {
+                    // str local return: load -> copy -> reload -> free
+                    // the local -> ret the copy (jsonparse parse_string)
+                    let nm = st.get(1).get(1).str_of();
+                    let l1 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", l1, nm));
+                    let cp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")",
+                        cp, l1));
+                    let l2 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", l2, nm));
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"rawstr_free\"(i8* %\"{}\")", l2));
+                    b.silent();
+                    b.line(format!("  ret i8* %\"{}\"", cp));
                 } else if rty.starts_with("inst:") || rty == "str"
                     || rty.starts_with("list:") {
                     match v {
@@ -3250,6 +3340,9 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"rawstr_slice\"(i8* %\"{}\", i64 {}, i64 {})",
                     sl, l, sr, er));
+                if SLICE_NO_COPY.with(|c| *c.borrow()) {
+                    return Typed::Str(format!("%\"{}\"", sl));
+                }
                 let cp = b.nx();
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")",
