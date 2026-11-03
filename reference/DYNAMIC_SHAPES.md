@@ -240,14 +240,29 @@ AST: ["match_class",["name","JArr"],[],["items"],[["match_as",null,"items"]]]
 - digit_value 的 if 链 = 既有 str== 形状（create_str 弃值 + 新常量 gep
   + eq_cstr）✓
 
-## 待解剖（下一轮入口）
+## 已补齐的形状（全部解剖完毕，可直接实现）
 
-1. parse_number 的 `s[pos[0]] >= "0" and <= "9"`：str 的 >=/<= 比较形状
-   （sc_next 块内，非 eq_cstr——可能是 pyobj_ge 或字符序）
-2. parse_object 的 `result[key] = v` IR（subscript_set?）
-3. main 的 `o["id"]` 字面量键动态下标
-4. `while s[pos[0]] != '"'` 中 cv 与 list_get 的 get_ok/get_err 编号交错
-5. jsonparse_json.si（同目录伴生文件，应基本复用）
+1. **str 序比较融合**：`s[k] >= "c"` →
+   `%r = call i64 @"rawstr_at_cmp_cstr"(i8* s, i64 k, i8* gep, i64 len)`
+   + `icmp sge i64 %r, 0`（<= 用 sle）。**不物化 char1**、不走 cv 机器——
+   但 int-list 下标 k 自身的 get_ok 边界检查照旧先行。
+   注意不对称：`!=` 仍走 char1+eq_cstr（parse_string 证据）。
+2. **动态字典写**：`result[key] = v` → load result({i32,i8*}*)、
+   `rawstr_to_pystr(key_i8*)`、求值 v（pyobj）、
+   `call void @"pyobj_subscript_set"(obj, pykey, pyval)`。
+3. **动态下标读**：
+   - 变量键：load obj、`create_int(k)` → `pyobj_subscript(obj, pyint)`
+   - 字面量键：`gep 常量` + `create_str(gep, len)` → pyobj_subscript
+4. **len(动态)** = `pyobj_len_raw`（与静态 rawlist_len/字段读三分）。
+5. `items[i]`（动态list[int]下标）= create_int(i64) + pyobj_subscript；
+   返回 pyobj 直接喂 pyobj_instance_cid（match 链）。
+6. **嵌套 match**：match 的 case 体内再 match（case_body.1 里 match
+   o["id"]）——块号独立递增（case_body.2/case_next.2）✓ 既有 uniq 机制。
+
+## 剩余未知（实现时验证）
+
+- jsonparse_json.si（伴生文件，应基本复用）
+- str_view 临时在 parse_array/parse_object 中的用途（slice 装载？）
 
 ## 实现落点（silu-conv.rs）
 
