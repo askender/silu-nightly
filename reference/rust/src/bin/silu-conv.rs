@@ -551,6 +551,13 @@ impl FnB {
     // str char index s[i]: cv machinery (bounds pair + ascii/walk + phi
     // + utf8 width selects + rawstr_char1) -> 1-char str (calc blueprint 5)
     fn str_char_at(&mut self, objref: &str, idx: &str, sc: &mut usize) -> String {
+        let v = COMPARE_VIEW.with(|c| *c.borrow());
+        self.str_char_at_mode(objref, idx, sc, v)
+    }
+    // view=true: compare-context char reads store the pair into a hoisted
+    // str_view (dead chain) instead of calling rawstr_char1 (jsonparse)
+    fn str_char_at_mode(&mut self, objref: &str, idx: &str, sc: &mut usize,
+                        view: bool) -> String {
         let bc = self.nx();
         self.line(format!(
             "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*",
@@ -703,6 +710,38 @@ impl FnB {
         let ev2 = self.nx();
         self.line(format!(
             "  %\"{}\" = extractvalue {{i8*, i64}} %\"{}\", 1", ev2, iv2));
+        if view {
+            // dead chain: pair -> str_view field stores (+ unused bitcast)
+            let vn = self.uniq_label("str_view");
+            self.reg_names.push(vn.clone());
+            if IN_FN.with(|v| *v.borrow()) {
+                FN_ALLOCAS.with(|f| f.borrow_mut()
+                    .push((vn.clone(), "view".into())));
+            } else {
+                MAIN_ALLOCAS.with(|m| m.borrow_mut().push(vn.clone()));
+            }
+            for fld in [0u32, 1, 3] {
+                let g = self.nx();
+                self.line(format!(
+                    "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 {}",
+                    g, vn, fld));
+                self.silent();
+                self.line(format!(
+                    "  store i64 %\"{}\", i64* %\"{}\"", ev2, g));
+            }
+            let g2 = self.nx();
+            self.line(format!(
+                "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+                g2, vn));
+            self.silent();
+            self.line(format!(
+                "  store i8* %\"{}\", i8** %\"{}\"", ev1, g2));
+            let vbc = self.nx();
+            self.line(format!(
+                "  %\"{}\" = bitcast {{i64, i64, i8*, i64}}* %\"{}\" to i8*",
+                vbc, vn));
+            return format!("%\"{}\"", vbc);
+        }
         let ch = self.nx();
         self.line(format!(
             "  %\"{}\" = call i8* @\"rawstr_char1\"(i8* %\"{}\", i64 %\"{}\")",
@@ -942,6 +981,8 @@ thread_local! {
     static FN_PARAM_NAMES: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static CV_ERR_NAME: RefCell<Option<String>> = RefCell::new(None);
     static TEMP_STRS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static COMPARE_VIEW: RefCell<bool> = RefCell::new(false);
+    static SPLIT_FORM: RefCell<bool> = RefCell::new(false);
     static DYN_CLASSES: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static PY_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static PY_RETS: RefCell<Vec<String>> = RefCell::new(Vec::new());
@@ -988,7 +1029,22 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
             format!("%\"{}\"", c)
         }
         "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+            // compare-context subscripts: dead value conversion (view
+            // mode) first, then the fused compare with fresh loads
+            let fused_pattern = e.get(1).head() == "subscript"
+                && e.get(1).get(1).head() == "name"
+                && e.get(2).head() == "const"
+                && matches!(e.get(2).get(1), Val::Str(_)) && {
+                let bn = e.get(1).get(1).get(1).str_of();
+                STR_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn))
+                    || is_local_s(&bn)
+            };
+            if fused_pattern {
+                // dead value conversion: cv -> str_view (result unused)
+                COMPARE_VIEW.with(|c| *c.borrow_mut() = true);
+            }
             let lt = eval_mod(b, &e.get(1), &fs, sc);
+            COMPARE_VIEW.with(|c| *c.borrow_mut() = false);
             let rt = eval_mod(b, &e.get(2), &fs, sc);
             // fused subscript-vs-const: s[k] op "c" (no char1/cv)
             if matches!(lt, Typed::Str(_))
@@ -2645,6 +2701,42 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let mut b = FnB::new(n + 1); // .1..N args, .N+1 ret slot
     // container params: alloca+store pairs in the splice, forward order
     let mut container_pairs = String::new();
+    // owned str params (whole-use: slice base / len arg / by-name
+    // compare) flip the prologue to the split form: params REVERSED
+    // (str: alloca+null+store, container: bare alloca), container
+    // stores deferred forward (jsonparse evidence)
+    fn str_owned(body: &[Val], pn: &str) -> bool {
+        fn scan(v: &Val, pn: &str) -> bool {
+            if let Val::List(items) = v {
+                let h = v.head();
+                if h == "subscript" && v.get(1).head() == "name"
+                    && v.get(1).get(1).str_of() == pn
+                    && v.get(2).head() == "slice" { return true; }
+                if h == "call" && v.get(1).head() == "name"
+                    && v.get(1).get(1).str_of() == "len" {
+                    let ia = v.get(2).items();
+                    if ia.len() == 1 && ia[0].head() == "name"
+                        && ia[0].get(1).str_of() == pn { return true; }
+                }
+                if (h == "==" || h == "!=")
+                    && v.get(1).head() == "name"
+                    && v.get(1).get(1).str_of() == pn
+                    && v.get(2).head() == "const"
+                    && matches!(v.get(2).get(1), Val::Str(_)) { return true; }
+                for i in items { if scan(i, pn) { return true; } }
+            }
+            false
+        }
+        scan(&Val::List({
+            let mut v = vec![Val::Str("body".into())];
+            v.extend_from_slice(body);
+            v
+        }), pn)
+    }
+    SPLIT_FORM.with(|x| *x.borrow_mut() = false);
+    let any_owned = params.iter().zip(atys.iter())
+        .any(|(p, t)| t == "str" && str_owned(&body, &p.str_of()));
+    if !any_owned {
     for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
         if t.starts_with("list:") {
             FN_L.with(|f| f.borrow_mut()
@@ -2679,6 +2771,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     // param stores forward at body start (silent slots); container
     // stores live in the splice but STILL consume their slot
     for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
+        if SPLIT_FORM.with(|x| *x.borrow_mut()) { break; }
         // str pairs consume TWO slots (null + value stores); scalars one
         if t == "str" { b.silent(); b.silent(); continue; }
         b.silent();
@@ -2686,6 +2779,47 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
         let ll = arg_ll(t);
         b.line(format!("  store {} %\".{}\", {}* %\"{}\"",
             ll, i + 1, ll, p.str_of()));
+    }
+    } else {
+        // split form: params REVERSED (str: alloca+null+store inline;
+        // containers: bare alloca), container stores deferred forward
+        let mut deferred: Vec<String> = Vec::new();
+        for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate().rev() {
+            if t == "str" {
+                FN_S.with(|y| y.borrow_mut().push(p.str_of()));
+                container_pairs.push_str(&format!(
+                    "  %\"{}\" = alloca i8*\n  store i8* null, i8** %\"{}\"\n  store i8* %\".{}\", i8** %\"{}\"\n",
+                    p.str_of(), p.str_of(), i + 1, p.str_of()));
+                b.silent(); b.silent();
+            } else if t.starts_with("inst:") {
+                FN_TY.with(|y| y.borrow_mut().push(
+                    (p.str_of(), t.strip_prefix("inst:").unwrap_or("").to_string())));
+                container_pairs.push_str(&format!(
+                    "  %\"{}\" = alloca i8*\n  store i8* %\".{}\", i8** %\"{}\"\n",
+                    p.str_of(), i + 1, p.str_of()));
+                b.silent();
+            } else if t.starts_with("list:") {
+                FN_L.with(|f| f.borrow_mut().push(
+                    (p.str_of(), t.split(':').nth(1).unwrap_or("int").to_string())));
+                container_pairs.push_str(&format!(
+                    "  %\"{}\" = alloca i8*\n", p.str_of()));
+                deferred.push(format!(
+                    "  store i8* %\".{}\", i8** %\"{}\"",
+                    i + 1, p.str_of()));
+                b.silent();
+            } else {
+                container_pairs.push_str(&format!(
+                    "  %\"{}\" = alloca {}\n", p.str_of(), arg_ll(t)));
+                deferred.push(format!(
+                    "  store {} %\".{}\", {}* %\"{}\"",
+                    arg_ll(t), i + 1, arg_ll(t), p.str_of()));
+                b.silent();
+            }
+        }
+        for d in deferred {
+            container_pairs.push_str(&d);
+            container_pairs.push('\n');
+        }
     }
 
     let mut loops: Vec<String> = Vec::new();
@@ -2709,6 +2843,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let mut alloca_lines = String::new();
     let alloca_ty = |t: &str| match t {
         "bool" => "i1",
+        "view" => "{i64, i64, i8*, i64}",
         "list" | "str" | "inst" | "i8*" => "i8*",
         "i8*" => "i8*",
         "float" => "double",
