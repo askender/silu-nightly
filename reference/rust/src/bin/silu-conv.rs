@@ -1444,6 +1444,24 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         let anno = st.get(3).get(1).str_of();
         if anno == "str" {
             STR_SLOTS.with(|sl| sl.borrow_mut().push(name.clone()));
+            if !matches!(&init.items().get(1), Some(Val::Str(_))) {
+                // call/expr init: no init constant (doc = input())
+                *sc += 1;
+                tail_push(format!("@\"{}\" = global i8* null", name));
+                let fsx = F_SLOTS.with(|f| f.borrow().clone());
+                let v = eval_mod(b, &init, &fsx, sc);
+                let r = to_raw(b, v, sc);
+                let oldr = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = load i8*, i8** @\"{}\"", oldr, name));
+                b.silent();
+                b.line(format!(
+                    "  call void @\"rawstr_free\"(i8* %\"{}\")", oldr));
+                b.silent();
+                b.line(format!(
+                    "  store i8* {}, i8** @\"{}\"", r, name));
+                return;
+            }
             let text = match &init.items()[1] { Val::Str(v) => v.clone(),
                                                 _ => String::new() };
             let gname = add_str(sc, &text);
@@ -2340,7 +2358,6 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                                     b.line(format!(
                                         "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
                                     // capture -> raw str global
-                                    *sc += 1;
                                     tail_push(format!(
                                         "@\"{}\" = global i8* null", bname));
                                     STR_SLOTS.with(|t| t.borrow_mut().push(bname.clone()));
@@ -2355,7 +2372,6 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                                     let ld = b.nx();
                                     b.line(format!(
                                         "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** %\"{}\"", ld, bc));
-                                    *sc += 1;
                                     tail_push(format!(
                                         "@\"{}\" = global {{i32, i8*}}* null", bname));
                                     PY_SLOTS.with(|t| t.borrow_mut().push(bname.clone()));
@@ -2370,7 +2386,6 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                                     let ld = b.nx();
                                     b.line(format!(
                                         "  %\"{}\" = load i64, i64* %\"{}\"", ld, bc));
-                                    *sc += 1;
                                     tail_push(format!(
                                         "@\"{}\" = global i64 0", bname));
                                     b.silent();
@@ -2420,21 +2435,27 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 b.line(format!("  br label %\"{}\"", end_lbl));
                 let e_idx = b.blocks.iter()
                     .position(|(l, _)| l == &end_lbl);
+                let is_last = i + 1 >= stmts.len();
                 if let Some(i2) = e_idx {
                     b.pos(i2);
-                    let rty = FN_RET.with(|r| r.borrow().clone());
-                    b.silent();
-                    match rty.as_str() {
-                        "float" => b.line(format!(
-                            "  ret double {}", double_bits(0.0))),
-                        t if t.starts_with("inst:") || t == "str"
-                            || t.starts_with("list:") =>
-                            b.line("  ret i8* null".into()),
-                        "none" => b.line("  ret {i32, i8*}* null".into()),
-                        _ => b.line("  ret i64 0".into()),
+                    if is_last && IN_FN.with(|v| *v.borrow()) {
+                        // trailing match: typed default ret in match_end
+                        let rty = FN_RET.with(|r| r.borrow().clone());
+                        b.silent();
+                        match rty.as_str() {
+                            "float" => b.line(format!(
+                                "  ret double {}", double_bits(0.0))),
+                            t if t.starts_with("inst:") || t == "str"
+                                || t.starts_with("list:") =>
+                                b.line("  ret i8* null".into()),
+                            "none" | "pyobj" =>
+                                b.line("  ret {i32, i8*}* null".into()),
+                            _ => b.line("  ret i64 0".into()),
+                        }
+                        return true;
                     }
                 }
-                return true; // match_end terminates the function body
+                // match_end is a merge block: following stmts flow here
             }
 "raise" => {
                 // raise SystemExit(N): free str locals, trunc, exit
@@ -3155,6 +3176,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             if elty == "float" { Typed::F64(r) } else { Typed::I64(r) }
         }
         "call" => {
+            // len() reached from expression position: route through
+            // eval_mod's builtin dispatch (list/dict/str/pyobj shapes)
+            if e.get(1).head() == "name"
+                && e.get(1).get(1).str_of() == "len" {
+                return eval_mod(b, e, fslots, sc);
+            }
             // constructor: Class(args) -> inline malloc + field stores
             if e.get(1).head() == "name" && is_class(&e.get(1).get(1).str_of()) {
                 let cls = e.get(1).get(1).str_of();
