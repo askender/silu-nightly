@@ -23,7 +23,10 @@ enum Val { Null, Bool(bool), Int(i64), Float(f64), Str(String), List(Vec<Val>) }
 
 impl Val {
     fn head(&self) -> &str {
-        match self { Val::List(v) => match &v[0] { Val::Str(s) => s, _ => "" }, _ => "" }
+        match self {
+            Val::List(v) => match v.first() {
+                Some(Val::Str(s)) => s, _ => "" },
+            _ => "" }
     }
     fn get(&self, k: usize) -> Val {
         match self { Val::List(v) => v.get(k).cloned().unwrap_or(Val::Null), _ => Val::Null }
@@ -195,6 +198,19 @@ fn is_local_f(n: &str) -> bool {
 }
 fn is_local_i(n: &str) -> bool {
     FN_I.with(|f| f.borrow().iter().any(|x| x == n))
+}
+
+fn is_dyn_class(c: &str) -> bool {
+    DYN_CLASSES.with(|d| d.borrow().iter().any(|x| x == c))
+}
+
+fn class_cid(c: &str) -> i64 {
+    CLASSES.with(|c2| c2.borrow().iter().position(|(k, _)| k == c)
+        .map(|i| (i + 1) as i64).unwrap_or(0))
+}
+
+fn is_py(n: &str) -> bool {
+    PY_SLOTS.with(|t| t.borrow().iter().any(|x| x == n))
 }
 
 fn is_local_b(n: &str) -> bool {
@@ -926,6 +942,9 @@ thread_local! {
     static FN_PARAM_NAMES: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static CV_ERR_NAME: RefCell<Option<String>> = RefCell::new(None);
     static TEMP_STRS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static DYN_CLASSES: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static PY_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static PY_RETS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     // dynamic-instance layer: enums, classes, method signatures
     static ENUMS: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
     static CLASSES: RefCell<Vec<(String, Vec<(String, String)>)>> =
@@ -971,6 +990,52 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
         "==" | "!=" | "<" | "<=" | ">" | ">=" => {
             let lt = eval_mod(b, &e.get(1), &fs, sc);
             let rt = eval_mod(b, &e.get(2), &fs, sc);
+            // fused subscript-vs-const: s[k] op "c" (no char1/cv)
+            if matches!(lt, Typed::Str(_))
+                && e.get(1).head() == "subscript"
+                && e.get(2).head() == "const"
+                && matches!(e.get(2).get(1), Val::Str(_))
+                && matches!(rt, Typed::PStr(_)) {
+                let sr = match lt { Typed::Str(r) => r, _ => unreachable!() };
+                let idxe = e.get(1).get(2);
+                let iv = eval_mod(b, &idxe, &fs, sc);
+                let Typed::I64(k) = iv else { bail("fused idx") };
+                let text = e.get(2).get(1).str_of();
+                let blen = text.chars().count() as i64;
+                let gname = add_str(sc, &text);
+                let g = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                    g, blen + 1, blen + 1, gname));
+                match e.head() {
+                    "==" | "!=" => {
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i1 @\"rawstr_at_eq_cstr\"(i8* {}, i64 {}, i8* %\"{}\", i64 {})",
+                            c, sr, k, g, blen));
+                        if e.head() == "!=" {
+                            let x = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                            return format!("%\"{}\"", x);
+                        }
+                        return format!("%\"{}\"", c);
+                    }
+                    _ => {
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i64 @\"rawstr_at_cmp_cstr\"(i8* {}, i64 {}, i8* %\"{}\", i64 {})",
+                            c, sr, k, g, blen));
+                        let pred = match e.head() {
+                            ">=" => "sge", "<=" => "sle",
+                            ">" => "sgt", _ => "slt" };
+                        let ic = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = icmp {} i64 %\"{}\", 0", ic, pred, c));
+                        return format!("%\"{}\"", ic);
+                    }
+                }
+            }
             if e.head() == "==" && (matches!(lt, Typed::Str(_) | Typed::PStr(_))
                 || matches!(rt, Typed::Str(_) | Typed::PStr(_))) {
                 // str ==: const rhs gets a FRESH constant slot + gep
@@ -1526,6 +1591,38 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         && !is_declared(&name) && !is_local_i(&name)
         && !is_local_f(&name) && !is_local_b(&name)
         && fn_ty_of(&name).is_none() {
+        // untyped container literals: dynamic pyobj (parse_array/object)
+        if rhs.head() == "list" || rhs.head() == "dict" {
+            let elems = rhs.items().get(1).cloned().unwrap_or(Val::Null);
+            let empty = matches!(&elems, Val::List(v) if v.is_empty());
+            if empty {
+                let ctor = if rhs.head() == "list" { "create_list" }
+                           else { "create_dict" };
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"{}\"()",
+                    c, ctor));
+                if IN_FN.with(|v| *v.borrow()) {
+                    FN_ALLOCAS.with(|f| f.borrow_mut()
+                        .push((name.clone(), "pyobj".into())));
+                    PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"",
+                        c, name));
+                } else {
+                    *sc += 1;
+                    tail_push(format!(
+                        "@\"{}\" = global {{i32, i8*}}* null", name));
+                    PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** @\"{}\"",
+                        c, name));
+                }
+                return;
+            }
+        }
         // w = vocab[k]: str-element read via copy_into; the destination
         // auto-declares (str global) BEFORE the rhs (wordcount evidence)
         if rhs.head() == "subscript" && rhs.get(1).head() == "name" {
@@ -1590,7 +1687,45 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
                         "  store double {}, double* @\"{}\"", r, name));
                 }
             }
-            Typed::Inst(_) => bail("auto inst decl"),
+            Typed::Pyo(r) => {
+                if IN_FN.with(|v| *v.borrow()) {
+                    FN_ALLOCAS.with(|f| f.borrow_mut()
+                        .push((name.clone(), "pyobj".into())));
+                    PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store {{i32, i8*}}* {}, {{i32, i8*}}** %\"{}\"",
+                        r, name));
+                } else {
+                    *sc += 1;
+                    tail_push(format!(
+                        "@\"{}\" = global {{i32, i8*}}* null", name));
+                    PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store {{i32, i8*}}* {}, {{i32, i8*}}** @\"{}\"",
+                        r, name));
+                }
+            }
+            Typed::Inst(r) => {
+                // str-valued auto-decl (parse_string result): i8* slot
+                if IN_FN.with(|v| *v.borrow()) {
+                    FN_ALLOCAS.with(|f| f.borrow_mut()
+                        .push((name.clone(), "str".into())));
+                    FN_S.with(|y| y.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store i8* {}, i8** %\"{}\"", r, name));
+                } else {
+                    *sc += 1;
+                    tail_push(format!(
+                        "@\"{}\" = global i8* null", name));
+                    STR_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store i8* {}, i8** @\"{}\"", r, name));
+                }
+            }
             Typed::I64(r) => {
                 if IN_FN.with(|v| *v.borrow()) {
                     // function-local auto int: alloca, not a global
@@ -1649,6 +1784,38 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         if LST_SLOTS.with(|t| t.borrow().iter().any(|x| x == &name))
             || DCT_SLOTS.with(|t| t.borrow().iter().any(|x| x == &name)) {
             bail("assign to container");
+        }
+        // untyped container literals: dynamic pyobj (parse_array/object)
+        if rhs.head() == "list" || rhs.head() == "dict" {
+            let elems = rhs.items().get(1).cloned().unwrap_or(Val::Null);
+            let empty = matches!(&elems, Val::List(v) if v.is_empty());
+            if empty {
+                let ctor = if rhs.head() == "list" { "create_list" }
+                           else { "create_dict" };
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"{}\"()",
+                    c, ctor));
+                if IN_FN.with(|v| *v.borrow()) {
+                    FN_ALLOCAS.with(|f| f.borrow_mut()
+                        .push((name.clone(), "pyobj".into())));
+                    PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"",
+                        c, name));
+                } else {
+                    *sc += 1;
+                    tail_push(format!(
+                        "@\"{}\" = global {{i32, i8*}}* null", name));
+                    PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    b.silent();
+                    b.line(format!(
+                        "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** @\"{}\"",
+                        c, name));
+                }
+                return;
+            }
         }
         // w = vocab[k]: str-element read via copy_into; the destination
         // auto-declares (str global) BEFORE the rhs (wordcount evidence)
@@ -1748,6 +1915,31 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         b.line(format!(
                 "  call void @\"rawdict_set\"(i8* %\"{}\", i64 {}, i64 {})",
             l, k, v));
+    } else if is_py(&obj) {
+        // dynamic store: pyobj_subscript_set(obj, pykey, pyval)
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let dl = b.nx();
+        b.line(format!(
+            "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
+            dl, obj));
+        let kr = {
+            let kv = eval_mod(b, &st.get(2), &fs, sc);
+            match kv {
+                Typed::Str(r) | Typed::Inst(r) => r,
+                Typed::PStr(_) => to_raw(b, kv, sc),
+                _ => bail("pyobj store key"),
+            }
+        };
+        let ps = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* {})",
+            ps, kr));
+        let vv = eval_mod(b, &st.get(3), &fs, sc);
+        let Typed::Pyo(pv) = vv else { bail("pyobj store val") };
+        b.silent();
+        b.line(format!(
+            "  call void @\"pyobj_subscript_set\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
+            dl, ps, pv));
     } else if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &obj))
         || FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &obj)) {
         let l = b.nx(); // obj load, then key eval, then value eval
@@ -1796,10 +1988,12 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 if !LST_SLOTS.with(|t| t.borrow().iter()
                         .any(|f| f == &obj))
                     && !FN_L.with(|t| t.borrow().iter()
-                        .any(|(k, _)| k == &obj)) { bail("append target"); }
+                        .any(|(k, _)| k == &obj))
+                    && !is_py(&obj) { bail("append target"); }
                 let args = st.get(2).items();
                 if args.len() != 1 { bail("append arity"); }
                 let l = b.nx(); // object load first, then arg eval
+                if !is_py(&obj) {
                 b.line(format!("  %\"{}\" = load i8*, i8** {}",
                     l, lst_slot(&obj)));
                 let elem = lst_elem_ty(&obj);
@@ -1838,6 +2032,19 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     let c = b.nx();
                     b.line(format!(
                         "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 {})",
+                        c, l, r));
+                }
+                } else {
+                    // dynamic append: list_append(pyobj, pyobj)
+                    b.line(format!(
+                        "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
+                        l, obj));
+                    let fs2 = F_SLOTS.with(|f| f.borrow().clone());
+                    let v = eval_mod(b, &args[0], &fs2, sc);
+                    let Typed::Pyo(r) = v else { bail("py append arg") };
+                    let c = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call {{i32, i8*}}* @\"list_append\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
                         c, l, r));
                 }
             }
@@ -1998,6 +2205,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     let r = to_f64(b, v);
                     b.silent();
                     b.line(format!("  ret double {}", r));
+                } else if let Typed::Pyo(r) = &v {
+                    b.silent();
+                    b.line(format!(
+                        "  ret {{i32, i8*}}* {}", r));
                 } else if rty.starts_with("inst:") || rty == "str"
                     || rty.starts_with("list:") {
                     match v {
@@ -2041,9 +2252,21 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 // cases br through case_next.N to match_end (calc)
                 let fs = F_SLOTS.with(|f| f.borrow().clone());
                 let sv = eval_mod(b, &st.get(1), &fs, sc);
-                let Typed::I64(vref) = sv else { bail("match scrutinee") };
                 let cases = st.get(2).items();
                 let end_lbl = b.uniq_label("match_end");
+                let pyo_ref = match &sv {
+                    Typed::Pyo(r) => Some(r.clone()),
+                    _ => None,
+                };
+                let vref = match sv.clone() {
+                    Typed::I64(r) => r,
+                    _ => {
+                        if pyo_ref.is_none() {
+                            bail("match scrutinee");
+                        }
+                        String::new()
+                    }
+                };
                 for (ci, c) in cases.iter().enumerate() {
                     // match_case = [match_case, pattern, guard, body]
                     let pat = c.get(1);
@@ -2063,6 +2286,106 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                         let _ = bb;
                         let nb = b.add_block(&next_lbl);
                         let _ = nb;
+                    }
+                    if pat.head() == "match_class" {
+                        // dynamic class: pyobj_instance_cid == CID
+                        let pr = pyo_ref.clone().unwrap_or_else(|| {
+                            eprintln!("mc fail, scrut head={}",
+                                st.get(1).head());
+                            bail("match_class scrutinee") });
+                        let cn = pat.get(1).get(1).str_of();
+                        let cid = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i64 @\"pyobj_instance_cid\"({{i32, i8*}}* {})",
+                            cid, pr));
+                        let eq = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = icmp eq i64 %\"{}\", {}",
+                            eq, cid, class_cid(&cn)));
+                        b.silent();
+                        b.line(format!(
+                            "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+                            eq, body_lbl, next_lbl));
+                        // captures in the body block: instance_ptr + field
+                        let cap_fields = pat.get(3).items();
+                        let cap_binds = pat.get(4).items();
+                        let bi = b.blocks.iter()
+                            .position(|(l, _)| l == &body_lbl)
+                            .unwrap_or_else(|| bail("case body missing"));
+                        b.pos(bi);
+                        let ptr = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"pyobj_instance_ptr\"({{i32, i8*}}* {})",
+                            ptr, pr));
+                        let fields = class_fields(&cn)
+                            .unwrap_or_else(|| bail("class fields"));
+                        for (fi, bind) in cap_binds.iter().enumerate() {
+                            let bname = bind.get(2).str_of();
+                            let fname = cap_fields.get(fi)
+                                .map(|v| v.str_of()).unwrap_or_default();
+                            let (off, fty) = fields.iter()
+                                .position(|(f, _)| f == &fname)
+                                .map(|i| ((i * 8) as i64, fields[i].1.clone()))
+                                .unwrap_or_else(|| bail("capture field"));
+                            let gp = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+                                gp, ptr, off));
+                            match fty.as_str() {
+                                "str" => {
+                                    let bc = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                                    let ld = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
+                                    // capture -> raw str global
+                                    *sc += 1;
+                                    tail_push(format!(
+                                        "@\"{}\" = global i8* null", bname));
+                                    STR_SLOTS.with(|t| t.borrow_mut().push(bname.clone()));
+                                    b.silent();
+                                    b.line(format!(
+                                        "  store i8* %\"{}\", i8** @\"{}\"", ld, bname));
+                                }
+                                "list" | "dict" => {
+                                    let bc = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = bitcast i8* %\"{}\" to {{i32, i8*}}**", bc, gp));
+                                    let ld = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** %\"{}\"", ld, bc));
+                                    *sc += 1;
+                                    tail_push(format!(
+                                        "@\"{}\" = global {{i32, i8*}}* null", bname));
+                                    PY_SLOTS.with(|t| t.borrow_mut().push(bname.clone()));
+                                    b.silent();
+                                    b.line(format!(
+                                        "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** @\"{}\"", ld, bname));
+                                }
+                                _ => {
+                                    let bc = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, gp));
+                                    let ld = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = load i64, i64* %\"{}\"", ld, bc));
+                                    *sc += 1;
+                                    tail_push(format!(
+                                        "@\"{}\" = global i64 0", bname));
+                                    b.silent();
+                                    b.line(format!(
+                                        "  store i64 %\"{}\", i64* @\"{}\"", ld, bname));
+                                }
+                            }
+                        }
+                        // continue converting the case body after captures
+                        conv_block(b, &cbody, loops, sc);
+                        let ni = b.blocks.iter()
+                            .position(|(l, _)| l == &next_lbl)
+                            .unwrap_or_else(|| bail("case next missing"));
+                        b.pos(ni);
+                        continue;
                     }
                     if pat.head() == "match_value" {
                         let mv = pat.get(1);
@@ -2234,8 +2557,18 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
             atys.push(format!("list:{}", a.get(2).get(1).str_of()));
         } else { bail("param type"); }
     }
-    // missing return annotation -> silu none ({i32, i8*}*)
-    let rty = if matches!(ret_anno, Val::Null) { "none".to_string() }
+    // missing return annotation -> infer from return statements
+    // (parse_string -> str i8* + alwaysinline; parse_value -> pyobj)
+    let rty = if matches!(ret_anno, Val::Null) {
+        let inferred = infer_ret(&body, &params, &annos);
+        match inferred.as_str() {
+            "str" => "str".to_string(),
+            "int" => "int".to_string(),
+            "float" => "float".to_string(),
+            "pyobj" => "pyobj".to_string(),
+            _ => "none".to_string(),
+        }
+    }
               else if ret_anno.head() == "subscript"
                   && ret_anno.get(1).get(1).str_of() == "list" {
                   format!("list:{}", ret_anno.get(2).get(1).str_of())
@@ -2268,9 +2601,11 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
         "float" => "double",
         t if t.starts_with("list:") || t.starts_with("inst:")
             || t == "str" => "i8*",
+        "pyobj" => "{i32, i8*}*",
         _ => "i64",
     };
     let rty_ll = match rty.as_str() {
+        "pyobj" => "{i32, i8*}*",
         "float" => "double", "none" => "{i32, i8*}*",
         t if t.starts_with("inst:") || t == "str"
             || t.starts_with("list:") => "i8*",
@@ -2283,7 +2618,8 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
             .map(|(i, (p, t))| format!("{} %\".{}\"",
                 arg_ll(t), i + 1))
             .collect::<Vec<_>>().join(", "),
-        if rty == "none" { "" } else { " alwaysinline" });
+        if rty == "none" || rty == "pyobj" { "" }
+        else { " alwaysinline" });
 
     let mut b = FnB::new(n + 1); // .1..N args, .N+1 ret slot
     // container params: alloca+store pairs in the splice, forward order
@@ -2341,7 +2677,8 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
                 "  ret double {}", double_bits(0.0))),
             t if t.starts_with("inst:") || t == "str"
                 || t.starts_with("list:") => b.line("  ret i8* null".into()),
-            "none" => b.line("  ret {i32, i8*}* null".into()),
+            "none" | "pyobj" =>
+                b.line("  ret {i32, i8*}* null".into()),
             _ => b.line("  ret i64 0".into()),
         }
     }
@@ -2387,7 +2724,8 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
 }
 
 #[derive(Clone)]
-enum Typed { I64(String), F64(String), Str(String), PStr(String), Inst(String) }
+enum Typed { I64(String), F64(String), Str(String), PStr(String),
+             Inst(String), Pyo(String) } // Pyo = boxed {i32, i8*}* value
 
 fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
              slot_f: &dyn Fn(&str) -> String, sc: &mut usize,
@@ -2571,7 +2909,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     Typed::F64(format!("%\"{}\"", m))
                 }
                 Typed::I64(_) => bail("unary minus int"),
-                Typed::Str(_) | Typed::PStr(_) => bail("unary minus str"),
+                Typed::Str(_) | Typed::PStr(_) | Typed::Pyo(_) =>
+                    bail("unary minus non-num"),
                 Typed::Inst(_) => bail("unary minus inst"),
             }
         }
@@ -2760,6 +3099,43 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")",
                     cp, sl));
                 return Typed::Str(format!("%\"{}\"", cp));
+            } else if is_py(&n) {
+                // dynamic subscript: create_int / create_str key +
+                // pyobj_subscript -> pyobj
+                let l = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
+                    l, n));
+                if e.get(2).head() == "const"
+                    && matches!(e.get(2).get(1), Val::Str(_)) {
+                    let text = e.get(2).get(1).str_of();
+                    let blen = text.chars().count();
+                    let gname = add_str(sc, &text);
+                    let g = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                        g, blen + 1, blen + 1, gname));
+                    let cs = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call {{i32, i8*}}* @\"create_str\"(i8* %\"{}\", i32 {})",
+                        cs, g, blen));
+                    let c2 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_subscript\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\")",
+                        c2, l, cs));
+                    return Typed::Pyo(format!("%\"{}\"", c2));
+                }
+                let kv = eval_expr(b, &e.get(2), slot_i, slot_f, sc, fslots);
+                let Typed::I64(k) = kv else { bail("pyobj key type") };
+                let ci = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 {})",
+                    ci, k));
+                let c2 = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_subscript\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\")",
+                    c2, l, ci));
+                return Typed::Pyo(format!("%\"{}\"", c2));
             } else if STR_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
                 || is_local_s(&n) {
                 // str char read: cv machinery -> 1-char str
@@ -2782,6 +3158,10 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             // constructor: Class(args) -> inline malloc + field stores
             if e.get(1).head() == "name" && is_class(&e.get(1).get(1).str_of()) {
                 let cls = e.get(1).get(1).str_of();
+                if is_dyn_class(&cls) {
+                    return emit_dyn_ctor(b, e, &cls, sc,
+                        slot_i, slot_f, fslots);
+                }
                 let fields = class_fields(&cls)
                     .unwrap_or_else(|| bail("class fields"));
                 let args = e.get(2).items();
@@ -3006,6 +3386,9 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 || rty.starts_with("list:") {
                 return Typed::Inst(format!("%\"{}\"", c));
             }
+            if rty == "none" || rty == "pyobj" {
+                return Typed::Pyo(format!("%\"{}\"", c));
+            }
             Typed::I64(format!("%\"{}\"", c))
         }
         "+" if (e.get(1).head() == "const"
@@ -3087,6 +3470,7 @@ fn to_f64(b: &mut FnB, t: Typed) -> String {
         Typed::F64(s) => s,
         Typed::I64(s) => to_f64_ref(b, &s),
         Typed::Str(_) | Typed::PStr(_) => bail("str where float expected"),
+        Typed::Pyo(_) => bail("pyobj where float expected"),
         Typed::Inst(_) => bail("inst where float expected"),
     }
 }
@@ -3220,6 +3604,7 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
                         pr, fg, len, data));
                 }
                 Typed::Inst(_) => bail("print instance"),
+                Typed::Pyo(_) => bail("print pyobj"),
                 Typed::Str(r) => {
                     // str NAME arg: %.*s with (len field 0, data field 2)
                     let bc = b.nx();
@@ -3278,6 +3663,156 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
 // const str key in d.get("K", def): create_str, TAG CHECK pair
 // (key_str_ok/key_str_err), unpack the pystr payload into a str_view,
 // rawdict_str_get_or(dict, view, def)
+// ---- pyobj boxed layer (jsonparse blueprint) ----
+
+// classify a return expression's static type for untyped-ret inference
+fn infer_ret_of(e: &Val, binds: &[(String, String)]) -> String {
+    match e.head() {
+        "const" => match &e.items()[1] {
+            Val::Int(_) => "int".into(),
+            Val::Float(_) => "float".into(),
+            Val::Str(_) => "str".into(),
+            _ => "none".into(),
+        },
+        "name" => binds.iter().rev()
+            .find(|(k, _)| k == &e.get(1).str_of())
+            .map(|(_, t)| t.clone()).unwrap_or_else(|| "none".into()),
+        "call" => {
+            if e.get(1).head() == "name"
+                && is_class(&e.get(1).get(1).str_of()) {
+                if is_dyn_class(&e.get(1).get(1).str_of()) { "pyobj".into() }
+                else { "inst".into() }
+            } else if e.get(1).head() == "name"
+                && PY_RETS.with(|r| r.borrow().iter()
+                    .any(|x| *x == e.get(1).get(1).str_of())) {
+                "pyobj".into()
+            } else { "int".into() }
+        }
+        _ => "int".into(),
+    }
+}
+
+// pre-scan a function body for binding declarations + returns
+fn infer_ret(body: &[Val], params: &[Val],
+             annos: &[Val]) -> String {
+    let mut binds: Vec<(String, String)> = Vec::new();
+    for (p, a) in params.iter().zip(annos.iter()) {
+        let t = if a.head() == "subscript" { "list".to_string() }
+                else { a.get(1).str_of() };
+        binds.push((p.str_of(), t));
+    }
+    fn scan(stmts: &[Val], binds: &mut Vec<(String, String)>) -> String {
+        for st in stmts.iter() {
+            if !matches!(st, Val::List(_)) { continue; }
+            match st.head() {
+                "ann_assign" => binds.push((
+                    st.get(1).str_of(), st.get(3).get(1).str_of())),
+                "assign" => {
+                    let rh = st.get(2);
+                    let t = match rh.head() {
+                        "list" => Some("pyobj".to_string()),
+                        "dict" => Some("pyobj".to_string()),
+                        _ => None,
+                    };
+                    if let Some(t) = t {
+                        binds.push((st.get(1).str_of(), t))
+                    }
+                }
+                "return" => {
+                    return infer_ret_of(&st.get(1), binds)
+                }
+                "if" => {
+                    let r = scan(&st.get(2).items(), binds);
+                    if r != "none" { return r; }
+                    let r2 = scan(&st.get(3).items(), binds);
+                    if r2 != "none" { return r2; }
+                }
+                "while" => {
+                    let r = scan(&st.get(2).items(), binds);
+                    if r != "none" { return r; }
+                }
+                _ => {}
+            }
+        }
+        "none".to_string()
+    }
+    scan(body, &mut binds)
+}
+
+// dynamic-class ctor: malloc + typed field stores + make_instance(CID)
+fn emit_dyn_ctor(b: &mut FnB, e: &Val, cls: &str, sc: &mut usize,
+                 slot_i: &dyn Fn(&str) -> String,
+                 slot_f: &dyn Fn(&str) -> String,
+                 fslots: &[String]) -> Typed {
+    let fields = class_fields(cls)
+        .unwrap_or_else(|| bail("class fields"));
+    let args = e.get(2).items();
+    let c = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i8* @\"malloc\"(i64 {})",
+        c, (fields.len() * 8) as i64));
+    for (i, (_, fty)) in fields.iter().enumerate() {
+        let av = eval_expr(b, &args[i], slot_i, slot_f, sc, fslots);
+        let gp = b.nx();
+        b.line(format!(
+            "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+            gp, c, (i * 8) as i64));
+        match (av, fty.as_str()) {
+            (Typed::Pyo(r), _) => {
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to {{i32, i8*}}**",
+                    bc, gp));
+                b.silent();
+                b.line(format!(
+                    "  store {{i32, i8*}}* {}, {{i32, i8*}}** %\"{}\"",
+                    r, bc));
+            }
+            (Typed::Str(r), "str") | (Typed::Inst(r), "str") => {
+                // str fields store a COPY (JStr evidence)
+                let cp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                b.silent();
+                b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", cp, bc));
+            }
+            (v, "float") => {
+                let r = to_f64(b, v);
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to double*", bc, gp));
+                b.silent();
+                b.line(format!(
+                    "  store double {}, double* %\"{}\"", r, bc));
+            }
+            (Typed::I64(r), _) => {
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, gp));
+                b.silent();
+                b.line(format!("  store i64 {}, i64* %\"{}\"", r, bc));
+            }
+            (v, _) => {
+                // str const / other raw-able values via to_raw
+                let r = to_raw(b, v, sc);
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                b.silent();
+                b.line(format!("  store i8* {}, i8** %\"{}\"", r, bc));
+            }
+        }
+    }
+    let m = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_make_instance\"(i64 {}, i8* %\"{}\")",
+        m, class_cid(cls), c));
+    Typed::Pyo(format!("%\"{}\"", m))
+}
+
 fn emit_const_key_get(b: &mut FnB, dl: &str, text: &str, def: i64,
                       sc: &mut usize) -> String {
     let gname = add_str(sc, text);
@@ -3440,6 +3975,12 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
             b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
             return Typed::Inst(format!("%\"{}\"", l));
         }
+        if is_py(&n) {
+            b.line(format!(
+                "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
+                l, n));
+            return Typed::Pyo(format!("%\"{}\"", l));
+        }
         if fn_ty_of(&n).is_some() {
             if n == "self" || inst_stor(&n).is_none() {
                 b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"",
@@ -3508,6 +4049,17 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
         }
         if ia[0].head() != "name" { bail("len arg"); }
         let n = ia[0].get(1).str_of();
+        if is_py(&n) {
+            let l = b.nx();
+            b.line(format!(
+                "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
+                l, n));
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"pyobj_len_raw\"({{i32, i8*}}* %\"{}\")",
+                c, l));
+            return Typed::I64(format!("%\"{}\"", c));
+        }
         if LST_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n)) {
             let l = b.nx();
             b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
@@ -3652,6 +4204,19 @@ fn main() {
     let stmts = module.get(1).items();
 
     let mut sc = STR_BASE;
+    // dynamic classes: consumed via match_class -> pyobj instances
+    fn scan_match(v: &Val) {
+        if let Val::List(items) = v {
+            if v.head() == "match_class" {
+                let cn = v.get(1).get(1).str_of();
+                if !DYN_CLASSES.with(|d| d.borrow().iter().any(|x| *x == cn)) {
+                    DYN_CLASSES.with(|d| d.borrow_mut().push(cn));
+                }
+            }
+            for i in items { scan_match(i); }
+        }
+    }
+    for st in stmts.iter() { scan_match(st); }
     // registries first: classes/enums must exist before signature typing
     for st in stmts.iter() {
         if st.head() == "enum_def" {
@@ -3701,6 +4266,55 @@ fn main() {
             }
         }
     }
+    // pyobj-returning functions: fixpoint (ctor returns, then callers)
+    {
+        let fdefs: Vec<&Val> = stmts.iter()
+            .filter(|st| st.head() == "func_def").collect();
+        loop {
+            let mut added = false;
+            for fd in fdefs.iter() {
+                let nm = fd.get(1).str_of();
+                if PY_RETS.with(|r| r.borrow().iter().any(|x| *x == nm)) {
+                    continue;
+                }
+                let is_py_ret = infer_ret(&fd.get(3).items(),
+                    &fd.get(2).items(), &fd.get(4).items()) == "pyobj";
+                if is_py_ret {
+                    PY_RETS.with(|r| r.borrow_mut().push(nm.clone()));
+                    added = true;
+                }
+            }
+            // propagate: bodies whose returns call PY_RETS functions
+            for fd in fdefs.iter() {
+                let nm = fd.get(1).str_of();
+                if PY_RETS.with(|r| r.borrow().iter().any(|x| *x == nm)) {
+                    continue;
+                }
+                let mut hits_py_call = false;
+                fn walk_ret(v: &Val, py: &[String]) -> bool {
+                    if let Val::List(items) = v {
+                        if v.head() == "return" {
+                            let r = v.get(1);
+                            if r.head() == "call" && r.get(1).head() == "name"
+                                && py.iter()
+                                    .any(|p| *p == r.get(1).get(1).str_of()) {
+                                return true;
+                            }
+                        }
+                        for i in items { if walk_ret(i, py) { return true; } }
+                    }
+                    false
+                }
+                let pys = PY_RETS.with(|r| r.borrow().clone());
+                hits_py_call = walk_ret(fd, &pys);
+                if hits_py_call {
+                    PY_RETS.with(|r| r.borrow_mut().push(nm.clone()));
+                    added = true;
+                }
+            }
+            if !added { break; }
+        }
+    }
     // signatures first: main may call functions defined later
     let sig_of = |fd: &Val, prefix: Option<&str>| {
         let atys: Vec<String> = fd.get(4).items().iter().enumerate()
@@ -3720,7 +4334,10 @@ fn main() {
                     else { t }
                 }
             }).collect();
-        let rt0 = if matches!(fd.get(5), Val::Null) { "none".to_string() }
+        let rt0 = if matches!(fd.get(5), Val::Null) {
+            infer_ret(&fd.get(3).items(), &fd.get(2).items(),
+                      &fd.get(4).items())
+        }
                  else if fd.get(5).head() == "subscript"
                      && fd.get(5).get(1).get(1).str_of() == "list" {
                      format!("list:{}", fd.get(5).get(2).get(1).str_of())
