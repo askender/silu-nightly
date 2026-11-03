@@ -172,3 +172,88 @@ node.right is None → load 字段 → icmp eq i8* null → if_then/if_else
 - str 比较 = rawstr_eq_cstr + sc 链；bool 局部 i1
 - epilogue free 清单（str 局部）
 - def main → __silu_user_main 包装
+
+
+# jsonparse 的 pyobj 装箱动态层（T2c 第二台阶蓝图）
+
+> 来源：`./siluc1 < benchmarks/jsonparse.si`（尾 77KB，/tmp/jp_ref.ll）。
+> 与 calc 的静态实例层**并存于同一编译器**：判别点 = 值是否为无注解
+> （untyped）——untyped 值一律装箱为 pyobj。
+
+## 核心模型
+
+- **pyobj = `{i32, i8*}*`**（即 none 类型作为值载体）。无注解返回/赋值
+  的值全是 pyobj。`def parse_value(...)`（无返回注解）→
+  `define internal {i32, i8*}*`（**无 alwaysinline**，同 none 规则）。
+- **untyped 容器**：`result = []` → `create_list()` → pyobj；`result = {}`
+  → `create_dict()`（parse_object 证据）。
+- **自动声明**：pyobj rhs 的裸赋值 → 全局 `@"x" = global {i32, i8*}* null`
+  （main 的 data）。
+
+## 动态类构造（与 calc 静态 malloc 的分岔）
+
+```
+JArr(result):  # result 是 pyobj list
+  %p = malloc(nfields*8)
+  load result ({i32,i8*}*) → gep p,0 → bitcast {i32,i8*}** → store
+  %m = call {i32, i8*}* @"pyobj_make_instance"(i64 CID, i8* %p)
+  ret %m
+CID = class 定义序（JInt=1, JStr=2, JArr=3, JObj=4 —— 全源码 class_def 次序）
+```
+判别：ctor 实参为 pyobj（untyped list/dict）→ 走 make_instance；
+calc 的静态字段（int/str/float/静态list）→ 裸 malloc。待验证：
+> 混合情况（某字段静态某字段动态）未见于语料。
+
+## match_class（带捕获的类匹配）
+
+```
+match data:                      # scrutinee = pyobj
+  case JArr(items=items):
+%v  = load {i32, i8*}*, {i32, i8*}** @"data"
+%cid = call i64 @"pyobj_instance_cid"({i32, i8*}* %v)
+%eq  = icmp eq i64 %cid, 3       # JArr 的 CID
+br → case_body / case_next       # 与 calc match 同链
+case_body:
+  %ptr = call i8* @"pyobj_instance_ptr"({i32, i8*}* %v)
+  gep ptr, OFFSET → bitcast {i32, i8*}** → load
+  store → @"items"               # 捕获名 = 自动全局 {i32,i8*}* null
+```
+AST: ["match_class",["name","JArr"],[],["items"],[["match_as",null,"items"]]]
+(= 类名, kwargs, 捕获字段名表, 绑定列表)
+
+## pyobj 运行时族（本次实际用到的）
+
+- `list_append(pyobj_list, pyobj)` — 动态 append
+- `pyobj_len_raw(pyobj)` — len(动态容器)
+- `pyobj_subscript(pyobj, pyobj_key)` — 动态下标读（键先 create_str？待查）
+- parse_object 的 `result[key] = v` → 大概率 pyobj_subscript_set（待查）
+- `pyobj_instance_cid/ptr` — 类匹配/字段提取
+
+## 静态层复用（已实现，直接可用）
+
+- `pos: list[int]`/`s: str` 参数 = i8* 对儿（splice 正序）；局部逆序在前 ✓
+- `pos[0]` 读取 = get_ok/get_err 边界检查对（list_get elem=int）✓
+- `pos[0] += 1` = **无检查**直接 gep 链（aug-subscript 既有形状），
+  panic_ok 里**复用** gep（不重载 pos）——与 attr_aug 的重载不同！
+- `s[pos[0]] != '"'` = 链式：list_get → cv 字符机器 → eq_cstr ✓
+- `digit_value(s[pos[0]])`：char1 结果直接 i8* 传给 str 参数 ✓
+- digit_value 的 if 链 = 既有 str== 形状（create_str 弃值 + 新常量 gep
+  + eq_cstr）✓
+
+## 待解剖（下一轮入口）
+
+1. parse_number 的 `s[pos[0]] >= "0" and <= "9"`：str 的 >=/<= 比较形状
+   （sc_next 块内，非 eq_cstr——可能是 pyobj_ge 或字符序）
+2. parse_object 的 `result[key] = v` IR（subscript_set?）
+3. main 的 `o["id"]` 字面量键动态下标
+4. `while s[pos[0]] != '"'` 中 cv 与 list_get 的 get_ok/get_err 编号交错
+5. jsonparse_json.si（同目录伴生文件，应基本复用）
+
+## 实现落点（silu-conv.rs）
+
+- PYOBJ 表：untyped 值跟踪（auto-decl 时按 rhs 是否 pyobj 决定
+  `{i32, i8*}*` 存储）；PY_FNS：返回 pyobj 的函数签名（untyped ret）
+- ctor 分岔：实参含 pyobj → make_instance 路径（CID 表 = CLASSES 序+1）
+- match_class 臂：cid 比较 + instance_ptr 捕获链
+- len/subscript/append 的 pyobj 分支
+- 现有静态路径一律不动（calc 已锁定）
