@@ -341,3 +341,18 @@ digit_value（按名比较→null ✓）、parse_string（slice ✓）、parse_n
 
 且双转换死链在 parse_array 同样存在（cv→str_view 全跑弃用 + 融合重载），
 即死链与 null 无关、是比较上下文的固有行为。
+
+
+## 迭代 3 实现进度（提交 c93cd17）
+
+已实现：死链（COMPARE_VIEW 门控的 lhs 视图模式转换：cv→insertvalue→
+extractvalue→str_view 存储+弃用 bitcast，无 char1）+ str_view 首用序
+提升（alloca_ty view）+ 前导拆分形（str_owned 扫描：slice 基址/len 实参/
+按名比较 → 参数逆序、str 内联 null+store、容器裸 alloca + 延迟正序 store）。
+
+剩余（下一轮入口）：
+1. **死链交错序**：RHS 常量的 gep+create_str 位于 lhs insertvalue 与
+   extractvalue 之间（ref parse_string .100/.101 在 .98/.99 与 .102/.103
+   之间）——需要 lhs 拆两段求值（pair 构造 → rhs → pair 抽取）。
+2. JStr(parse_string(...)) 构造链（含 epilogue free ch）。
+3. jsonparse_json.si。
