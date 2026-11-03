@@ -41,9 +41,14 @@ byte-identical 立即提交**。
 **jsonparse pyobj 层已实现到端到端转换**（提交 614c44a）：Typed::Pyo 全管线
 （动态类/DYN_CLASSES+CID ctor、match_class 捕获、pyobj len/subscript/set/append、
 无注解容器 create_list/dict、返回类型推断+PY_RETS 不动点、s[k] vs 常量融合比较
-at_eq/at_cmp_cstr）。当前 DIFF（非 ERROR）：442328 vs 428244 字节，首个差分 =
-digit_value 起始处字符串编号差 9（模块级槽位计数偏移——查模块级绑定消耗：
-类/函数/捕获/auto-decl 的 *sc 次序）。14/18 保持。差分迭代入口：
+at_eq/at_cmp_cstr）。迭代 1 完成（提交 838baf1）：字符串计数已完全对齐（str_311 起）。
+四个修复：match_end 是合并块（仅函数末尾 match 才发默认 ret）；
+str 调用初始化不造 init 常量；len 从表达式位置路由到 eval_mod 内置
+分派；match_class 捕获不耗槽。当前差分 = parse_string 入口形状：
+(1) str_view 临时（切片 s[a:b] 装载）提升到 entry，位于 start 与 out
+之间的首用序；(2) 参数对交错序——ref: [locals 逆序: out(null),
+str_view, start] + pos alloca + s 对(alloca+null+store) + pos store。
+14/18 保持。差分迭代入口：
 `./reference/rust/target/debug/silu-conv benchmarks/jsonparse.si > /tmp/jp_rust.ll`
 对比 /tmp/jp_ref.ll（normalize 槽位号后看结构差）。
 
