@@ -2332,9 +2332,17 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 let rty = FN_RET.with(|r| r.borrow().clone());
                 let fs = F_SLOTS.with(|f| f.borrow().clone());
                 let v = eval_mod(b, &st.get(1), &fs, sc);
-                // epilogue: free non-param str locals before returning
+                // epilogue: free non-param str locals before returning;
+                // a str local that IS the return value frees itself in
+                // the ret copy chain (jsonparse parse_string evidence)
+                let ret_str_local = if rty == "str" && st.get(1).head() == "name"
+                    && is_local_s(&st.get(1).get(1).str_of()) {
+                    Some(st.get(1).get(1).str_of()) } else { None };
                 let locals = FN_S.with(|y| y.borrow().clone());
                 for nm in locals.iter() {
+                    if Some(nm.as_str()) == ret_str_local.as_deref() {
+                        continue;
+                    }
                     if FN_PARAM_NAMES.with(|p| p.borrow().contains(nm)) {
                         continue;
                     }
@@ -2355,16 +2363,14 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                         "  ret {{i32, i8*}}* {}", r));
                 } else if rty == "str" && st.get(1).head() == "name"
                     && is_local_s(&st.get(1).get(1).str_of()) {
-                    // str local return: load -> copy -> reload -> free
-                    // the local -> ret the copy (jsonparse parse_string)
+                    // str local return reuses the eval load:
+                    // copy(eval) -> reload -> free -> ret copy
                     let nm = st.get(1).get(1).str_of();
-                    let l1 = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i8*, i8** %\"{}\"", l1, nm));
+                    let Typed::Str(r0) = &v else { bail("ret str ref") };
                     let cp = b.nx();
                     b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")",
-                        cp, l1));
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})",
+                        cp, r0));
                     let l2 = b.nx();
                     b.line(format!(
                         "  %\"{}\" = load i8*, i8** %\"{}\"", l2, nm));
