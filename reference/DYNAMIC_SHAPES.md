@@ -328,3 +328,16 @@ str_view 注册进 FN_ALLOCAS 于首用时。
 
 差分入口：`./reference/rust/target/debug/silu-conv benchmarks/jsonparse.si
 > /tmp/jp_rust.ll` 与 /tmp/jp_ref.ll 对比（槽位归一化）。
+
+
+## 迭代 3 补充：前导规则精化（parse_array 反例）
+
+s-null + pos 拆分 ⟺ s 的整体值流入 slice 基址 / len(s) 实参 / 按名比较
+（`ch == "0"` 的 eq_cstr 直传）；**融合比较路径不算**——parse_array 的
+`s[pos[0]] != "]"` 全程融合比较（at_eq_cstr 整体传 s）却无 null、用普通
+参数对儿。即融合路径按"借用"，其余整体使用按"拥有+null"。
+digit_value（按名比较→null ✓）、parse_string（slice ✓）、parse_number
+（len ✓）、parse_array/object/value（仅融合 ✗）全部自洽。
+
+且双转换死链在 parse_array 同样存在（cv→str_view 全跑弃用 + 融合重载），
+即死链与 null 无关、是比较上下文的固有行为。
