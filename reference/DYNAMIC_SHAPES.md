@@ -300,8 +300,31 @@ rawstr_char1，无 str_view）。其 str_view×2 来自 `ch == '"'` 分支：
 bitcast——**形如 knucleotide 的 emit_slice_view**（cv 输出对儿存进
 str_view 再 bitcast 传给 pyobj 调用，此处大概率是 JStr 构造或 pyobj
 键装箱）。即：**char1 结果要进 pyobj 域时走 str_view**，比较时直接
-char1+eq_cstr。下一差分点：`JStr(parse_string(...))` 构造链的确切形状
-（.78-.96 区段，含 epilogue free ch）。
+char1+eq_cstr。下一差分点：`JStr(parse_string(...))` 构造链（.78-.96 区段）。
+
+## 迭代 3 新发现：比较上下文的双转换（重大）
+
+`while s[pos[0]] != '"'`（parse_string while_cond）的完整形状：
+1. **值转换（死代码）**：pos[0] 边界检查(get_ok.1) → cv 机器全跑
+   （cv_ok/err/ascii/walk/join + phi + 宽度选择）→ insertvalue 对儿 →
+   extractvalue → **存进 str_view 四字段** + bitcast（bitcast 也弃用）。
+   **无 char1 调用**——比较上下文的下标值转换止步于 str_view。
+2. **融合比较（实际分支）**：重新 load s + load pos + pos[0] 再做一次
+   边界检查(get_ok.2) → rawstr_at_eq_cstr + xor -1 → br。
+
+即：比较识别 s[k] vs 常量时，LHS 的值转换照常发生（cv→str_view，
+全部弃用），然后融合路径**重新装载**双方再比较。str_view 临时因此在
+首用序注册（介于 start 与 out 之间），s 因 at_eq_cstr 整体传参而获得
+null 所有权标记——这统一解释了前导变体表！
+
+对照：赋值上下文（parse_value 的 ch = s[pos[0]]）= cv + char1 +
+free-old + store（无 str_view）。
+
+实现要点（下一轮）：eval_i1 比较臂中，当 LHS 是 str 下标时：
+(a) 先让 lhs 值转换走"str_view 变体"（cv 机器照发但结尾改为
+insertvalue→extractvalue→str_view 存储链，不调 char1）；
+(b) 融合比较重新 load s + 求值 idx（第二次边界检查）+ at_eq/at_cmp。
+str_view 注册进 FN_ALLOCAS 于首用时。
 
 差分入口：`./reference/rust/target/debug/silu-conv benchmarks/jsonparse.si
 > /tmp/jp_rust.ll` 与 /tmp/jp_ref.ll 对比（槽位归一化）。
