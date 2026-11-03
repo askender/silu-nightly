@@ -272,3 +272,31 @@ AST: ["match_class",["name","JArr"],[],["items"],[["match_as",null,"items"]]]
 - match_class 臂：cid 比较 + instance_ptr 捕获链
 - len/subscript/append 的 pyobj 分支
 - 现有静态路径一律不动（calc 已锁定）
+
+
+# jsonparse 差分迭代 2 观察（前导变体，待实现）
+
+六个函数的前导形状实测（ref IR）：
+
+| 函数 | 形状 | s null? | pos 拆分? |
+|---|---|---|---|
+| digit_value(ch) | ch 对儿 alloca+null+store | —（ch 有 null） | — |
+| parse_string | out(null),str_view,start 逆序 + pos 裸alloca + s 对儿(含null) + pos store | ✓ | ✓ |
+| parse_number | str_view.1,str_view,n 逆序 + pos 裸alloca + s 对儿(含null) + pos store | ✓ | ✓ |
+| parse_array | 逆序局部 + s 对儿(无null) + pos 对儿 | ✗ | ✗ |
+| parse_object | 逆序局部 + s 对儿(无null) + pos 对儿 | ✗ | ✗ |
+| parse_value | ch(null) 逆序 + s 对儿(无null) + pos 对儿 | ✗ | ✗ |
+
+**工作假设**：s-null + pos 拆分 ⟺ 函数体把 s 作为**整体字符串**使用
+（slice `s[a:b]` 传给 rawstr_slice，或 `len(s)` 整体调用）——此时 s 按
+"拥有型 str 局部"处理（null 初值=所有权），否则是"借用指针参数"。
+parse_string 有 slice ✓、parse_number 有 len(s) ✓、其余只有下标访问 ✗。
+待验证 + 实现时注意：pos 拆分形状 = 裸 alloca 进逆序块、store 追加在
+全部参数对之后（forward）。
+
+另一观察：jsonparse 的 cv 字符读取会**用到 str_view 临时**（parse_value
+有 str_view×2 但源码无切片）——与 calc 的 cv（直接 insertvalue +
+rawstr_char1）不同！下一步差分确认 cv 在此文件的真实形状。
+
+差分入口：`./reference/rust/target/debug/silu-conv benchmarks/jsonparse.si
+> /tmp/jp_rust.ll` 与 /tmp/jp_ref.ll 对比（槽位归一化）。
