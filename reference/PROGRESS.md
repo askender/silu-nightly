@@ -18,7 +18,7 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 - silu-conv 通过子进程调 silu-fe 取 IR（前端已独立验证）
 - **非目标**：不做产品编译器、不进自举链、不做同步镜像（版本快照神谕）
 
-## 当前状态：转换器 13/18
+## 当前状态：转换器 14/18
 
 | 文件 | 能力面 | 状态 |
 |---|---|---|
@@ -30,10 +30,23 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 | mandelbrot | print(str 变量)/体内 str 声明 | ✅ |
 | wordcount | str 层：PStr/pystr 拼接/str()/list[str]/dict[str,int] get 惯用法 | ✅ |
 | knucleotide | str 切片(str_view)/elif 链/const 键 get_or + 标签检查 | ✅ |
-| calc / jsonparse×2 | **动态实例层**（class/enum/方法/self） | 未实现 |
+| calc | **动态实例层全套**（class/enum/方法/match/sc短路/存储类型/epilogue/user-main） | ✅ |
+| jsonparse ×2 | **pyobj 装箱动态层**（{i32,i8*}* 值树 + 90+ pyobj_* 运行时族） | 未实现 |
 | ir_interp / silu_fe | import 系 + 全特性 | 未实现 |
 
-最近提交（本轮 8 个）：`8428fc8` knucleotide、`7f31ccd` wordcount、
+里程碑提交：`c25628d` calc.si（事故重放+回归修复）、`355cb81` jsonparse 前置。
+本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
+byte-identical 立即提交**。
+
+jsonparse 剩余规模（/tmp/jp_ref.ll 尾 77KB）：pyobj 动态层 = 值全走 {i32,i8*}*
+装箱；匹配 class 用 pyobj_instance_cid(==类序号)+pyobj_instance_ptr+字段
+{i32,i8*}* 装载；len(装箱list) = pyobj_len_raw；下标 = create_int+
+pyobj_subscript；[0] 字面量实参 = create_list+create_int+list_append+
+pylist_to_rawlist；**enum 提取序**里 JInt/JStr/JArr/JObj 的 cid=1/2/3/4
+（JArr=3 已证）。这是第三种表示（静态 rawlist/rawdict 之外），建议下一轮
+从 jsonparse 的 parse_number/digit_value（纯静态 str 层）先行，再啃 match_class。
+
+之前提交（前轮 8 个）：`8428fc8` knucleotide、`7f31ccd` wordcount、
 `f9cc50b` mandelbrot、`2abfbb9` spectral、`aa69e5b` nbody、`9c06ce8` fannkuch、
 `12a6758` trees、`e6e2f5f` list+dict。更早：`05fd782` string 等。
 
