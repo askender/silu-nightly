@@ -38,7 +38,32 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
 byte-identical 立即提交**。
 
-**jsonparse pyobj 层已实现到端到端转换**（提交 614c44a）：Typed::Pyo 全管线
+**当前焦点：jsonparse 逐字节对齐（5 轮差分迭代完成，全部已提交）**
+
+- 迭代 1（838baf1）：字符串计数完全对齐——match_end 是合并块、str 调用
+  初始化无 init 常量、len 表达式位置路由、捕获不耗槽
+- 迭代 2（76f01c6/dacb4ca 观察）：前导变体规律 + cv/pyobj 域规则
+- 迭代 3（c93cd17）：死链（COMPARE_VIEW 门控 cv→str_view 无 char1）+
+  拆分前导（str_owned 扫描：slice/len/按名比较 → 参数逆序）+ str_view
+  首用序提升
+- 迭代 4（9a3ee96）：死链交错序（PENDING_PAIR 暂停 insertvalue 后，
+  rhs 常量 create_str 插入其间，finish_view_split 补完）+ 融合比较
+  重载基址（局部槽解析）+ 切片 copy 语境门控（SLICE_NO_COPY）+ str
+  局部返回 copy→reload→free→ret
+- 迭代 5（81538b1）：**parse_string 整函数逐字节对齐**（首个跨过函数
+  边界）；返回局部从 epilogue 免除
+
+**下一差分点（已定位）**：parse_number 入口——参考为每个融合比较建
+独立 str_view（str_view.1, str_view 两个）且顺序为 .1 在前；我的实现
+共享一个 str_view 且只有一个 at_cmp（ref 有 2 个 at_cmp：>= "0" 与
+<= "9" 各一套死链）。实现要点：**每次融合比较独立分配 str_view**（不
+共享），且第二个比较（<=）也走死链路径（当前实现里 and 链第二操作数
+的 LHS 下标没触发死链——检查 eval_i1 的 and 递归是否带 COMPARE_VIEW
+上下文）。
+
+jsonparse 当前输出 436,862 字节 vs 参考 442,328；14/18 保持。
+
+**历史**：pyobj 层端到端转换（提交 614c44a）：Typed::Pyo 全管线
 （动态类/DYN_CLASSES+CID ctor、match_class 捕获、pyobj len/subscript/set/append、
 无注解容器 create_list/dict、返回类型推断+PY_RETS 不动点、s[k] vs 常量融合比较
 at_eq/at_cmp_cstr）。迭代 1 完成（提交 838baf1）：字符串计数已完全对齐（str_311 起）。
