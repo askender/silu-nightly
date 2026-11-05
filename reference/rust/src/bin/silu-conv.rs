@@ -150,6 +150,12 @@ fn class_fields(cls: &str) -> Option<Vec<(String, String)>> {
         .map(|(_, fs)| fs.clone()))
 }
 
+// field byte offset in the instance block (8 bytes per field)
+fn off_of(fields: &[(String, String)], fld: &str) -> i64 {
+    fields.iter().position(|(f, _)| f == fld)
+        .map(|i| (i * 8) as i64).unwrap_or(0)
+}
+
 fn is_local_s(n: &str) -> bool {
     FN_S.with(|t| t.borrow().iter().any(|x| x == n))
 }
@@ -1236,7 +1242,7 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
                     "  %\"{}\" = fcmp {} double {}, {}", ic, fp, l, r));
                 format!("%\"{}\"", ic)
             } else {
-                let (Typed::I64(l), Typed::I64(r)) = (lt, rt) else {
+                let (Typed::I64(l), Typed::I64(r)) = (&lt, &rt) else {
                     bail("cond types") };
                 let ic = b.nx();
                 b.line(format!(
@@ -2710,6 +2716,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
             "enum_def" => {
                 *sc += 1; // registered by the prescan
             }
+            "from_import" => {
+                // from __future__ import annotations is a no-op: no code,
+                // no global slot (ir_interp evidence)
+            }
             "class_def" => {
                 // instance-domain classes occupy a global slot (calc);
                 // pyobj dynamic classes register only a layout (jsonparse)
@@ -3115,6 +3125,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let n = params.len();
     let arg_ll = |t: &str| match t {
         "float" => "double",
+        "bool" => "i1",
         t if t.starts_with("list:") || t.starts_with("inst:")
             || t == "str" || t == "json" => "i8*",
         "pyobj" => "{i32, i8*}*",
@@ -3214,6 +3225,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
                 continue;
             }
             if t == "float" { FN_F.with(|f| f.borrow_mut().push(p.str_of())); }
+            else if t == "bool" { FN_B.with(|f| f.borrow_mut().push(p.str_of())); }
             else { FN_I.with(|f| f.borrow_mut().push(p.str_of())); }
         }
     }
@@ -3331,7 +3343,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
 
 #[derive(Clone)]
 enum Typed { I64(String), F64(String), Str(String), PStr(String),
-             Inst(String), Pyo(String) } // Pyo = boxed {i32, i8*}* value
+             Inst(String), Pyo(String), Bool(String) } // Bool = i1 value
 
 fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
              slot_f: &dyn Fn(&str) -> String, sc: &mut usize,
@@ -3500,6 +3512,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             Val::Int(v) => Typed::I64(v.to_string()),
             Val::Float(v) => Typed::F64(double_bits(*v)),
             Val::Null => Typed::Inst("null".into()),
+            Val::Bool(v) => Typed::Bool(if *v { "1".into() } else { "0".into() }),
             _ => bail("const type"),
         },
         "name" => {
@@ -3594,6 +3607,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 Typed::Str(_) | Typed::PStr(_) | Typed::Pyo(_) =>
                     bail("unary minus non-num"),
                 Typed::Inst(_) => bail("unary minus inst"),
+                Typed::Bool(_) => bail("unary minus bool"),
             }
         }
         "**" => {
@@ -3699,6 +3713,53 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let fty = fields.iter().find(|(f, _)| f == &fld)
                 .map(|(_, t)| t.clone())
                 .unwrap_or_else(|| bail("field"));
+            if fty == "str" {
+                // self.src[...]: str field read. A slice index yields
+                // rawstr_slice (field load + dead len + start + end);
+                // a plain index yields the cv char machinery
+                // (ir_interp Json__ws / Json__string evidence)
+                let lv = b.nx();
+                b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", lv, bn));
+                let gp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}", gp, lv, off_of(&fields, &fld)));
+                let bc = b.nx();
+                b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                let sp = b.nx();
+                b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", sp, bc));
+                let idxe = &e.get(2);
+                if idxe.head() == "slice" {
+                    // dead len read (str header field3), then start/end
+                    let sc2 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*", sc2, sp));
+                    let g3 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                        g3, sc2));
+                    let dl = b.nx();
+                    b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", dl, g3));
+                    let sv = eval_expr(b, &idxe.get(1), slot_i, slot_f, sc, fslots);
+                    let Typed::I64(sr) = sv else { bail("field slice start") };
+                    let ev = eval_expr(b, &idxe.get(2), slot_i, slot_f, sc, fslots);
+                    let Typed::I64(er) = ev else { bail("field slice end") };
+                    let sl = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_slice\"(i8* %\"{}\", i64 {}, i64 {})",
+                        sl, sp, sr, er));
+                    if SLICE_NO_COPY.with(|c| *c.borrow()) {
+                        return Typed::Str(format!("%\"{}\"", sl));
+                    }
+                    let cp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp, sl));
+                    return Typed::Str(format!("%\"{}\"", cp));
+                }
+                let kv = eval_expr(b, idxe, slot_i, slot_f, sc, fslots);
+                let Typed::I64(k) = kv else { bail("str field idx") };
+                let r = b.str_char_at(&format!("%\"{}\"", sp), &k, sc);
+                return Typed::Str(r);
+            }
             let elty = fty.strip_prefix("list:")
                 .unwrap_or_else(|| bail("not a list field"))
                 .to_string();
@@ -4082,6 +4143,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
                 match (av, ty) {
                     (Typed::I64(r), "int") => parts.push(format!("i64 {}", r)),
+                    (Typed::Bool(r), "bool") => parts.push(format!("i1 {}", r)),
                     (v, "float") => {
                         let r = to_f64(b, v);
                         parts.push(format!("double {}", r));
@@ -4206,6 +4268,7 @@ fn to_f64(b: &mut FnB, t: Typed) -> String {
         Typed::Str(_) | Typed::PStr(_) => bail("str where float expected"),
         Typed::Pyo(_) => bail("pyobj where float expected"),
         Typed::Inst(_) => bail("inst where float expected"),
+        Typed::Bool(_) => bail("bool where float expected"),
     }
 }
 
@@ -4339,6 +4402,7 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
                 }
                 Typed::Inst(_) => bail("print instance"),
                 Typed::Pyo(_) => bail("print pyobj"),
+                Typed::Bool(_) => bail("print bool"),
                 Typed::Str(r) => {
                     // str NAME arg: %.*s with (len field 0, data field 2)
                     let bc = b.nx();
@@ -4864,6 +4928,44 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
                 b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, gl));
                 return Typed::I64(format!("%\"{}\"", ld));
             }
+        }
+        if ia[0].head() == "attribute" && ia[0].get(1).head() == "name" {
+            // len(self.src) / len(stmts.arr): instance field, then the
+            // kind-appropriate length load (str header field3 / rawlist_len)
+            let bn = ia[0].get(1).get(1).str_of();
+            let fld = ia[0].get(2).str_of();
+            let cls = fn_ty_of(&bn).unwrap_or_else(|| bail("len attr base"));
+            let fields = class_fields(&cls)
+                .unwrap_or_else(|| bail("len attr fields"));
+            let (off, fty) = fields.iter().position(|(f, _)| f == &fld)
+                .map(|i| ((i * 8) as i64, fields[i].1.clone()))
+                .unwrap_or_else(|| bail("len attr field"));
+            let lv = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", lv, bn));
+            let gp = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}", gp, lv, off));
+            let bc = b.nx();
+            b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+            let fldp = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", fldp, bc));
+            if fty == "str" {
+                let sc2 = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*", sc2, fldp));
+                let gl = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                    gl, sc2));
+                let ld = b.nx();
+                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, gl));
+                return Typed::I64(format!("%\"{}\"", ld));
+            }
+            // list field: rawlist_len
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"rawlist_len\"(i8* %\"{}\")", c, fldp));
+            return Typed::I64(format!("%\"{}\"", c));
         }
         if ia[0].head() != "name" { bail("len arg"); }
         let n = ia[0].get(1).str_of();
