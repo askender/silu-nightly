@@ -18,7 +18,7 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 - silu-conv 通过子进程调 silu-fe 取 IR（前端已独立验证）
 - **非目标**：不做产品编译器、不进自举链、不做同步镜像（版本快照神谕）
 
-## 当前状态：转换器 14/18
+## 当前状态：转换器 15/18
 
 | 文件 | 能力面 | 状态 |
 |---|---|---|
@@ -31,51 +31,44 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 | wordcount | str 层：PStr/pystr 拼接/str()/list[str]/dict[str,int] get 惯用法 | ✅ |
 | knucleotide | str 切片(str_view)/elif 链/const 键 get_or + 标签检查 | ✅ |
 | calc | **动态实例层全套**（class/enum/方法/match/sc短路/存储类型/epilogue/user-main） | ✅ |
-| jsonparse ×2 | **pyobj 装箱动态层**（{i32,i8*}* 值树 + 90+ pyobj_* 运行时族） | 未实现 |
+| jsonparse.si | **pyobj 装箱动态层**（{i32,i8*}* 值树 + 90+ pyobj_* 运行时族 + match_class） | ✅ |
+| jsonparse_json.si | 伴生变体 | 未实现 |
 | ir_interp / silu_fe | import 系 + 全特性 | 未实现 |
 
-里程碑提交：`c25628d` calc.si（事故重放+回归修复）、`355cb81` jsonparse 前置。
+里程碑提交：`c25628d` calc.si（事故重放+回归修复）、`355cb81` jsonparse 前置、
+`cedef08` **jsonparse.si 逐字节对齐（15/18）**。
 本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
 byte-identical 立即提交**。
 
-**当前焦点：jsonparse 逐字节对齐（5 轮差分迭代完成，全部已提交）**
+**jsonparse.si 已完成（cedef08，15/18）——迭代 6 全函数跨过**
 
-- 迭代 1（838baf1）：字符串计数完全对齐——match_end 是合并块、str 调用
-  初始化无 init 常量、len 表达式位置路由、捕获不耗槽
-- 迭代 2（76f01c6/dacb4ca 观察）：前导变体规律 + cv/pyobj 域规则
-- 迭代 3（c93cd17）：死链（COMPARE_VIEW 门控 cv→str_view 无 char1）+
-  拆分前导（str_owned 扫描：slice/len/按名比较 → 参数逆序）+ str_view
-  首用序提升
-- 迭代 4（9a3ee96）：死链交错序（PENDING_PAIR 暂停 insertvalue 后，
-  rhs 常量 create_str 插入其间，finish_view_split 补完）+ 融合比较
-  重载基址（局部槽解析）+ 切片 copy 语境门控（SLICE_NO_COPY）+ str
-  局部返回 copy→reload→free→ret
-- 迭代 5（81538b1）：**parse_string 整函数逐字节对齐**（首个跨过函数
-  边界）；返回局部从 epilogue 免除
+迭代 6 修复（201 行改动）：
+1. **emit_sc 变长重写**：IR 的 and 是扁平变长节点（["and",op1,op2,op3]），
+   原实现只读两个操作数。重写为：sc_end 块在首操作数求值前创建，每个后续
+   操作数在 sc_next.k 块求值，最后一操作数直接 create_bool 收尾
+2. 未拥有 str 参数直接 alloca+store（无 null；null 仅 split form）
+3. alloca_ty 补 pyobj→{i32,i8*}*；FN_PY 注册表 + py_slot()（pyobj 局部
+   解析 %"name" 而非 @"name"）；list_append/pyobj_subscript_set/name 装载
+   走 py_slot；两个调用点补 none|pyobj→{i32,i8*}* 返回
+4. Typed::Inst 裸赋值自动声明 = load 旧值+free+store（key=parse_string
+   证据；call 结果多耗一 silent 槽：call .121, silent .122, load .123）
+5. **emit_dyn_ctor 字段次序**：实参求值→转换(copy/to_f64/to_raw)→gep→
+   bitcast→store（JStr copy 在 gep 前）
+6. pyobj 被调者的 list 字面量实参走装箱域：create_list+create_int+
+   list_append+pylist_to_rawlist（main 的 parse_value(doc,[0])）
+7. **match 收尾规则**：conv_block 尾部在 case body 耗尽且当前块未终止时
+   发 br 最内层 match_end。MATCH_END 栈（push 在 case 循环**前**）+
+   LOOP_DEPTH/CASE_DEPTH 区分 case body（发 match_end）vs while/if/for
+   body（由语句自身回环/merge）。内层 match 结束由外层收尾补 br 父 match_end
+8. **全局槽号模型**（关键）：ref 的 `_create_global_string` 用
+   `str_{len(module.globals)}`——槽号=模块全局表长度（含变量和函数）。
+   **class_def：inst 域类耗 1 槽、pyobj 动态类不耗**（jsonparse 的 JInt 等
+   被 match_class 消费→DYN_CLASSES→不耗）；**match_class 每个捕获耗 1 槽**
+   （建 gvar）。这条修正了迭代 1“捕获不耗槽”的误判
+9. len(names[i]) → rawlist_str_get（非 copy_into）；str 捕获先 rawstr_copy
 
-**下一差分点（已定位）**：parse_number 入口——参考为每个融合比较建
-独立 str_view（str_view.1, str_view 两个）且顺序为 .1 在前；我的实现
-共享一个 str_view 且只有一个 at_cmp（ref 有 2 个 at_cmp：>= "0" 与
-<= "9" 各一套死链）。实现要点：**每次融合比较独立分配 str_view**（不
-共享），且第二个比较（<=）也走死链路径（当前实现里 and 链第二操作数
-的 LHS 下标没触发死链——检查 eval_i1 的 and 递归是否带 COMPARE_VIEW
-上下文）。
-
-jsonparse 当前输出 436,862 字节 vs 参考 442,328；14/18 保持。
-
-**历史**：pyobj 层端到端转换（提交 614c44a）：Typed::Pyo 全管线
-（动态类/DYN_CLASSES+CID ctor、match_class 捕获、pyobj len/subscript/set/append、
-无注解容器 create_list/dict、返回类型推断+PY_RETS 不动点、s[k] vs 常量融合比较
-at_eq/at_cmp_cstr）。迭代 1 完成（提交 838baf1）：字符串计数已完全对齐（str_311 起）。
-四个修复：match_end 是合并块（仅函数末尾 match 才发默认 ret）；
-str 调用初始化不造 init 常量；len 从表达式位置路由到 eval_mod 内置
-分派；match_class 捕获不耗槽。当前差分 = parse_string 入口形状：
-(1) str_view 临时（切片 s[a:b] 装载）提升到 entry，位于 start 与 out
-之间的首用序；(2) 参数对交错序——ref: [locals 逆序: out(null),
-str_view, start] + pos alloca + s 对(alloca+null+store) + pos store。
-14/18 保持。差分迭代入口：
-`./reference/rust/target/debug/silu-conv benchmarks/jsonparse.si > /tmp/jp_rust.ll`
-对比 /tmp/jp_ref.ll（normalize 槽位号后看结构差）。
+**下一目标**：jsonparse_json.si（当前 ERROR: list elem type）。
+jsonparse.si 输出 442,328 字节 = 参考，逐字节一致。
 
 **蓝图文档**（完整形状）（reference/DYNAMIC_SHAPES.md 提交 9a7f325）：
 pyobj={i32,i8*}*（= none 型作值载体）、动态 ctor=malloc+pyobj字段+
