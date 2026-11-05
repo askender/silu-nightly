@@ -16,7 +16,11 @@ use std::io::Write;
 use std::process::Command;
 
 const CONST_PREFIX: &str = include_str!("../../const_prefix.ll");
+const TAGGED_PREFIX: &str = include_str!("../../tagged_prefix.ll");
 const STR_BASE: usize = 297; // runtime consumed 0..=296 (see README)
+// the tagged/Json runtime block adds 15 module globals (14 fns + the
+// json_typeerr constant), shifting every user string's number by 15
+const TAGGED_SLOTS: usize = 15;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Val { Null, Bool(bool), Int(i64), Float(f64), Str(String), List(Vec<Val>) }
@@ -127,6 +131,8 @@ thread_local! {
     static FN_PARAMS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
     static FN_L: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
     static FN_PY: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static FN_D: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static JSON_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static IN_FN: RefCell<bool> = RefCell::new(false);
     static FN_RET: RefCell<String> = RefCell::new(String::new());
     static LST_ELEM: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
@@ -186,6 +192,12 @@ fn lst_elem_ty(n: &str) -> String {
         .unwrap_or_else(|| "int".into()))
 }
 
+// dict value annotation is Json? (dict[str,Json] evidence)
+fn dct_val_is_json(n: &str) -> bool {
+    DCT_VALS.with(|m| m.borrow().iter()
+        .any(|(k, v)| k == n && v == "Json"))
+}
+
 // container slot: local alloca %x vs module global @x
 fn lst_slot(n: &str) -> String {
     if FN_L.with(|m| m.borrow().iter().any(|(k, _)| k == n)) {
@@ -196,6 +208,13 @@ fn lst_slot(n: &str) -> String {
 // pyobj locals ({i32,i8*}* alloca) vs module pyobj globals
 fn py_slot(n: &str) -> String {
     if FN_PY.with(|m| m.borrow().iter().any(|k| k == n)) {
+        format!("%\"{}\"", n)
+    } else { format!("@\"{}\"", n) }
+}
+
+// dict local alloca %x vs module global @x (function-local dict[str,Json])
+fn dct_slot(n: &str) -> String {
+    if FN_D.with(|m| m.borrow().iter().any(|k| k == n)) {
         format!("%\"{}\"", n)
     } else { format!("@\"{}\"", n) }
 }
@@ -238,6 +257,7 @@ thread_local! {
     static LST_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new()); // list-typed globals
     static DCT_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new()); // dict-typed globals
     static DCT_KEYS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new()); // dict key types
+    static DCT_VALS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new()); // dict value types
 }
 
 fn tail_push(line: String) {
@@ -1046,6 +1066,8 @@ thread_local! {
     // merge, an inner match ends with a forward branch to the parent's
     // merge (jsonparse main evidence)
     static MATCH_END: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // whether the tagged-union Json runtime is pulled in
+    static TAGGED: RefCell<bool> = RefCell::new(false);
     // loop-body nesting depth; a match case body records the depth it
     // entered at so the block-fallthrough rule can tell a case body
     // (branch to match_end) from a while body (the loop re-branches)
@@ -1420,13 +1442,34 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
     if IN_FN.with(|v| *v.borrow()) && st.get(3).head() == "subscript"
         && st.get(3).get(1).get(1).str_of() == "list" {
         // function-local list: alloca + rawlist_new + store
-        let elem = st.get(3).get(2).get(1).str_of();
+        let elem0 = st.get(3).get(2).get(1).str_of();
+        let elem = if elem0 == "Json" { "json".to_string() } else { elem0 };
         if !is_class(&elem) && elem != "int" && elem != "str"
-            && elem != "float" { bail("local list elem"); }
+            && elem != "float" && elem != "json" { bail("local list elem"); }
         FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "list".into())));
         FN_L.with(|l| l.borrow_mut().push((name.clone(), elem)));
         let c = b.nx();
         b.line(format!("  %\"{}\" = call i8* @\"rawlist_new\"(i64 8)", c));
+        b.silent();
+        b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", c, name));
+        return;
+    }
+    if IN_FN.with(|v| *v.borrow()) && st.get(3).head() == "subscript"
+        && st.get(3).get(1).get(1).str_of() == "dict" {
+        // function-local dict[str,Json]: alloca + rawdict_new + store
+        // (jsonparse_json parse_object o evidence)
+        let tp = st.get(3).get(2);
+        let tv = tp.items().get(1).cloned().unwrap_or(Val::Null);
+        let vty = tv_valtype(&tv);
+        FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "list".into())));
+        DCT_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+        DCT_KEYS.with(|m| m.borrow_mut().push((name.clone(), vty)));
+        let va = match &tv { Val::List(vs) if vs.len() == 2 =>
+            vs[1].get(1).str_of(), _ => String::new() };
+        DCT_VALS.with(|m| m.borrow_mut().push((name.clone(), va)));
+        FN_D.with(|f| f.borrow_mut().push(name.clone()));
+        let c = b.nx();
+        b.line(format!("  %\"{}\" = call i8* @\"rawdict_new\"()", c));
         b.silent();
         b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", c, name));
         return;
@@ -1522,8 +1565,30 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         let tv = tp.items().get(1).cloned().unwrap_or(Val::Null);
         let ok_types = tp.head() == "tuple"
             && matches!(&tv, Val::List(vs) if vs.len() == 2
-                && vs.iter().all(|v| ["int", "str"].contains(&v.get(1).str_of().as_str())));
+                && vs.iter().all(|v| ["int", "str", "Json"].contains(&v.get(1).str_of().as_str())));
         if !ok_types { bail("dict elem types"); }
+        let vty = tv_valtype(&tv);
+        // dict[str,Json]: the VALUE annotation (second tuple member)
+        let val_ann = match &tv { Val::List(vs) if vs.len() == 2 =>
+            vs[1].get(1).str_of(), _ => String::new() };
+        if init.head() == "call" && val_ann == "Json" {
+            // dict[str,Json] = json_dict(x): unwrap the tagged dict pointer
+            // into the raw dict global (jsonparse_json main o)
+            *sc += 1;
+            DCT_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+            DCT_KEYS.with(|m| m.borrow_mut().push((name.clone(), vty)));
+            DCT_VALS.with(|m| m.borrow_mut().push((name.clone(), val_ann.clone())));
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &init, &fs, sc);
+            let r = match v {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                _ => bail("json_dict init"),
+            };
+            b.silent();
+            b.line(format!("  store i8* {}, i8** @\"{}\"", r, name));
+            tail_push(format!("@\"{}\" = global i8* null", name));
+            return;
+        }
         if init.head() != "dict"
             || !matches!(init.items().get(1), Some(Val::List(v)) if v.is_empty()) {
             bail("dict init");
@@ -1532,6 +1597,9 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         DCT_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
         DCT_KEYS.with(|m| m.borrow_mut().push(
             (name.clone(), tv_valtype(&tv))));
+        let va2 = match &tv { Val::List(vs) if vs.len() == 2 =>
+            vs[1].get(1).str_of(), _ => String::new() };
+        DCT_VALS.with(|m| m.borrow_mut().push((name.clone(), va2)));
         let c = b.nx();
         b.line(format!("  %\"{}\" = call i8* @\"rawdict_new\"()", c));
         b.silent();
@@ -1539,8 +1607,9 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         tail_push(format!("@\"{}\" = global i8* null", name));
     } else if st.get(3).head() == "subscript"
         && st.get(3).get(1).get(1).str_of() == "list" {
-        let elem = st.get(3).get(2).get(1).str_of();
-        if elem != "int" && elem != "float" && elem != "str"
+        let elem0 = st.get(3).get(2).get(1).str_of();
+        let elem = if elem0 == "Json" { "json".to_string() } else { elem0 };
+        if elem != "int" && elem != "float" && elem != "str" && elem != "json"
             && !is_class(&elem) && !is_enum(&elem) {
             bail("list elem type");
         }
@@ -1584,10 +1653,37 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
             } else { bail("list init"); }
         } else if init.head() == "*" {
             emit_fill(b, &name, &init.get(1), &init.get(2), sc);
+        } else if elem == "json" && init.head() == "call" {
+            // list[Json] = json_list(x): unwrap the tagged list pointer
+            // into the raw list global (jsonparse_json main items)
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &init, &fs, sc);
+            let r = match v {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                _ => bail("json_list init"),
+            };
+            b.silent();
+            b.line(format!("  store i8* {}, i8** @\"{}\"", r, name));
         } else { bail("list init"); }
         tail_push(format!("@\"{}\" = global i8* null", name));
     } else {
         let anno = st.get(3).get(1).str_of();
+        if anno == "Json" {
+            // Json module binding: i8* global holding the tagged block
+            // pointer (jsonparse_json main data evidence)
+            JSON_SLOTS.with(|sl| sl.borrow_mut().push(name.clone()));
+            *sc += 1;
+            tail_push(format!("@\"{}\" = global i8* null", name));
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &init, &fs, sc);
+            let r = match v {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                _ => bail("json init"),
+            };
+            b.silent();
+            b.line(format!("  store i8* {}, i8** @\"{}\"", r, name));
+            return;
+        }
         if anno == "str" {
             STR_SLOTS.with(|sl| sl.borrow_mut().push(name.clone()));
             if !matches!(&init.items().get(1), Some(Val::Str(_))) {
@@ -1757,6 +1853,37 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         && !is_declared(&name) && !is_local_i(&name)
         && !is_local_f(&name) && !is_local_b(&name)
         && fn_ty_of(&name).is_none() {
+        // Json subscript read: it = items[i] (list[Json]) or n1 = o["id"]
+        // (dict[str,Json]). The element is an i64 slot bit-pattern; the
+        // target auto-declares a Json global and inttoptr's the bits
+        // (jsonparse_json main evidence)
+        if rhs.head() == "subscript" && rhs.get(1).head() == "name" {
+            let bn = rhs.get(1).get(1).str_of();
+            let is_json_elem =
+                (LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn))
+                    && lst_elem_ty(&bn) == "json")
+                || (FN_L.with(|t| t.borrow().iter().any(|(k, e)|
+                        k == &bn && e == "json")))
+                || (DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn))
+                    && dct_key_ty(&bn) == "str" && dct_val_is_json(&bn));
+            if is_json_elem {
+                // rhs (with its bounds-check panic string) is created
+                // BEFORE the target binding, matching _convert_node ->
+                // _declare_var order in the reference
+                let fs = F_SLOTS.with(|f| f.borrow().clone());
+                let v = eval_mod(b, &rhs, &fs, sc);
+                let Typed::I64(bits) = v else { bail("json subscript") };
+                JSON_SLOTS.with(|sl| sl.borrow_mut().push(name.clone()));
+                *sc += 1;
+                tail_push(format!("@\"{}\" = global i8* null", name));
+                let pt = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = inttoptr i64 {} to i8*", pt, bits));
+                b.silent();
+                b.line(format!("  store i8* %\"{}\", i8** @\"{}\"", pt, name));
+                return;
+            }
+        }
         // untyped container literals: dynamic pyobj (parse_array/object)
         if rhs.head() == "list" || rhs.head() == "dict" {
             let elems = rhs.items().get(1).cloned().unwrap_or(Val::Null);
@@ -2087,6 +2214,38 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
             b.line(format!("  store i64 {}, i64* %\"{}\"", res, bc));
             return;
         }
+        if dct_key_ty(&obj) == "str" {
+            // o[key] = value on a str-keyed dict. Value order: obj, then
+            // value, then key; rawdict_str_set. A Json value (tagged block
+            // pointer) is ptrtoint'd into the slot's i64 bits
+            // (jsonparse_json parse_object o[key]=parse_value evidence)
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** {}", l, dct_slot(&obj)));
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let vv = eval_mod(b, &st.get(3), &fs, sc);
+            let vbits = match vv {
+                Typed::Inst(r) | Typed::Str(r) => {
+                    let pt = b.nx();
+                    b.line(format!("  %\"{}\" = ptrtoint i8* {} to i64", pt, r));
+                    format!("%\"{}\"", pt)
+                }
+                Typed::I64(r) => r,
+                _ => bail("dict str value"),
+            };
+            let kr = {
+                let kv = eval_mod(b, &st.get(2), &fs, sc);
+                match kv {
+                    Typed::Str(r) | Typed::Inst(r) => r,
+                    Typed::PStr(_) => to_raw(b, kv, sc),
+                    _ => bail("dict str key"),
+                }
+            };
+            b.silent();
+            b.line(format!(
+                "  call void @\"rawdict_str_set\"(i8* %\"{}\", i8* {}, i64 {})",
+                l, kr, vbits));
+            return;
+        }
         let l = b.nx();
         b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, obj));
         let v = b.expr_i64_raw(&st.get(3), &global_slot, sc);
@@ -2383,6 +2542,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     && is_local_s(&st.get(1).get(1).str_of()) {
                     Some(st.get(1).get(1).str_of()) } else { None };
                 let locals = FN_S.with(|y| y.borrow().clone());
+                // Json returns box first, then free the str locals (the
+                // tagged_new_ptr/copy precede the ch free, parse_value
+                // evidence); other returns free before the value dispatch
+                if rty != "json" {
                 for nm in locals.iter() {
                     if Some(nm.as_str()) == ret_str_local.as_deref() {
                         continue;
@@ -2397,6 +2560,7 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     b.line(format!(
                         "  call void @\"rawstr_free\"(i8* %\"{}\")", lf));
                 }
+                }
                 if rty == "float" {
                     let r = to_f64(b, v);
                     b.silent();
@@ -2405,6 +2569,94 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     b.silent();
                     b.line(format!(
                         "  ret {{i32, i8*}}* {}", r));
+                } else if rty == "json" {
+                    // Json return: box the value into a tagged block, THEN
+                    // free the str locals (ch free follows tagged_new_ptr,
+                    // parse_value evidence)
+                    macro_rules! free_str_locals {
+                        ($bb:expr) => {
+                            for nm in locals.iter() {
+                                if FN_PARAM_NAMES.with(|p| p.borrow().contains(nm)) {
+                                    continue;
+                                }
+                                let lf = $bb.nx();
+                                $bb.line(format!(
+                                    "  %\"{}\" = load i8*, i8** %\"{}\"", lf, nm));
+                                $bb.silent();
+                                $bb.line(format!(
+                                    "  call void @\"rawstr_free\"(i8* %\"{}\")", lf));
+                            }
+                        };
+                    }
+                    let src = &st.get(1);
+                    let callee_json = src.head() == "call"
+                        && src.get(1).head() == "name"
+                        && FN_SIGS.with(|m| m.borrow().iter().any(|(k, _, r)|
+                            *k == src.get(1).get(1).str_of() && r == "json"));
+                    if callee_json {
+                        let r = match &v {
+                            Typed::Inst(r) | Typed::Str(r) => r.clone(),
+                            _ => bail("json ret callee"),
+                        };
+                        free_str_locals!(b);
+                        b.silent();
+                        b.line(format!("  ret i8* {}", r));
+                    } else {
+                        // decide the box kind from the SOURCE type: a call
+                        // uses the callee's return type (parse_string->str
+                        // yields Inst, not Str), a local name uses its
+                        // container registration (list[Json]/dict[Json])
+                        let callee_rty = if src.head() == "call"
+                            && src.get(1).head() == "name" {
+                            FN_SIGS.with(|m| m.borrow().iter()
+                                .find(|(k, _, _)| *k == src.get(1).get(1).str_of())
+                                .map(|(_, _, r)| r.clone()))
+                        } else { None };
+                        let (tag, is_ptr, copy) = match callee_rty.as_deref() {
+                            Some("str") => (4, true, true),
+                            Some("int") => (1, false, false),
+                            _ => match &v {
+                                Typed::I64(_) => (1, false, false),
+                                Typed::Str(_) => (4, true, true),
+                                _ if src.head() == "name"
+                                    && FN_L.with(|l| l.borrow().iter().any(|(k, _)|
+                                        *k == src.get(1).str_of())) => (5, true, false),
+                                _ if src.head() == "name"
+                                    && FN_D.with(|l| l.borrow().iter()
+                                        .any(|k| *k == src.get(1).str_of())) => (6, true, false),
+                                _ => bail("json ret src"),
+                            },
+                        };
+                        let r = match &v {
+                            Typed::I64(r) => r.clone(),
+                            Typed::Str(r) | Typed::Inst(r) => r.clone(),
+                            _ => bail("json ret val"),
+                        };
+                        if is_ptr {
+                            // str payload is copied first; list/dict not
+                            let r2 = if copy {
+                                let cp = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                                format!("%\"{}\"", cp)
+                            } else { r };
+                            let c = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"tagged_new_ptr\"(i32 {}, i8* {})",
+                                c, tag, r2));
+                            free_str_locals!(b);
+                            b.silent();
+                            b.line(format!("  ret i8* %\"{}\"", c));
+                        } else {
+                            let c = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"tagged_new_scalar\"(i32 {}, i64 {})",
+                                c, tag, r));
+                            free_str_locals!(b);
+                            b.silent();
+                            b.line(format!("  ret i8* %\"{}\"", c));
+                        }
+                    }
                 } else if rty == "str" && st.get(1).head() == "name"
                     && is_local_s(&st.get(1).get(1).str_of()) {
                     // str local return reuses the eval load:
@@ -2829,20 +3081,25 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     }
               else if ret_anno.head() == "subscript"
                   && ret_anno.get(1).get(1).str_of() == "list" {
-                  format!("list:{}", ret_anno.get(2).get(1).str_of())
+                  let el = ret_anno.get(2).get(1).str_of();
+                  format!("list:{}", if el == "Json" { "json".into() } else { el })
               }
               else {
                   let t = ret_anno.get(1).str_of();
+                  if t == "Json" { "json".to_string() }
+                  else {
                   if t != "int" && t != "float" && !is_class(&t) && t != "str" {
                       bail("ret type");
                   }
                   if is_class(&t) { format!("inst:{}", t) } else { t.to_string() }
+                  }
               };
 
     FN_I.with(|f| *f.borrow_mut() = Vec::new());
     FN_F.with(|f| *f.borrow_mut() = Vec::new());
     FN_L.with(|f| *f.borrow_mut() = Vec::new());
     FN_PY.with(|f| *f.borrow_mut() = Vec::new());
+    FN_D.with(|f| *f.borrow_mut() = Vec::new());
     FN_TY.with(|y| *y.borrow_mut() = Vec::new());
     FN_S.with(|y| *y.borrow_mut() = Vec::new());
     FN_B.with(|y| *y.borrow_mut() = Vec::new());
@@ -2859,14 +3116,14 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let arg_ll = |t: &str| match t {
         "float" => "double",
         t if t.starts_with("list:") || t.starts_with("inst:")
-            || t == "str" => "i8*",
+            || t == "str" || t == "json" => "i8*",
         "pyobj" => "{i32, i8*}*",
         _ => "i64",
     };
     let rty_ll = match rty.as_str() {
         "pyobj" => "{i32, i8*}*",
         "float" => "double", "none" => "{i32, i8*}*",
-        t if t.starts_with("inst:") || t == "str"
+        t if t.starts_with("inst:") || t == "str" || t == "json"
             || t.starts_with("list:") => "i8*",
         _ => "i64",
     };
@@ -2916,8 +3173,17 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
         }), pn)
     }
     SPLIT_FORM.with(|x| *x.borrow_mut() = false);
+    // split form (reversed params, str null-init) applies when an owned
+    // str param is detected (slice/len/by-name compare) OR the function
+    // carries an explicit return annotation (typed path: _declare_var
+    // null-inits every RAWSTR param). pyobj-returning functions without
+    // an annotation keep the plain prologue (jsonparse.si parse_value vs
+    // jsonparse_json parse_value evidence)
+    let has_ret_anno = !matches!(ret_anno, Val::Null)
+        && params.iter().zip(atys.iter()).any(|(_, t)| t == "str");
     let any_owned = params.iter().zip(atys.iter())
-        .any(|(p, t)| t == "str" && str_owned(&body, &p.str_of()));
+        .any(|(p, t)| t == "str" && str_owned(&body, &p.str_of()))
+        || has_ret_anno;
     if !any_owned {
     for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
         if t.starts_with("list:") {
@@ -3070,6 +3336,62 @@ enum Typed { I64(String), F64(String), Str(String), PStr(String),
 fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
              slot_f: &dyn Fn(&str) -> String, sc: &mut usize,
              fslots: &[String]) -> Typed {
+    // json_* builtins over the tagged-union Json representation
+    // (jsonparse_json). Mirrors the eval_mod dispatch so that expr_i64
+    // (aug-assign rhs, subscript indices) also reaches these builtins.
+    if e.head() == "call" && e.get(1).head() == "name" {
+        let fname = e.get(1).get(1).str_of();
+        let jargs = e.get(2).items();
+        if jargs.len() == 1 && fname.starts_with("json_") {
+            let av = eval_expr(b, &jargs[0], slot_i, slot_f, sc, fslots);
+            let jv = match av {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                Typed::I64(r) => r,
+                _ => bail("json arg"),
+            };
+            match fname.as_str() {
+                "json_tag" => {
+                    let t = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i32 @\"tagged_tag\"(i8* {})", t, jv));
+                    let sx = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = sext i32 %\"{}\" to i64", sx, t));
+                    return Typed::I64(format!("%\"{}\"", sx));
+                }
+                "json_int" => {
+                    let c = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i64 @\"json_unwrap_int\"(i8* {})", c, jv));
+                    return Typed::I64(format!("%\"{}\"", c));
+                }
+                "json_str" => {
+                    let bw = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"json_unwrap_str\"(i8* {})", bw, jv));
+                    let cp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp, bw));
+                    return Typed::Str(format!("%\"{}\"", cp));
+                }
+                "json_list" | "json_dict" => {
+                    let f = if fname == "json_list" { "json_unwrap_list" }
+                            else { "json_unwrap_dict" };
+                    let c = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"{}\"(i8* {})", c, f, jv));
+                    return Typed::Inst(format!("%\"{}\"", c));
+                }
+                "json_free" => {
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"tagged_free\"(i8* {}, i32 4, i32 5, i32 6)", jv));
+                    return Typed::I64("0".into());
+                }
+                _ => {}
+            }
+        }
+    }
     if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() == "input" {
         let c = b.nx();
@@ -3192,11 +3514,19 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
                 return Typed::Inst(format!("%\"{}\"", l));
             }
+            if FN_D.with(|t| t.borrow().iter().any(|k| k == &n)) {
+                b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
+                return Typed::Inst(format!("%\"{}\"", l));
+            }
             if FN_PY.with(|t| t.borrow().iter().any(|x| x == &n)) {
                 b.line(format!(
                     "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** %\"{}\"",
                     l, n));
                 return Typed::Pyo(format!("%\"{}\"", l));
+            }
+            if JSON_SLOTS.with(|t| t.borrow().iter().any(|x| x == &n)) {
+                b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+                return Typed::Inst(format!("%\"{}\"", l));
             }
             if fn_ty_of(&n).is_some() {
                 if n == "self" || inst_stor(&n).is_none() {
@@ -3390,8 +3720,17 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 // dict read: key type dispatch (int: rawdict_get;
                 // str: concat chain to raw, rawdict_str_get)
                 let l = b.nx();
-                b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+                b.line(format!("  %\"{}\" = load i8*, i8** {}", l, dct_slot(&n)));
                 if dct_key_ty(&n) == "str" {
+                    // const str key: the checked key_str_ok/err + str_view
+                    // unpack shape, then rawdict_str_get (o["id"] evidence)
+                    if e.get(2).head() == "const"
+                        && matches!(e.get(2).get(1), Val::Str(_)) {
+                        let text = e.get(2).get(1).str_of();
+                        let r = emit_const_key_direct(b,
+                            &format!("%\"{}\"", l), &text, sc);
+                        return Typed::I64(r);
+                    }
                     let kr = if let Some((bname, sl)) = as_slice_sub(&e.get(2)) {
                         let bn = if bname.is_empty() { n.clone() } else { bname };
                         emit_slice_view(b, &bn, &sl, sc)
@@ -3690,8 +4029,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     if a.head() == "list" {
                         let elems = a.items().get(1).cloned()
                             .unwrap_or(Val::Null);
-                        if rty == "pyobj" {
-                            // pyobj-callee list literal arg: boxed domain
+                        if rty == "pyobj" || rty == "json" {
+                            // pyobj/json-callee list literal arg: boxed domain
                             // create_list + create_int + list_append,
                             // then pylist_to_rawlist (main [0] evidence)
                             let c = b.nx();
@@ -3770,14 +4109,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let c = b.nx();
             let rll = match rty.as_str() {
                 "float" => "double", "none" | "pyobj" => "{i32, i8*}*",
-                t if t == "str" || t.starts_with("inst:")
+                t if t == "str" || t == "json" || t.starts_with("inst:")
                     || t.starts_with("list:") => "i8*",
                 _ => "i64",
             };
             b.line(format!("  %\"{}\" = call {} @\"{}\"({})",
                 c, rll, fname, parts.join(", ")));
             if rty == "float" { return Typed::F64(format!("%\"{}\"", c)); }
-            if rty == "str" || rty.starts_with("inst:")
+            if rty == "str" || rty == "json" || rty.starts_with("inst:")
                 || rty.starts_with("list:") {
                 return Typed::Inst(format!("%\"{}\"", c));
             }
@@ -4213,6 +4552,18 @@ fn emit_dyn_ctor(b: &mut FnB, e: &Val, cls: &str, sc: &mut usize,
 
 fn emit_const_key_get(b: &mut FnB, dl: &str, text: &str, def: i64,
                       sc: &mut usize) -> String {
+    emit_const_key_get_mode(b, dl, text, Some(def), sc)
+}
+
+// direct subscript (o["id"]): rawdict_str_get, no default; the key
+// type-check + str_view unpack shape is shared with d.get(key, def)
+fn emit_const_key_direct(b: &mut FnB, dl: &str, text: &str,
+                         sc: &mut usize) -> String {
+    emit_const_key_get_mode(b, dl, text, None, sc)
+}
+
+fn emit_const_key_get_mode(b: &mut FnB, dl: &str, text: &str,
+                           def: Option<i64>, sc: &mut usize) -> String {
     let gname = add_str(sc, text);
     let blen = text.chars().count();
     let g = b.nx();
@@ -4299,9 +4650,14 @@ fn emit_const_key_get(b: &mut FnB, dl: &str, text: &str, def: i64,
         "  %\"{}\" = bitcast {{i64, i64, i8*, i64}}* %\"{}\" to i8*",
         vbc, vn));
     let res = b.nx();
-    b.line(format!(
-        "  %\"{}\" = call i64 @\"rawdict_str_get_or\"(i8* {}, i8* %\"{}\", i64 {})",
-        res, dl, vbc, def));
+    match def {
+        Some(d) => b.line(format!(
+            "  %\"{}\" = call i64 @\"rawdict_str_get_or\"(i8* {}, i8* %\"{}\", i64 {})",
+            res, dl, vbc, d)),
+        None => b.line(format!(
+            "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* {}, i8* %\"{}\")",
+            res, dl, vbc)),
+    }
     format!("%\"{}\"", res)
 }
 
@@ -4362,6 +4718,62 @@ fn emit_slice_view(b: &mut FnB, base: &str, sl: &Val, sc: &mut usize) -> String 
 }
 
 fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
+    // json_* builtins over the tagged-union Json representation
+    // (jsonparse_json). The Json value is an i8* tagged block pointer.
+    if e.head() == "call" && e.get(1).head() == "name" {
+        let fname = e.get(1).get(1).str_of();
+        let jargs = e.get(2).items();
+        if jargs.len() == 1 && fname.starts_with("json_") {
+            let av = eval_mod(b, &jargs[0], fslots, sc);
+            let jv = match av {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                Typed::I64(r) => r, // already a slot pointer (it=items[i])
+                _ => bail("json arg"),
+            };
+            match fname.as_str() {
+                "json_tag" => {
+                    let t = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i32 @\"tagged_tag\"(i8* {})", t, jv));
+                    let sx = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = sext i32 %\"{}\" to i64", sx, t));
+                    return Typed::I64(format!("%\"{}\"", sx));
+                }
+                "json_int" => {
+                    let c = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i64 @\"json_unwrap_int\"(i8* {})", c, jv));
+                    return Typed::I64(format!("%\"{}\"", c));
+                }
+                "json_str" => {
+                    // borrowed str payload, then copy into a raw str
+                    let bw = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"json_unwrap_str\"(i8* {})", bw, jv));
+                    let cp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp, bw));
+                    return Typed::Str(format!("%\"{}\"", cp));
+                }
+                "json_list" | "json_dict" => {
+                    let f = if fname == "json_list" { "json_unwrap_list" }
+                            else { "json_unwrap_dict" };
+                    let c = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"{}\"(i8* {})", c, f, jv));
+                    return Typed::Inst(format!("%\"{}\"", c));
+                }
+                "json_free" => {
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"tagged_free\"(i8* {}, i32 4, i32 5, i32 6)", jv));
+                    return Typed::I64("0".into());
+                }
+                _ => {}
+            }
+        }
+    }
     if e.head() == "name" {
         let n = e.get(1).str_of();
         let l = b.nx();
@@ -4373,11 +4785,19 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
             b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
             return Typed::Inst(format!("%\"{}\"", l));
         }
+        if FN_D.with(|t| t.borrow().iter().any(|k| k == &n)) {
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
+            return Typed::Inst(format!("%\"{}\"", l));
+        }
         if is_py(&n) {
             b.line(format!(
                 "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** {}",
                 l, py_slot(&n)));
             return Typed::Pyo(format!("%\"{}\"", l));
+        }
+        if JSON_SLOTS.with(|t| t.borrow().iter().any(|x| x == &n)) {
+            b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+            return Typed::Inst(format!("%\"{}\"", l));
         }
         if fn_ty_of(&n).is_some() {
             if n == "self" || inst_stor(&n).is_none() {
@@ -4601,7 +5021,21 @@ fn main() {
     let module = parse_json(&String::from_utf8_lossy(&ir.stdout));
     let stmts = module.get(1).items();
 
-    let mut sc = STR_BASE;
+    // Json / tagged-union detection: any annotation mentioning the Json
+    // type (return, param, local, list/dict element) pulls in the tagged
+    // runtime block and shifts the global-slot base
+    fn uses_json(v: &Val) -> bool {
+        if let Val::List(items) = v {
+            for it in items.iter() {
+                if matches!(it, Val::Str(s) if s == "Json") { return true; }
+                if uses_json(it) { return true; }
+            }
+        }
+        false
+    }
+    let tagged = uses_json(&Val::List(stmts.clone()));
+    TAGGED.with(|t| *t.borrow_mut() = tagged);
+    let mut sc = STR_BASE + if tagged { TAGGED_SLOTS } else { 0 };
     // dynamic classes: consumed via match_class -> pyobj instances
     fn scan_match(v: &Val) {
         if let Val::List(items) = v {
@@ -4724,10 +5158,12 @@ fn main() {
                 }
                 if a.head() == "subscript"
                     && a.get(1).get(1).str_of() == "list" {
-                    format!("list:{}", a.get(2).get(1).str_of())
+                    let el = a.get(2).get(1).str_of();
+                    format!("list:{}", if el == "Json" { "json".into() } else { el })
                 } else {
                     let t = a.get(1).str_of();
-                    if is_class(&t) { format!("inst:{}", t) }
+                    if t == "Json" { "json".into() }
+                    else if is_class(&t) { format!("inst:{}", t) }
                     else if is_enum(&t) { "int".into() }
                     else { t }
                 }
@@ -4738,9 +5174,11 @@ fn main() {
         }
                  else if fd.get(5).head() == "subscript"
                      && fd.get(5).get(1).get(1).str_of() == "list" {
-                     format!("list:{}", fd.get(5).get(2).get(1).str_of())
+                     let el = fd.get(5).get(2).get(1).str_of();
+                     format!("list:{}", if el == "Json" { "json".into() } else { el })
                  } else { fd.get(5).get(1).str_of() };
-        let rt = if is_class(&rt0) { format!("inst:{}", rt0) } else { rt0 };
+        let rt = if rt0 == "Json" { "json".into() }
+                 else if is_class(&rt0) { format!("inst:{}", rt0) } else { rt0 };
         let name = match prefix {
             Some(c) => format!("{}__{}", c, fd.get(1).str_of()),
             None => fd.get(1).str_of(),
@@ -4760,6 +5198,10 @@ fn main() {
 
     let mut out = String::new();
     out.push_str(CONST_PREFIX);
+    if TAGGED.with(|t| *t.borrow()) {
+        out.push_str(TAGGED_PREFIX);
+        out.push('\n'); // blank line before the first user function
+    }
     for fd in &func_defs {
         out.push_str(&convert_func(fd, &mut sc));
     }
