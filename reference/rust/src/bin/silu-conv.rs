@@ -126,6 +126,7 @@ thread_local! {
     static FN_ALLOCAS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
     static FN_PARAMS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
     static FN_L: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+    static FN_PY: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static IN_FN: RefCell<bool> = RefCell::new(false);
     static FN_RET: RefCell<String> = RefCell::new(String::new());
     static LST_ELEM: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
@@ -188,6 +189,13 @@ fn lst_elem_ty(n: &str) -> String {
 // container slot: local alloca %x vs module global @x
 fn lst_slot(n: &str) -> String {
     if FN_L.with(|m| m.borrow().iter().any(|(k, _)| k == n)) {
+        format!("%\"{}\"", n)
+    } else { format!("@\"{}\"", n) }
+}
+
+// pyobj locals ({i32,i8*}* alloca) vs module pyobj globals
+fn py_slot(n: &str) -> String {
+    if FN_PY.with(|m| m.borrow().iter().any(|k| k == n)) {
         format!("%\"{}\"", n)
     } else { format!("@\"{}\"", n) }
 }
@@ -1034,6 +1042,15 @@ thread_local! {
     static SLICE_NO_COPY: RefCell<bool> = RefCell::new(false);
     static DYN_CLASSES: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static PY_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // enclosing match_end targets: while_end branches back to the match
+    // merge, an inner match ends with a forward branch to the parent's
+    // merge (jsonparse main evidence)
+    static MATCH_END: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // loop-body nesting depth; a match case body records the depth it
+    // entered at so the block-fallthrough rule can tell a case body
+    // (branch to match_end) from a while body (the loop re-branches)
+    static LOOP_DEPTH: RefCell<usize> = RefCell::new(0);
+    static CASE_DEPTH: RefCell<Vec<usize>> = RefCell::new(Vec::new());
     static PY_RETS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     // dynamic-instance layer: enums, classes, method signatures
     static ENUMS: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
@@ -1218,39 +1235,44 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
     }
 }
 
-// and/or short-circuit: boxed sc_result chain; block creation order
-// sc_end, sc_finish, sc_next, then truthy_call, truthy_merge (calc)
+// and/or short-circuit: boxed sc_result chain; the sc_end block is
+// created before the first operand's eval blocks, then per-operand
+// sc_finish/sc_next, truthy_call, truthy_merge (calc, parse_number).
+// The IR and/or is variadic: operand k+1 evaluates inside sc_next.k
 fn emit_sc(b: &mut FnB, e: &Val, sc: &mut usize, truthy: bool) -> String {
     let is_and = e.head() == "and";
     let srn = b.uniq_label("sc_result");
     b.reg_names.push(srn.clone());
     b.line(format!("  %\"{}\" = alloca {{i32, i8*}}*", srn));
-    let a = eval_i1(b, &e.get(1), sc);
-    let f_lbl = b.uniq_label("sc_finish");
-    let n_lbl = b.uniq_label("sc_next");
     let ed_lbl = b.uniq_label("sc_end");
-    b.silent();
-    if is_and {
-        b.line(format!(
-            "  br i1 {}, label %\"{}\", label %\"{}\"", a, n_lbl, f_lbl));
-    } else {
-        b.line(format!(
-            "  br i1 {}, label %\"{}\", label %\"{}\"", a, f_lbl, n_lbl));
-    }
     let ed_b = b.add_block(&ed_lbl);
-    let fb = b.add_block(&f_lbl);
-    let nb = b.add_block(&n_lbl);
-    b.pos(fb);
-    let cb = b.nx();
-    b.line(format!(
-        "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb, a));
-    b.silent();
-    b.line(format!(
-        "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"", cb, srn));
-    b.silent();
-    b.line(format!("  br label %\"{}\"", ed_lbl));
-    b.pos(nb);
-    let bv = eval_i1(b, &e.get(2), sc);
+    let n_ops = e.items().len() - 1;
+    let mut cur = eval_i1(b, &e.get(1), sc);
+    for k in 1..n_ops {
+        let f_lbl = b.uniq_label("sc_finish");
+        let n_lbl = b.uniq_label("sc_next");
+        b.silent();
+        if is_and {
+            b.line(format!(
+                "  br i1 {}, label %\"{}\", label %\"{}\"", cur, n_lbl, f_lbl));
+        } else {
+            b.line(format!(
+                "  br i1 {}, label %\"{}\", label %\"{}\"", cur, f_lbl, n_lbl));
+        }
+        let fb = b.add_block(&f_lbl);
+        let nb = b.add_block(&n_lbl);
+        b.pos(fb);
+        let cb = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb, cur));
+        b.silent();
+        b.line(format!(
+            "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"", cb, srn));
+        b.silent();
+        b.line(format!("  br label %\"{}\"", ed_lbl));
+        b.pos(nb);
+        cur = eval_i1(b, &e.get(k + 1), sc);
+    }
     if !truthy {
         // assignment and/or: free TEMP strs produced by B's eval
         let temps = TEMP_STRS.with(|t| t.borrow().clone());
@@ -1262,7 +1284,7 @@ fn emit_sc(b: &mut FnB, e: &Val, sc: &mut usize, truthy: bool) -> String {
     }
     let cb2 = b.nx();
     b.line(format!(
-        "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb2, bv));
+        "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb2, cur));
     b.silent();
     b.line(format!(
         "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"", cb2, srn));
@@ -1750,6 +1772,7 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
                     FN_ALLOCAS.with(|f| f.borrow_mut()
                         .push((name.clone(), "pyobj".into())));
                     PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    FN_PY.with(|t| t.borrow_mut().push(name.clone()));
                     b.silent();
                     b.line(format!(
                         "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"",
@@ -1836,6 +1859,7 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
                     FN_ALLOCAS.with(|f| f.borrow_mut()
                         .push((name.clone(), "pyobj".into())));
                     PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    FN_PY.with(|t| t.borrow_mut().push(name.clone()));
                     b.silent();
                     b.line(format!(
                         "  store {{i32, i8*}}* {}, {{i32, i8*}}** %\"{}\"",
@@ -1852,11 +1876,22 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
                 }
             }
             Typed::Inst(r) => {
-                // str-valued auto-decl (parse_string result): i8* slot
+                // str-valued auto-decl (parse_string result): i8* slot;
+                // the local pre-exists (null in prologue) so assignments
+                // free the old value first (parse_object key evidence)
                 if IN_FN.with(|v| *v.borrow()) {
                     FN_ALLOCAS.with(|f| f.borrow_mut()
                         .push((name.clone(), "str".into())));
                     FN_S.with(|y| y.borrow_mut().push(name.clone()));
+                    // call result holds one temp slot before the old-value
+                    // load (ref: call .121, silent .122, load key .123)
+                    b.silent();
+                    let old = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", old, name));
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"rawstr_free\"(i8* %\"{}\")", old));
                     b.silent();
                     b.line(format!(
                         "  store i8* {}, i8** %\"{}\"", r, name));
@@ -1944,6 +1979,7 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
                     FN_ALLOCAS.with(|f| f.borrow_mut()
                         .push((name.clone(), "pyobj".into())));
                     PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    FN_PY.with(|t| t.borrow_mut().push(name.clone()));
                     b.silent();
                     b.line(format!(
                         "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"",
@@ -2064,8 +2100,8 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
         let fs = F_SLOTS.with(|f| f.borrow().clone());
         let dl = b.nx();
         b.line(format!(
-            "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
-            dl, obj));
+            "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** {}",
+            dl, py_slot(&obj)));
         let kr = {
             let kv = eval_mod(b, &st.get(2), &fs, sc);
             match kv {
@@ -2181,8 +2217,8 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 } else {
                     // dynamic append: list_append(pyobj, pyobj)
                     b.line(format!(
-                        "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
-                        l, obj));
+                        "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** {}",
+                        l, py_slot(&obj)));
                     let fs2 = F_SLOTS.with(|f| f.borrow().clone());
                     let v = eval_mod(b, &args[0], &fs2, sc);
                     let Typed::Pyo(r) = v else { bail("py append arg") };
@@ -2215,7 +2251,9 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     ic, body_lbl, end_lbl));
                 b.pos(body_b);
                 loops.push(end_lbl.clone());
+                LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
                 conv_block(b, &body, loops, sc);
+                LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
                 loops.pop();
                 b.silent();
                 b.line(format!("  br label %\"{}\"", cond_lbl));
@@ -2286,7 +2324,9 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 b.silent();
                 b.line(format!("  store i64 %\"{}\", i64* @\"{}\"", el, target));
                 loops.push(re_lbl.clone());
+                LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
                 conv_block(b, &body, loops, sc);
+                LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
                 loops.pop();
                 b.silent();
                 b.line(format!("  br label %\"{}\"", ri_lbl));
@@ -2315,13 +2355,17 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 b.line(format!(
                     "  br i1 {}, label %\"{}\", label %\"{}\"", ic, t_lbl, e_lbl));
                 b.pos(t_b);
+                LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
                 let t_term = conv_block(b, &then_body, loops, sc);
+                LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
                 if !t_term {
                     b.silent();
                     b.line(format!("  br label %\"{}\"", m_lbl));
                 }
                 b.pos(e_b);
+                LOOP_DEPTH.with(|d| *d.borrow_mut() += 1);
                 let e_term = conv_block(b, &orelse, loops, sc);
+                LOOP_DEPTH.with(|d| *d.borrow_mut() -= 1);
                 if !e_term {
                     b.silent();
                     b.line(format!("  br label %\"{}\"", m_lbl));
@@ -2415,7 +2459,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 *sc += 1; // registered by the prescan
             }
             "class_def" => {
-                *sc += 1; // registered by the prescan
+                // instance-domain classes occupy a global slot (calc);
+                // pyobj dynamic classes register only a layout (jsonparse)
+                let cn = st.get(1).str_of();
+                if !is_dyn_class(&cn) { *sc += 1; }
             }
             "match" => {
                 // scrutinee read once, then a case_next chain; wildcard
@@ -2437,6 +2484,7 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                         String::new()
                     }
                 };
+                MATCH_END.with(|m| m.borrow_mut().push(end_lbl.clone()));
                 for (ci, c) in cases.iter().enumerate() {
                     // match_case = [match_case, pattern, guard, body]
                     let pat = c.get(1);
@@ -2490,6 +2538,7 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                         let fields = class_fields(&cn)
                             .unwrap_or_else(|| bail("class fields"));
                         for (fi, bind) in cap_binds.iter().enumerate() {
+                            *sc += 1; // capture gvar occupies a global slot
                             let bname = bind.get(2).str_of();
                             let fname = cap_fields.get(fi)
                                 .map(|v| v.str_of()).unwrap_or_default();
@@ -2509,13 +2558,18 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                                     let ld = b.nx();
                                     b.line(format!(
                                         "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
-                                    // capture -> raw str global
+                                    // capture -> raw str global, COPY first
+                                    // (case JStr(v=w) evidence)
+                                    let cp = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")",
+                                        cp, ld));
                                     tail_push(format!(
                                         "@\"{}\" = global i8* null", bname));
                                     STR_SLOTS.with(|t| t.borrow_mut().push(bname.clone()));
                                     b.silent();
                                     b.line(format!(
-                                        "  store i8* %\"{}\", i8** @\"{}\"", ld, bname));
+                                        "  store i8* %\"{}\", i8** @\"{}\"", cp, bname));
                                 }
                                 "list" | "dict" => {
                                     let bc = b.nx();
@@ -2547,7 +2601,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                             }
                         }
                         // continue converting the case body after captures
+                        CASE_DEPTH.with(|c| c.borrow_mut()
+                            .push(LOOP_DEPTH.with(|d| *d.borrow())));
                         conv_block(b, &cbody, loops, sc);
+                        CASE_DEPTH.with(|c| c.borrow_mut().pop());
                         let ni = b.blocks.iter()
                             .position(|(l, _)| l == &next_lbl)
                             .unwrap_or_else(|| bail("case next missing"));
@@ -2576,7 +2633,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                     let bi = b.blocks.iter().position(|(l, _)| l == &body_lbl)
                         .unwrap_or_else(|| bail("case body missing"));
                     b.pos(bi);
+                    CASE_DEPTH.with(|c| c.borrow_mut()
+                        .push(LOOP_DEPTH.with(|d| *d.borrow())));
                     conv_block(b, &cbody, loops, sc);
+                    CASE_DEPTH.with(|c| c.borrow_mut().pop());
                     let ni = b.blocks.iter()
                         .position(|(l, _)| l == &next_lbl)
                         .unwrap_or_else(|| bail("case next missing"));
@@ -2585,13 +2645,16 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 // trailing case_next brs to match_end
                 b.silent();
                 b.line(format!("  br label %\"{}\"", end_lbl));
+                MATCH_END.with(|m| m.borrow_mut().pop());
                 let e_idx = b.blocks.iter()
                     .position(|(l, _)| l == &end_lbl);
                 let is_last = i + 1 >= stmts.len();
                 if let Some(i2) = e_idx {
                     b.pos(i2);
                     if is_last && IN_FN.with(|v| *v.borrow()) {
-                        // trailing match: typed default ret in match_end
+                        // trailing match: typed default ret in match_end;
+                        // the parent-merge branch (if any) is emitted by
+                        // the enclosing block's fallthrough rule
                         let rty = FN_RET.with(|r| r.borrow().clone());
                         b.silent();
                         match rty.as_str() {
@@ -2607,7 +2670,9 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                         return true;
                     }
                 }
-                // match_end is a merge block: following stmts flow here
+                // match_end is a merge block: following stmts flow here;
+                // when this match was nested, the parent's fallthrough
+                // rule appends br match_end.<parent> to this block
             }
 "raise" => {
                 // raise SystemExit(N): free str locals, trunc, exit
@@ -2659,6 +2724,26 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
             _ => bail(st.head()),
         }
         i += 1;
+    }
+    // statements exhausted inside a case body: fall through to the
+    // innermost match merge unless the current block already terminates.
+    // Only case bodies do this; a while body is closed by the loop's own
+    // back-branch (panic_ok vs while_cond evidence in jsonparse main)
+    let in_case = CASE_DEPTH.with(|c| c.borrow().last().cloned())
+        .map(|d| d == LOOP_DEPTH.with(|l| *l.borrow()))
+        .unwrap_or(false);
+    if in_case {
+        if let Some(me) = MATCH_END.with(|m| m.borrow().last().cloned()) {
+            let term = b.blocks[b.cur].1.last()
+                .map(|l| l.trim_start().starts_with("br ")
+                    || l.trim_start().starts_with("ret ")
+                    || l.trim_start().starts_with("unreachable"))
+                .unwrap_or(false);
+            if !term {
+                b.silent();
+                b.line(format!("  br label %\"{}\"", me));
+            }
+        }
     }
     false
 }
@@ -2757,6 +2842,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     FN_I.with(|f| *f.borrow_mut() = Vec::new());
     FN_F.with(|f| *f.borrow_mut() = Vec::new());
     FN_L.with(|f| *f.borrow_mut() = Vec::new());
+    FN_PY.with(|f| *f.borrow_mut() = Vec::new());
     FN_TY.with(|y| *y.borrow_mut() = Vec::new());
     FN_S.with(|y| *y.borrow_mut() = Vec::new());
     FN_B.with(|y| *y.borrow_mut() = Vec::new());
@@ -2841,13 +2927,14 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
                 "  %\"{}\" = alloca i8*\n  store i8* %\".{}\", i8** %\"{}\"\n",
                 p.str_of(), i + 1, p.str_of()));
         } else if t == "str" {
-            // str params: alloca + null-init + store pair
+            // unowned str params: direct alloca+store, no null-init
+            // (parse_array/object/value); the null pair is split-form only
             FN_S.with(|y| y.borrow_mut().push(p.str_of()));
             FN_PARAMS.with(|f| f.borrow_mut()
                 .push((p.str_of(), t.clone())));
             container_pairs.push_str(&format!(
-                "  %\"{}\" = alloca i8*\n  store i8* null, i8** %\"{}\"\n  store i8* %\".{}\", i8** %\"{}\"\n",
-                p.str_of(), p.str_of(), i + 1, p.str_of()));
+                "  %\"{}\" = alloca i8*\n  store i8* %\".{}\", i8** %\"{}\"\n",
+                p.str_of(), i + 1, p.str_of()));
         } else {
             FN_PARAMS.with(|f| f.borrow_mut()
                 .push((p.str_of(), t.clone())));
@@ -2868,8 +2955,8 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     // stores live in the splice but STILL consume their slot
     for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
         if SPLIT_FORM.with(|x| *x.borrow_mut()) { break; }
-        // str pairs consume TWO slots (null + value stores); scalars one
-        if t == "str" { b.silent(); b.silent(); continue; }
+        // str pairs consume one splice slot (direct store); scalars one
+        if t == "str" { b.silent(); continue; }
         b.silent();
         if t.starts_with("list:") || t.starts_with("inst:") { continue; }
         let ll = arg_ll(t);
@@ -2940,6 +3027,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let alloca_ty = |t: &str| match t {
         "bool" => "i1",
         "view" => "{i64, i64, i8*, i64}",
+        "pyobj" => "{i32, i8*}*",
         "list" | "str" | "inst" | "i8*" => "i8*",
         "i8*" => "i8*",
         "float" => "double",
@@ -3104,6 +3192,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
                 return Typed::Inst(format!("%\"{}\"", l));
             }
+            if FN_PY.with(|t| t.borrow().iter().any(|x| x == &n)) {
+                b.line(format!(
+                    "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** %\"{}\"",
+                    l, n));
+                return Typed::Pyo(format!("%\"{}\"", l));
+            }
             if fn_ty_of(&n).is_some() {
                 if n == "self" || inst_stor(&n).is_none() {
                     b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"",
@@ -3136,6 +3230,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             if STR_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
                 b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
                 return Typed::Str(format!("%\"{}\"", l));
+            }
+            if PY_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
+                b.line(format!(
+                    "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
+                    l, n));
+                return Typed::Pyo(format!("%\"{}\"", l));
             }
             b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, n));
             Typed::I64(format!("%\"{}\"", l))
@@ -3546,6 +3646,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 let c = b.nx();
                 let rll = match rty.as_str() {
                     "float" => "double",
+                    "none" | "pyobj" => "{i32, i8*}*",
                     t if t.starts_with("inst:") || t == "str" => "i8*",
                     _ => "i64",
                 };
@@ -3554,6 +3655,9 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 if rty == "float" { return Typed::F64(format!("%\"{}\"", c)); }
                 if rty.starts_with("inst:") || rty == "str" {
                     return Typed::Inst(format!("%\"{}\"", c));
+                }
+                if rty == "none" || rty == "pyobj" {
+                    return Typed::Pyo(format!("%\"{}\"", c));
                 }
                 return Typed::I64(format!("%\"{}\"", c));
             }
@@ -3586,6 +3690,36 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     if a.head() == "list" {
                         let elems = a.items().get(1).cloned()
                             .unwrap_or(Val::Null);
+                        if rty == "pyobj" {
+                            // pyobj-callee list literal arg: boxed domain
+                            // create_list + create_int + list_append,
+                            // then pylist_to_rawlist (main [0] evidence)
+                            let c = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call {{i32, i8*}}* @\"create_list\"()", c));
+                            if let Val::List(vs) = &elems {
+                                for el in vs.iter() {
+                                    let ev = eval_expr(b, el, slot_i, slot_f,
+                                        sc, fslots);
+                                    let Typed::I64(r) = ev else {
+                                        bail("py list lit elem") };
+                                    let bi = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 {})",
+                                        bi, r));
+                                    let ap = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = call {{i32, i8*}}* @\"list_append\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\")",
+                                        ap, c, bi));
+                                }
+                            }
+                            let rl = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"pylist_to_rawlist\"({{i32, i8*}}* %\"{}\")",
+                                rl, c));
+                            parts.push(format!("i8* %\"{}\"", rl));
+                            continue;
+                        }
                         let c = b.nx();
                         b.line(format!(
                             "  %\"{}\" = call i8* @\"rawlist_new\"(i64 8)", c));
@@ -3635,7 +3769,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             }
             let c = b.nx();
             let rll = match rty.as_str() {
-                "float" => "double", "none" => "{i32, i8*}*",
+                "float" => "double", "none" | "pyobj" => "{i32, i8*}*",
                 t if t == "str" || t.starts_with("inst:")
                     || t.starts_with("list:") => "i8*",
                 _ => "i64",
@@ -4014,12 +4148,29 @@ fn emit_dyn_ctor(b: &mut FnB, e: &Val, cls: &str, sc: &mut usize,
         c, (fields.len() * 8) as i64));
     for (i, (_, fty)) in fields.iter().enumerate() {
         let av = eval_expr(b, &args[i], slot_i, slot_f, sc, fslots);
+        // per-field conversion lands BETWEEN the arg eval and the gep
+        // (JStr copy / float to_f64 / raw-able to_raw evidence)
+        enum Fv { Py(String), Str(String), Raw(String), F64(String),
+                  I64(String) }
+        let v = match (av, fty.as_str()) {
+            (Typed::Pyo(r), _) => Fv::Py(r),
+            (Typed::Str(r), "str") | (Typed::Inst(r), "str") => {
+                // str fields store a COPY (JStr evidence)
+                let cp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                Fv::Str(format!("%\"{}\"", cp))
+            }
+            (v, "float") => Fv::F64(to_f64(b, v)),
+            (Typed::I64(r), _) => Fv::I64(r),
+            (v, _) => Fv::Raw(to_raw(b, v, sc)),
+        };
         let gp = b.nx();
         b.line(format!(
             "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
             gp, c, (i * 8) as i64));
-        match (av, fty.as_str()) {
-            (Typed::Pyo(r), _) => {
+        match v {
+            Fv::Py(r) => {
                 let bc = b.nx();
                 b.line(format!(
                     "  %\"{}\" = bitcast i8* %\"{}\" to {{i32, i8*}}**",
@@ -4029,19 +4180,14 @@ fn emit_dyn_ctor(b: &mut FnB, e: &Val, cls: &str, sc: &mut usize,
                     "  store {{i32, i8*}}* {}, {{i32, i8*}}** %\"{}\"",
                     r, bc));
             }
-            (Typed::Str(r), "str") | (Typed::Inst(r), "str") => {
-                // str fields store a COPY (JStr evidence)
-                let cp = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+            Fv::Str(r) | Fv::Raw(r) => {
                 let bc = b.nx();
                 b.line(format!(
                     "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
                 b.silent();
-                b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", cp, bc));
+                b.line(format!("  store i8* {}, i8** %\"{}\"", r, bc));
             }
-            (v, "float") => {
-                let r = to_f64(b, v);
+            Fv::F64(r) => {
                 let bc = b.nx();
                 b.line(format!(
                     "  %\"{}\" = bitcast i8* %\"{}\" to double*", bc, gp));
@@ -4049,21 +4195,12 @@ fn emit_dyn_ctor(b: &mut FnB, e: &Val, cls: &str, sc: &mut usize,
                 b.line(format!(
                     "  store double {}, double* %\"{}\"", r, bc));
             }
-            (Typed::I64(r), _) => {
+            Fv::I64(r) => {
                 let bc = b.nx();
                 b.line(format!(
                     "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, gp));
                 b.silent();
                 b.line(format!("  store i64 {}, i64* %\"{}\"", r, bc));
-            }
-            (v, _) => {
-                // str const / other raw-able values via to_raw
-                let r = to_raw(b, v, sc);
-                let bc = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
-                b.silent();
-                b.line(format!("  store i8* {}, i8** %\"{}\"", r, bc));
             }
         }
     }
@@ -4238,8 +4375,8 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
         }
         if is_py(&n) {
             b.line(format!(
-                "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** @\"{}\"",
-                l, n));
+                "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** {}",
+                l, py_slot(&n)));
             return Typed::Pyo(format!("%\"{}\"", l));
         }
         if fn_ty_of(&n).is_some() {
@@ -4294,7 +4431,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
                 unsafe { SC_PTR = sc; }
                 let k = b.expr_i64(&ia[0].get(2), &global_slot);
                 let d = b.nx();
-                b.line(format!("  %\"{}\" = call i8* @\"rawlist_str_copy_into\"(i8* %\"{}\", i64 {}, i8* null)",
+                b.line(format!("  %\"{}\" = call i8* @\"rawlist_str_get\"(i8* %\"{}\", i64 {})",
                     d, l, k));
                 let bc = b.nx();
                 b.line(format!(
