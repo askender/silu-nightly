@@ -18,7 +18,7 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 - silu-conv 通过子进程调 silu-fe 取 IR（前端已独立验证）
 - **非目标**：不做产品编译器、不进自举链、不做同步镜像（版本快照神谕）
 
-## 当前状态：转换器 15/18
+## 当前状态：转换器 16/18
 
 | 文件 | 能力面 | 状态 |
 |---|---|---|
@@ -32,11 +32,11 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 | knucleotide | str 切片(str_view)/elif 链/const 键 get_or + 标签检查 | ✅ |
 | calc | **动态实例层全套**（class/enum/方法/match/sc短路/存储类型/epilogue/user-main） | ✅ |
 | jsonparse.si | **pyobj 装箱动态层**（{i32,i8*}* 值树 + 90+ pyobj_* 运行时族 + match_class） | ✅ |
-| jsonparse_json.si | 伴生变体 | 未实现 |
-| ir_interp / silu_fe | import 系 + 全特性 | 未实现 |
+| jsonparse_json.si | **tagged-union Json 域**（{tag,bits} 块 + json_* 内建 + RAWLIST_JSON/RAWDICT_SJ） | ✅ |
+| ir_interp / silu_fe | import 系 + 全特性 | 未实现（仅剩这两关） |
 
-里程碑提交：`c25628d` calc.si（事故重放+回归修复）、`355cb81` jsonparse 前置、
-`cedef08` **jsonparse.si 逐字节对齐（15/18）**。
+里程碑提交：`c25628d` calc.si、`cedef08` jsonparse.si（15/18）、
+`f9fa865` **jsonparse_json.si 逐字节对齐（16/18）**。
 本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
 byte-identical 立即提交**。
 
@@ -67,8 +67,44 @@ byte-identical 立即提交**。
    （建 gvar）。这条修正了迭代 1“捕获不耗槽”的误判
 9. len(names[i]) → rawlist_str_get（非 copy_into）；str 捕获先 rawstr_copy
 
-**下一目标**：jsonparse_json.si（当前 ERROR: list elem type）。
+**下一目标**：ir_interp.si / silu_fe.si（import 系，最后两关）。
 jsonparse.si 输出 442,328 字节 = 参考，逐字节一致。
+
+**jsonparse_json.si 已完成（f9fa865，16/18）——tagged-union Json 平面**
+
+新平面（745 行改动 + tagged_prefix.ll 281 行静态模板）：
+1. **tagged 运行时模板**：13 个 tagged_*/json_unwrap_* 函数 + json_typeerr
+   常量 = **15 个模块全局**（不是 14，含 14 define + 1 常量）。检测 Json
+   注解 → TAGGED flag + STR_BASE 偏移 +15，模板注入 const_prefix 之后、
+   首个用户函数之前（后补一个空行）
+2. **Json 类型**：注解 `-> Json`/`: Json`/`list[Json]`/`dict[str,Json]` 归一化
+   为内部 "json"（i8* tagged 块指针，行为类 inst 但保留 alwaysinline）。
+   arg_ll/rty_ll 补 json→i8*
+3. **json_* 内建族**（eval_mod + eval_expr 双分派，后者让 expr_i64 可达）：
+   json_tag→tagged_tag+sext；json_int→json_unwrap_int；json_str→
+   json_unwrap_str+rawstr_copy；json_list/dict→json_unwrap_*→Inst；
+   json_free→tagged_free(i8*,4,5,6)
+4. **Json 返回装箱**（返回位置类型强制）：callee 返回 json → 直接 ret；
+   str→rawstr_copy+tagged_new_ptr(4)；int→tagged_new_scalar(1)；
+   list[Json] 局部→tagged_new_ptr(5)；dict[str,Json] 局部→tagged_new_ptr(6)。
+   按 callee_rty（call）或容器注册（name）判源类型。**epilogue free 在装箱
+   之后**（tagged_new_ptr 先于 ch free，parse_value 证据）——通用 free 循环
+   对 rty=="json" 跳过，Json 分支内 macro free_str_locals! 在 ret 前发
+5. **容器**：list[Json] 元素存指针位值（append=ptrtoint+rawlist_push；
+   下标读=rawlist 边界检查+inttoptr）；dict[str,Json] 写=ptrtoint+
+   rawdict_str_set；读=emit_const_key_direct（const 键 key_str_ok/err 检查+
+   str_view 解包+rawdict_str_get，泛化自 emit_const_key_get 加 def:Option）
+6. **split form 规则修正**：有显式返回注解（typed 路径）的函数 str 参数
+   一律 split（_declare_var 对 RAWSTR 参数总是 null-init+逆序）；无注解按
+   str_owned 扫描。这条区分了 jsonparse.si parse_value（pyobj 无注解→非
+   split）与 jsonparse_json parse_value（-> Json→split）
+7. **Json 下标读裸赋值自动声明**：it=items[i]/n1=o["id"]/w=o["name"] →
+   目标自动声明 Json 全局（i8*），**rhs（含 panic 字符串）先于目标绑定**
+   （_convert_node→_declare_var 次序）
+8. 函数内 dict[str,Json] 局部：FN_D 注册表 + dct_slot()（%"o" 非 @"o"），
+   name 求值（eval_mod/eval_expr）补 FN_D→Inst
+
+**下一目标**：ir_interp.si / silu_fe.si（import 系，最后两关）。
 
 **蓝图文档**（完整形状）（reference/DYNAMIC_SHAPES.md 提交 9a7f325）：
 pyobj={i32,i8*}*（= none 型作值载体）、动态 ctor=malloc+pyobj字段+
