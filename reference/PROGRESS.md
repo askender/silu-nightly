@@ -7,18 +7,18 @@
 
 ```
 silu-fe  (Rust 前端)      : .si → IR JSON     ✅ 19/19 与 silu_fe 逐字节一致
-silu-conv (Rust 转换器)   : .si → 完整 .ll     ✅ 17/18 语料逐字节一致
+silu-conv (Rust 转换器)   : .si → 完整 .ll     ✅ 18/18 语料逐字节一致（全部对齐）
 diff_harness.py           : 平面对拍基架       ✅ 自校验通过
 const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 ```
 
-- 位置：`reference/rust/`（cargo，零外部依赖，`src/main.rs` = silu-fe，
-  `src/bin/silu-conv.rs` = 转换器，~2,300 行）
+- 位置：`reference/rust/`（cargo，零外部依赖，`src/main.rs` = silu-fe 2,509 行，
+  `src/bin/silu-conv.rs` = 转换器 7,882 行）
 - 运行：`cd reference/rust && cargo build`；对拍 `python reference/diff_harness.py ll conv rustconv`
 - silu-conv 通过子进程调 silu-fe 取 IR（前端已独立验证）
 - **非目标**：不做产品编译器、不进自举链、不做同步镜像（版本快照神谕）
 
-## 当前状态：转换器 17/18
+## 当前状态：转换器 18/18 全部对齐 ✅
 
 | 文件 | 能力面 | 状态 |
 |---|---|---|
@@ -34,11 +34,15 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 | jsonparse.si | **pyobj 装箱动态层**（{i32,i8*}* 值树 + 90+ pyobj_* 运行时族 + match_class） | ✅ |
 | jsonparse_json.si | **tagged-union Json 域**（{tag,bits} 块 + json_* 内建 + RAWLIST_JSON/RAWDICT_SJ） | ✅ |
 | ir_interp.si | **混合实例/pyobj 平面**（变元短路、嵌套字段、dict 属性、bool/rawstr ownership） | ✅ |
-| silu_fe.si | import 系 + 2,183 行全特性前端 | 未实现（最后一关） |
+| silu_fe.si | **全特性前端**（import 展开/动态 object 全域/嵌套函数提升/迭代器三态） | ✅ 1,492,988B |
+
+**R2 完成（2026-11-07）：18/18 全语料逐字节一致。** 前端 19/19 + 转换器 18/18，
+diff_harness 两个平面全部 PASS。Rust 参照实现使命达成：钉住 1.16.2/87df40f
+的第二实现已可对任意语料复现参考输出，隐含规约提取完毕（见下）。
 
 里程碑提交：`c25628d` calc.si、`cedef08` jsonparse.si（15/18）、
-`f9fa865` **jsonparse_json.si 逐字节对齐（16/18）**；本轮
-**ir_interp.si 逐字节对齐（17/18，487,006B）**。
+`f9fa865` jsonparse_json.si（16/18）、`e9cffcc` ir_interp.si（17/18）、
+本轮 **silu_fe.si 逐字节对齐（18/18，1,492,988B）——全语料收官**。
 本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
 byte-identical 立即提交**。
 
@@ -133,7 +137,33 @@ jsonparse.si 输出 442,328 字节 = 参考，逐字节一致。
    回归，修复后聚焦 cmp 通过；最终全量 17/18，仅 silu_fe 的 import 仍 ERROR。
    `cargo test --quiet` 通过（当前 0 个单元测试）。
 
-**下一目标**：silu_fe.si（import + 全特性前端，最后一关）。
+**silu_fe.si 已完成（18/18，1,492,988B）——全语料收官**
+
+2,183 行前端全特性，迭代要点：
+1. **import/from_import/c_extern**：无代码、无槽号的编译期声明。
+2. **动态 object 全域**：`x: object`、裸 `list/dict/tuple/set`、未注解参数
+   一律 pyobj 域；任一 pyobj 参数使函数走动态 ABI（{i32,i8*}* 返回、无
+   alwaysinline、正序参数 alloca+store，不触发 typed split-form）。
+3. **迭代器三态**：range → loop_init/cond/body/end/incr 整数计数器；
+   enumerate(rawlist) → riter 家族 + __enum_ctr_N pyobj 计数器；
+   enumerate/dict(object) → pyobj_iter_keys + list_length/list_get + iter_*；
+   str 直接迭代 → siter_off/siter_seq 字节偏移 + UTF-8 宽度 + malloc 单字符
+   rawstr（null store 在最终 bitcast 之前）。
+4. **动态声明链**：str()/chr()/int(str,base)/float(str)/file_exists/read_file/
+   isinstance(内联 isa_tags/isa_merge phi)/join/contains/嵌套 call 属性、
+   if_expr（iexpr_val 槽 + then_s/else_s 写块）、list_comp（lc_cond/body/
+   emit/skip/done）、dict 字面量 create_dict + dict_set。
+5. **动态短路**：ScVal 携带 I1/Pyo；动态函数内 and/or 直接保存原 Pyo 到
+   sc_result（无 create_bool），返回 object 的函数 ret sc_result 原值。
+6. **rawlist 写回**：object 形参收 rawlist 实参时保存调用前长度，调用后
+   pylist_to_rawlist_str + 长度 icmp ne(new,old) + select + 回写槽。
+7. **槽位规约补遗**：新 RAWSTR 局部（含循环目标）声明时消耗一个 null-store
+   silent；siter 的 silent 在 char-struct bitcast 之前；`is True/False` 固定
+   形状 and(non_null, and(tag==3, value==want))；rawlist 写回长度比较操作数
+   顺序 icmp ne(new, old)。
+8. **验证**：前端 19/19 + 转换器 18/18 全部 PASS；`cargo test --quiet` 通过。
+
+**下一目标**：T3 校准报告（见 TODO）。
 
 **蓝图文档**（完整形状）（reference/DYNAMIC_SHAPES.md 提交 9a7f325）：
 pyobj={i32,i8*}*（= none 型作值载体）、动态 ctor=malloc+pyobj字段+
@@ -214,8 +244,8 @@ print str const = %.*s(len,gep) / print str 名 = 字段0+2 / 函数序言2N+1 /
 - 读参考尾：`./siluc1 < selfhost/calc.si` 截 const_prefix 之后（51KB/1323行）
 - enum_def（Tok）/ class_def / match 语句形状待解剖
 
-### T2d import 系（ir_interp → silu_fe 终关）
-- ir_interp.si ✅ 487,006B 逐字节一致；silu_fe.si：import + 2,183 行全特性
+### T2d import 系（ir_interp → silu_fe 终关）✅ 完成
+- ir_interp.si ✅ 487,006B；silu_fe.si ✅ 1,492,988B——18/18 全语料逐字节一致
 
 ### T3 校准报告（R3）
 - 分组件行数对照表（前端 2509 Rust vs 2183 Silu +15%；转换器对照待量）
@@ -244,3 +274,5 @@ print str const = %.*s(len,gep) / print str 名 = 字段0+2 / 函数序言2N+1 /
 - T1 容器族：list+dict（e6e2f5f）、trees（12a6758）
 - T2 复杂程序：fannkuch（9c06ce8）、nbody（aa69e5b）、spectral（2abfbb9）、
   mandelbrot（f9cc50b）、wordcount（7f31ccd）、knucleotide（8428fc8）
+- T2c 动态层：calc（c25628d）、jsonparse（cedef08）、jsonparse_json（f9fa865）
+- T2d 终关：ir_interp（e9cffcc）、**silu_fe（18/18 全语料收官）**
