@@ -7,7 +7,7 @@
 
 ```
 silu-fe  (Rust 前端)      : .si → IR JSON     ✅ 19/19 与 silu_fe 逐字节一致
-silu-conv (Rust 转换器)   : .si → 完整 .ll     ✅ 13/18 语料逐字节一致
+silu-conv (Rust 转换器)   : .si → 完整 .ll     ✅ 17/18 语料逐字节一致
 diff_harness.py           : 平面对拍基架       ✅ 自校验通过
 const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 ```
@@ -18,7 +18,7 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 - silu-conv 通过子进程调 silu-fe 取 IR（前端已独立验证）
 - **非目标**：不做产品编译器、不进自举链、不做同步镜像（版本快照神谕）
 
-## 当前状态：转换器 16/18
+## 当前状态：转换器 17/18
 
 | 文件 | 能力面 | 状态 |
 |---|---|---|
@@ -33,10 +33,12 @@ const_prefix.ll           : 365,264B 常量前缀   ✅ 跨语料恒定
 | calc | **动态实例层全套**（class/enum/方法/match/sc短路/存储类型/epilogue/user-main） | ✅ |
 | jsonparse.si | **pyobj 装箱动态层**（{i32,i8*}* 值树 + 90+ pyobj_* 运行时族 + match_class） | ✅ |
 | jsonparse_json.si | **tagged-union Json 域**（{tag,bits} 块 + json_* 内建 + RAWLIST_JSON/RAWDICT_SJ） | ✅ |
-| ir_interp / silu_fe | import 系 + 全特性 | 未实现（仅剩这两关） |
+| ir_interp.si | **混合实例/pyobj 平面**（变元短路、嵌套字段、dict 属性、bool/rawstr ownership） | ✅ |
+| silu_fe.si | import 系 + 2,183 行全特性前端 | 未实现（最后一关） |
 
 里程碑提交：`c25628d` calc.si、`cedef08` jsonparse.si（15/18）、
-`f9fa865` **jsonparse_json.si 逐字节对齐（16/18）**。
+`f9fa865` **jsonparse_json.si 逐字节对齐（16/18）**；本轮
+**ir_interp.si 逐字节对齐（17/18，487,006B）**。
 本轮事故：git checkout 回退未提交工作树——已全部重放并验证；教训：**每达成一个
 byte-identical 立即提交**。
 
@@ -62,12 +64,13 @@ byte-identical 立即提交**。
    body（由语句自身回环/merge）。内层 match 结束由外层收尾补 br 父 match_end
 8. **全局槽号模型**（关键）：ref 的 `_create_global_string` 用
    `str_{len(module.globals)}`——槽号=模块全局表长度（含变量和函数）。
-   **class_def：inst 域类耗 1 槽、pyobj 动态类不耗**（jsonparse 的 JInt 等
-   被 match_class 消费→DYN_CLASSES→不耗）；**match_class 每个捕获耗 1 槽**
-   （建 gvar）。这条修正了迭代 1“捕获不耗槽”的误判
+   `STR_BASE=297` 已含 main 包装；class/enum 仅占编译期表、不耗模块槽；
+   每个顶层函数和方法各耗 1 槽（main  renamed 后也仅 1）；match_class
+   每个捕获建 gvar、耗 1 槽。ir_interp 的 12 个方法证实方法必须预声明计数；
+   早期“实例类额外占 1/main 双计”的局部近似已由本规约取代
 9. len(names[i]) → rawlist_str_get（非 copy_into）；str 捕获先 rawstr_copy
 
-**下一目标**：ir_interp.si / silu_fe.si（import 系，最后两关）。
+**下一目标**：silu_fe.si（import 系，最后一关）。
 jsonparse.si 输出 442,328 字节 = 参考，逐字节一致。
 
 **jsonparse_json.si 已完成（f9fa865，16/18）——tagged-union Json 平面**
@@ -104,7 +107,33 @@ jsonparse.si 输出 442,328 字节 = 参考，逐字节一致。
 8. 函数内 dict[str,Json] 局部：FN_D 注册表 + dct_slot()（%"o" 非 @"o"），
    name 求值（eval_mod/eval_expr）补 FN_D→Inst
 
-**下一目标**：ir_interp.si / silu_fe.si（import 系，最后两关）。
+**ir_interp.si 已完成（17/18，487,006B）——混合实例与 pyobj 平面**
+
+1. **pyobj 序比较/短路**：ch=self.src[self.pos] 在裸赋值中经
+   rawstr_to_pystr 成为 Pyo；>=/<= 发射 pyobj_ge/le。短路操作数以 ScVal
+   显式携带 I1/Pyo：非末尾 Pyo 先做 null+pyobj_truthy 分支，sc_finish 直接
+   保存原 Pyo（不 create_bool），末尾同样保存原值，sc_end 后统一 truthy。
+   既有 i1 链保持 create_bool 形态。
+2. **直接索引比较与 concat 的暂停形态**：条件中的 self.src[i] 不走 Pyo，
+   而走既有融合 str_view/rawstr_eq_cstr；rawstr concat 左侧字符视图在
+   insertvalue 后暂停，先求 rhs，再 extractvalue+rawstr_char1+concat。
+3. **实例域扩展**：bool 构造字段/参数/返回均为 i1；is not None、in dict、
+   read_stdin、ord、嵌套 call/subscript 基址字段读、dict 属性读写、空 dict
+   构造均已覆盖。列表中的实例元素始终读为 i64 位值，属性访问时才 inttoptr。
+4. **rawstr ownership**：普通字段读复制；静态方法 rawstr 实参复制，静态
+   自由函数同类型实参不复制；rawstr 返回先 copy 再按声明序释放局部；
+   属性 str 写为 rhs copy→base 求值→field coerce copy→free old→store。
+   concat 在函数内释放转换/char1 临时，顶层 wordcount 形状不多发 free。
+5. **typed prologue**：显式返回注解触发参数逆序 alloca、正序 store；
+   rawstr 参数 alloca+null，参数 store 延迟；标量参数同步注册 FN_I/FN_B，
+   不再误读为模块全局。隐式 str 返回释放局部后生成空 rawstr_new_copy。
+6. **Json 内建与用户类同名**：只有内建 Json 注解且不存在用户自定义
+   `class Json` 时才注入 tagged runtime；ir_interp 的 Json 类不再误触发。
+7. **回归验证**：wordcount/calc 曾分别暴露顶层临时释放和实例列表表示
+   回归，修复后聚焦 cmp 通过；最终全量 17/18，仅 silu_fe 的 import 仍 ERROR。
+   `cargo test --quiet` 通过（当前 0 个单元测试）。
+
+**下一目标**：silu_fe.si（import + 全特性前端，最后一关）。
 
 **蓝图文档**（完整形状）（reference/DYNAMIC_SHAPES.md 提交 9a7f325）：
 pyobj={i32,i8*}*（= none 型作值载体）、动态 ctor=malloc+pyobj字段+
@@ -186,7 +215,7 @@ print str const = %.*s(len,gep) / print str 名 = 字段0+2 / 函数序言2N+1 /
 - enum_def（Tok）/ class_def / match 语句形状待解剖
 
 ### T2d import 系（ir_interp → silu_fe 终关）
-- ir_interp: from_import；silu_fe: import + 2,183 行全特性
+- ir_interp.si ✅ 487,006B 逐字节一致；silu_fe.si：import + 2,183 行全特性
 
 ### T3 校准报告（R3）
 - 分组件行数对照表（前端 2509 Rust vs 2183 Silu +15%；转换器对照待量）

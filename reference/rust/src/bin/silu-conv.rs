@@ -134,6 +134,7 @@ thread_local! {
     static FN_D: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static JSON_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static IN_FN: RefCell<bool> = RefCell::new(false);
+    static CUR_FN: RefCell<String> = RefCell::new(String::new());
     static FN_RET: RefCell<String> = RefCell::new(String::new());
     static LST_ELEM: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
     static FN_SIGS: RefCell<Vec<(String, Vec<String>, String)>> =
@@ -528,7 +529,7 @@ impl FnB {
 
     // complete a paused view conversion: extract x2 + str_view stores
     // + unused bitcast (jsonparse compare interleave, second half)
-    fn finish_view_split(&mut self, pair: &str) {
+    fn finish_view_split(&mut self, pair: &str) -> String {
         let ev1 = self.nx();
         self.line(format!(
             "  %\"{}\" = extractvalue {{i8*, i64}} {}, 0", ev1, pair));
@@ -563,6 +564,7 @@ impl FnB {
         self.line(format!(
             "  %\"{}\" = bitcast {{i64, i64, i8*, i64}}* %\"{}\" to i8*",
             vbc, vn));
+        format!("%\"{}\"", vbc)
     }
 
     // list element WRITE: bounds-check chain + store. objref/keyref/valref
@@ -1101,7 +1103,7 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
     let fs = F_SLOTS.with(|f| f.borrow().clone());
     match e.head() {
         "and" | "or" => emit_sc(b, e, sc, true),
-        "is" => {
+        "is" | "is not" => {
             let v = eval_mod(b, &e.get(1), &fs, sc);
             let r = match v {
                 Typed::Inst(r) | Typed::Str(r) => r,
@@ -1110,6 +1112,11 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
             let ic = b.nx();
             b.line(format!(
                 "  %\"{}\" = icmp eq i8* {}, null", ic, r));
+            if e.head() == "is not" {
+                let x = b.nx();
+                b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, ic));
+                return format!("%\"{}\"", x);
+            }
             format!("%\"{}\"", ic)
         }
         "call" if e.get(1).head() == "attribute"
@@ -1122,17 +1129,31 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
                 "  %\"{}\" = call i1 @\"rawstr_isdigit\"(i8* {})", c, r));
             format!("%\"{}\"", c)
         }
+        "in" | "not in" => {
+            let dv = eval_mod(b, &e.get(2), &fs, sc);
+            let d = match dv {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                _ => bail("membership container"),
+            };
+            let kv = eval_mod(b, &e.get(1), &fs, sc);
+            let k = to_raw(b, kv, sc);
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i1 @\"rawdict_str_has\"(i8* {}, i8* {})", c, d, k));
+            if e.head() == "not in" {
+                let x = b.nx();
+                b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                return format!("%\"{}\"", x);
+            }
+            format!("%\"{}\"", c)
+        }
         "==" | "!=" | "<" | "<=" | ">" | ">=" => {
             // compare-context subscripts: dead value conversion (view
             // mode) first, then the fused compare with fresh loads
             let fused_pattern = e.get(1).head() == "subscript"
-                && e.get(1).get(1).head() == "name"
+                && is_str_expr(&e.get(1))
                 && e.get(2).head() == "const"
-                && matches!(e.get(2).get(1), Val::Str(_)) && {
-                let bn = e.get(1).get(1).get(1).str_of();
-                STR_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn))
-                    || is_local_s(&bn)
-            };
+                && matches!(e.get(2).get(1), Val::Str(_));
             if fused_pattern {
                 // dead value conversion pauses after insertvalue; the
                 // rhs const chain (gep+create_str) lands between the
@@ -1146,8 +1167,30 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
             let rt = eval_mod(b, &e.get(2), &fs, sc);
             let pending = PENDING_PAIR.with(|c| c.borrow().clone());
             PENDING_PAIR.with(|c| *c.borrow_mut() = None);
-            if let Some(pr) = pending {
-                if !pr.is_empty() { b.finish_view_split(&pr); }
+            let view_ref = if let Some(pr) = pending {
+                if !pr.is_empty() { Some(b.finish_view_split(&pr)) } else { None }
+            } else { None };
+            if e.get(1).get(1).head() == "attribute"
+                && matches!(rt, Typed::PStr(_))
+                && view_ref.is_some() {
+                let view = view_ref.clone().unwrap();
+                let text = e.get(2).get(1).str_of();
+                let blen = text.chars().count() as i64;
+                let gname = add_str(sc, &text);
+                let g = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                    g, blen + 1, blen + 1, gname));
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i1 @\"rawstr_eq_cstr\"(i8* {}, i8* %\"{}\", i64 {})",
+                    c, view, g, blen));
+                if e.head() == "!=" {
+                    let x = b.nx();
+                    b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                    return format!("%\"{}\"", x);
+                }
+                return format!("%\"{}\"", c);
             }
             // fused subscript-vs-const: s[k] op "c" (no char1/cv)
             if matches!(lt, Typed::Str(_))
@@ -1203,6 +1246,30 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
                     }
                 }
             }
+            if matches!(e.head(), "==" | "!=")
+                && matches!(lt, Typed::Pyo(_))
+                && matches!(rt, Typed::PStr(_))
+                && e.get(2).head() == "const"
+                && matches!(e.get(2).get(1), Val::Str(_)) {
+                let l = match &lt { Typed::Pyo(r) => r, _ => unreachable!() };
+                let text = e.get(2).get(1).str_of();
+                let blen = text.chars().count() as i64;
+                let gname = add_str(sc, &text);
+                let g = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                    g, blen + 1, blen + 1, gname));
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i1 @\"pyobj_str_eq_cstr\"({{i32, i8*}}* {}, i8* %\"{}\", i64 {})",
+                    c, l, g, blen));
+                if e.head() == "!=" {
+                    let x = b.nx();
+                    b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                    return format!("%\"{}\"", x);
+                }
+                return format!("%\"{}\"", c);
+            }
             if e.head() == "==" && (matches!(lt, Typed::Str(_) | Typed::PStr(_))
                 || matches!(rt, Typed::Str(_) | Typed::PStr(_))) {
                 // str ==: const rhs gets a FRESH constant slot + gep
@@ -1226,6 +1293,24 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
                     c, lr, rr, rlen));
                 return format!("%\"{}\"", c);
             }
+            if matches!(e.head(), "<" | "<=" | ">" | ">=")
+                && matches!(lt, Typed::Pyo(_))
+                && matches!(rt, Typed::Pyo(_) | Typed::PStr(_)) {
+                let l = match &lt { Typed::Pyo(r) => r, _ => unreachable!() };
+                let r = match &rt {
+                    Typed::Pyo(r) | Typed::PStr(r) => r,
+                    _ => unreachable!(),
+                };
+                let f = match e.head() {
+                    "<" => "pyobj_lt", "<=" => "pyobj_le",
+                    ">" => "pyobj_gt", _ => "pyobj_ge",
+                };
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"{}\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
+                    c, f, l, r));
+                return emit_pyo_truthy(b, &format!("%\"{}\"", c));
+            }
             let pred = match e.head() {
                 "<" => "slt", "<=" => "sle", ">" => "sgt", ">=" => "sge",
                 "==" => "eq", _ => "ne",
@@ -1243,11 +1328,18 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
                 format!("%\"{}\"", ic)
             } else {
                 let (Typed::I64(l), Typed::I64(r)) = (&lt, &rt) else {
-                    bail("cond types") };
+                    bail(&format!("cond types: {:?}", e)) };
                 let ic = b.nx();
                 b.line(format!(
                     "  %\"{}\" = icmp {} i64 {}, {}", ic, pred, l, r));
                 format!("%\"{}\"", ic)
+            }
+        }
+        "call" => {
+            match eval_mod(b, e, &fs, sc) {
+                Typed::Bool(r) => r,
+                Typed::Pyo(r) | Typed::PStr(r) => emit_pyo_truthy(b, &r),
+                _ => bail("i1 call type"),
             }
         }
         "const" if matches!(e.get(1), Val::Bool(_)) => {
@@ -1259,7 +1351,7 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
                 "  %\"{}\" = load i1, i1* %\"{}\"", l, e.get(1).str_of()));
             format!("%\"{}\"", l)
         }
-        _ => bail("i1 expr"),
+        _ => bail(&format!("i1 expr: {:?}", e)),
     }
 }
 
@@ -1267,6 +1359,62 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
 // created before the first operand's eval blocks, then per-operand
 // sc_finish/sc_next, truthy_call, truthy_merge (calc, parse_number).
 // The IR and/or is variadic: operand k+1 evaluates inside sc_next.k
+enum ScVal { I1(String), Pyo(String) }
+
+fn emit_pyo_truthy(b: &mut FnB, value: &str) -> String {
+    let pred = b.blocks[b.cur].0.clone();
+    let nz = b.nx();
+    b.line(format!(
+        "  %\"{}\" = icmp eq {{i32, i8*}}* {}, null", nz, value));
+    let tm_lbl = b.uniq_label("truthy_merge");
+    let tc_lbl = b.uniq_label("truthy_call");
+    b.silent();
+    b.line(format!(
+        "  br i1 %\"{}\", label %\"{}\", label %\"{}\"", nz, tm_lbl, tc_lbl));
+    let tcb = b.add_block(&tc_lbl);
+    let tmb = b.add_block(&tm_lbl);
+    b.pos(tcb);
+    let tv = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i1 @\"pyobj_truthy\"({{i32, i8*}}* {})", tv, value));
+    b.silent();
+    b.line(format!("  br label %\"{}\"", tm_lbl));
+    b.pos(tmb);
+    let ph = b.nx();
+    b.line(format!(
+        "  %\"{}\" = phi  i1 [0, %\"{}\"], [%\"{}\", %\"{}\"]",
+        ph, pred, tv, tc_lbl));
+    format!("%\"{}\"", ph)
+}
+
+fn eval_sc_operand(b: &mut FnB, e: &Val, sc: &mut usize) -> ScVal {
+    let ordered = matches!(e.head(), "<" | "<=" | ">" | ">=");
+    let py_name = |v: &Val| v.head() == "name" && is_py(&v.get(1).str_of());
+    if ordered && (py_name(&e.get(1)) || py_name(&e.get(2))) {
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let lt = eval_mod(b, &e.get(1), &fs, sc);
+        let rt = eval_mod(b, &e.get(2), &fs, sc);
+        let l = match lt {
+            Typed::Pyo(r) | Typed::PStr(r) => r,
+            _ => bail("pyobj compare lhs"),
+        };
+        let r = match rt {
+            Typed::Pyo(r) | Typed::PStr(r) => r,
+            _ => bail("pyobj compare rhs"),
+        };
+        let f = match e.head() {
+            "<" => "pyobj_lt", "<=" => "pyobj_le",
+            ">" => "pyobj_gt", _ => "pyobj_ge",
+        };
+        let c = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call {{i32, i8*}}* @\"{}\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
+            c, f, l, r));
+        return ScVal::Pyo(format!("%\"{}\"", c));
+    }
+    ScVal::I1(eval_i1(b, e, sc))
+}
+
 fn emit_sc(b: &mut FnB, e: &Val, sc: &mut usize, truthy: bool) -> String {
     let is_and = e.head() == "and";
     let srn = b.uniq_label("sc_result");
@@ -1275,31 +1423,41 @@ fn emit_sc(b: &mut FnB, e: &Val, sc: &mut usize, truthy: bool) -> String {
     let ed_lbl = b.uniq_label("sc_end");
     let ed_b = b.add_block(&ed_lbl);
     let n_ops = e.items().len() - 1;
-    let mut cur = eval_i1(b, &e.get(1), sc);
+    let mut cur = eval_sc_operand(b, &e.get(1), sc);
     for k in 1..n_ops {
+        let cond = match &cur {
+            ScVal::I1(r) => r.clone(),
+            ScVal::Pyo(r) => emit_pyo_truthy(b, r),
+        };
         let f_lbl = b.uniq_label("sc_finish");
         let n_lbl = b.uniq_label("sc_next");
         b.silent();
         if is_and {
             b.line(format!(
-                "  br i1 {}, label %\"{}\", label %\"{}\"", cur, n_lbl, f_lbl));
+                "  br i1 {}, label %\"{}\", label %\"{}\"", cond, n_lbl, f_lbl));
         } else {
             b.line(format!(
-                "  br i1 {}, label %\"{}\", label %\"{}\"", cur, f_lbl, n_lbl));
+                "  br i1 {}, label %\"{}\", label %\"{}\"", cond, f_lbl, n_lbl));
         }
         let fb = b.add_block(&f_lbl);
         let nb = b.add_block(&n_lbl);
         b.pos(fb);
-        let cb = b.nx();
-        b.line(format!(
-            "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb, cur));
+        let stored = match &cur {
+            ScVal::I1(r) => {
+                let cb = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb, r));
+                format!("%\"{}\"", cb)
+            }
+            ScVal::Pyo(r) => r.clone(),
+        };
         b.silent();
         b.line(format!(
-            "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"", cb, srn));
+            "  store {{i32, i8*}}* {}, {{i32, i8*}}** %\"{}\"", stored, srn));
         b.silent();
         b.line(format!("  br label %\"{}\"", ed_lbl));
         b.pos(nb);
-        cur = eval_i1(b, &e.get(k + 1), sc);
+        cur = eval_sc_operand(b, &e.get(k + 1), sc);
     }
     if !truthy {
         // assignment and/or: free TEMP strs produced by B's eval
@@ -1310,12 +1468,18 @@ fn emit_sc(b: &mut FnB, e: &Val, sc: &mut usize, truthy: bool) -> String {
         }
         TEMP_STRS.with(|t| *t.borrow_mut() = Vec::new());
     }
-    let cb2 = b.nx();
-    b.line(format!(
-        "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb2, cur));
+    let stored = match &cur {
+        ScVal::I1(r) => {
+            let cb = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}* @\"create_bool\"(i1 {})", cb, r));
+            format!("%\"{}\"", cb)
+        }
+        ScVal::Pyo(r) => r.clone(),
+    };
     b.silent();
     b.line(format!(
-        "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"", cb2, srn));
+        "  store {{i32, i8*}}* {}, {{i32, i8*}}** %\"{}\"", stored, srn));
     b.silent();
     b.line(format!("  br label %\"{}\"", ed_lbl));
     b.pos(ed_b);
@@ -1329,29 +1493,7 @@ fn emit_sc(b: &mut FnB, e: &Val, sc: &mut usize, truthy: bool) -> String {
             ub, ld));
         return format!("%\"{}\"", ub);
     }
-    let nz = b.nx();
-    b.line(format!(
-        "  %\"{}\" = icmp eq {{i32, i8*}}* %\"{}\", null", nz, ld));
-    let tm_lbl = b.uniq_label("truthy_merge");
-    let tc_lbl = b.uniq_label("truthy_call");
-    b.silent();
-    b.line(format!(
-        "  br i1 %\"{}\", label %\"{}\", label %\"{}\"", nz, tm_lbl, tc_lbl));
-    let tcb = b.add_block(&tc_lbl);
-    let tmb = b.add_block(&tm_lbl);
-    b.pos(tcb);
-    let tv = b.nx();
-    b.line(format!(
-        "  %\"{}\" = call i1 @\"pyobj_truthy\"({{i32, i8*}}* %\"{}\")",
-        tv, ld));
-    b.silent();
-    b.line(format!("  br label %\"{}\"", tm_lbl));
-    b.pos(tmb);
-    let ph = b.nx();
-    b.line(format!(
-        "  %\"{}\" = phi  i1 [0, %\"{}\"], [%\"{}\", %\"{}\"]",
-        ph, ed_lbl, tv, tc_lbl));
-    format!("%\"{}\"", ph)
+    emit_pyo_truthy(b, &format!("%\"{}\"", ld))
 }
 
 // conditions share eval_i1 (comparisons, sc chains, bools)
@@ -1793,6 +1935,72 @@ fn conv_ann_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
 // evaluated rhs; an UNDECLARED name auto-registers a global + slot AFTER
 // the rhs eval (fannkuch k/tmp/j evidence)
 fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
+    if st.get(1).head() == "attribute" {
+        let target = st.get(1);
+        let cls = expr_class(&target.get(1))
+            .unwrap_or_else(|| bail("attribute assign class"));
+        let fields = class_fields(&cls)
+            .unwrap_or_else(|| bail("attribute assign fields"));
+        let fld = target.get(2).str_of();
+        let (off, fty) = fields.iter().position(|(f, _)| f == &fld)
+            .map(|i| ((i * 8) as i64, fields[i].1.clone()))
+            .unwrap_or_else(|| bail("attribute assign field"));
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let v = eval_mod(b, &st.get(2), &fs, sc);
+        if fty == "str" {
+            let r = to_raw(b, v, sc);
+            let cp = b.nx();
+            b.line(format!("  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+            let bv = eval_mod(b, &target.get(1), &fs, sc);
+            let base = match bv {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                _ => bail("attribute assign base"),
+            };
+            let cp2 = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp2, cp));
+            let gp = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr i8, i8* {}, i64 {}", gp, base, off));
+            let bc = b.nx();
+            b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+            let old = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", old, bc));
+            b.silent();
+            b.line(format!("  call void @\"rawstr_free\"(i8* %\"{}\")", old));
+            b.silent();
+            b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", cp2, bc));
+            return;
+        }
+        let r = match v {
+            Typed::I64(r) if is_enum(&fty) || fty == "int" => r,
+            Typed::Bool(r) if fty == "bool" => r,
+            Typed::F64(r) if fty == "float" => r,
+            Typed::Inst(r) | Typed::Str(r) => r,
+            Typed::I64(r) => {
+                let pt = b.nx();
+                b.line(format!("  %\"{}\" = inttoptr i64 {} to i8*", pt, r));
+                format!("%\"{}\"", pt)
+            }
+            _ => bail("attribute assign value"),
+        };
+        let bv = eval_mod(b, &target.get(1), &fs, sc);
+        let base = match bv {
+            Typed::Inst(r) | Typed::Str(r) => r,
+            _ => bail("attribute assign base"),
+        };
+        let gp = b.nx();
+        b.line(format!(
+            "  %\"{}\" = getelementptr i8, i8* {}, i64 {}", gp, base, off));
+        let ll = if fty == "bool" { "i1" }
+                 else if fty == "float" { "double" }
+                 else if is_enum(&fty) || fty == "int" { "i64" } else { "i8*" };
+        let bc = b.nx();
+        b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to {}*", bc, gp, ll));
+        b.silent();
+        b.line(format!("  store {} {}, {}* %\"{}\"", ll, r, ll, bc));
+        return;
+    }
     let name = st.get(1).str_of();
     let rhs = st.get(2);
     if IN_FN.with(|v| *v.borrow()) && (is_local_i(&name) || is_local_f(&name)) {
@@ -2056,7 +2264,8 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
             _ => bail("auto decl type"),
         }
     } else if is_s || is_local_s(&name) {
-        if rhs.head() == "+" {
+        if rhs.head() == "+" && rhs.get(2).head() == "const"
+            && matches!(rhs.get(2).get(1), Val::Str(_)) {
             // s = s + "lit" -> rawstr_append(s, lit, len)
             let lit = match &rhs.get(2).items()[1] {
                 Val::Str(v) => v.clone(), _ => bail("str rhs") };
@@ -2184,6 +2393,30 @@ fn conv_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
 // subscript store: dict keeps (obj, value, key) + rawdict_set; list uses
 // (obj, key, value) + bounds-checked element store
 fn conv_subscript_assign(b: &mut FnB, st: &Val, sc: &mut usize) {
+    if st.get(1).head() == "attribute" && st.get(1).get(1).head() == "name" {
+        let bn = st.get(1).get(1).get(1).str_of();
+        let cls = fn_ty_of(&bn).unwrap_or_else(|| bail("subscript attr class"));
+        let fields = class_fields(&cls).unwrap_or_else(|| bail("subscript attr fields"));
+        let fld = st.get(1).get(2).str_of();
+        let fty = fields.iter().find(|(f, _)| f == &fld)
+            .map(|(_, t)| t.clone()).unwrap_or_else(|| bail("subscript attr field"));
+        if fty.starts_with("dict:str:") {
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let dv = eval_mod(b, &st.get(1), &fs, sc);
+            let d = match dv {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                _ => bail("subscript attr dict"),
+            };
+            let vv = eval_mod(b, &st.get(3), &fs, sc);
+            let Typed::I64(v) = vv else { bail("subscript attr dict value") };
+            let kv = eval_mod(b, &st.get(2), &fs, sc);
+            let k = to_raw(b, kv, sc);
+            b.silent();
+            b.line(format!(
+                "  call void @\"rawdict_str_set\"(i8* {}, i8* {}, i64 {})", d, k, v));
+            return;
+        }
+    }
     if st.get(1).head() != "name" { bail("subscript_assign base"); }
     let obj = st.get(1).get(1).str_of();
     if DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &obj)) {
@@ -2540,22 +2773,29 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
             "return" if IN_FN.with(|v| *v.borrow()) => {
                 let rty = FN_RET.with(|r| r.borrow().clone());
                 let fs = F_SLOTS.with(|f| f.borrow().clone());
-                let v = eval_mod(b, &st.get(1), &fs, sc);
-                // epilogue: free non-param str locals before returning;
-                // a str local that IS the return value frees itself in
-                // the ret copy chain (jsonparse parse_string evidence)
-                let ret_str_local = if rty == "str" && st.get(1).head() == "name"
-                    && is_local_s(&st.get(1).get(1).str_of()) {
-                    Some(st.get(1).get(1).str_of()) } else { None };
+                let mut v = eval_mod(b, &st.get(1), &fs, sc);
+                // rawstr returns are copied before any local drops
+                if rty == "str" {
+                    v = match v {
+                        Typed::Str(r) | Typed::Inst(r) => {
+                            let cp = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                            Typed::Str(format!("%\"{}\"", cp))
+                        }
+                        Typed::PStr(_) | Typed::Pyo(_) => {
+                            let r = to_raw(b, v, sc);
+                            Typed::Str(r)
+                        }
+                        other => other,
+                    };
+                }
                 let locals = FN_S.with(|y| y.borrow().clone());
                 // Json returns box first, then free the str locals (the
                 // tagged_new_ptr/copy precede the ch free, parse_value
                 // evidence); other returns free before the value dispatch
                 if rty != "json" {
                 for nm in locals.iter() {
-                    if Some(nm.as_str()) == ret_str_local.as_deref() {
-                        continue;
-                    }
                     if FN_PARAM_NAMES.with(|p| p.borrow().contains(nm)) {
                         continue;
                     }
@@ -2663,24 +2903,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                             b.line(format!("  ret i8* %\"{}\"", c));
                         }
                     }
-                } else if rty == "str" && st.get(1).head() == "name"
-                    && is_local_s(&st.get(1).get(1).str_of()) {
-                    // str local return reuses the eval load:
-                    // copy(eval) -> reload -> free -> ret copy
-                    let nm = st.get(1).get(1).str_of();
-                    let Typed::Str(r0) = &v else { bail("ret str ref") };
-                    let cp = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})",
-                        cp, r0));
-                    let l2 = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i8*, i8** %\"{}\"", l2, nm));
+                } else if rty == "bool" {
+                    let Typed::Bool(r) = v else { bail("ret bool type") };
                     b.silent();
-                    b.line(format!(
-                        "  call void @\"rawstr_free\"(i8* %\"{}\")", l2));
-                    b.silent();
-                    b.line(format!("  ret i8* %\"{}\"", cp));
+                    b.line(format!("  ret i1 {}", r));
                 } else if rty.starts_with("inst:") || rty == "str"
                     || rty.starts_with("list:") {
                     match v {
@@ -2714,17 +2940,17 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 return true;
             }
             "enum_def" => {
-                *sc += 1; // registered by the prescan
+                // enums are compile-time tables, not module globals
             }
             "from_import" => {
                 // from __future__ import annotations is a no-op: no code,
                 // no global slot (ir_interp evidence)
             }
             "class_def" => {
-                // instance-domain classes occupy a global slot (calc);
-                // pyobj dynamic classes register only a layout (jsonparse)
-                let cn = st.get(1).str_of();
-                if !is_dyn_class(&cn) { *sc += 1; }
+                // classes are layouts only; each method has a predeclared
+                // function global, just like a top-level def
+                *sc += st.get(3).items().iter()
+                    .filter(|s| s.head() == "func_def").count();
             }
             "match" => {
                 // scrutinee read once, then a case_next chain; wildcard
@@ -2978,9 +3204,9 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>,
                 conv_aug_assign(b, &rebuilt, sc, &global_slot);
             }
             "func_def" => {
-                // def main consumes TWO slots: main + __silu_user_main
+                // STR_BASE already includes the native main wrapper; each
+                // source-level function (including renamed main) adds one
                 *sc += 1;
-                if st.get(1).str_of() == "main" { *sc += 1; }
                 FUNC_DEFS.with(|f| f.borrow_mut().push(st.clone()));
             }
             _ => bail(st.head()),
@@ -3060,14 +3286,15 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let body = fd.get(3).items();
     let mut name = fd.get(1).str_of();
     if name == "main" { name = "__silu_user_main".into(); }
+    CUR_FN.with(|f| *f.borrow_mut() = name.clone());
 
     let mut atys = Vec::new();
     for (p, a) in params.iter().zip(annos.iter()) {
         if p.str_of().is_empty() { bail("param name"); }
         if a.head() == "name" {
             let t = a.get(1).str_of();
-            if t != "int" && t != "float" && !is_class(&t) && t != "str"
-                && !is_enum(&t) { bail("param type"); }
+            if t != "int" && t != "float" && t != "bool"
+                && !is_class(&t) && t != "str" && !is_enum(&t) { bail("param type"); }
             if is_class(&t) { atys.push(format!("inst:{}", t)); }
             else if t == "str" { atys.push("str".into()); }
             else if is_enum(&t) { atys.push("int".into()); }
@@ -3098,7 +3325,8 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
                   let t = ret_anno.get(1).str_of();
                   if t == "Json" { "json".to_string() }
                   else {
-                  if t != "int" && t != "float" && !is_class(&t) && t != "str" {
+                  if t != "int" && t != "float" && t != "bool"
+                      && !is_class(&t) && t != "str" {
                       bail("ret type");
                   }
                   if is_class(&t) { format!("inst:{}", t) } else { t.to_string() }
@@ -3133,7 +3361,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     };
     let rty_ll = match rty.as_str() {
         "pyobj" => "{i32, i8*}*",
-        "float" => "double", "none" => "{i32, i8*}*",
+        "float" => "double", "bool" => "i1", "none" => "{i32, i8*}*",
         t if t.starts_with("inst:") || t == "str" || t == "json"
             || t.starts_with("list:") => "i8*",
         _ => "i64",
@@ -3190,8 +3418,7 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     // null-inits every RAWSTR param). pyobj-returning functions without
     // an annotation keep the plain prologue (jsonparse.si parse_value vs
     // jsonparse_json parse_value evidence)
-    let has_ret_anno = !matches!(ret_anno, Val::Null)
-        && params.iter().zip(atys.iter()).any(|(_, t)| t == "str");
+    let has_ret_anno = !matches!(ret_anno, Val::Null);
     let any_owned = params.iter().zip(atys.iter())
         .any(|(p, t)| t == "str" && str_owned(&body, &p.str_of()))
         || has_ret_anno;
@@ -3249,29 +3476,37 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
             if t == "str" {
                 FN_S.with(|y| y.borrow_mut().push(p.str_of()));
                 container_pairs.push_str(&format!(
-                    "  %\"{}\" = alloca i8*\n  store i8* null, i8** %\"{}\"\n  store i8* %\".{}\", i8** %\"{}\"\n",
-                    p.str_of(), p.str_of(), i + 1, p.str_of()));
+                    "  %\"{}\" = alloca i8*\n  store i8* null, i8** %\"{}\"\n",
+                    p.str_of(), p.str_of()));
+                deferred.insert(0, format!(
+                    "  store i8* %\".{}\", i8** %\"{}\"",
+                    i + 1, p.str_of()));
                 b.silent(); b.silent();
             } else if t.starts_with("inst:") {
                 FN_TY.with(|y| y.borrow_mut().push(
                     (p.str_of(), t.strip_prefix("inst:").unwrap_or("").to_string())));
                 container_pairs.push_str(&format!(
-                    "  %\"{}\" = alloca i8*\n  store i8* %\".{}\", i8** %\"{}\"\n",
-                    p.str_of(), i + 1, p.str_of()));
+                    "  %\"{}\" = alloca i8*\n", p.str_of()));
+                deferred.insert(0, format!(
+                    "  store i8* %\".{}\", i8** %\"{}\"",
+                    i + 1, p.str_of()));
                 b.silent();
             } else if t.starts_with("list:") {
                 FN_L.with(|f| f.borrow_mut().push(
                     (p.str_of(), t.split(':').nth(1).unwrap_or("int").to_string())));
                 container_pairs.push_str(&format!(
                     "  %\"{}\" = alloca i8*\n", p.str_of()));
-                deferred.push(format!(
+                deferred.insert(0, format!(
                     "  store i8* %\".{}\", i8** %\"{}\"",
                     i + 1, p.str_of()));
                 b.silent();
             } else {
+                if t == "float" { FN_F.with(|f| f.borrow_mut().push(p.str_of())); }
+                else if t == "bool" { FN_B.with(|f| f.borrow_mut().push(p.str_of())); }
+                else { FN_I.with(|f| f.borrow_mut().push(p.str_of())); }
                 container_pairs.push_str(&format!(
                     "  %\"{}\" = alloca {}\n", p.str_of(), arg_ll(t)));
-                deferred.push(format!(
+                deferred.insert(0, format!(
                     "  store {} %\".{}\", {}* %\"{}\"",
                     arg_ll(t), i + 1, arg_ll(t), p.str_of()));
                 b.silent();
@@ -3286,13 +3521,37 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     let mut loops: Vec<String> = Vec::new();
     let ended = conv_block(&mut b, &body, &mut loops, sc);
     if !ended {
-        // implicit returns: typed null/zero defaults (calc: ret i8* null)
-        b.silent();
+        // implicit returns drop owned local raw strings first
+        let locals = FN_S.with(|f| f.borrow().clone());
+        for nm in locals {
+            if FN_PARAM_NAMES.with(|p| p.borrow().iter().any(|x| x == &nm)) {
+                continue;
+            }
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, nm));
+            b.silent();
+            b.line(format!("  call void @\"rawstr_free\"(i8* %\"{}\")", l));
+        }
+        if rty != "str" { b.silent(); }
         match rty.as_str() {
             "float" => b.line(format!(
                 "  ret double {}", double_bits(0.0))),
-            t if t.starts_with("inst:") || t == "str"
-                || t.starts_with("list:") => b.line("  ret i8* null".into()),
+            "bool" => b.line("  ret i1 false".into()),
+            "str" => {
+                let gname = add_str(sc, "");
+                let g = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [1 x i8], [1 x i8]* @\"{}\", i32 0, i32 0",
+                    g, gname));
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_new_copy\"(i8* %\"{}\", i64 0)",
+                    c, g));
+                b.silent();
+                b.line(format!("  ret i8* %\"{}\"", c));
+            }
+            t if t.starts_with("inst:") || t.starts_with("list:") =>
+                b.line("  ret i8* null".into()),
             "none" | "pyobj" =>
                 b.line("  ret {i32, i8*}* null".into()),
             _ => b.line("  ret i64 0".into()),
@@ -3341,9 +3600,64 @@ fn convert_func(fd: &Val, sc: &mut usize) -> String {
     out
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Typed { I64(String), F64(String), Str(String), PStr(String),
              Inst(String), Pyo(String), Bool(String) } // Bool = i1 value
+
+fn expr_class(e: &Val) -> Option<String> {
+    match e.head() {
+        "name" => fn_ty_of(&e.get(1).str_of()),
+        "call" if e.get(1).head() == "name" => {
+            let n = e.get(1).get(1).str_of();
+            FN_SIGS.with(|s| s.borrow().iter().find(|(k, _, _)| k == &n)
+                .and_then(|(_, _, r)| r.strip_prefix("inst:").map(str::to_string)))
+        }
+        "subscript" if e.get(1).head() == "attribute"
+            && e.get(1).get(1).head() == "name" => {
+            let bn = e.get(1).get(1).get(1).str_of();
+            let fld = e.get(1).get(2).str_of();
+            fn_ty_of(&bn).and_then(|c| class_fields(&c))
+                .and_then(|fs| fs.into_iter().find(|(f, _)| f == &fld))
+                .and_then(|(_, t)| t.strip_prefix("list:").map(str::to_string))
+                .filter(|t| is_class(t))
+        }
+        _ => None,
+    }
+}
+
+fn is_str_expr(e: &Val) -> bool {
+    match e.head() {
+        "const" => matches!(e.get(1), Val::Str(_)),
+        "name" => {
+            let n = e.get(1).str_of();
+            is_local_s(&n) || STR_SLOTS.with(|s| s.borrow().iter().any(|x| x == &n))
+        }
+        "attribute" if e.get(1).head() == "name" => {
+            let bn = e.get(1).get(1).str_of();
+            let fld = e.get(2).str_of();
+            fn_ty_of(&bn).and_then(|c| class_fields(&c))
+                .and_then(|fs| fs.into_iter().find(|(f, _)| f == &fld))
+                .map(|(_, t)| t == "str").unwrap_or(false)
+        }
+        "subscript" => is_str_expr(&e.get(1)),
+        "+" => is_str_expr(&e.get(1)) || is_str_expr(&e.get(2)),
+        "call" => {
+            let target = if e.get(1).head() == "name" {
+                e.get(1).get(1).str_of()
+            } else if e.get(1).head() == "attribute"
+                && e.get(1).get(1).head() == "name" {
+                let bn = e.get(1).get(1).get(1).str_of();
+                match fn_ty_of(&bn) {
+                    Some(c) => format!("{}__{}", c, e.get(1).get(2).str_of()),
+                    None => return false,
+                }
+            } else { return false; };
+            FN_SIGS.with(|s| s.borrow().iter()
+                .any(|(n, _, r)| n == &target && r == "str"))
+        }
+        _ => false,
+    }
+}
 
 fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
              slot_f: &dyn Fn(&str) -> String, sc: &mut usize,
@@ -3405,6 +3719,32 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         }
     }
     if e.head() == "call" && e.get(1).head() == "name"
+        && e.get(1).get(1).str_of() == "ord" {
+        let ia = e.get(2).items();
+        if ia.len() != 1 { bail("ord arity"); }
+        let av = eval_expr(b, &ia[0], slot_i, slot_f, sc, fslots);
+        let owned = matches!(av, Typed::PStr(_) | Typed::Pyo(_));
+        let r = to_raw(b, av, sc);
+        let c = b.nx();
+        b.line(format!("  %\"{}\" = call i64 @\"rawstr_ord\"(i8* {})", c, r));
+        if owned {
+            b.silent();
+            b.line(format!("  call void @\"rawstr_free\"(i8* {})", r));
+        }
+        return Typed::I64(format!("%\"{}\"", c));
+    }
+    if e.head() == "call" && e.get(1).head() == "name"
+        && e.get(1).get(1).str_of() == "read_stdin" {
+        let c = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_read_stdin\"()", c));
+        let rr = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
+            rr, c));
+        return Typed::Str(format!("%\"{}\"", rr));
+    }
+    if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() == "input" {
         let c = b.nx();
         b.line(format!(
@@ -3429,8 +3769,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
     }
     if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() == "float" {
-        // float(str): copy -> to_cstr -> inline fend alloca -> strtod
-        // -> validation panic pair -> free (calc evidence)
+        // float(str): field read owns any required copy; convert to C string
+        // -> inline fend alloca -> strtod -> validation panic pair -> free
         let ia = e.get(2).items();
         if ia.len() != 1 { bail("float arity"); }
         let v = eval_expr(b, &ia[0], slot_i, slot_f, sc, fslots);
@@ -3439,12 +3779,9 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             Typed::PStr(_) => to_raw(b, v, sc),
             _ => bail("float arg type"),
         };
-        let cp = b.nx();
-        b.line(format!(
-            "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
         let cs = b.nx();
         b.line(format!(
-            "  %\"{}\" = call i8* @\"rawstr_to_cstr\"(i8* %\"{}\")", cs, cp));
+            "  %\"{}\" = call i8* @\"rawstr_to_cstr\"(i8* {})", cs, r));
         let fn_ = b.uniq_label("fend");
         b.reg_names.push(fn_.clone());
         b.line(format!("  %\"{}\" = alloca i8*", fn_));
@@ -3512,7 +3849,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             Val::Int(v) => Typed::I64(v.to_string()),
             Val::Float(v) => Typed::F64(double_bits(*v)),
             Val::Null => Typed::Inst("null".into()),
-            Val::Bool(v) => Typed::Bool(if *v { "1".into() } else { "0".into() }),
+            Val::Bool(v) => Typed::Bool(if *v { "true".into() } else { "false".into() }),
             _ => bail("const type"),
         },
         "name" => {
@@ -3566,6 +3903,10 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                        else { format!("@\"{}\"", n) }));
                 return Typed::F64(format!("%\"{}\"", l));
             }
+            if is_local_b(&n) {
+                b.line(format!("  %\"{}\" = load i1, i1* %\"{}\"", l, n));
+                return Typed::Bool(format!("%\"{}\"", l));
+            }
             if is_local_i(&n) {
                 b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", l, n));
                 return Typed::I64(format!("%\"{}\"", l));
@@ -3610,6 +3951,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 Typed::Bool(_) => bail("unary minus bool"),
             }
         }
+        "dict" if e.get(1).items().is_empty() => {
+            let c = b.nx();
+            b.line(format!("  %\"{}\" = call i8* @\"rawdict_new\"()", c));
+            Typed::Inst(format!("%\"{}\"", c))
+        }
+        "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+            Typed::Bool(eval_i1(b, e, sc))
+        }
         "**" => {
             let lt = eval_expr(b, &e.get(1), slot_i, slot_f, sc, fslots);
             let l = to_f64(b, lt);
@@ -3622,6 +3971,61 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     Typed::F64(format!("%\"{}\"", c))
                 }
                 _ => bail("pow exponent"),
+            }
+        }
+        "attribute" if e.get(1).head() != "name"
+            && expr_class(&e.get(1)).is_some() => {
+            let cls = expr_class(&e.get(1)).unwrap();
+            let fields = class_fields(&cls)
+                .unwrap_or_else(|| bail("call attr fields"));
+            let fld = e.get(2).str_of();
+            let (off, fty) = fields.iter().position(|(f, _)| f == &fld)
+                .map(|i| ((i * 8) as i64, fields[i].1.clone()))
+                .unwrap_or_else(|| bail("call attr field"));
+            let bv = eval_expr(b, &e.get(1), slot_i, slot_f, sc, fslots);
+            let base = match bv {
+                Typed::Inst(r) => r,
+                Typed::I64(r) => {
+                    let pt = b.nx();
+                    b.line(format!("  %\"{}\" = inttoptr i64 {} to i8*", pt, r));
+                    format!("%\"{}\"", pt)
+                }
+                _ => bail("call attr base"),
+            };
+            let gp = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr i8, i8* {}, i64 {}", gp, base, off));
+            if is_enum(&fty) || fty == "int" {
+                let bc = b.nx();
+                b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, gp));
+                let ld = b.nx();
+                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, bc));
+                Typed::I64(format!("%\"{}\"", ld))
+            } else if fty == "bool" {
+                let bc = b.nx();
+                b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i1*", bc, gp));
+                let ld = b.nx();
+                b.line(format!("  %\"{}\" = load i1, i1* %\"{}\"", ld, bc));
+                Typed::Bool(format!("%\"{}\"", ld))
+            } else if fty == "float" {
+                let bc = b.nx();
+                b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to double*", bc, gp));
+                let ld = b.nx();
+                b.line(format!("  %\"{}\" = load double, double* %\"{}\"", ld, bc));
+                Typed::F64(format!("%\"{}\"", ld))
+            } else {
+                let bc = b.nx();
+                b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                let ld = b.nx();
+                b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
+                if fty == "str" {
+                    let cp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp, ld));
+                    Typed::Str(format!("%\"{}\"", cp))
+                } else {
+                    Typed::Inst(format!("%\"{}\"", ld))
+                }
             }
         }
         "attribute" if e.get(1).head() == "name" => {
@@ -3667,6 +4071,15 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                             "  %\"{}\" = load i64, i64* %\"{}\"", ld, bc));
                         Typed::I64(format!("%\"{}\"", ld))
                     }
+                    "bool" => {
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to i1*", bc, gp));
+                        let ld = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i1, i1* %\"{}\"", ld, bc));
+                        Typed::Bool(format!("%\"{}\"", ld))
+                    }
                     "float" => {
                         let bc = b.nx();
                         b.line(format!(
@@ -3692,7 +4105,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         let ld = b.nx();
                         b.line(format!(
                             "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
-                        Typed::Inst(format!("%\"{}\"", ld))
+                        if fty == "str" {
+                            let cp = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp, ld));
+                            Typed::Str(format!("%\"{}\"", cp))
+                        } else {
+                            Typed::Inst(format!("%\"{}\"", ld))
+                        }
                     }
                 }
             } else if is_enum(&base) {
@@ -3758,7 +4178,28 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 let kv = eval_expr(b, idxe, slot_i, slot_f, sc, fslots);
                 let Typed::I64(k) = kv else { bail("str field idx") };
                 let r = b.str_char_at(&format!("%\"{}\"", sp), &k, sc);
-                return Typed::Str(r);
+                if COMPARE_VIEW.with(|c| *c.borrow()) {
+                    return Typed::Str(r);
+                }
+                let ps = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* {})",
+                    ps, r));
+                return Typed::Pyo(format!("%\"{}\"", ps));
+            }
+            if fty.starts_with("dict:str:") {
+                let bv = eval_expr(b, &base, slot_i, slot_f, sc, fslots);
+                let d = match bv {
+                    Typed::Inst(r) => r,
+                    _ => bail("attr dict ref"),
+                };
+                let kv = eval_expr(b, &e.get(2), slot_i, slot_f, sc, fslots);
+                let k = to_raw(b, kv, sc);
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* {}, i8* {})",
+                    c, d, k));
+                return Typed::I64(format!("%\"{}\"", c));
             }
             let elty = fty.strip_prefix("list:")
                 .unwrap_or_else(|| bail("not a list field"))
@@ -3934,6 +4375,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     let av = eval_expr(b, &args[i], slot_i, slot_f, sc, fslots);
                     // str fields: to_raw BEFORE the field gep (calc)
                     let av = match (&av, fty.as_str()) {
+                        (Typed::Str(r), "str") | (Typed::Inst(r), "str")
+                            if !(args[i].head() == "subscript"
+                                && args[i].get(2).head() == "slice") => {
+                            let cp = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                            Typed::Str(format!("%\"{}\"", cp))
+                        }
                         (Typed::PStr(_), _) if fty != "float" && fty != "int"
                             && !is_enum(fty) => {
                             let r = to_raw(b, av, sc);
@@ -3952,6 +4401,13 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                                 "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, gp));
                             b.silent();
                             b.line(format!("  store i64 {}, i64* %\"{}\"", r, bc));
+                        }
+                        (Typed::Bool(r), "bool") => {
+                            let bc = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = bitcast i8* %\"{}\" to i1*", bc, gp));
+                            b.silent();
+                            b.line(format!("  store i1 {}, i1* %\"{}\"", r, bc));
                         }
                         (v, "float") => {
                             let r = to_f64(b, v);
@@ -4026,6 +4482,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     if ty.starts_with("inst:") || ty == "str" {
                         let av = eval_expr(b, a, slot_i, slot_f, sc, fslots);
                         match av {
+                            Typed::Str(r) | Typed::Inst(r) if ty == "str" => {
+                                let cp = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                                parts.push(format!("i8* %\"{}\"", cp));
+                            }
                             Typed::Inst(r) | Typed::Str(r) =>
                                 parts.push(format!("i8* {}", r)),
                             Typed::PStr(_) => {
@@ -4046,6 +4508,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 let c = b.nx();
                 let rll = match rty.as_str() {
                     "float" => "double",
+                    "bool" => "i1",
                     "none" | "pyobj" => "{i32, i8*}*",
                     t if t.starts_with("inst:") || t == "str" => "i8*",
                     _ => "i64",
@@ -4053,6 +4516,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 b.line(format!("  %\"{}\" = call {} @\"{}\"({})",
                     c, rll, target, parts.join(", ")));
                 if rty == "float" { return Typed::F64(format!("%\"{}\"", c)); }
+                if rty == "bool" { return Typed::Bool(format!("%\"{}\"", c)); }
                 if rty.starts_with("inst:") || rty == "str" {
                     return Typed::Inst(format!("%\"{}\"", c));
                 }
@@ -4170,7 +4634,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             }
             let c = b.nx();
             let rll = match rty.as_str() {
-                "float" => "double", "none" | "pyobj" => "{i32, i8*}*",
+                "float" => "double", "bool" => "i1",
+                "none" | "pyobj" => "{i32, i8*}*",
                 t if t == "str" || t == "json" || t.starts_with("inst:")
                     || t.starts_with("list:") => "i8*",
                 _ => "i64",
@@ -4178,6 +4643,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             b.line(format!("  %\"{}\" = call {} @\"{}\"({})",
                 c, rll, fname, parts.join(", ")));
             if rty == "float" { return Typed::F64(format!("%\"{}\"", c)); }
+            if rty == "bool" { return Typed::Bool(format!("%\"{}\"", c)); }
             if rty == "str" || rty == "json" || rty.starts_with("inst:")
                 || rty.starts_with("list:") {
                 return Typed::Inst(format!("%\"{}\"", c));
@@ -4187,30 +4653,60 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             }
             Typed::I64(format!("%\"{}\"", c))
         }
-        "+" if (e.get(1).head() == "const"
-                  && matches!(e.get(1).get(1), Val::Str(_)))
-             || (e.get(2).head() == "const"
-                  && matches!(e.get(2).get(1), Val::Str(_)))
-             || e.get(2).head() == "call" && e.get(2).get(1).head() == "name"
-                  && e.get(2).get(1).get(1).str_of() == "str" => {
+        "+" if is_str_expr(&e.get(1)) || is_str_expr(&e.get(2)) => {
             // str concat: eval both sides (pystr domain), to_rawstr each
             // in order, rawstr_concat (wordcount evidence)
             let _ = slot_f;
-            let lt = eval_expr(b, &e.get(1),
+            let pause_lhs = e.get(1).head() == "subscript"
+                && is_str_expr(&e.get(1))
+                && PENDING_PAIR.with(|p| p.borrow().is_none());
+            if pause_lhs {
+                PENDING_PAIR.with(|p| *p.borrow_mut() = Some(String::new()));
+                COMPARE_VIEW.with(|c| *c.borrow_mut() = true);
+            }
+            let mut lt = eval_expr(b, &e.get(1),
                 &|n: &str| format!("@\"{}\"", n),
                 &|n: &str| format!("@\"{}\"", n), sc, fslots);
+            COMPARE_VIEW.with(|c| *c.borrow_mut() = false);
             let rt = eval_expr(b, &e.get(2),
                 &|n: &str| format!("@\"{}\"", n),
                 &|n: &str| format!("@\"{}\"", n), sc, fslots);
+            if pause_lhs {
+                let pair = PENDING_PAIR.with(|p| p.borrow_mut().take())
+                    .unwrap_or_else(|| bail("concat char pair"));
+                if !pair.is_empty() {
+                    let ev1 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = extractvalue {{i8*, i64}} {}, 0", ev1, pair));
+                    let ev2 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = extractvalue {{i8*, i64}} {}, 1", ev2, pair));
+                    let ch = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_char1\"(i8* %\"{}\", i64 %\"{}\")",
+                        ch, ev1, ev2));
+                    TEMP_STRS.with(|t| t.borrow_mut().push(format!("%\"{}\"", ch)));
+                    lt = Typed::Str(format!("%\"{}\"", ch));
+                }
+            }
             let (lref, lpy) = pystr_of(b, &lt, sc);
             let (rref, rpy) = pystr_of(b, &rt, sc);
-            if !lpy && !rpy { bail("both raw concat"); }
             let lr = if lpy { to_raw(b, lt, sc) } else { lref };
             let rr = if rpy { to_raw(b, rt, sc) } else { rref };
             let cc = b.nx();
             b.line(format!(
                 "  %\"{}\" = call i8* @\"rawstr_concat\"(i8* {}, i8* {})",
                 cc, lr, rr));
+            let ltemp = lpy || TEMP_STRS.with(|t| t.borrow().iter().any(|r| r == &lr));
+            let rtemp = rpy || TEMP_STRS.with(|t| t.borrow().iter().any(|r| r == &rr));
+            let cleanup_temps = IN_FN.with(|v| *v.borrow());
+            for (r, is_temp) in [(&lr, ltemp), (&rr, rtemp)] {
+                if cleanup_temps && is_temp {
+                    b.silent();
+                    b.line(format!("  call void @\"rawstr_free\"(i8* {})", r));
+                }
+            }
+            TEMP_STRS.with(|t| t.borrow_mut().retain(|r| r != &lr && r != &rr));
             Typed::Str(format!("%\"{}\"", cc))
         }
         "+" | "-" | "*" | "/" | "//" | "%" => {
@@ -4257,7 +4753,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 _ => bail("op"),
             }
         }
-        _ => bail("eval expr"),
+        _ => bail(&format!("eval expr: {:?}", e)),
     }
 }
 
@@ -4278,28 +4774,29 @@ fn to_f64(b: &mut FnB, t: Typed) -> String {
 fn to_raw(b: &mut FnB, t: Typed, sc: &mut usize) -> String {
     let _ = sc;
     match t {
-        Typed::Str(r) => r,
-        Typed::PStr(r) => {
+        Typed::Str(r) | Typed::Inst(r) => r,
+        Typed::PStr(r) | Typed::Pyo(r) => {
             let rr = b.nx();
             b.line(format!(
                 "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* {})",
                 rr, r));
             format!("%\"{}\"", rr)
         }
-        _ => bail("to_raw on non-str"),
+        other => bail(&format!("to_raw on non-str in {}: {:?}",
+            CUR_FN.with(|f| f.borrow().clone()), other)),
     }
 }
 
 fn pystr_of(b: &mut FnB, t: &Typed, sc: &mut usize) -> (String, bool) {
     match t {
         Typed::PStr(r) => (r.clone(), true),      // pystr: needs to_rawstr
-        Typed::Str(r) => (r.clone(), false),      // already raw
+        Typed::Str(r) | Typed::Inst(r) => (r.clone(), false), // already raw
         Typed::I64(_) => {
             // str(x) folded earlier; bare int -> create_int + conv
             let _ = sc;
             bail("int in str expr")
         }
-        _ => bail("str operand"),
+        other => bail(&format!("str operand: {:?}", other)),
     }
 }
 
@@ -4338,6 +4835,14 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
                 p, fg, blen, g));
         } else {
             let v_typed = eval_mod(b, a, &fslots, sc);
+            let v_typed = match v_typed {
+                Typed::Inst(r) if is_str_expr(a) => {
+                    let cp = b.nx();
+                    b.line(format!("  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                    Typed::Str(format!("%\"{}\"", cp))
+                }
+                v => v,
+            };
             match v_typed {
                 Typed::I64(v) => {
                     let fmt = add_str(sc, "%lld");
@@ -4445,6 +4950,11 @@ fn conv_print(b: &mut FnB, st: &Val, sc: &mut usize) {
                 "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\")", p, g));
         }
     }
+    let no_newline = st.get(3).items().iter().any(|kw| {
+        kw.get(0).str_of() == "end" && kw.get(1).head() == "const"
+            && kw.get(1).get(1).str_of().is_empty()
+    });
+    if no_newline { return; }
     let nl = add_str(sc, "\x0a");
     let g2 = b.nx();
     b.line(format!(
@@ -5126,16 +5636,33 @@ fn main() {
     // Json / tagged-union detection: any annotation mentioning the Json
     // type (return, param, local, list/dict element) pulls in the tagged
     // runtime block and shifts the global-slot base
-    fn uses_json(v: &Val) -> bool {
+    fn annotation_json(v: &Val) -> bool {
         if let Val::List(items) = v {
             for it in items.iter() {
                 if matches!(it, Val::Str(s) if s == "Json") { return true; }
+                if annotation_json(it) { return true; }
+            }
+        }
+        false
+    }
+    fn uses_json(v: &Val) -> bool {
+        if let Val::List(items) = v {
+            if v.head() == "ann_assign" && annotation_json(&v.get(3)) {
+                return true;
+            }
+            if v.head() == "func_def"
+                && (annotation_json(&v.get(4)) || annotation_json(&v.get(5))) {
+                return true;
+            }
+            for it in items.iter() {
                 if uses_json(it) { return true; }
             }
         }
         false
     }
-    let tagged = uses_json(&Val::List(stmts.clone()));
+    let tagged = uses_json(&Val::List(stmts.clone()))
+        && !stmts.iter().any(|st| st.head() == "class_def"
+            && st.get(1).str_of() == "Json");
     TAGGED.with(|t| *t.borrow_mut() = tagged);
     let mut sc = STR_BASE + if tagged { TAGGED_SLOTS } else { 0 };
     // dynamic classes: consumed via match_class -> pyobj instances
@@ -5174,6 +5701,14 @@ fn main() {
                         let t = if an.head() == "subscript"
                             && an.get(1).get(1).str_of() == "list" {
                             format!("list:{}", an.get(2).get(1).str_of())
+                        } else if an.head() == "subscript"
+                            && an.get(1).get(1).str_of() == "dict" {
+                            let kv = an.get(2).get(1).items();
+                            format!("dict:{}:{}",
+                                kv.first().map(|v| v.get(1).str_of())
+                                    .unwrap_or_else(|| "int".into()),
+                                kv.get(1).map(|v| v.get(1).str_of())
+                                    .unwrap_or_else(|| "int".into()))
                         } else { an.get(1).str_of() };
                         fields.push((b.get(1).str_of(), t));
                     }
