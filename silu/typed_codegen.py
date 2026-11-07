@@ -11378,9 +11378,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             b"IndexError: string index out of range\0"
         )
         string_type = ir.ArrayType(ir.IntType(8), len(string_bytes))
+        # P6: same content-addressed naming as every other string
+        # global (this site historically inlined the old counter form)
         gv = ir.gvar_(
             self.module,
-            string_type, f'str_{len(self.module.globals)}',
+            string_type,
+            self._unique_str_global_name(
+                "IndexError: string index out of range"
+            ),
 
         )
         gv.global_constant = True

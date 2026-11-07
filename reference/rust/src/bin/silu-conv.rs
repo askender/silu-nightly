@@ -17,9 +17,12 @@ use std::process::Command;
 
 const CONST_PREFIX: &str = include_str!("../../const_prefix.ll");
 const TAGGED_PREFIX: &str = include_str!("../../tagged_prefix.ll");
-const STR_BASE: usize = 297; // runtime consumed 0..=296 (see README)
-// the tagged/Json runtime block adds 15 module globals (14 fns + the
-// json_typeerr constant), shifting every user string's number by 15
+// RETIRED by P6 (content-addressed string names): these counters used
+// to seed the str_N numbering that mirrored Python's
+// len(module.globals). Nothing consumes them any more - sc keeps
+// flowing through call signatures as a vestige, to be dropped in a
+// follow-up refactor.
+const STR_BASE: usize = 297;
 const TAGGED_SLOTS: usize = 15;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -282,9 +285,46 @@ fn tail_push(line: String) {
     TAIL.with(|t| t.borrow_mut().push(line));
 }
 
+// names already used for string globals this module (mirrors the
+// Python side's `while name in self.module.globals` lookup; only
+// `str.`-prefixed names ever land here, and no function/variable
+// global can collide with that prefix)
+thread_local! {
+    static STR_NAMES: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+const STR_HEX: &[u8; 16] = b"0123456789abcdef";
+
 fn add_str(counter: &mut usize, text: &str) -> String {
-    let name = format!("str_{}", counter);
-    *counter += 1;
+    // P6: content-addressed names replace the old `str_{counter}`
+    // numbering (which mirrored Python's len(module.globals) and made
+    // every name depend on global declaration order). The counter
+    // parameter is retired - kept purely for signature stability;
+    // callers still advance it but nothing consumes it any more.
+    // Duplicates of one content get a '~N' suffix: the Python side
+    // must avoid llvmlite's DuplicatedNameError, so both planes are
+    // forced into the same scheme. P2 interning will make these
+    // duplicate definitions disappear entirely.
+    let _ = counter;
+    let mut base = String::from("str.");
+    for &b in text.as_bytes() {
+        let c = b as char;
+        if c.is_ascii_alphanumeric() || c == '.' {
+            base.push(c);
+        } else {
+            base.push('_');
+            base.push(STR_HEX[(b >> 4) as usize] as char);
+            base.push(STR_HEX[(b & 15) as usize] as char);
+        }
+    }
+    let mut name = base.clone();
+    let mut n = 0usize;
+    while STR_NAMES.with(|s| s.borrow().contains(&name)) {
+        n += 1;
+        name = format!("{}~{}", base, n);
+    }
+    STR_NAMES.with(|s| s.borrow_mut().insert(name.clone()));
     let bytes = format!("{}\x00", text);
     tail_push(format!(
         "@\"{}\" = constant [{} x i8] c\"{}\"",
@@ -7621,6 +7661,24 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String], sc: &mut usize) -> Typed {
 }
 
 fn main() {
+    // P6: the embedded runtime prefixes already define string globals;
+    // their names occupy the namespace exactly like the Python side's
+    // module.globals contents, so every @"str..." mentioned in the
+    // prefixes (definitions and references alike - they are the same
+    // names) is seeded into STR_NAMES before any user string is named.
+    for src in [CONST_PREFIX, TAGGED_PREFIX] {
+        let mut from = 0;
+        while let Some(hit) = src[from..].find("@\"str.") {
+            let start = from + hit + 2;
+            if let Some(end) = src[start..].find('"') {
+                STR_NAMES.with(|s| {
+                    s.borrow_mut()
+                        .insert(src[start..start + end].to_string());
+                });
+            }
+            from = start;
+        }
+    }
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: silu-conv <file.si>");

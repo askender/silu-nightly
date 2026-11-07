@@ -4,6 +4,24 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.17.0
+string globals are content-addressed (proposal P6) - .ll output changes, semantics unchanged
+
+- global names for string constants switch from
+  `str_{len(module.globals)}` (a running counter over ALL module
+  globals, so any declaration reorder shifted every later string name)
+  to an escaped form of the content: `str.<safe bytes>` with every
+  other UTF-8 byte as `_xx` hex, e.g. `@"str.OverflowError_3a_20integer_20overflow_20in_20add"`
+- `_` is escaped too, so distinct contents always map to distinct
+  names; duplicate contents keep deterministic `~N` suffixes until
+  constant interning lands (P2)
+- benefits: output diffs and incremental compilation no longer
+  renumber unrelated strings; third implementations stop needing the
+  "global slot model" (STR_BASE/TAGGED_SLOTS/function-method-capture
+  counting) - the Rust twin deleted that entire accounting
+- all planes re-verified byte-identical: ll 18/18, IR 19/19,
+  full pytest suite, and the self-hosting fixed point
+
 ### v1.16.2
 large-file frontend memory regression fixed - full self-hosting CI restored
 

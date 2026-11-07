@@ -32,9 +32,10 @@
 ## reference/：第二实现（差分 Oracle）——当前工作重心
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
-2,509 行 + 转换器 `src/bin/silu-conv.rs` 7,882 行），钉住
-**silu 1.16.2 / commit 87df40f** 的行为。用途：差分 Oracle、表达力
-校准、隐式规约提取。**不是产品编译器，不进自举链，不做同步镜像**。
+2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
+**silu 1.17.0（P6 重钉；原神谕 1.16.2 / 87df40f）** 的行为。用途：
+差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
+不做同步镜像**。
 
 **状态（2026-11-07）：已完成**——前端 IR **19/19**、完整 .ll **18/18**
 全语料逐字节一致。规模对照、参考特性分诊、语言设计建议见校准报告。
@@ -92,8 +93,10 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 - **rawstr 所有权**：别名赋值必须 copy（rawstr 可变，append 原地改）；
   字段读 copy、写时 copy+free old；静态自由函数同类型实参不 copy，
   方法实参 copy。
-- **全局槽号**：字符串名 = `str_{len(module.globals)}`——函数/方法/
-  捕获计数全部影响编号；多耗一个槽 = 全文件编号漂移。
+- **全局槽号**：~~字符串名 = `str_{len(module.globals)}`~~ **已退役
+  （1.17.0/P6）**：字符串全局按内容寻址命名 `str.<转义>`，重复内容
+  `~N` 后缀；STR_BASE/TAGGED_SLOTS/函数方法捕获计数全部作废（详见
+  PROGRESS.md"P6 落地"节）。
 - **短路链**：i1 链与 pyobj 链形态不同（后者直接存原对象）；
   object 返回函数的 and/or 不 create_bool 直接 ret。
 - **迭代器五族**（range/riter/object/dict/str）块名、创建顺序、

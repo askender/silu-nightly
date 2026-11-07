@@ -17,7 +17,9 @@ language's behavior. It exists to answer three questions with data:
 
 ## Contract
 
-- **Pinned version**: silu 1.16.2, commit 87df40f. The Rust code
+- **Pinned version**: silu 1.17.0 (P6 re-pin; the original oracle was
+  1.16.2, commit 87df40f - the calibration report CALIBRATION.md
+  documents that pin). The Rust code
   implements THIS behavior, not whatever main does later. No tracking
   obligation: divergences from future Silu are expected and fine.
 - **Corpus**: the 19-file parity corpus (15 benchmarks + calc +
@@ -61,14 +63,20 @@ language's behavior. It exists to answer three questions with data:
 The full .ll layout, confirmed constant-across-corpus by cross-file
 common-prefix extraction:
 
-    [ const 365,264 bytes: module header + 27 extern declares +
+    [ const 370,740 bytes: module header + 27 extern declares +
       __silu_line + ALL runtime functions and runtime string globals ]
     [ variable: user function defines, main, user string globals ]
 
 - `rust/const_prefix.ll` is the constant (regenerate for a new pin by
   compiling two different corpus files and taking the common prefix).
-- User string globals continue the module-wide counter (fib starts at
-  str_298 for this pin; runtime consumed 0..297).
+- Since silu 1.17.0 (proposal P6) string globals are CONTENT-NAMED:
+  `str.<escaped bytes>` (safe set letters/digits/dot; every other
+  UTF-8 byte as `_xx` lowercase hex; duplicates get `~N` until P2
+  interning lands). The old `str_N` sequential numbering and the whole
+  "global slot model" (STR_BASE=297, TAGGED_SLOTS=15, function/method/
+  capture counting) are RETIRED - the prefix must be regenerated on
+  the text-layer plane (`SILU_LLVM_IR=text`), which is what the
+  self-hosted converter matches.
 - Naming rules that byte-parity depends on (llvmlite_text layer):
   per-function NameScope; unnamed values dedupe as ".N"; block names
   dedupe with ".N" suffix on repeat within the function; empty-name

@@ -1,7 +1,37 @@
 # Rust 参照实现：进展与 TODO（2026-11-01）
 
-> 钉住版本：silu 1.16.2 / commit 87df40f。本文是唯一的状态锚点——
+> 钉住版本：silu 1.17.0（P6 重钉；原神谕钉 1.16.2 / 87df40f，
+> 校准报告记录的是原钉）。本文是唯一的状态锚点——
 > compact 后从这里继续。规约细节在 `reference/README.md`。
+
+## P6 落地（2026-11-07，1.17.0）：字符串全局内容寻址命名
+
+提议→评估→实施全程见 `PROPOSALS.md`（头部评估结论）。要点：
+
+1. **规则**：字符串全局名 = `str.` + 内容转义（白名单
+   `[a-zA-Z0-9.]` 直通，其余 UTF-8 字节 `_xx` 小写 hex；`_` 也转义
+   → 编码可逆、零碰撞）；重复内容 `~N` 后缀（N≥1，P2 interning
+   落地后消失）。真 llvmlite 的 DuplicatedNameError 保证双平面
+   被迫采用同一后缀方案。
+2. **改动面**：Python 侧 `_create_global_string_with_builder` +
+   `_str_global_name`/`_unique_str_global_name`（pyobj_runtime mixin
+   方法；嵌套函数**不可捕获外层变量**——flatten 后是 Rust 语义，
+   bootstrap 门禁会拦）；`_create_char_idxerr_global`（typed_codegen，
+   历史上内联了旧计数式，属漏网点）。Rust 侧 `add_str` 重写 +
+   main 预填扫描前缀中全部 `str.` 名（等价 Python 的
+   module.globals 查询）。
+3. **前缀重提**：**必须用文本层平面**（`SILU_LLVM_IR=text`）提取
+   ——conv/rustconv 对拍平面是自举文本层，datalayout 与真 llvmlite
+   本机输出不同（新旧 pin 的 datalayout 形态也因此不同，属环境
+   差异，重钉即消）。新前缀 370,740B。
+4. **全局槽号模型整体退役**：STR_BASE/TAGGED_SLOTS/函数方法捕获
+   计数/创建序交织章节全部作废（Rust 侧 sc 参数保留透传但无消费者，
+   后续重构清理）。规约速查中"全局槽号"条目由本节取代。
+5. **门禁**：ll 18/18 + IR 19/19 + pytest 1332/3skip +
+   fixed-point 自举通过；siluc1/silu_conv 经 selfhost_build 重建。
+6. **教训**：`while name in module.globals` 的 Python 侧查询含
+   函数名（真 llvmlite globals 是函数+变量总表）——这正是旧计数
+   "函数占槽"的根源；Rust 侧只预填 `str.` 前缀名即可等价。
 
 ## 总体架构
 

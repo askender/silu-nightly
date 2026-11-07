@@ -4880,6 +4880,61 @@ class PyobjRuntimeMixin:
             "mul": self.smul_overflow,
         }
 
+    def _str_global_name(self, string_content: str) -> str:
+        """Content-addressed name for a string constant global (P6).
+
+        ASCII letters, digits and '.' pass through; every other UTF-8
+        byte becomes '_' + two lowercase hex digits. '_' itself is
+        escaped, so distinct contents always map to distinct names
+        (the encoding is injective - no collision suffixes are needed
+        for *different* contents). Duplicate contents get a '~N'
+        suffix decided by the caller; '~' can never occur in an
+        escaped name, so suffixed names never collide with plain ones.
+        """
+        safe = ("abcdefghijklmnopqrstuvwxyz"
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.")
+        hexd = "0123456789abcdef"
+
+        def esc(b: int, safe: str, hexd: str) -> str:
+            if chr(b) in safe:
+                return chr(b)
+            return "_" + hexd[b // 16] + hexd[b % 16]
+
+        out = "str."
+        for ch in string_content:
+            cp = ord(ch)
+            if cp < 0x80:
+                out += esc(cp, safe, hexd)
+            elif cp < 0x800:
+                out += esc(0xC0 | (cp // 64), safe, hexd)
+                out += esc(0x80 | (cp & 0x3F), safe, hexd)
+            elif cp < 0x10000:
+                out += esc(0xE0 | (cp // 4096), safe, hexd)
+                out += esc(0x80 | ((cp // 64) & 0x3F), safe, hexd)
+                out += esc(0x80 | (cp & 0x3F), safe, hexd)
+            else:
+                out += esc(0xF0 | (cp // 262144), safe, hexd)
+                out += esc(0x80 | ((cp // 4096) & 0x3F), safe, hexd)
+                out += esc(0x80 | ((cp // 64) & 0x3F), safe, hexd)
+                out += esc(0x80 | (cp & 0x3F), safe, hexd)
+        return out
+
+    def _unique_str_global_name(self, string_content: str) -> str:
+        """Resolve the content-addressed name against occupied names.
+
+        Duplicates of one content get '~N' (N >= 1); the real llvmlite
+        rejects duplicate global names, so both planes are forced into
+        the same suffix scheme. P2 interning can later flip this lookup
+        into a reuse.
+        """
+        base = self._str_global_name(string_content)
+        name = base
+        n = 0
+        while name in self.module.globals:
+            n += 1
+            name = base + "~" + str(n)
+        return name
+
     def _create_global_string(self, string_content: str) -> ir.Value:
         """Create a global string constant."""
         return self._create_global_string_with_builder(
@@ -4900,10 +4955,13 @@ class PyobjRuntimeMixin:
         string_bytes = bytearray((string_content + "\0").encode("utf-8"))
         string_type = ir.ArrayType(ir.IntType(8), len(string_bytes))
 
+        # Content-addressed global name (P6): the old
+        # f'str_{len(self.module.globals)}' numbering made every string
+        # name depend on the declaration order of ALL module globals.
+        name = self._unique_str_global_name(string_content)
+
         # Create global variable
-        global_str = ir.gvar_(
-            self.module, string_type, f'str_{len(self.module.globals)}'
-        )
+        global_str = ir.gvar_(self.module, string_type, name)
         global_str.global_constant = True
         global_str.initializer = ir.const_(string_type, string_bytes)
 
