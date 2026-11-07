@@ -237,19 +237,14 @@ print str const = %.*s(len,gep) / print str 名 = 字段0+2 / 函数序言2N+1 /
 
 ## TODO（优先级序）
 
-### T2c 动态实例层（calc → jsonparse×2）——下一个大台阶
-- calc.si 参考：方法 → `Class__method(i8* self)` 独立函数；构造
-  `Token(...)`；实例字段读写；`__silu_user_main` 包装（main 调它）；
-  pyobj_input/truthy/rawstr_eq_cstr/isdigit/to_cstr 等运行时族
-- 读参考尾：`./siluc1 < selfhost/calc.si` 截 const_prefix 之后（51KB/1323行）
-- enum_def（Tok）/ class_def / match 语句形状待解剖
+### T2c 动态实例层（calc → jsonparse×2）✅ 完成
+- calc（c25628d）→ jsonparse（cedef08）→ jsonparse_json（f9fa865）
 
 ### T2d import 系（ir_interp → silu_fe 终关）✅ 完成
 - ir_interp.si ✅ 487,006B；silu_fe.si ✅ 1,492,988B——18/18 全语料逐字节一致
 
-### T3 校准报告（R3）
-- 分组件行数对照表（前端 2509 Rust vs 2183 Silu +15%；转换器对照待量）
-- 省/费热点归因；发现 bug 分诊；语言设计建议
+### T3 校准报告（R3）✅ 完成
+- 报告：`reference/CALIBRATION.md`（规模对照、参考特性分诊、设计建议、方法论）
 
 ### 方法提醒
 - 每个新文件：读参考尾 → 实现子集 → 差分迭代（本轮多数文件 1-2 轮可达）
