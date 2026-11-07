@@ -46,3 +46,10 @@ else:
         return fn.bitcast(ty)
 
     ir.fn_const_bitcast = _fn_const_bitcast
+
+    def _gv_const_bitcast(gv, ty):
+        # constant-expression bitcast of a global's address (the P5
+        # bool singletons store an i64* payload in an i8* field)
+        return gv.bitcast(ty)
+
+    ir.gv_const_bitcast = _gv_const_bitcast

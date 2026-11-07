@@ -1163,40 +1163,22 @@ fn eval_i1(b: &mut FnB, e: &Val, sc: &mut usize) -> String {
             let v = eval_mod(b, &e.get(1), &fs, sc);
             if let Val::Bool(want) = e.get(2).get(1) {
                 let obj = to_pyobj(b, v);
-                let nz = b.nx();
-                b.line(format!("  %\"{}\" = icmp ne {{i32, i8*}}* {}, null", nz, obj));
-                let gp = b.nx();
+                // P5: every bool IS @silu_true/@silu_false (create_bool
+                // hands out the two immortal singleton boxes; audited -
+                // no other tag-3 construction exists), so identity is a
+                // single pointer compare. The null case is covered for
+                // free (null != singleton). Replaces the old 11-opcode
+                // and(non_null, and(tag==3, payload==want)) walk.
+                let s = b.nx();
                 b.line(format!(
-                    "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* {}, i32 0, i32 0",
-                    gp, obj));
-                let tv = b.nx();
-                b.line(format!("  %\"{}\" = load i32, i32* %\"{}\"", tv, gp));
-                let teq = b.nx();
-                b.line(format!("  %\"{}\" = icmp eq i32 %\"{}\", 3", teq, tv));
-                let dp = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* {}, i32 0, i32 1",
-                    dp, obj));
-                let raw = b.nx();
-                b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", raw, dp));
-                let bc = b.nx();
-                b.line(format!("  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, raw));
-                let val = b.nx();
-                b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", val, bc));
-                let veq = b.nx();
-                b.line(format!("  %\"{}\" = icmp eq i64 %\"{}\", {}", veq, val,
-                    if want { 1 } else { 0 }));
-                // fixed shape: and(non_null, and(tag==3, value==want))
-                let inner = b.nx();
-                b.line(format!("  %\"{}\" = and i1 %\"{}\", %\"{}\"", inner, teq, veq));
-                let a2 = b.nx();
-                b.line(format!("  %\"{}\" = and i1 %\"{}\", %\"{}\"", a2, nz, inner));
+                    "  %\"{}\" = icmp eq {{i32, i8*}}* {}, @\"{}\"",
+                    s, obj, if want { "silu_true" } else { "silu_false" }));
                 if e.head() == "is not" {
                     let x = b.nx();
-                    b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, a2));
+                    b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, s));
                     return format!("%\"{}\"", x);
                 }
-                return format!("%\"{}\"", a2);
+                return format!("%\"{}\"", s);
             }
             let ic = b.nx();
             match v {

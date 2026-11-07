@@ -136,12 +136,15 @@ def split(full_text, rt_text=None):
     rt_globals = {}
     for m in re.finditer(
         r'^@"([A-Za-z0-9_.$]+)"\s*=\s*(?:internal\s+)?'
-        r'(global|constant)\s+([^,;\n]+)', rb, re.M
+        r'(global|constant)\s+([^;\n]+)', rb, re.M
     ):
         # kind must round-trip: a constant definition (every string
         # global since P6/P2 content-addressing - and interning now has
         # the USER side referencing prefix constants by the same name)
-        # needs an `external constant` declaration, not `external global`
+        # needs an `external constant` declaration, not `external global`.
+        # NOTE: the type capture runs to end-of-line (NOT stopping at
+        # ','): a struct type like {i32, i8*} contains commas, and
+        # _global_type's bracket pairing is what delimits it.
         rt_globals[m.group(1)] = (
             _global_type(m.group(3)), m.group(2) == "constant"
         )

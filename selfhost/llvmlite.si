@@ -189,7 +189,15 @@ def const_(ty, val):
                 et = ty.element
             else:
                 et = ty.elements[idx]
-            out.append(const_(et, v))
+            # an element that is already a Constant (or a raw
+            # FormattedConstant bitcast) is adopted as-is, like real
+            # llvmlite does - re-wrapping would nest it and print as
+            # an object repr (first exercised by the P5 bool boxes,
+            # the first non-zero struct global initializer)
+            if isinstance(v, (Constant, FormattedConstant)):
+                out.append(v)
+            else:
+                out.append(const_(et, v))
             idx += 1
         c.constant = out
         return c
@@ -354,6 +362,14 @@ def fn_const_bitcast(fn, ty):
     return FormattedConstant(
         ty, "bitcast (" + fn.ftype.text + "* "
         + _quote_ref("@", fn.name) + " to " + ty.text + ")")
+
+
+def gv_const_bitcast(gv, ty):
+    # constant-expression bitcast of a global's address (the P5 bool
+    # singletons keep an i64* payload inside the box's i8* field)
+    return FormattedConstant(
+        ty, "bitcast (" + gv.value_type.text + "* "
+        + _quote_ref("@", gv.name) + " to " + ty.text + ")")
 
 
 def const_reference(c):

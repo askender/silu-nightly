@@ -57,3 +57,23 @@ def test_split_prefix_invariant_still_guards():
     )
     with pytest.raises(RuntimeError, match="prefix invariant"):
         rc.split(bad, rt_text=_runtime_text())
+
+
+def test_split_struct_typed_constant_not_comma_truncated():
+    # the P5 bool singletons are {i32, i8*}-typed constants: the type
+    # text contains a COMMA, so a ','-terminated capture would emit a
+    # truncated `external constant {i32` declaration (clang: expected
+    # '}' at end of struct)
+    rt = _runtime_text() + (
+        '@"silu_true_payload" = constant i64 1\n'
+        '@"silu_true" = constant {i32, i8*} '
+        '{i32 3, i8* bitcast (i64* @"silu_true_payload" to i8*)}\n'
+    )
+    full = rt + (
+        "\n"
+        'define i32 @"main"()\n{\nentry:\n'
+        '  %".1" = icmp eq {i32, i8*}* null, @"silu_true"\n'
+        "  ret i32 0\n}\n"
+    )
+    _, user_ll = rc.split(full, rt_text=rt)
+    assert '@"silu_true" = external constant {i32, i8*}' in user_ll

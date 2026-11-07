@@ -108,7 +108,40 @@ class PyobjRuntimeMixin:
 
         builder.ret(obj)
 
-        # PyObject* create_bool(i1 value)
+        # P5: the two immortal bool singleton boxes. Every boolean in
+        # the program IS one of these (create_bool hands them out), so
+        # `x is True` compiles to a single pointer compare. The tag-3
+        # payload is private and never written after init, so sharing
+        # is safe. NOTE for any future recursive pyobj release: tag-3
+        # boxes are singletons and MUST be exempt from free.
+        # (Written out twice instead of a loop: Silu classes reject
+        # setattr-created fields, so the flattened twin cannot do
+        # `setattr(self, name, ...)`.)
+        i8p_ty = ir.PointerType(ir.IntType(8))
+        i64_ty = ir.IntType(64)
+        pyobj_ty = self.pyobj.pyobj_type
+
+        true_payload = ir.gvar_(self.module, i64_ty, "silu_true_payload")
+        true_payload.global_constant = True
+        true_payload.initializer = ir.const_(i64_ty, 1)
+        self.silu_true = ir.gvar_(self.module, pyobj_ty, "silu_true")
+        self.silu_true.global_constant = True
+        self.silu_true.initializer = ir.const_(pyobj_ty, [
+            ir.const_(ir.IntType(32), 3),
+            ir.gv_const_bitcast(true_payload, i8p_ty),
+        ])
+
+        false_payload = ir.gvar_(self.module, i64_ty, "silu_false_payload")
+        false_payload.global_constant = True
+        false_payload.initializer = ir.const_(i64_ty, 0)
+        self.silu_false = ir.gvar_(self.module, pyobj_ty, "silu_false")
+        self.silu_false.global_constant = True
+        self.silu_false.initializer = ir.const_(pyobj_ty, [
+            ir.const_(ir.IntType(32), 3),
+            ir.gv_const_bitcast(false_payload, i8p_ty),
+        ])
+
+        # PyObject* create_bool(i1 value) - returns the singleton
         create_bool_ty = ir.FunctionType(
             ir.PointerType(self.pyobj.pyobj_type), [ir.IntType(1)], False
         )
@@ -117,29 +150,9 @@ class PyobjRuntimeMixin:
         block = self.create_bool.append_basic_block("entry")
         builder = ir.builder_(block)
 
-        # Allocate PyObject
-        obj_ptr = builder.call(self.malloc, [ir.const_(ir.IntType(64), 16)])
-        obj = builder.bitcast(obj_ptr, ir.PointerType(self.pyobj.pyobj_type))
-
-        # Set type tag to 3 (bool)
-        tag_ptr = builder.gep(
-            obj, [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), 0)]
-        )
-        builder.store(ir.const_(ir.IntType(32), 3), tag_ptr)
-
-        # Allocate and store the value as i64 0/1
-        data_ptr = builder.call(self.malloc, [ir.const_(ir.IntType(64), 8)])
-        data_i64 = builder.bitcast(data_ptr, ir.PointerType(ir.IntType(64)))
-        bool_i64 = builder.zext(self.create_bool.args[0], ir.IntType(64))
-        builder.store(bool_i64, data_i64)
-
-        # Store data pointer
-        data_ptr_field = builder.gep(
-            obj, [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), 1)]
-        )
-        builder.store(data_ptr, data_ptr_field)
-
-        builder.ret(obj)
+        builder.ret(builder.select(
+            self.create_bool.args[0], self.silu_true, self.silu_false
+        ))
 
         # PyObject* create_float(double value)
         create_float_ty = ir.FunctionType(

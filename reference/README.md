@@ -77,6 +77,13 @@ common-prefix extraction:
   capture counting) are RETIRED - the prefix must be regenerated on
   the text-layer plane (`SILU_LLVM_IR=text`), which is what the
   self-hosted converter matches.
+- Also 1.17.0 (P5): `True`/`False` are two immortal singleton boxes
+  `@silu_true`/`@silu_false` (constant globals, tag 3, private
+  payload); `create_bool` is a bare `select` over them (no malloc) and
+  `x is True/False` compiles to ONE pointer compare. RUNTIME
+  CONTRACT: any future recursive pyobj release MUST exempt tag-3
+  boxes from free - they are shared immortals. Nothing else may
+  construct a tag-3 box (audited at P5 landing).
 - Naming rules that byte-parity depends on (llvmlite_text layer):
   per-function NameScope; unnamed values dedupe as ".N"; block names
   dedupe with ".N" suffix on repeat within the function; empty-name

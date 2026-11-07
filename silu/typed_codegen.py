@@ -5779,38 +5779,20 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
     def _is_bool_singleton(self, tv: Tuple[str, Any], want: bool) -> Any:
         """`x is True` / `x is False`: identity with the bool singleton.
 
-        Truthiness is wrong here - `"s" is True` is False in Python. A
-        boxed object matches only when its tag is bool (3) and the payload
-        equals the wanted constant; an unboxed I1 compares directly; any
-        other representation is never the singleton."""
+        Truthiness is wrong here - `"s" is True` is False in Python.
+        Since P5 every boolean IS @silu_true/@silu_false (create_bool
+        hands out the two immortal boxes and nothing else ever builds a
+        tag-3 box - audited), so identity is a single pointer compare,
+        which also covers the null case for free. An unboxed I1 compares
+        directly; any other representation is never the singleton."""
         builder = self.current_builder
         if tv[0] == I1:
             return builder.icmp_signed(
                 "==", tv[1], ir.const_(ir.IntType(1), int(want))
             )
         if tv[0] == OBJ:
-            boxed = tv[1]
-            non_null = builder.icmp_signed(
-                "!=", boxed, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None)
-            )
-            tag_ptr = builder.gep(
-                boxed, [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), 0)]
-            )
-            tag = builder.load(tag_ptr)
-            is_bool = builder.icmp_signed(
-                "==", tag, ir.const_(ir.IntType(32), 3)
-            )
-            data_ptr_field = builder.gep(
-                boxed, [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), 1)]
-            )
-            data_ptr = builder.bitcast(
-                builder.load(data_ptr_field), ir.PointerType(ir.IntType(64))
-            )
-            payload = builder.load(data_ptr)
-            value_eq = builder.icmp_signed(
-                "==", payload, ir.const_(ir.IntType(64), int(want))
-            )
-            return builder.and_(non_null, builder.and_(is_bool, value_eq))
+            singleton = self.silu_true if want else self.silu_false
+            return builder.icmp_signed("==", tv[1], singleton)
         return ir.const_(ir.IntType(1), 0)
 
     # pyobj type tags: 0=int 1=float 2=str 3=bool 4=list 5=dict;

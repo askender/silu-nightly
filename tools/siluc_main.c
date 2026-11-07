@@ -195,16 +195,14 @@ static void parse_runtime_symbols(const char *rt_ll) {
                     if (nmlen > 255) nmlen = 255;
                     memcpy(s->name, nm, nmlen);
                     s->name[nmlen] = 0;
-                    /* type text after the keyword up to comma/newline
-                       ("constant " = 9 chars, "global " = 7) */
+                    /* type text after the keyword ("constant " = 9
+                       chars, "global " = 7). Bracketed types run to
+                       the MATCHING close - struct types like
+                       {i32, i8*} contain commas, so the comma cut may
+                       only apply to scalars; the initializer after
+                       the brackets (c"...") must not leak either. */
                     const char *t = kp + (cp ? 9 : 7);
                     const char *tend = eol;
-                    const char *comma = strchr(t, ',');
-                    if (comma && comma < tend) tend = comma;
-                    /* scalar types end at the first space (the
-                       initializer follows); bracketed types run to
-                       the matching close - the initializer after them
-                       (c"...") must NOT leak into the declaration */
                     if (*t == '[' || *t == '{') {
                         int depth = 0;
                         for (const char *q = t; q < tend; q++) {
@@ -214,6 +212,8 @@ static void parse_runtime_symbols(const char *rt_ll) {
                             }
                         }
                     } else {
+                        const char *comma = strchr(t, ',');
+                        if (comma && comma < tend) tend = comma;
                         const char *sp = strchr(t, ' ');
                         if (sp && sp < tend) tend = sp;
                     }

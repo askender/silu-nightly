@@ -93,20 +93,15 @@ entry:
   ret {i32, i8*}* %".5"
 }
 
+@"silu_true_payload" = constant i64 1
+@"silu_true" = constant {i32, i8*} {i32 3, i8* bitcast (i64* @"silu_true_payload" to i8*)}
+@"silu_false_payload" = constant i64 0
+@"silu_false" = constant {i32, i8*} {i32 3, i8* bitcast (i64* @"silu_false_payload" to i8*)}
 define {i32, i8*}* @"create_bool"(i1 %".1")
 {
 entry:
-  %".3" = call i8* @"malloc"(i64 16)
-  %".4" = bitcast i8* %".3" to {i32, i8*}*
-  %".5" = getelementptr {i32, i8*}, {i32, i8*}* %".4", i32 0, i32 0
-  store i32 3, i32* %".5"
-  %".7" = call i8* @"malloc"(i64 8)
-  %".8" = bitcast i8* %".7" to i64*
-  %".9" = zext i1 %".1" to i64
-  store i64 %".9", i64* %".8"
-  %".11" = getelementptr {i32, i8*}, {i32, i8*}* %".4", i32 0, i32 1
-  store i8* %".7", i8** %".11"
-  ret {i32, i8*}* %".4"
+  %".3" = select  i1 %".1", {i32, i8*}* @"silu_true", {i32, i8*}* @"silu_false"
+  ret {i32, i8*}* %".3"
 }
 
 define {i32, i8*}* @"create_float"(double %".1")

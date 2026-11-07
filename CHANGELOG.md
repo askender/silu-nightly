@@ -5,7 +5,7 @@ All notable changes, organized by version tag.
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
 ### v1.17.0
-string globals are content-addressed and interned (proposals P6+P2) - .ll output changes, semantics unchanged
+string globals are content-addressed and interned, booleans are singletons (proposals P6+P2+P5) - .ll output changes, semantics unchanged
 
 - global names for string constants switch from
   `str_{len(module.globals)}` (a running counter over ALL module
@@ -37,6 +37,23 @@ string globals are content-addressed and interned (proposals P6+P2) - .ll output
   declarations; the C scanner also gained within-line keyword bounds
   and bracket-type termination (an initializer could leak into the
   external declaration). Regression tests added on both sides.
+- boolean singletons (P5): @silu_true/@silu_false are two immortal
+  constant boxes (tag 3, private payload); create_bool became a bare
+  select (zero allocations) and `x is True/False` a single pointer
+  compare replacing the old 11-opcode
+  and(non_null, and(tag==3, payload==want)) walk - null covered for
+  free, semantics aligned with CPython's bool identity. Runtime
+  contract: any future recursive pyobj release must exempt tag-3 from
+  free; audited that nothing but create_bool constructs a tag-3 box.
+  This work also fixed a text-layer llvmlite bug (struct constant
+  initializers double-wrapped pre-adopted Constant elements and
+  printed object reprs - the singletons are the first non-zero struct
+  initializer), taught the self-hosted llvmlite.si the gv_const_bitcast
+  twin the Python layers already had, and hardened BOTH split
+  synthesizers once more: struct-typed constants ({i32, i8*}) contain
+  a comma, and a comma-terminated type capture truncated the external
+  declaration (`external constant {i32`) - bracket pairing now takes
+  precedence over the comma cut on both sides.
 
 ### v1.16.2
 large-file frontend memory regression fixed - full self-hosting CI restored

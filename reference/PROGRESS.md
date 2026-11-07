@@ -6,6 +6,25 @@
 
 ## P6 落地（2026-11-07，1.17.0）：字符串全局内容寻址命名
 
+> **P5（布尔单例）同日落地**：@silu_true/@silu_false 两个不朽常量盒
+> （tag 3、payload 私有）；create_bool = 一条 select（零 malloc），
+> `x is True/False` = 一条指针比较（替代 11 指令
+> and(non_null, and(tag==3, payload==want)) 链；null 自动涵盖；
+> 语义对齐 CPython 布尔身份）。运行时契约：**未来任何递归 pyobj
+> 释放必须豁免 tag=3**；审计确认除 create_bool 外无 tag=3 构造点。
+> 连带修复：文本层 llvmlite 的 struct 常量 initializer 双包 bug
+> （首个非零 struct initializer——单例——暴露）+ 自举层
+> selfhost/llvmlite.si 补 gv_const_bitcast 孪生与同一 const_ 修复
+> + **split 合成器第三连环**：单例是 `{i32, i8*}` struct 类型常量，
+> 类型文本含**逗号**——两份合成器（runtime_cache.py 正则 `[^,;\n]`、
+> siluc_main.c 的 comma 截断）都在逗号处砍断类型，external 声明残缺
+> （`external constant {i32`）。bracket 配对优先于逗号截断（双侧）。
+> （**运行时辅助必须三实现同步**：ir_iface 真层 / llvmlite_text
+> 文本层 / llvmlite.si 自举层——P5 一度只改两份导致
+> `name 'llvmlite' is not defined`，靠逐文件二分定位）。setattr 在
+> 自举类不可用（单例构建展开写两遍）。前缀 368,756B。
+> 新增 tests/test_bool_singleton.py 5 项。
+
 > P2（常量 interning）同日落地于同版本：命中 bare 内容名即复用既有
 > gvar，`~N` 后缀绝迹；silu_fe 常量 1,137 份（263 唯一）→ 262 份
 > 全唯一（0 冗余），该文件 .ll 缩 ~51.5KB；前缀随之再提为 368,822B。
