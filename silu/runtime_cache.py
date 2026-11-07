@@ -136,9 +136,15 @@ def split(full_text, rt_text=None):
     rt_globals = {}
     for m in re.finditer(
         r'^@"([A-Za-z0-9_.$]+)"\s*=\s*(?:internal\s+)?'
-        r'global\s+([^,;\n]+)', rb, re.M
+        r'(global|constant)\s+([^,;\n]+)', rb, re.M
     ):
-        rt_globals[m.group(1)] = _global_type(m.group(2))
+        # kind must round-trip: a constant definition (every string
+        # global since P6/P2 content-addressing - and interning now has
+        # the USER side referencing prefix constants by the same name)
+        # needs an `external constant` declaration, not `external global`
+        rt_globals[m.group(1)] = (
+            _global_type(m.group(3)), m.group(2) == "constant"
+        )
 
     # declarations the user part needs: symbols it references that the
     # runtime defines (and it does not define itself)
@@ -153,7 +159,9 @@ def split(full_text, rt_text=None):
         if name in rt_fns:
             decls.append(rt_fns[name])
         elif name in rt_globals:
-            decls.append(f'@"{name}" = external global {rt_globals[name]}')
+            ty, is_const = rt_globals[name]
+            kind = "constant" if is_const else "global"
+            decls.append(f'@"{name}" = external {kind} {ty}')
     # external declares (printf, intrinsics) live in the full text's
     # header region; the user module keeps its own copies
     header_declares = re.findall(

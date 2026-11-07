@@ -170,28 +170,50 @@ static void parse_runtime_symbols(const char *rt_ll) {
                 s->name[nmlen] = 0;
             }
         } else if (len >= 2 && p[0] == '@' && p[1] == '"') {
-            /* @"name" = [internal] global <type> ... */
+            /* @"name" = [internal] (global|constant) <type> ...
+               Since P6/P2 every string constant is `constant`, and
+               interning lets the USER part reference prefix constants
+               by the same name - they must synthesize an
+               `external constant` declaration, not `external global`. */
             const char *eq = strstr(p, "= ");
             if (eq && eq < eol) {
+                /* both keywords must be searched WITHIN this line:
+                   strstr runs to end-of-buffer, a miss would otherwise
+                   latch onto a later line's keyword and (via the
+                   kp < eol guard) silently drop this symbol */
+                const char *cp = strstr(eq, "constant ");
+                if (cp && cp >= eol) cp = NULL;
                 const char *gp = strstr(eq, "global ");
-                if (gp && gp < eol) {
+                if (gp && gp >= eol) gp = NULL;
+                const char *kp = cp ? cp : gp;
+                if (kp && kp < eol) {
                     Sym *s = &g_syms[g_nsyms++];
-                    s->kind = 'g';
+                    s->kind = cp ? 'c' : 'g';
                     const char *nm = p + 2;
                     const char *close = strchr(nm, '"');
                     size_t nmlen = close - nm;
                     if (nmlen > 255) nmlen = 255;
                     memcpy(s->name, nm, nmlen);
                     s->name[nmlen] = 0;
-                    /* type text after 'global ' up to comma/newline */
-                    const char *t = gp + 7;
+                    /* type text after the keyword up to comma/newline
+                       ("constant " = 9 chars, "global " = 7) */
+                    const char *t = kp + (cp ? 9 : 7);
                     const char *tend = eol;
                     const char *comma = strchr(t, ',');
                     if (comma && comma < tend) tend = comma;
                     /* scalar types end at the first space (the
                        initializer follows); bracketed types run to
-                       the matching close */
-                    if (*t != '[' && *t != '{') {
+                       the matching close - the initializer after them
+                       (c"...") must NOT leak into the declaration */
+                    if (*t == '[' || *t == '{') {
+                        int depth = 0;
+                        for (const char *q = t; q < tend; q++) {
+                            if (*q == '[' || *q == '{') depth++;
+                            else if (*q == ']' || *q == '}') {
+                                if (--depth == 0) { tend = q + 1; break; }
+                            }
+                        }
+                    } else {
                         const char *sp = strchr(t, ' ');
                         if (sp && sp < tend) tend = sp;
                     }
@@ -516,8 +538,12 @@ int main(int argc, char **argv) {
                         continue;
                     }
                 } else {
-                    snprintf(one, sizeof one, "@\"%s\" = external global %s\n",
-                             s->name, s->sig);
+                    /* kind must round-trip the definition: constants
+                       declare as `external constant` (see the parser
+                       note above) */
+                    snprintf(one, sizeof one, "@\"%s\" = external %s %s\n",
+                             s->name, s->kind == 'c' ? "constant" : "global",
+                             s->sig);
                 }
                 if (!strstr(decls, one))
                     strcat(decls, one);

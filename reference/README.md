@@ -63,7 +63,7 @@ language's behavior. It exists to answer three questions with data:
 The full .ll layout, confirmed constant-across-corpus by cross-file
 common-prefix extraction:
 
-    [ const 370,740 bytes: module header + 27 extern declares +
+    [ const 368,822 bytes: module header + 27 extern declares +
       __silu_line + ALL runtime functions and runtime string globals ]
     [ variable: user function defines, main, user string globals ]
 
@@ -71,8 +71,8 @@ common-prefix extraction:
   compiling two different corpus files and taking the common prefix).
 - Since silu 1.17.0 (proposal P6) string globals are CONTENT-NAMED:
   `str.<escaped bytes>` (safe set letters/digits/dot; every other
-  UTF-8 byte as `_xx` lowercase hex; duplicates get `~N` until P2
-  interning lands). The old `str_N` sequential numbering and the whole
+  UTF-8 byte as `_xx` lowercase hex) and INTERNED (P2): one
+  definition per content, reuse on every later mention. The old `str_N` sequential numbering and the whole
   "global slot model" (STR_BASE=297, TAGGED_SLOTS=15, function/method/
   capture counting) are RETIRED - the prefix must be regenerated on
   the text-layer plane (`SILU_LLVM_IR=text`), which is what the

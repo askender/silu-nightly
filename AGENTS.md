@@ -94,9 +94,9 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
   字段读 copy、写时 copy+free old；静态自由函数同类型实参不 copy，
   方法实参 copy。
 - **全局槽号**：~~字符串名 = `str_{len(module.globals)}`~~ **已退役
-  （1.17.0/P6）**：字符串全局按内容寻址命名 `str.<转义>`，重复内容
-  `~N` 后缀；STR_BASE/TAGGED_SLOTS/函数方法捕获计数全部作废（详见
-  PROGRESS.md"P6 落地"节）。
+  （1.17.0/P6+P2）**：字符串全局按内容寻址命名 `str.<转义>` 且
+  interning（同内容仅一份定义）；STR_BASE/TAGGED_SLOTS/函数方法捕获
+  计数全部作废（详见 PROGRESS.md"P6 落地"节）。
 - **短路链**：i1 链与 pyobj 链形态不同（后者直接存原对象）；
   object 返回函数的 and/or 不 create_bool 直接 ret。
 - **迭代器五族**（range/riter/object/dict/str）块名、创建顺序、

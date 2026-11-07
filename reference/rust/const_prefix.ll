@@ -734,7 +734,7 @@ error:
   call void @"silu_panic"(i8* %".79")
   unreachable
 float_zero:
-  %".48" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero~1", i32 0, i32 0
+  %".48" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero", i32 0, i32 0
   call void @"silu_panic"(i8* %".48")
   unreachable
 float_ok:
@@ -743,7 +743,7 @@ float_ok:
   %".53" = call {i32, i8*}* @"create_float"(double %".52")
   ret {i32, i8*}* %".53"
 int_zero:
-  %".65" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero~2", i32 0, i32 0
+  %".65" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero", i32 0, i32 0
   call void @"silu_panic"(i8* %".65")
   unreachable
 int_ok:
@@ -760,8 +760,6 @@ int_ok:
   ret {i32, i8*}* %".77"
 }
 
-@"str.ZeroDivisionError_3a_20division_20by_20zero~1" = constant [36 x i8] c"ZeroDivisionError: division by zero\00"
-@"str.ZeroDivisionError_3a_20division_20by_20zero~2" = constant [36 x i8] c"ZeroDivisionError: division by zero\00"
 @"str.TypeError_3a_20unsupported_20operand_20types_20for_20floordiv" = constant [50 x i8] c"TypeError: unsupported operand types for floordiv\00"
 define {i32, i8*}* @"pyobj_mod"({i32, i8*}* %".1", {i32, i8*}* %".2")
 {
@@ -828,7 +826,7 @@ error:
   call void @"silu_panic"(i8* %".84")
   unreachable
 float_zero:
-  %".48" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero~3", i32 0, i32 0
+  %".48" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero", i32 0, i32 0
   call void @"silu_panic"(i8* %".48")
   unreachable
 float_ok:
@@ -843,7 +841,7 @@ float_ok:
   %".59" = call {i32, i8*}* @"create_float"(double %".58")
   ret {i32, i8*}* %".59"
 int_zero:
-  %".71" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero~4", i32 0, i32 0
+  %".71" = getelementptr [36 x i8], [36 x i8]* @"str.ZeroDivisionError_3a_20division_20by_20zero", i32 0, i32 0
   call void @"silu_panic"(i8* %".71")
   unreachable
 int_ok:
@@ -859,8 +857,6 @@ int_ok:
   ret {i32, i8*}* %".82"
 }
 
-@"str.ZeroDivisionError_3a_20division_20by_20zero~3" = constant [36 x i8] c"ZeroDivisionError: division by zero\00"
-@"str.ZeroDivisionError_3a_20division_20by_20zero~4" = constant [36 x i8] c"ZeroDivisionError: division by zero\00"
 @"str.TypeError_3a_20unsupported_20operand_20types_20for_20mod" = constant [45 x i8] c"TypeError: unsupported operand types for mod\00"
 define {i32, i8*}* @"pyobj_bitor"({i32, i8*}* %".1", {i32, i8*}* %".2")
 {
@@ -1263,7 +1259,7 @@ print_float:
   %".87" = bitcast i8* %".86" to double*
   %".88" = load double, double* %".87"
   %".89" = call i8* @"float_repr"(double %".88")
-  %".90" = getelementptr [3 x i8], [3 x i8]* @"str._25s~1", i32 0, i32 0
+  %".90" = getelementptr [3 x i8], [3 x i8]* @"str._25s", i32 0, i32 0
   %".91" = call i32 (i8*, ...) @"printf"(i8* %".90", i8* %".89")
   ret void
 print_str:
@@ -1355,7 +1351,7 @@ dict_body:
   %".58" = icmp ne {i32, i8*}* %".57", null
   br i1 %".58", label %"dict_live", label %"dict_skip"
 dict_sep:
-  %".66" = getelementptr [3 x i8], [3 x i8]* @"str._2c_20~1", i32 0, i32 0
+  %".66" = getelementptr [3 x i8], [3 x i8]* @"str._2c_20", i32 0, i32 0
   %".67" = call i32 (i8*, ...) @"printf"(i8* %".66")
   br label %"dict_key"
 dict_key:
@@ -1416,10 +1412,8 @@ repr_other:
 @"str._2c_20" = constant [3 x i8] c", \00"
 @"str._5d" = constant [2 x i8] c"]\00"
 @"str._7b" = constant [2 x i8] c"{\00"
-@"str._2c_20~1" = constant [3 x i8] c", \00"
 @"str._3a_20" = constant [3 x i8] c": \00"
 @"str._7d" = constant [2 x i8] c"}\00"
-@"str._25s~1" = constant [3 x i8] c"%s\00"
 @"str.True" = constant [5 x i8] c"True\00"
 @"str.False" = constant [6 x i8] c"False\00"
 @"str._25ld" = constant [4 x i8] c"%ld\00"
@@ -3151,7 +3145,7 @@ int_op:
   %".123" = call {i32, i8*}* @"create_bool"(i1 %".122")
   ret {i32, i8*}* %".123"
 error:
-  %".125" = getelementptr [52 x i8], [52 x i8]* @"str.TypeError_3a_20_27_3c_27_20not_20supported_20between_20these_20operands~1", i32 0, i32 0
+  %".125" = getelementptr [52 x i8], [52 x i8]* @"str.TypeError_3a_20_27_3c_27_20not_20supported_20between_20these_20operands", i32 0, i32 0
   call void @"silu_panic"(i8* %".125")
   unreachable
 null_check:
@@ -3244,7 +3238,6 @@ seq_gate:
   br i1 %".45", label %"set_op", label %"error"
 }
 
-@"str.TypeError_3a_20_27_3c_27_20not_20supported_20between_20these_20operands~1" = constant [52 x i8] c"TypeError: '<' not supported between these operands\00"
 define {i32, i8*}* @"pyobj_le"({i32, i8*}* %".1", {i32, i8*}* %".2")
 {
 entry:
@@ -4244,8 +4237,8 @@ str_bool:
   %".41" = bitcast i8* %".40" to i64*
   %".42" = load i64, i64* %".41"
   %".43" = icmp ne i64 %".42", 0
-  %".44" = getelementptr [5 x i8], [5 x i8]* @"str.True~1", i32 0, i32 0
-  %".45" = getelementptr [6 x i8], [6 x i8]* @"str.False~1", i32 0, i32 0
+  %".44" = getelementptr [5 x i8], [5 x i8]* @"str.True", i32 0, i32 0
+  %".45" = getelementptr [6 x i8], [6 x i8]* @"str.False", i32 0, i32 0
   %".46" = select  i1 %".43", i8* %".44", i8* %".45"
   %".47" = select  i1 %".43", i32 4, i32 5
   %".48" = call {i32, i8*}* @"create_str"(i8* %".46", i32 %".47")
@@ -4257,7 +4250,7 @@ str_fail:
   call void @"silu_panic"(i8* %".50")
   unreachable
 str_null:
-  %".5" = getelementptr [5 x i8], [5 x i8]* @"str.None~1", i32 0, i32 0
+  %".5" = getelementptr [5 x i8], [5 x i8]* @"str.None", i32 0, i32 0
   %".6" = call {i32, i8*}* @"create_str"(i8* %".5", i32 4)
   ret {i32, i8*}* %".6"
 dispatch:
@@ -4278,10 +4271,7 @@ str_int:
   ret {i32, i8*}* %".20"
 }
 
-@"str.None~1" = constant [5 x i8] c"None\00"
 @"str._25lld" = constant [5 x i8] c"%lld\00"
-@"str.True~1" = constant [5 x i8] c"True\00"
-@"str.False~1" = constant [6 x i8] c"False\00"
 @"str.TypeError_3a_20str_28_29_20of_20this_20type_20is_20not_20supported" = constant [47 x i8] c"TypeError: str() of this type is not supported\00"
 declare i32 @"getchar"()
 
@@ -4427,7 +4417,7 @@ pe_entry:
   call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".5", i8* %".1", i64 %".2", i1 0)
   %".7" = getelementptr i8, i8* %".5", i64 %".2"
   store i8 0, i8* %".7"
-  %".9" = getelementptr [2 x i8], [2 x i8]* @"str.r~1", i32 0, i32 0
+  %".9" = getelementptr [2 x i8], [2 x i8]* @"str.r", i32 0, i32 0
   %".10" = call i8* @"fopen"(i8* %".5", i8* %".9")
   %".11" = icmp eq i8* %".10", null
   br i1 %".11", label %"pe_no", label %"pe_yes"
@@ -4438,7 +4428,6 @@ pe_no:
   ret i1 0
 }
 
-@"str.r~1" = constant [2 x i8] c"r\00"
 define void @"dict_clear_entries"({i32, i8*}* %".1")
 {
 entry:
@@ -4905,7 +4894,7 @@ lst_case:
   %".22" = icmp eq i64 %".4", 0
   br i1 %".22", label %"ls_zero_step", label %"ls_step_ok"
 ls_zero_step:
-  %".24" = getelementptr [38 x i8], [38 x i8]* @"str.ValueError_3a_20slice_20step_20cannot_20be_20zero~1", i32 0, i32 0
+  %".24" = getelementptr [38 x i8], [38 x i8]* @"str.ValueError_3a_20slice_20step_20cannot_20be_20zero", i32 0, i32 0
   call void @"silu_panic"(i8* %".24")
   unreachable
 ls_step_ok:
@@ -4975,7 +4964,6 @@ ls_tag_error:
 }
 
 @"str.TypeError_3a_20only_20list_20slicing_20is_20supported" = constant [42 x i8] c"TypeError: only list slicing is supported\00"
-@"str.ValueError_3a_20slice_20step_20cannot_20be_20zero~1" = constant [38 x i8] c"ValueError: slice step cannot be zero\00"
 define {i32, i8*}* @"pyobj_slice_any"({i32, i8*}* %".1", i64 %".2", i64 %".3", i64 %".4", i1 %".5", i1 %".6")
 {
 entry:
@@ -5349,7 +5337,7 @@ entry:
   %".6" = icmp eq i64 %".5", 0
   br i1 %".6", label %"pop_empty", label %"pop_ok"
 pop_empty:
-  %".8" = getelementptr [32 x i8], [32 x i8]* @"str.IndexError_3a_20pop_20from_20empty_20list~1", i32 0, i32 0
+  %".8" = getelementptr [32 x i8], [32 x i8]* @"str.IndexError_3a_20pop_20from_20empty_20list", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 pop_ok:
@@ -5364,7 +5352,6 @@ pop_ok:
   ret i64 %".16"
 }
 
-@"str.IndexError_3a_20pop_20from_20empty_20list~1" = constant [32 x i8] c"IndexError: pop from empty list\00"
 define {i32, i8*}* @"rawlist_to_pylist"(i8* %".1", i64 %".2")
 {
 entry:
@@ -7019,7 +7006,7 @@ entry:
   %".6" = icmp eq i64 %".5", 0
   br i1 %".6", label %"pop_empty", label %"pop_ok"
 pop_empty:
-  %".8" = getelementptr [32 x i8], [32 x i8]* @"str.IndexError_3a_20pop_20from_20empty_20list~2", i32 0, i32 0
+  %".8" = getelementptr [32 x i8], [32 x i8]* @"str.IndexError_3a_20pop_20from_20empty_20list", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 pop_ok:
@@ -7039,7 +7026,6 @@ pop_ok:
   ret i8* %".18"
 }
 
-@"str.IndexError_3a_20pop_20from_20empty_20list~2" = constant [32 x i8] c"IndexError: pop from empty list\00"
 define i64 @"rawstr_ord"(i8* %".1")
 {
 entry:
@@ -7709,7 +7695,7 @@ ok:
   %".23" = icmp eq i64 %".22", 0
   br i1 %".23", label %"set_dead", label %"set_live"
 index_error:
-  %".15" = getelementptr [47 x i8], [47 x i8]* @"str.IndexError_3a_20list_20assignment_20index_20out_20of_20range~1", i32 0, i32 0
+  %".15" = getelementptr [47 x i8], [47 x i8]* @"str.IndexError_3a_20list_20assignment_20index_20out_20of_20range", i32 0, i32 0
   call void @"silu_panic"(i8* %".15")
   unreachable
 set_dead:
@@ -7725,7 +7711,6 @@ set_store:
   ret void
 }
 
-@"str.IndexError_3a_20list_20assignment_20index_20out_20of_20range~1" = constant [47 x i8] c"IndexError: list assignment index out of range\00"
 define i8* @"rawlist_str_get"(i8* %".1", i64 %".2")
 {
 entry:
@@ -7753,12 +7738,11 @@ ok:
   %".25" = call i8* @"rawstr_copy"(i8* %".24")
   ret i8* %".25"
 index_error:
-  %".16" = getelementptr [36 x i8], [36 x i8]* @"str.IndexError_3a_20list_20index_20out_20of_20range~1", i32 0, i32 0
+  %".16" = getelementptr [36 x i8], [36 x i8]* @"str.IndexError_3a_20list_20index_20out_20of_20range", i32 0, i32 0
   call void @"silu_panic"(i8* %".16")
   unreachable
 }
 
-@"str.IndexError_3a_20list_20index_20out_20of_20range~1" = constant [36 x i8] c"IndexError: list index out of range\00"
 define i8* @"rawlist_str_copy_into"(i8* %".1", i64 %".2", i8* %".3")
 {
 entry:
@@ -7794,7 +7778,7 @@ ok:
   %".34" = icmp eq i64 %".33", 0
   br i1 %".34", label %"fresh", label %"fit"
 index_error:
-  %".17" = getelementptr [36 x i8], [36 x i8]* @"str.IndexError_3a_20list_20index_20out_20of_20range~2", i32 0, i32 0
+  %".17" = getelementptr [36 x i8], [36 x i8]* @"str.IndexError_3a_20list_20index_20out_20of_20range", i32 0, i32 0
   call void @"silu_panic"(i8* %".17")
   unreachable
 fresh:
@@ -7841,7 +7825,6 @@ copy:
   ret i8* %".3"
 }
 
-@"str.IndexError_3a_20list_20index_20out_20of_20range~2" = constant [36 x i8] c"IndexError: list index out of range\00"
 define i8* @"rawlist_str_ptr"(i8* %".1", i64 %".2")
 {
 entry:
@@ -8948,12 +8931,11 @@ ok:
   store i64 %".23", i64* %".24"
   ret void
 index_error:
-  %".16" = getelementptr [36 x i8], [36 x i8]* @"str.IndexError_3a_20list_20index_20out_20of_20range~3", i32 0, i32 0
+  %".16" = getelementptr [36 x i8], [36 x i8]* @"str.IndexError_3a_20list_20index_20out_20of_20range", i32 0, i32 0
   call void @"silu_panic"(i8* %".16")
   unreachable
 }
 
-@"str.IndexError_3a_20list_20index_20out_20of_20range~3" = constant [36 x i8] c"IndexError: list index out of range\00"
 define void @"rawlist_set"(i8* %".1", i64 %".2", i8* %".3", i64 %".4")
 {
 entry:
@@ -8979,12 +8961,11 @@ ok:
   store i64 %".24", i64* %".22"
   ret void
 index_error:
-  %".16" = getelementptr [47 x i8], [47 x i8]* @"str.IndexError_3a_20list_20assignment_20index_20out_20of_20range~2", i32 0, i32 0
+  %".16" = getelementptr [47 x i8], [47 x i8]* @"str.IndexError_3a_20list_20assignment_20index_20out_20of_20range", i32 0, i32 0
   call void @"silu_panic"(i8* %".16")
   unreachable
 }
 
-@"str.IndexError_3a_20list_20assignment_20index_20out_20of_20range~2" = constant [47 x i8] c"IndexError: list assignment index out of range\00"
 define {i32, i8*}* @"str_join_boxed"({i32, i8*}* %".1", {i32, i8*}* %".2")
 {
 entry:

@@ -82,7 +82,11 @@ class TestTypedCodegen:
             "print(a // b)\nprint(a % b)\nprint(a / b)\nprint(a / c)\n"
         )
 
-        assert llvm_ir.count("ZeroDivisionError: division by zero") >= 4
+        # P2 interning: ONE definition of the message constant, but a
+        # gep reference at each of the 4 division sites (name count =
+        # 1 def + 4 refs)
+        assert llvm_ir.count("ZeroDivisionError: division by zero") == 1
+        assert llvm_ir.count('str.ZeroDivisionError') >= 5
 
     def test_static_function_raw_abi(self):
         """Fully annotated functions get raw-typed signatures."""

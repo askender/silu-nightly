@@ -371,7 +371,9 @@ class TestSiluToLLVMConverter:
         """//, % and / must abort on zero divisors."""
         llvm_ir = _convert("a = 7 // 2\nb = 7 % 3\nc = 7 / 2\nprint(a, b, c)\n")
 
-        assert llvm_ir.count("ZeroDivisionError: division by zero") >= 3
+        # P2 interning: one definition, one gep reference per division
+        assert llvm_ir.count("ZeroDivisionError: division by zero") == 1
+        assert llvm_ir.count('str.ZeroDivisionError') >= 4
 
     def test_dict_hash_runtime(self):
         """Dict uses hash index table with rehash, tombstones, KeyError."""

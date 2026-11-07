@@ -302,10 +302,10 @@ fn add_str(counter: &mut usize, text: &str) -> String {
     // every name depend on global declaration order). The counter
     // parameter is retired - kept purely for signature stability;
     // callers still advance it but nothing consumes it any more.
-    // Duplicates of one content get a '~N' suffix: the Python side
-    // must avoid llvmlite's DuplicatedNameError, so both planes are
-    // forced into the same scheme. P2 interning will make these
-    // duplicate definitions disappear entirely.
+    // P2 interning: a hit on the bare content name means an identical
+    // constant already exists (in this module or embedded in the
+    // runtime prefixes) - reuse it and emit no second definition.
+    // The P6-era '~N' duplicate suffixes disappear entirely.
     let _ = counter;
     let mut base = String::from("str.");
     for &b in text.as_bytes() {
@@ -318,18 +318,15 @@ fn add_str(counter: &mut usize, text: &str) -> String {
             base.push(STR_HEX[(b & 15) as usize] as char);
         }
     }
-    let mut name = base.clone();
-    let mut n = 0usize;
-    while STR_NAMES.with(|s| s.borrow().contains(&name)) {
-        n += 1;
-        name = format!("{}~{}", base, n);
+    if STR_NAMES.with(|s| s.borrow().contains(&base)) {
+        return base;
     }
-    STR_NAMES.with(|s| s.borrow_mut().insert(name.clone()));
+    STR_NAMES.with(|s| s.borrow_mut().insert(base.clone()));
     let bytes = format!("{}\x00", text);
     tail_push(format!(
         "@\"{}\" = constant [{} x i8] c\"{}\"",
-        name, bytes.len(), escape_bytes(bytes.as_bytes())));
-    name
+        base, bytes.len(), escape_bytes(bytes.as_bytes())));
+    base
 }
 
 

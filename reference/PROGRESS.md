@@ -6,7 +6,22 @@
 
 ## P6 落地（2026-11-07，1.17.0）：字符串全局内容寻址命名
 
-提议→评估→实施全程见 `PROPOSALS.md`（头部评估结论）。要点：
+> P2（常量 interning）同日落地于同版本：命中 bare 内容名即复用既有
+> gvar，`~N` 后缀绝迹；silu_fe 常量 1,137 份（263 唯一）→ 262 份
+> 全唯一（0 冗余），该文件 .ll 缩 ~51.5KB；前缀随之再提为 368,822B。
+> 显式命名的运行时 panic 全局（str_keyerr/str_idxerr/json_typeerr）
+> 是 ABI 形单份，不参与 interning（已记录的残留）。
+>
+> **P2 连环修复（interning 的边界效应）**：用户代码第一次跨
+> "运行时/用户"两部分**复用前缀常量名**，暴露了两份 split 声明
+> 合成器的 constant 盲区——`silu/runtime_cache.py`（rt_globals 正则
+> 漏 `constant`，补 kind round-trip）与 `tools/siluc_main.c`
+> （parse_runtime_symbols 只认 `"global "`；连环修三处：constant
+> 关键字+9 字符偏移、strstr 越过行尾导致 global 漏收、bracket 类型
+> 无终止扫描导致 initializer 泄入 external 声明）。两处都补了
+> 回归测试（tests/test_runtime_split.py、test_siluc_driver 全量）。
+> 教训：**任何"运行时前缀 ↔ 用户代码"命名空间合并的提案都要审计
+> split/decl 合成器**（Python 与 C 各一份，双实现）。
 
 1. **规则**：字符串全局名 = `str.` + 内容转义（白名单
    `[a-zA-Z0-9.]` 直通，其余 UTF-8 字节 `_xx` 小写 hex；`_` 也转义

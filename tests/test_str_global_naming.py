@@ -85,7 +85,9 @@ def test_injectivity_adversarial():
     assert len(set(names)) == len(names)
 
 
-def test_duplicate_contents_get_suffix_not_crash():
+def test_duplicate_contents_intern_not_duplicate():
+    # P2: same content reuses the existing global (the P6-era '~N'
+    # suffixes are gone); only ONE definition ever lands in the module
     import llvmlite.ir as ir
 
     m = ir.Module()
@@ -99,7 +101,7 @@ def test_duplicate_contents_get_suffix_not_crash():
     # module.globals also holds functions (that is exactly why the old
     # len()-based numbering counted them) - filter to our names
     names = [k for k in m.globals if k.startswith("str.")]
-    assert names == ["str.dup", "str.dup~1", "str.dup~2"]
+    assert names == ["str.dup"]
 
 
 def test_suffixed_name_cannot_collide_with_plain():

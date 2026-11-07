@@ -4958,13 +4958,19 @@ class PyobjRuntimeMixin:
         # Content-addressed global name (P6): the old
         # f'str_{len(self.module.globals)}' numbering made every string
         # name depend on the declaration order of ALL module globals.
-        name = self._unique_str_global_name(string_content)
+        # P2 interning: the bare content name can only ever be THIS
+        # content's global (the str. namespace is exclusive), so a hit
+        # means an identical constant already exists - reuse it. The
+        # '~N' duplicate suffixes from the P6 stage disappear entirely.
+        base = self._str_global_name(string_content)
+        zero = ir.const_(ir.IntType(32), 0)
+        if base in self.module.globals:
+            return builder.gep(self.module.globals[base], [zero, zero])
 
         # Create global variable
-        global_str = ir.gvar_(self.module, string_type, name)
+        global_str = ir.gvar_(self.module, string_type, base)
         global_str.global_constant = True
         global_str.initializer = ir.const_(string_type, string_bytes)
 
         # Get pointer to first character
-        zero = ir.const_(ir.IntType(32), 0)
         return builder.gep(global_str, [zero, zero])

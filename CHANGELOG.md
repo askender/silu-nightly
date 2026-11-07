@@ -5,7 +5,7 @@ All notable changes, organized by version tag.
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
 ### v1.17.0
-string globals are content-addressed (proposal P6) - .ll output changes, semantics unchanged
+string globals are content-addressed and interned (proposals P6+P2) - .ll output changes, semantics unchanged
 
 - global names for string constants switch from
   `str_{len(module.globals)}` (a running counter over ALL module
@@ -21,6 +21,22 @@ string globals are content-addressed (proposal P6) - .ll output changes, semanti
   counting) - the Rust twin deleted that entire accounting
 - all planes re-verified byte-identical: ll 18/18, IR 19/19,
   full pytest suite, and the self-hosting fixed point
+- constant interning (P2): a hit on the bare content name reuses the
+  existing global instead of emitting a second definition - the '~N'
+  duplicate suffixes vanish and constants collapse to one definition
+  per content. silu_fe's output drops 1,137 constants (263 unique,
+  71% redundant bytes) to 262 unique / 0 redundant; total .ll shrinks
+  ~51.5KB on that corpus file. The explicitly named runtime panic
+  globals (str_keyerr/str_idxerr/json_typeerr) are ABI-shaped single
+  instances and stay named as-is (recorded residue, not interned).
+- interning exposed a latent bug in BOTH runtime/user split
+  synthesizers (python runtime_cache.py and the C driver siluc_main.c):
+  their prefix-symbol scans only matched `= global`, never
+  `= constant` - unreachable before because the two halves never
+  shared a constant name. Both now synthesize `external constant`
+  declarations; the C scanner also gained within-line keyword bounds
+  and bracket-type termination (an initializer could leak into the
+  external declaration). Regression tests added on both sides.
 
 ### v1.16.2
 large-file frontend memory regression fixed - full self-hosting CI restored

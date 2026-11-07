@@ -11379,15 +11379,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
         string_type = ir.ArrayType(ir.IntType(8), len(string_bytes))
         # P6: same content-addressed naming as every other string
-        # global (this site historically inlined the old counter form)
-        gv = ir.gvar_(
-            self.module,
-            string_type,
-            self._unique_str_global_name(
-                "IndexError: string index out of range"
-            ),
-
+        # global (this site historically inlined the old counter form).
+        # P2: intern against an existing identical constant (e.g. the
+        # pystr-domain subscript error) instead of adding a second one.
+        base = self._str_global_name(
+            "IndexError: string index out of range"
         )
+        if base in self.module.globals:
+            return self.module.globals[base]
+        gv = ir.gvar_(self.module, string_type, base)
         gv.global_constant = True
         gv.initializer = ir.const_(string_type, string_bytes)
         return gv
