@@ -1854,12 +1854,15 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
         let t = st.get(3).get(1).str_of();
         if t == "strbuf" {
             // strbuf local: plain alloca (NO null store, no silence),
-            // reference semantics - the pointer is shared as-is
+            // reference semantics - the pointer is shared as-is.
             FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "buf".into())));
             FN_SBUF.with(|y| y.borrow_mut().push(name.clone()));
             let fs2 = F_SLOTS.with(|f| f.borrow().clone());
             let v = eval_mod(b, &init, &fs2);
             let r = to_raw(b, v);
+            // every buf declaration closes with ONE silent before
+            // the store (probe make .7 and user_main .5)
+            b.silent();
             b.line(format!("  store i8* {}, i8** %\"{}\"", r, name));
             return;
         }
@@ -3147,12 +3150,15 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                 b.pos(end_b);
             }
             "for" => {
-                let dynamic_for = st.get(2).head() != "name"
+                let iter_is_buf = st.get(2).head() == "name"
+                    && is_local_buf(&st.get(2).get(1).str_of());
+                let dynamic_for = iter_is_buf
+                    || st.get(2).head() != "name"
                     || is_py(&st.get(2).get(1).str_of());
                 let is_range = st.get(2).head() == "call"
                     && st.get(2).get(1).head() == "name"
                     && st.get(2).get(1).get(1).str_of() == "range";
-                if is_str_expr(&st.get(2)) {
+                if !iter_is_buf && is_str_expr(&st.get(2)) {
                     conv_str_for(b, &st, loops);
                 } else if is_range {
                     conv_range_for(b, &st, loops);
@@ -3470,7 +3476,7 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                     b.silent();
                     b.line(format!("  ret i1 {}", r));
                 } else if rty.starts_with("inst:") || rty == "str"
-                    || rty.starts_with("list:") {
+                    || rty == "buf" || rty.starts_with("list:") {
                     match v {
                         Typed::Inst(r) | Typed::Str(r) => {
                             b.silent();
@@ -4428,6 +4434,7 @@ fn convert_func(fd: &Val) -> String {
     FN_D.with(|f| *f.borrow_mut() = Vec::new());
     FN_TY.with(|y| *y.borrow_mut() = Vec::new());
     FN_S.with(|y| *y.borrow_mut() = Vec::new());
+    FN_SBUF.with(|y| *y.borrow_mut() = Vec::new());
     FN_B.with(|y| *y.borrow_mut() = Vec::new());
     FN_STOR.with(|y| *y.borrow_mut() = Vec::new());
     TEMP_STRS.with(|t| *t.borrow_mut() = Vec::new());
@@ -4846,7 +4853,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     g, blen + 1, blen + 1, gname));
                 let cs = b.nx();
                 b.line(format!(
-                    "  %\"{}\" = call {{i32, i8*}}*\"@create_str\"(i8* %\"{}\", i32 {})",
+                    "  %\"{}\" = call {{i32, i8*}}* @\"create_str\"(i8* %\"{}\", i32 {})",
                     cs, g, blen));
                 let g2 = b.nx();
                 b.line(format!(
@@ -4854,7 +4861,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     g2, blen + 1, blen + 1, gname));
                 let c = b.nx();
                 b.line(format!(
-                    "  %\"{}\" = call i8*\"@rawstr_new_copy\"(i8* %\"{}\", i64 {})",
+                    "  %\"{}\" = call i8* @\"rawstr_new_copy\"(i8* %\"{}\", i64 {})",
                     c, g2, blen));
                 return Typed::Str(format!("%\"{}\"", c));
             }
@@ -5210,7 +5217,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let n = e.get(1).str_of();
             let l = b.nx();
             let _ = (slot_i, slot_f);
-            if is_local_s(&n) {
+            if is_local_s(&n) || is_local_buf(&n) {
                 b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
                 return Typed::Str(format!("%\"{}\"", l));
             }
@@ -5402,7 +5409,38 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             }
             Typed::Pyo(format!("%\"{}\"", c))
         }
-        "==" | "!=" | "<" | "<=" | ">" | ">=" => {
+                "==" | "!=" | "<" | "<=" | ">" | ">="
+            if e.get(1).head() == "name"
+                && is_local_buf(&e.get(1).get(1).str_of())
+                && e.get(2).head() == "const"
+                && matches!(e.get(2).get(1), Val::Str(_)) => {
+            // b == "lit": snapshot compare - buffer load FIRST, then
+            // the const create_str, then pyobj_eq (probe order .124-)
+            let bn = e.get(1).get(1).str_of();
+            let lit = e.get(2).get(1).str_of();
+            let blen = lit.chars().count();
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, bn));
+            let gname = add_str(&lit);
+            let g = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                g, blen + 1, blen + 1, gname));
+            let cs = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}* @\"create_str\"(i8* %\"{}\", i32 {})",
+                cs, g, blen));
+            let ps = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* %\"{}\")",
+                ps, l));
+            let r = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_eq\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\")",
+                r, ps, cs));
+            return Typed::Pyo(format!("%\"{}\"", r));
+        }
+"==" | "!=" | "<" | "<=" | ">" | ">=" => {
             Typed::Bool(eval_i1(b, e))
         }
         "**" => {
@@ -5591,14 +5629,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, bn));
             let ps = b.nx();
             b.line(format!(
-                "  %\"{}\" = call {{i32, i8*}}*\"@rawstr_to_pystr\"(i8* %\"{}\")",
+                "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* %\"{}\")",
                 ps, l));
             let idx = e.get(2);
             let iv = if idx.head() == "const"
                 && matches!(idx.get(1), Val::Int(_)) {
                 let c = b.nx();
                 b.line(format!(
-                    "  %\"{}\" = call {{i32, i8*}}*\"@create_int\"(i64 {})",
+                    "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 {})",
                     c, idx.get(1).int_of()));
                 format!("%\"{}\"", c)
             } else {
@@ -5607,7 +5645,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             };
             let r = b.nx();
             b.line(format!(
-                "  %\"{}\" = call {{i32, i8*}}*\"@pyobj_subscript\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
+                "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_subscript\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
                 r, ps, iv));
             return Typed::Pyo(format!("%\"{}\"", r));
         }
@@ -5860,6 +5898,37 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"malloc\"(i64 {})",
                     c, (fields.len() * 8) as i64));
+                if args.is_empty() && !fields.is_empty() {
+                    // defaulted construction: every field must be a
+                    // strbuf (strbuf() default) - emit the empty-buffer
+                    // chain per field (probe Holder: malloc, gep @"str.",
+                    // new_copy, gep off, bitcast i8**, store, store inst)
+                    for (i, (_, fty)) in fields.iter().enumerate() {
+                        if fty != "strbuf" {
+                            bail("class default ctor: non-strbuf field");
+                        }
+                        let gname = add_str("");
+                        let g = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr [1 x i8], [1 x i8]* @\"{}\", i32 0, i32 0",
+                            g, gname));
+                        let nc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"rawstr_new_copy\"(i8* %\"{}\", i64 0)",
+                            nc, g));
+                        let gp = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+                            gp, c, (i * 8) as i64));
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                        b.silent();
+                        b.line(format!(
+                            "  store i8* %\"{}\", i8** %\"{}\"", nc, bc));
+                    }
+                    return Typed::Inst(format!("%\"{}\"", c));
+                }
                 for (i, (_, fty)) in fields.iter().enumerate() {
                     let av = eval_expr(b, &args[i], slot_i, slot_f, fslots);
                     // str fields: to_raw BEFORE the field gep (calc)
@@ -6123,14 +6192,22 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 .find(|(k, _, _)| k == &fname).cloned());
             let (_, atys, rty) = match sig {
                 Some(t) => t,
-                None => (String::new(), vec!["int".to_string(); 99],
-                         "int".to_string()),
+                None => {
+                    if std::env::var("SB_DBG").is_ok() {
+                        eprintln!("SIG MISS: {}", fname);
+                    }
+                    (String::new(), vec!["int".to_string(); 99],
+                     "int".to_string())
+                }
             };
             let args = e.get(2).items();
             let mut parts = Vec::new();
             let mut writebacks: Vec<(String, String, String, String)> = Vec::new();
             for (i, a) in args.iter().enumerate() {
                 let ty = atys.get(i).map(|s| s.as_str()).unwrap_or("int");
+                if std::env::var("SB_DBG").is_ok() {
+                    eprintln!("ARG ty={} head={:?}", ty, a.head());
+                }
                 if ty.starts_with("list:") {
                     // container arg: name -> load slot; literal -> inline
                     // rawlist_new + element pushes (jsonparse [0] evidence)
@@ -6941,7 +7018,14 @@ fn conv_print(b: &mut FnB, st: &Val) {
                         pr, fg, len, data));
                 }
                 Typed::Inst(_) => bail("print instance"),
-                Typed::Pyo(_) => bail("print pyobj"),
+                Typed::Pyo(r) => {
+                    // snapshot-view arguments arrive as boxed values
+                    // (b[i] / b == s ride pyobj_subscript/pyobj_eq);
+                    // Python prints them through pyobj_print
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"pyobj_print\"({{i32, i8*}}* {})", r));
+                }
                 Typed::Bool(_) => bail("print bool"),
                 Typed::Str(r) => {
                     // str NAME arg: %.*s with (len field 0, data field 2)
@@ -7424,7 +7508,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
     if e.head() == "name" {
         let n = e.get(1).str_of();
         let l = b.nx();
-        if is_local_s(&n) {
+        if is_local_s(&n) || is_local_buf(&n) {
             b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, n));
             return Typed::Str(format!("%\"{}\"", l));
         }
@@ -7506,6 +7590,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
                 b.line(format!(
                     "  call void @\"rawstr_append\"(i8* %\"{}\", i8* %\"{}\", i64 {})",
                     ld, g, blen));
+                b.silent(); // stmt-layer null-result slot (fill .18)
                 return Typed::Pyo("null".into());
             }
             bail("push const");
@@ -7530,13 +7615,119 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         b.line(format!(
             "  call void @\"rawstr_append\"(i8* %\"{}\", i8* %\"{}\", i64 %\"{}\")",
             ld, data, len));
+        b.silent(); // stmt-layer null-result slot
         return Typed::Pyo("null".into());
+    }
+    if e.head() == "call" && e.get(1).head() == "attribute"
+        && e.get(1).get(2).str_of() == "to_str"
+        && e.get(1).get(1).head() == "call"
+        && e.get(1).get(1).get(1).head() == "name"
+        && e.get(1).get(1).get(1).get(1).str_of() == "strbuf" {
+        // chained strbuf(x).to_str(): the ctor arm evaluates the base
+        // (boxed const shape), then the snapshot copy
+        let bv = eval_mod(b, &e.get(1).get(1), fslots);
+        let r = match bv {
+            Typed::Str(r) | Typed::Inst(r) => r,
+            _ => bail("chained to_str base"),
+        };
+        let c = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", c, r));
+        return Typed::Str(format!("%\"{}\"", c));
+    }
+    if e.head() == "call" && e.get(1).head() == "attribute"
+        && e.get(1).get(1).head() == "attribute"
+        && e.get(1).get(1).get(1).head() == "name"
+        && e.get(1).get(2).str_of() == "push" {
+                // h.buf.push("lit"): instance strbuf field, in-place append
+        // (probe: load base, gep off, bitcast, load buf, gep const, append)
+        let bn = e.get(1).get(1).get(1).get(1).str_of();
+        let fld = e.get(1).get(1).get(2);
+        if let Some(cls) = fn_ty_of(&bn) {
+            if let Some(fs2) = class_fields(&cls) {
+                if let Some((k, _)) = fs2.iter()
+                    .enumerate().find(|(_, (f, t))|
+                        f == &fld.str_of() && t == "strbuf") {
+                    let off = (k * 8) as i64;
+                    let lb = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", lb, bn));
+                    let gp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+                        gp, lb, off));
+                    let bc = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                    let ld = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
+                    let arg = e.get(2).items();
+                    if arg.len() != 1
+                        || arg[0].head() != "const"
+                        || !matches!(arg[0].get(1), Val::Str(_)) {
+                        bail("field push const");
+                    }
+                    if let Val::Str(lit) = &arg[0].items()[1] {
+                        let gname = add_str(lit);
+                        let g = b.nx();
+                        let blen = lit.chars().count();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                            g, blen + 1, blen + 1, gname));
+                        b.line(format!(
+                            "  call void @\"rawstr_append\"(i8* %\"{}\", i8* %\"{}\", i64 {})",
+                            ld, g, blen));
+                        b.silent();
+                        return Typed::Pyo("null".into());
+                    }
+                    bail("field push lit");
+                }
+            }
+        }
+        // fall through to the generic method path below
+    }
+    if e.head() == "call" && e.get(1).head() == "attribute"
+        && e.get(1).get(1).head() == "attribute"
+        && e.get(1).get(1).get(1).head() == "name"
+        && e.get(1).get(2).str_of() == "to_str" {
+        // h.buf.to_str(): snapshot copy of the field buffer
+        let bn = e.get(1).get(1).get(1).get(1).str_of();
+        let fld = e.get(1).get(1).get(2);
+        if let Some(cls) = fn_ty_of(&bn) {
+            if let Some(fs2) = class_fields(&cls) {
+                if let Some((k, _)) = fs2.iter()
+                    .enumerate().find(|(_, (f, t))|
+                        f == &fld.str_of() && t == "strbuf") {
+                    let off = (k * 8) as i64;
+                    let lb = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", lb, bn));
+                    let gp = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+                        gp, lb, off));
+                    let bc = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                    let ld = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
+                    let c2 = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")",
+                        c2, ld));
+                    return Typed::Str(format!("%\"{}\"", c2));
+                }
+            }
+        }
+        // fall through
     }
     if e.head() == "call" && e.get(1).head() == "attribute"
         && e.get(1).get(1).head() == "name"
         && is_local_buf(&e.get(1).get(1).get(1).str_of())
         && e.get(1).get(2).str_of() == "to_str" {
-        // strbuf.to_str: rawstr_copy snapshot
+        // strbuf.to_str: rawstr_copy snapshot (rebuild marker)
         let bn = e.get(1).get(1).get(1).str_of();
         let ld = b.nx();
         b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", ld, bn));
@@ -7549,6 +7740,45 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         && e.get(1).get(1).str_of() == "len" {
         let ia = e.get(2).items();
         if ia.len() != 1 { bail("len arg"); }
+        if ia[0].head() == "attribute" && ia[0].get(1).head() == "name" {
+            // len(h.buf): strbuf field - load chain then field 3
+            let bn = ia[0].get(1).get(1).str_of();
+            let fld = ia[0].get(2).str_of();
+            if let Some(cls) = fn_ty_of(&bn) {
+                if let Some(fs2) = class_fields(&cls) {
+                    if let Some((k, _)) = fs2.iter()
+                        .enumerate().find(|(_, (f, t))|
+                            f == &fld && t == "strbuf") {
+                        let off = (k * 8) as i64;
+                        let lb = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i8*, i8** %\"{}\"", lb, bn));
+                        let gp = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr i8, i8* %\"{}\", i64 {}",
+                            gp, lb, off));
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to i8**", bc, gp));
+                        let ld = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i8*, i8** %\"{}\"", ld, bc));
+                        let sc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*",
+                            sc, ld));
+                        let gl = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                            gl, sc));
+                        let lv = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i64, i64* %\"{}\"", lv, gl));
+                        return Typed::I64(format!("%\"{}\"", lv));
+                    }
+                }
+            }
+        }
         if ia[0].head() == "name" && is_local_buf(&ia[0].get(1).str_of()) {
             // len(buf): code-point field 3, same load shape as str
             let bn = ia[0].get(1).str_of();
@@ -7870,6 +8100,13 @@ fn main() {
                 let mut fields: Vec<(String, String)> = Vec::new();
                 for b in body.iter() {
                     if b.head() == "ann_assign" {
+                        // strbuf-typed fields with a strbuf() default:
+                        // the empty ctor builds them inline (probe H)
+                        let an_d = b.get(3);
+                        let has_dflt = an_d.head() == "name"
+                            && an_d.get(1).str_of() == "strbuf";
+                        let _ = has_dflt; // marker only; ctor reads ty
+                        
                         let an = b.get(3);
                         let t = if an.head() == "subscript"
                             && an.get(1).get(1).str_of() == "list" {

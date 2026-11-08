@@ -6,7 +6,27 @@
 
 ## P6 落地（2026-11-07，1.17.0）：字符串全局内容寻址命名
 
-## strbuf 落地进行时（2026-11-08，Python 侧已落地，Rust Oracle 同步待续）
+## strbuf 落地完成（2026-11-08）：Python 侧 + Rust Oracle 全同步
+
+**ll 19/19（strbuf_probe 为第 19 个语料）+ ir 20/20 双实现逐字节一致。**
+Oracle 同步收官要点（除下列清单外的关键修正）：
+- eval_mod 与 eval_expr **各有独立的 name 分派**——is_local_buf 要加两处；
+- ucall 打包有**两处 rll/返回 Typed**（方法区 6066 + 用户区 6230）；
+- **签名表在 7931 区独立重建**（非 convert_func 的 atys）——参数/返回
+  归一要做两次；
+- push 语句层：append 后一个 silent（null 结果槽）；buf 声明后一个
+  silent；pyobj_print 前一个 silent（void 槽）；
+- **构造盒形状**：strbuf("lit") 常量构造**带 create_str 盒**（gep→
+  create_str→再 gep→new_copy）——早先"main 无盒"是误读（snap 段的
+  .113 gep 是盒链的第二个 gep）；空构造无盒；
+- b == "lit" 快照：**load buf 先**、常量链后（.124 顺序）；
+- 类字段族：空构造对每个 strbuf 字段发 malloc+空构造链+store；
+  字段 push/to_str/len 的 fld 取 **get(1).get(1).get(2)**（字段名）
+  而非方法名——attribute-of-attribute 基座；
+- **cargo 增量可能不重编**（rm 二进制或 cargo clean -p 强制）。
+
+以下为历史过程记录：
+
 
 RFC：`docs/strbuf_rfc.md`。**Python 侧全链完成**（注解 BUF kind、
 构造/push/to_str/len、引用语义、快照视图；ll 18/18 byte-identical
