@@ -48,9 +48,19 @@ silent；to_str：load→copy；strbuf() 空构造 + 常量构造走 create_str
    load，与 str 同形）。
 ③ conv_assign 已声明 buf 直存（alias = b：load+store 无 copy 无 free
    无 silent）——**注意 Python 形状**：`.44 load b; store alias`。
-④ 快照视图（b[i]/b == s/for ch in b 走 rawstr_to_pystr 快照）——
-   core 对拍当前停在 `print(snap[1], ...)` 的 subscript-on-buf
-   （to_raw on I64(".42")）。
+④ 快照视图——Python 形状已全部提取（spc_ref.ll）：
+   - b[1]：load buf → rawstr_to_pystr → create_int(1) →
+     pyobj_subscript → pyobj_print（完全装箱路径）
+   - b == "abc"：**常量 create_str(gep,3) 先**、rawstr_to_pystr(load)
+     后 → pyobj_eq → print
+   - for ch in b：load → rawstr_to_pystr → pyobj_iter_keys →
+     object 迭代族（iter_idx/list_length/list_get/create_int）
+   - **构造盒形状规则（重要）**：strbuf("lit") 在**函数内**带
+     create_str 盒（我的构造代码 _convert_node 副作用：gep→
+     create_str→再 gep→new_copy）；在 **user_main 内无盒**（单 gep→
+     new_copy——main 层走了不同路径）。Rust 复现需按上下文区分
+     （IN_FN 且非 user_main → 带盒）。
+   core 对拍当前停在 snap[1]（to_raw on I64(".42")）。
 ⑤ 类字段族（字段类型表存原样 "strbuf"、emit 字段默认值构造
    malloc+构造链+store（Python 形状：malloc(8)+gep @"str."+new_copy+
    gep i8,block,off+bitcast i8**+store 两次）、字段 push/to_str arm：
