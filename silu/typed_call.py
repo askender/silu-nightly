@@ -11,7 +11,7 @@ from typing import Any, Tuple
 
 from silu.ir_iface import ir
 from silu.typed_helpers import (
-    F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, RAWLIST_JSON, RAWDICT_SJ, LLVM_KIND_TYPES, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
+    BUF, F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, RAWLIST_JSON, RAWDICT_SJ, LLVM_KIND_TYPES, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
 )
 
 
@@ -268,7 +268,7 @@ class TypedCallMixin:
                     ir.PointerType(self.pyobj.pyobj_type), None
                 ))
             return self._unsupported_raw_method(raw_kind, method_name)
-        if raw_kind in (RAWSTR, RAWCHAR_VIEW) or (
+        if raw_kind in (RAWSTR, RAWCHAR_VIEW, BUF) or (
             # string literal receiver: "a,b".split(",")
             isinstance(func_node[1], list)
             and len(func_node[1]) >= 2
@@ -586,6 +586,31 @@ class TypedCallMixin:
                 self.current_builder.call(self.rawstr_free, [temp])
             return (OBJ, result)
 
+        if func_name == "strbuf":
+            # strbuf(): an empty mutable buffer; strbuf(s) a copy of s.
+            # Same rawstr header, reference semantics from here on.
+            if len(args_node) == 0:
+                empty = self._create_global_string("")
+                return (BUF, self.current_builder.call(
+                    self.rawstr_new_copy, [empty, ir.const_(ir.IntType(64), 0)]
+                ))
+            if len(args_node) == 1:
+                # ALWAYS a fresh independent buffer (from a str OR from
+                # another buffer's content); aliasing is spelled `b = a`
+                src_tv = self._convert_node(args_node[0])
+                if src_tv[0] == BUF:
+                    return (BUF, self.current_builder.call(
+                        self.rawstr_copy, [src_tv[1]]
+                    ))
+                data, length, temp = self._rawstr_append_operand(args_node[0])
+                result = self.current_builder.call(
+                    self.rawstr_new_copy, [data, length]
+                )
+                if temp is not None:
+                    self.current_builder.call(self.rawstr_free, [temp])
+                return (BUF, result)
+            raise NotImplementedError(
+                "strbuf() takes 0 or 1 arguments")
         if func_name == "str":
             # scalar str() conversion; boxed path, the result coerces
             # back to rawstr at the use site when annotated
@@ -753,6 +778,24 @@ class TypedCallMixin:
                                 [
                                     ir.const_(ir.IntType(32), 0),
                                     ir.const_(ir.IntType(32), 0),
+                                ],
+                            )
+                        ),
+                    )
+                if arg_tv[0] == BUF:
+                    # buffer length: same field as str (code points)
+                    struct_ptr = self.current_builder.bitcast(
+                        arg_tv[1],
+                        ir.PointerType(self.rawstr_struct_type),
+                    )
+                    return (
+                        I64,
+                        self.current_builder.load(
+                            self.current_builder.gep(
+                                struct_ptr,
+                                [
+                                    ir.const_(ir.IntType(32), 0),
+                                    ir.const_(ir.IntType(32), 3),
                                 ],
                             )
                         ),

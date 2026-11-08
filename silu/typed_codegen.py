@@ -5363,6 +5363,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return self.current_builder.call(converter, [value])
         if kind == RAWSTR:
             return self.current_builder.call(self.rawstr_to_pystr, [value])
+        if kind == BUF:
+            # a buffer crossing into the dynamic world carries its
+            # CONTENT as an immutable str value (snapshot copy)
+            return self.current_builder.call(self.rawstr_to_pystr, [value])
         if kind == I64:
             return self.current_builder.call(self.create_int, [value])
         if kind == F64:
@@ -6258,6 +6262,40 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         The receiver may be a slot borrow (RAWSTR), a char view, or a
         boxed string - the latter two arrive as owned copies that this
         call frees (Rust end-of-statement temporary drop)."""
+        if obj_tv[0] == BUF:
+            # before _rawstr_operand: a buffer pointer IS the operand
+            # (never a temp to free, never a view to materialize)
+            s_ptr = obj_tv[1]
+            # strbuf methods: the whole reason the type exists.
+            # push appends in place (O(1) amortized) in ANY context -
+            # local, field, or across functions; to_str snapshots the
+            # content as an immutable str (value copy, buf keeps
+            # growing). Everything else is a spelling of "go through
+            # to_str()" and fails loudly.
+            if method_name == "push" and len(args_node) == 1:
+                data, length, arg_temp = self._rawstr_append_operand(
+                    args_node[0]
+                )
+                self.current_builder.call(
+                    self.rawstr_append, [s_ptr, data, length]
+                )
+                if arg_temp is not None:
+                    self.current_builder.call(
+                        self.rawstr_free, [arg_temp]
+                    )
+                return (OBJ, ir.const_(
+                    ir.PointerType(self.pyobj.pyobj_type), None
+                ))
+            if method_name == "to_str" and not args_node:
+                return (
+                    RAWSTR,
+                    self.current_builder.call(self.rawstr_copy, [s_ptr]),
+                )
+            raise NotImplementedError(
+                f"strbuf has no method '{method_name}' "
+                "(push/to_str only; convert with to_str() for str "
+                "operations)"
+            )
         s_ptr, temp = self._rawstr_operand(obj_tv)
 
         if method_name == "strip" and not args_node:
@@ -6556,6 +6594,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 # ownership model - assignment copies, append grows in
                 # place, so Python's immutable-value semantics hold)
                 return RAWSTR
+            if node[1] == "strbuf":
+                # reference-semantics mutable buffer: same rawstr header,
+                # pointer shared on assignment/passing (no copies, no
+                # scope drops - program-lifetime like list/dict)
+                return BUF
             if node[1] in self._class_layouts:
                 # `st: JointState` - instance pointer, layout from the table
                 return INSTANCE

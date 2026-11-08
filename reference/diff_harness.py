@@ -29,13 +29,19 @@ CORPUS_IR = [
         f for f in os.listdir(os.path.join(REPO, "benchmarks"))
         if f.endswith(".si"))],
     "selfhost/calc.si",
+    "selfhost/strbuf_probe.si",
     "selfhost/ir_interp.si",
     "selfhost/silu_fe.si",
     "selfhost/typed_codegen_flat.si",
 ]
 # the flat converter .ll round-trip through the python plane is minutes;
-# IR parity on it is enough, .ll parity covers the other 18
-CORPUS_LL = [f for f in CORPUS_IR if "typed_codegen_flat" not in f]
+# IR parity on it is enough, .ll parity covers the other 18.
+# strbuf_probe: the strbuf feature landed Python-side first; the Rust
+# oracle bails on it (exit 3, correctly) until its sync commit - keep
+# it out of the ll gate rather than carry a known ERROR row.
+CORPUS_LL = [f for f in CORPUS_IR
+             if "typed_codegen_flat" not in f
+             and "strbuf_probe" not in f]
 
 
 def _run(cmd, stdin_path=None, cwd=REPO, timeout=1200):

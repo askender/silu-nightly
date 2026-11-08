@@ -40,6 +40,7 @@ __all__ = [
     "ANNOTATION_KINDS",
     "RAWLIST_I",
     "RAWLIST_F",
+    "BUF",
     "RAWSTR",
     "RAWCHAR_VIEW",
     "RAWLIST_S",
@@ -310,6 +311,12 @@ ANNOTATION_KINDS = {"int": I64, "float": F64, "bool": I1}
 RAWLIST_I = "rawlist_i64"  # list[int]: Vec<i64>-style raw element array
 RAWLIST_F = "rawlist_f64"  # list[float]
 RAWSTR = "rawstr"  # str: {len, cap, data} with exclusive slot ownership
+# strbuf: the SAME rawstr header, but a REFERENCE-semantics mutable
+# buffer (assignment/passing share the pointer, no copies); push()
+# appends in place anywhere - the explicit contract the local
+# `x = x + t` in-place window only approximates (see
+# reference/P1_STRING_RESEARCH.md)
+BUF = "strbuf"
 # transient: a borrowed {i8* data, i64 seq} window into a parent
 # rawstr (SSA struct value, no allocation). Lives inside one
 # expression; any consumer needing an owned string coerces to
@@ -359,11 +366,13 @@ RAW_STORAGE_KINDS[RAWSTR] = RAWSTR
 RAW_STORAGE_KINDS[INSTANCE] = INSTANCE
 RAW_STORAGE_KINDS[JSON] = JSON  # tagged block pointer, null-initialized
 RAW_STORAGE_KINDS[RAWDICT_SJ] = RAWDICT_SJ
+RAW_STORAGE_KINDS[BUF] = BUF  # i8* slot like rawstr
 LLVM_KIND_TYPES = {
     I64: ir.IntType(64),
     F64: ir.DoubleType(),
     I1: ir.IntType(1),
     RAWSTR: ir.PointerType(ir.IntType(8)),  # rawstr passes as i8* in ABIs
+    BUF: ir.PointerType(ir.IntType(8)),  # strbuf: same header, shared ref
     RAWLIST_I: ir.PointerType(ir.IntType(8)),
     RAWLIST_F: ir.PointerType(ir.IntType(8)),
     RAWLIST_S: ir.PointerType(ir.IntType(8)),

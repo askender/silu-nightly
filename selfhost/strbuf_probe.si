@@ -1,0 +1,49 @@
+# strbuf corpus probe: constructor (empty/seeded), push, to_str, len,
+# reference semantics (alias, cross-function, instance field, return),
+# and the content-snapshot views (print / subscript / compare / for).
+def fill(b: strbuf, n: int) -> object:
+    i: int = 0
+    while i < n:
+        b.push("x")
+        i += 1
+    return None
+
+def make() -> strbuf:
+    b: strbuf = strbuf("ab")
+    b.push("c")
+    return b
+
+class Holder:
+    buf: strbuf = strbuf()
+
+def main() -> int:
+    b: strbuf = strbuf()
+    b.push("hello")
+    b.push(" world")
+    s: str = b.to_str()
+    print(s, len(b))
+
+    fill(b, 3)
+    alias: strbuf = b
+    alias.push("!")
+    print(b.to_str(), len(b))
+
+    made: strbuf = make()
+    made.push("d")
+    print(made.to_str())
+
+    h: Holder = Holder()
+    h.buf.push("field")
+    print(h.buf.to_str(), len(h.buf))
+
+    seeded: str = strbuf("seed").to_str()
+    print(seeded)
+
+    # content-snapshot views of a buffer
+    snap: strbuf = strbuf("abc")
+    print(snap[1], snap == "abc")
+    total: int = 0
+    for ch in snap:
+        total += 1
+    print(total)
+    return 0

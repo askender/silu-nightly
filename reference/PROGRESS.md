@@ -6,6 +6,37 @@
 
 ## P6 落地（2026-11-07，1.17.0）：字符串全局内容寻址命名
 
+## strbuf 落地进行时（2026-11-08，Python 侧已落地，Rust Oracle 同步待续）
+
+RFC：`docs/strbuf_rfc.md`。**Python 侧全链完成**（注解 BUF kind、
+构造/push/to_str/len、引用语义、快照视图；ll 18/18 byte-identical
+验收 ✓、ir 20/20 ✓、`tests/test_strbuf.py` 7 项）。**性能兑现**：
+字段+跨函数 3M 拼接 34.9s → 0.07s（~470×）。
+
+**Rust Oracle 同步（下轮续作）——已提取的形状基准**（来自
+strbuf_probe 的 Python 输出，逐字节对齐用）：
+1. **局部声明**：`%"b" = alloca i8*` **无 null store、无声 silent**
+   （对照 RAWSTR 的 null-store silent）；alloca_ty 加 "buf"→"i8*"。
+2. **空构造**：`gep @"str."` + `rawstr_new_copy(gep, 0)` + store。
+3. **种子构造 strbuf("ab")**：`create_str(gep,2)` 中间盒 + **再 gep** +
+   `rawstr_new_copy(gep2, 2)`（_rawstr_append_operand 常量路径）；
+   buf 实参 → `rawstr_copy(src)`。
+4. **push**：load buf + gep 常量 + `rawstr_append(buf, data, len)`。
+5. **to_str**：`rawstr_copy(load)`。
+6. **len(buf)**：bitcast + gep field 3 + load（码点数）。
+7. **assign/别名**：load src + **直存**（无 copy、无 free、无 silent）。
+8. **buf 参数**：alloca+store 成对正序（**容器参数模式**，无 split/
+   null）；**任一 buf 参数 → 函数动态 ABI**（{i32,i8*}* 返回、无
+   alwaysinline）。buf 返回：i8* 直 ret + alwaysinline 保留。
+9. **快照视图**（b[0]/b == s/for ch in b/print(b)）：走 box
+   （rawstr_to_pystr(load)）内容快照——Typed::Str 复用即得。
+10. 无注解 `b = strbuf()` 一律 dynamic 报错（双侧行为一致）。
+挂点：FN_SBUF 注册表、conv_ann_assign "strbuf" 分支、conv_assign
+buf 拦截、eval_mod push/to_str/strbuf() arm（内联 attribute-call
+模式）、len 分派、参数/返回注解归一化。harness 的 ll corpus 暂排
+strbuf_probe（diff_harness.py 内注释；语料本体在 selfhost/——benchmarks/
+是 CPython-parity 域，strbuf 是 silu 特有），Oracle 同步后移回并全绿。
+
 > **P5（布尔单例）同日落地**：@silu_true/@silu_false 两个不朽常量盒
 > （tag 3、payload 私有）；create_bool = 一条 select（零 malloc），
 > `x is True/False` = 一条指针比较（替代 11 指令
