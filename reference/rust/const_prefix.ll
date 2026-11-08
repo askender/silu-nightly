@@ -5480,8 +5480,6 @@ entry:
   ret i64 %".5"
 }
 
-@"str_keyerr" = constant [24 x i8] c"KeyError: key not found\00"
-@"str_idxerr" = constant [38 x i8] c"IndexError: string index out of range\00"
 define void @"rawdict_reindex"(i8* %".1", i64 %".2")
 {
 entry:
@@ -5799,7 +5797,7 @@ probe_step:
   store i64 %".34", i64* %"rdg_slot"
   br label %"probe_test"
 key_error:
-  %".37" = getelementptr [24 x i8], [24 x i8]* @"str_keyerr", i32 0, i32 0
+  %".37" = getelementptr [24 x i8], [24 x i8]* @"str.KeyError_3a_20key_20not_20found", i32 0, i32 0
   call void @"silu_panic"(i8* %".37")
   unreachable
 }
@@ -5854,7 +5852,7 @@ probe_step:
   store i64 %".41", i64* %"rdd_slot"
   br label %"probe_test"
 key_error:
-  %".44" = getelementptr [24 x i8], [24 x i8]* @"str_keyerr", i32 0, i32 0
+  %".44" = getelementptr [24 x i8], [24 x i8]* @"str.KeyError_3a_20key_20not_20found", i32 0, i32 0
   call void @"silu_panic"(i8* %".44")
   unreachable
 }
@@ -5949,7 +5947,7 @@ cvt_done:
 }
 
 @"char1_pool" = global [256 x i8*] zeroinitializer
-@"str_typeerr" = constant [24 x i8] c"TypeError: expected str\00"
+@"str.TypeError_3a_20expected_20str" = constant [24 x i8] c"TypeError: expected str\00"
 define i64 @"rawutf8_cp_count"(i8* %".1", i64 %".2")
 {
 entry:
@@ -6304,7 +6302,7 @@ ok:
   %".23" = icmp eq i64 %".22", %".8"
   br i1 %".23", label %"ascii", label %"walk"
 index_error:
-  %".16" = getelementptr [38 x i8], [38 x i8]* @"str_idxerr", i32 0, i32 0
+  %".16" = getelementptr [38 x i8], [38 x i8]* @"str.IndexError_3a_20string_20index_20out_20of_20range", i32 0, i32 0
   call void @"silu_panic"(i8* %".16")
   unreachable
 ascii:
@@ -6358,7 +6356,7 @@ ok:
   %".23" = icmp eq i64 %".22", %".8"
   br i1 %".23", label %"ascii", label %"walk"
 index_error:
-  %".16" = getelementptr [38 x i8], [38 x i8]* @"str_idxerr", i32 0, i32 0
+  %".16" = getelementptr [38 x i8], [38 x i8]* @"str.IndexError_3a_20string_20index_20out_20of_20range", i32 0, i32 0
   call void @"silu_panic"(i8* %".16")
   unreachable
 ascii:
@@ -6773,7 +6771,7 @@ probe_step:
   store i64 %".35", i64* %"probe_slot"
   br label %"probe_test"
 miss:
-  %".38" = getelementptr [24 x i8], [24 x i8]* @"str_keyerr", i32 0, i32 0
+  %".38" = getelementptr [24 x i8], [24 x i8]* @"str.KeyError_3a_20key_20not_20found", i32 0, i32 0
   call void @"silu_panic"(i8* %".38")
   unreachable
 }
@@ -7982,7 +7980,7 @@ ok:
   %".28" = bitcast {i64, i64, i8*, i64}* %".19" to i8*
   ret i8* %".28"
 type_error:
-  %".30" = getelementptr [24 x i8], [24 x i8]* @"str_typeerr", i32 0, i32 0
+  %".30" = getelementptr [24 x i8], [24 x i8]* @"str.TypeError_3a_20expected_20str", i32 0, i32 0
   call void @"silu_panic"(i8* %".30")
   unreachable
 }
@@ -8084,7 +8082,7 @@ probe_step:
   store i64 %".37", i64* %"sprobe_slot"
   br label %"probe_test"
 miss:
-  %".40" = getelementptr [24 x i8], [24 x i8]* @"str_keyerr", i32 0, i32 0
+  %".40" = getelementptr [24 x i8], [24 x i8]* @"str.KeyError_3a_20key_20not_20found", i32 0, i32 0
   call void @"silu_panic"(i8* %".40")
   unreachable
 }
@@ -8152,7 +8150,7 @@ probe_step:
   store i64 %".54", i64* %"sprobe_slot"
   br label %"probe_test"
 miss:
-  %".57" = getelementptr [24 x i8], [24 x i8]* @"str_keyerr", i32 0, i32 0
+  %".57" = getelementptr [24 x i8], [24 x i8]* @"str.KeyError_3a_20key_20not_20found", i32 0, i32 0
   call void @"silu_panic"(i8* %".57")
   unreachable
 }
@@ -8663,7 +8661,7 @@ probe_step:
   store i64 %".37", i64* %"sprobe_slot"
   br label %"probe_test"
 miss:
-  %".40" = getelementptr [24 x i8], [24 x i8]* @"str_keyerr", i32 0, i32 0
+  %".40" = getelementptr [24 x i8], [24 x i8]* @"str.KeyError_3a_20key_20not_20found", i32 0, i32 0
   call void @"silu_panic"(i8* %".40")
   unreachable
 }

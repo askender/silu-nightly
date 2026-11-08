@@ -751,10 +751,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
 
 
-        self._key_error_msg = self._panic_string(b"KeyError: key not found\0", "str_keyerr")
+        self._key_error_msg = self._panic_string("KeyError: key not found")
 
         self._str_index_error_msg = self._panic_string(
-            b"IndexError: string index out of range\0", "str_idxerr"
+            "IndexError: string index out of range"
         )
 
         # void rawdict_reindex(i8* d, i64 new_size)
@@ -1296,9 +1296,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
 
 
-        self._type_error_msg = self._panic_string(
-            b"TypeError: expected str\0", "str_typeerr"
-        )
+        self._type_error_msg = self._panic_string("TypeError: expected str")
 
         # i64 rawutf8_cp_count(i8* data, i64 len) - code points = bytes
         # that are not continuation bytes ((b & 0xC0) != 0x80)
@@ -4470,7 +4468,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         i32 = ir.IntType(32)
         i8p = ir.PointerType(ir.IntType(8))
         self._json_typeerr = self._panic_string(
-            b"TypeError: wrong Json member\0", "json_typeerr"
+            "TypeError: wrong Json member"
         )
 
         self.json_unwrap_int = ir.func_(

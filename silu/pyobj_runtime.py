@@ -573,15 +573,28 @@ class PyobjRuntimeMixin:
 
 
 
-    def _panic_string(self, data, label):
+    def _panic_string(self, string_content: str):
+        """A lazily-created panic message global.
+
+        Since P2 the global is content-named and interned like every
+        other string constant: identical messages share one
+        definition (the old explicit labels - str_keyerr/
+        str_idxerr/str_typeerr/json_typeerr - are gone; e.g. the
+        subscript IndexError and the char-view IndexError are one
+        global now). Body shaped to hit flatten's .si rewrites - keep
+        the string_bytes/string_content spellings."""
+        string_bytes = bytearray((string_content + "\x00").encode("utf-8"))
+        base = self._str_global_name(string_content)
+        if base in self.module.globals:
+            return self.module.globals[base]
         gv = ir.gvar_(
             self.module,
-            ir.ArrayType(ir.IntType(8), len(data)), label,
+            ir.ArrayType(ir.IntType(8), len(string_bytes)), base,
 
         )
         gv.global_constant = True
         gv.initializer = ir.const_(
-            ir.ArrayType(ir.IntType(8), len(data)), bytearray(data)
+            ir.ArrayType(ir.IntType(8), len(string_bytes)), string_bytes
         )
         return gv
 

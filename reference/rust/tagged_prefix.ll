@@ -166,7 +166,7 @@ done:
   ret void
 }
 
-@"json_typeerr" = constant [29 x i8] c"TypeError: wrong Json member\00"
+@"str.TypeError_3a_20wrong_20Json_20member" = constant [29 x i8] c"TypeError: wrong Json member\00"
 define i64 @"json_unwrap_int"(i8* %".1")
 {
 entry:
@@ -180,7 +180,7 @@ ok:
   %".12" = load i64, i64* %".11"
   ret i64 %".12"
 bad:
-  %".8" = getelementptr [29 x i8], [29 x i8]* @"json_typeerr", i32 0, i32 0
+  %".8" = getelementptr [29 x i8], [29 x i8]* @"str.TypeError_3a_20wrong_20Json_20member", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 }
@@ -199,7 +199,7 @@ ok:
   %".13" = bitcast i64 %".12" to double
   ret double %".13"
 bad:
-  %".8" = getelementptr [29 x i8], [29 x i8]* @"json_typeerr", i32 0, i32 0
+  %".8" = getelementptr [29 x i8], [29 x i8]* @"str.TypeError_3a_20wrong_20Json_20member", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 }
@@ -218,7 +218,7 @@ ok:
   %".13" = trunc i64 %".12" to i1
   ret i1 %".13"
 bad:
-  %".8" = getelementptr [29 x i8], [29 x i8]* @"json_typeerr", i32 0, i32 0
+  %".8" = getelementptr [29 x i8], [29 x i8]* @"str.TypeError_3a_20wrong_20Json_20member", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 }
@@ -237,7 +237,7 @@ ok:
   %".13" = inttoptr i64 %".12" to i8*
   ret i8* %".13"
 bad:
-  %".8" = getelementptr [29 x i8], [29 x i8]* @"json_typeerr", i32 0, i32 0
+  %".8" = getelementptr [29 x i8], [29 x i8]* @"str.TypeError_3a_20wrong_20Json_20member", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 }
@@ -256,7 +256,7 @@ ok:
   %".13" = inttoptr i64 %".12" to i8*
   ret i8* %".13"
 bad:
-  %".8" = getelementptr [29 x i8], [29 x i8]* @"json_typeerr", i32 0, i32 0
+  %".8" = getelementptr [29 x i8], [29 x i8]* @"str.TypeError_3a_20wrong_20Json_20member", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 }
@@ -275,7 +275,7 @@ ok:
   %".13" = inttoptr i64 %".12" to i8*
   ret i8* %".13"
 bad:
-  %".8" = getelementptr [29 x i8], [29 x i8]* @"json_typeerr", i32 0, i32 0
+  %".8" = getelementptr [29 x i8], [29 x i8]* @"str.TypeError_3a_20wrong_20Json_20member", i32 0, i32 0
   call void @"silu_panic"(i8* %".8")
   unreachable
 }
