@@ -6066,7 +6066,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     "float" => "double",
                     "bool" => "i1",
                     "none" | "pyobj" => "{i32, i8*}*",
-                    t if t.starts_with("inst:") || t == "str" => "i8*",
+                    t if t.starts_with("inst:") || t == "str"
+                        || t == "buf" => "i8*",
                     _ => "i64",
                 };
                 b.line(format!("  %\"{}\" = call {} @\"{}\"({})",
@@ -6075,6 +6076,9 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 if rty == "bool" { return Typed::Bool(format!("%\"{}\"", c)); }
                 if rty.starts_with("inst:") || rty == "str" {
                     return Typed::Inst(format!("%\"{}\"", c));
+                }
+                if rty == "buf" {
+                    return Typed::Str(format!("%\"{}\"", c));
                 }
                 if rty == "none" || rty == "pyobj" {
                     return Typed::Pyo(format!("%\"{}\"", c));
@@ -6201,7 +6205,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         let r = to_f64(b, v);
                         parts.push(format!("double {}", r));
                     }
-                    (v, t) if t == "str" || t.starts_with("inst:")
+                    (v, t) if t == "str" || t == "buf"
+                        || t.starts_with("inst:")
                         || t.starts_with("list:") => {
                         let r = match v {
                             Typed::Inst(r) | Typed::Str(r) => r,
@@ -6225,12 +6230,16 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let rll = match rty.as_str() {
                 "float" => "double", "bool" => "i1",
                 "none" | "pyobj" => "{i32, i8*}*",
-                t if t == "str" || t == "json" || t.starts_with("inst:")
+                t if t == "str" || t == "json" || t == "buf"
+                    || t.starts_with("inst:")
                     || t.starts_with("list:") => "i8*",
                 _ => "i64",
             };
             b.line(format!("  %\"{}\" = call {} @\"{}\"({})",
                 c, rll, fname, parts.join(", ")));
+            if rty == "buf" {
+                return Typed::Str(format!("%\"{}\"", c));
+            }
             for (nm, raw, before, boxed) in writebacks {
                 let back = b.nx();
                 b.line(format!(
@@ -7510,6 +7519,23 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         && e.get(1).get(1).str_of() == "len" {
         let ia = e.get(2).items();
         if ia.len() != 1 { bail("len arg"); }
+        if ia[0].head() == "name" && is_local_buf(&ia[0].get(1).str_of()) {
+            // len(buf): code-point field 3, same load shape as str
+            let bn = ia[0].get(1).str_of();
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, bn));
+            let bc = b.nx();
+            b.line(format!(
+                "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i8*, i64}}*",
+                bc, l));
+            let gl = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                gl, bc));
+            let ld = b.nx();
+            b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", ld, gl));
+            return Typed::I64(format!("%\"{}\"", ld));
+        }
         // len(subscript): list-element str read then header len load
         if ia[0].head() == "subscript" && ia[0].get(1).head() == "name" {
             let bn = ia[0].get(1).get(1).str_of();
@@ -7923,6 +7949,7 @@ fn main() {
                     else if is_obj_annotation(&t) { "pyobj".into() }
                     else if is_class(&t) { format!("inst:{}", t) }
                     else if is_enum(&t) { "int".into() }
+                    else if t == "strbuf" { "buf".into() }
                     else { t }
                 }
             }).collect();
@@ -7944,7 +7971,9 @@ fn main() {
                  } else { fd.get(5).get(1).str_of() };
         let rt = if rt0 == "Json" { "json".into() }
                  else if is_obj_annotation(&rt0) { "pyobj".into() }
-                 else if is_class(&rt0) { format!("inst:{}", rt0) } else { rt0 };
+                 else if is_class(&rt0) { format!("inst:{}", rt0) }
+                 else if rt0 == "strbuf" { "buf".into() }
+                 else { rt0 };
         let name = match prefix {
             Some(c) => format!("{}__{}", c, fd.get(1).str_of()),
             None => fd.get(1).str_of(),

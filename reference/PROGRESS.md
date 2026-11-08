@@ -39,13 +39,23 @@ strbuf_probe 的 Python 输出，逐字节对齐用）：
 "buf"+rty_ll）、eval_mod 三 arm（常量 push：load→gep→append 无
 silent；to_str：load→copy；strbuf() 空构造 + 常量构造走 create_str
 盒→再 gep→new_copy——probe make 形状）。
-**剩余清单**：① 具名函数调用的返回 Typed 映射（buf 返回当前落
-I64——搜 call 分派按 ret kind 构造 Typed 的 ~10 处）；② len(buf)
-（field 3 链）；③ conv_assign 已声明 buf 直存（alias = b：load+store
-无 copy 无 free 无 silent）；④ 快照视图（b[i]/b == s/for ch in b 走
-rawstr_to_pystr 快照）；⑤ 类字段族（字段类型表存原样 "strbuf"、
-emit 字段默认值构造 malloc+构造链+store、字段 push/to_str arm：
-load base→gep off→bitcast i8**→load）；⑥ strbuf_probe 移回 ll corpus。
+**剩余清单（2026-11-08 第三轮后：①②已完成）**：
+① ✓ 调用链全通：签名表（7931 区的 atys/rt0 两处归一 "strbuf"→"buf"）、
+   ucall 实参打包（str/inst/list 分支加 "buf"）、两处 rll（6066 方法区
+   + 6230 用户区）与各自返回 Typed::Str、eval_mod 委托确认（用户调用
+   → eval_expr "call"+name）。
+② ✓ len(buf)：len arm 头部 is_local_buf 分支（load→bitcast→gep f3→
+   load，与 str 同形）。
+③ conv_assign 已声明 buf 直存（alias = b：load+store 无 copy 无 free
+   无 silent）——**注意 Python 形状**：`.44 load b; store alias`。
+④ 快照视图（b[i]/b == s/for ch in b 走 rawstr_to_pystr 快照）——
+   core 对拍当前停在 `print(snap[1], ...)` 的 subscript-on-buf
+   （to_raw on I64(".42")）。
+⑤ 类字段族（字段类型表存原样 "strbuf"、emit 字段默认值构造
+   malloc+构造链+store（Python 形状：malloc(8)+gep @"str."+new_copy+
+   gep i8,block,off+bitcast i8**+store 两次）、字段 push/to_str arm：
+   load base→gep off→bitcast i8**→load buf→常量 gep→append）。
+⑥ strbuf_probe 移回 ll corpus（去 diff_harness 排除）→ 19/19。
 **方法教训**：heredoc 里 Rust 代码的引号会毁掉 python 补丁脚本
 （两度损坏 silu-conv.rs，git checkout 回滚+原子脚本文件
 /tmp/patch_*.py 方式重放才稳）；插入 eval_mod 的 arm 要落在
