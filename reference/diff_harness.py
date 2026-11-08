@@ -111,6 +111,23 @@ def _canonical_ir(raw):
                       ensure_ascii=False).encode()
 
 
+def _canonical_ll(raw):
+    """LL planes may be built on different hosts: the target triple and
+    datalayout come from the HOST llvmlite at build time (the embedded
+    const_prefix.ll was extracted on an arm64 mac - on a linux CI host
+    conv emits linux lines there), they are environment, not converter
+    semantics. Normalize both lines plus the trailing newline so the
+    gate runs portably."""
+    out = []
+    for line in raw.split(b"\n"):
+        if (line.startswith(b"target triple = ")
+                or line.startswith(b"target datalayout = ")):
+            out.append(line.split(b" = ", 1)[0] + b" = <host>")
+        else:
+            out.append(line)
+    return b"\n".join(out).rstrip(b"\n")
+
+
 def main():
     if len(sys.argv) != 4 or sys.argv[1] not in ("ir", "ll"):
         print(__doc__)
@@ -127,8 +144,9 @@ def main():
             aout, bout = _canonical_ir(aout), _canonical_ir(bout)
         if mode == "ll" and arc == 0 and brc == 0:
             # the python serializer appends one trailing newline the
-            # self-hosted one does not - not semantics, normalize it
-            aout, bout = aout.rstrip(b"\n"), bout.rstrip(b"\n")
+            # self-hosted one does not; triple/datalayout come from the
+            # build host's llvmlite - neither is converter semantics
+            aout, bout = _canonical_ll(aout), _canonical_ll(bout)
         dt = time.time() - t0
         if arc != 0 or brc != 0:
             print(f"ERROR {rel} ({dt:.1f}s): plane rc {a_name}={arc} "
