@@ -4,6 +4,32 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.18.0
+strbuf: an explicit, reference-semantics growable buffer (P1 / 1b-lite)
+
+- str semantics and emission untouched; the acceptance for the
+  landing commit was the ll gate staying byte-identical on all
+  pre-existing corpora. The new type fills the measured hole: the
+  same-concatenation spelling through an instance field or a
+  function boundary degraded ~1100x (34.9s vs 0.03s for 3M pushes,
+  reference/P1_STRING_RESEARCH.md); with a buffer it is 0.07s in
+  ANY context.
+- API: b: strbuf = strbuf() / strbuf(x) (ctor always copies; alias
+  is b = a); b.push(s) appends in place O(1) amortized anywhere;
+  b.to_str() snapshots as an immutable str; len(b) reads code
+  points; assignment/passing/returns share the i8* pointer like
+  list/dict (a buf parameter selects the dynamic function ABI).
+  v1 relaxation: b[0] / b == s / for ch in b / print(b) read the
+  content snapshot instead of failing (documented in the RFC).
+- front ends needed ZERO changes (annotations pass through as
+  strings); the Rust oracle is fully synced: selfhost/strbuf_probe.si
+  is the 19th ll corpus file, conv vs rustconv 19/19 byte-identical.
+- self-host sources deliberately NOT migrated: a census of
+  silu_fe.si shows every concatenation is the local `x = x + t`
+  shape already inside the in-place window (18 unescape table sites
+  + 3 lexer sites) - no field/cross-function hot loop exists to fix
+  (the batch-2 premise; recorded in the research note).
+
 ### v1.17.0
 string globals are content-addressed and interned, booleans are singletons (proposals P6+P2+P5) - .ll output changes, semantics unchanged
 

@@ -17,7 +17,7 @@ language's behavior. It exists to answer three questions with data:
 
 ## Contract
 
-- **Pinned version**: silu 1.17.0 (P6 re-pin; the original oracle was
+- **Pinned version**: silu 1.18.0 (strbuf feature re-pin; the original oracle was
   1.16.2, commit 87df40f - the calibration report CALIBRATION.md
   documents that pin). The Rust code
   implements THIS behavior, not whatever main does later. No tracking
