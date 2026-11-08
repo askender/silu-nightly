@@ -5581,6 +5581,36 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             } else { bail(&format!("attribute base {} in {}: {:?}", base,
                 CUR_FN.with(|f| f.borrow().clone()), e)) }
         }
+        "subscript" if e.get(1).head() == "name"
+            && is_local_buf(&e.get(1).get(1).str_of()) => {
+            // b[i] snapshot view: box the buffer content, dynamic
+            // subscript (probe shape: load -> rawstr_to_pystr ->
+            // create_int -> pyobj_subscript)
+            let bn = e.get(1).get(1).str_of();
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, bn));
+            let ps = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}*\"@rawstr_to_pystr\"(i8* %\"{}\")",
+                ps, l));
+            let idx = e.get(2);
+            let iv = if idx.head() == "const"
+                && matches!(idx.get(1), Val::Int(_)) {
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}*\"@create_int\"(i64 {})",
+                    c, idx.get(1).int_of()));
+                format!("%\"{}\"", c)
+            } else {
+                let v = eval_expr(b, &idx, slot_i, slot_f, fslots);
+                to_pyobj(b, v)
+            };
+            let r = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}*\"@pyobj_subscript\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
+                r, ps, iv));
+            return Typed::Pyo(format!("%\"{}\"", r));
+        }
         "subscript" if e.get(1).head() == "attribute" => {
             // self.toks[i]: field-resolved list read
             let base = e.get(1);
