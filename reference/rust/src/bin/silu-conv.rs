@@ -156,6 +156,11 @@ fn is_local_s(n: &str) -> bool {
     FN_S.with(|t| t.borrow().iter().any(|x| x == n))
 }
 
+fn is_local_buf(n: &str) -> bool {
+    FN_SBUF.with(|t| t.borrow().iter().any(|x| x == n))
+}
+
+
 fn fn_ty_of(n: &str) -> Option<String> {
     FN_TY.with(|t| t.borrow().iter().find(|(k, _)| k == n)
         .map(|(_, v)| v.clone()))
@@ -1121,6 +1126,7 @@ thread_local! {
         RefCell::new(Vec::new()); // (class, [(field, ty)])
     static FN_TY: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
     static FN_S: RefCell<Vec<String>> = RefCell::new(Vec::new()); // local strs
+    static FN_SBUF: RefCell<Vec<String>> = RefCell::new(Vec::new()); // local strbufs
 }
 
 fn is_declared(name: &str) -> bool {
@@ -1846,6 +1852,17 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
     if IN_FN.with(|v| *v.borrow()) && st.get(3).head() == "name" {
         // function-local binding: record the alloca, typed init store
         let t = st.get(3).get(1).str_of();
+        if t == "strbuf" {
+            // strbuf local: plain alloca (NO null store, no silence),
+            // reference semantics - the pointer is shared as-is
+            FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "buf".into())));
+            FN_SBUF.with(|y| y.borrow_mut().push(name.clone()));
+            let fs2 = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &init, &fs2);
+            let r = to_raw(b, v);
+            b.line(format!("  store i8* {}, i8** %\"{}\"", r, name));
+            return;
+        }
         if t == "str" {
             // str local: alloca (null in splice), free-old + store
             FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "str".into())));
@@ -4339,11 +4356,12 @@ fn convert_func(fd: &Val) -> String {
         if a.head() == "name" {
             let t = a.get(1).str_of();
             if t != "int" && t != "float" && t != "bool" && !is_obj_annotation(&t)
-                && !is_class(&t) && t != "str" && !is_enum(&t) {
+                && !is_class(&t) && t != "str" && t != "strbuf" && !is_enum(&t) {
                 bail(&format!("param type {} in {}", t, name));
             }
             if is_class(&t) { atys.push(format!("inst:{}", t)); }
             else if is_obj_annotation(&t) { atys.push("pyobj".into()); }
+            else if t == "strbuf" { atys.push("buf".into()); }
             else if t == "str" { atys.push("str".into()); }
             else if is_enum(&t) { atys.push("int".into()); }
             else { atys.push(t.to_string()); }
@@ -4375,7 +4393,8 @@ fn convert_func(fd: &Val) -> String {
               }
               else {
                   let t = ret_anno.get(1).str_of();
-                  if t == "Json" { "json".to_string() }
+                  if t == "strbuf" { "buf".to_string() }
+                  else if t == "Json" { "json".to_string() }
                   else if is_obj_annotation(&t) {
                       let inferred = infer_ret(&body, &params, &annos);
                       match inferred.as_str() {
@@ -4389,7 +4408,7 @@ fn convert_func(fd: &Val) -> String {
                   }
                   else {
                   if t != "int" && t != "float" && t != "bool"
-                      && !is_class(&t) && t != "str" {
+                      && !is_class(&t) && t != "str" && t != "strbuf" {
                       bail(&format!("ret type {} in {}", t, name));
                   }
                   if is_class(&t) { format!("inst:{}", t) } else { t.to_string() }
@@ -4397,7 +4416,7 @@ fn convert_func(fd: &Val) -> String {
               };
     // any object parameter selects the dynamic function ABI, independent of
     // the source-level return annotation
-    let rty = if atys.iter().any(|t| t == "pyobj") {
+    let rty = if atys.iter().any(|t| t == "pyobj" || t == "buf") {
         "pyobj".to_string()
     } else { rty };
 
@@ -4424,7 +4443,7 @@ fn convert_func(fd: &Val) -> String {
         "float" => "double",
         "bool" => "i1",
         t if t.starts_with("list:") || t.starts_with("inst:")
-            || t == "str" || t == "json" => "i8*",
+            || t == "str" || t == "json" || t == "buf" => "i8*",
         "pyobj" => "{i32, i8*}*",
         _ => "i64",
     };
@@ -4432,7 +4451,7 @@ fn convert_func(fd: &Val) -> String {
         "pyobj" => "{i32, i8*}*",
         "float" => "double", "bool" => "i1", "none" => "{i32, i8*}*",
         t if t.starts_with("inst:") || t == "str" || t == "json"
-            || t.starts_with("list:") => "i8*",
+            || t == "buf" || t.starts_with("list:") => "i8*",
         _ => "i64",
     };
     let header = format!(
@@ -4494,7 +4513,13 @@ fn convert_func(fd: &Val) -> String {
         || has_ret_anno);
     if !any_owned {
     for (i, (p, t)) in params.iter().zip(atys.iter()).enumerate() {
-        if t.starts_with("list:") {
+        if t == "buf" {
+            // strbuf param: container-pair alloca+store, no split form
+            FN_SBUF.with(|y| y.borrow_mut().push(p.str_of()));
+            container_pairs.push_str(&format!(
+                "  %\"{}\" = alloca i8*\n  store i8* %\".{}\", i8** %\"{}\"\n",
+                p.str_of(), i + 1, p.str_of()));
+        } else if t.starts_with("list:") {
             FN_L.with(|f| f.borrow_mut()
                 .push((p.str_of(), t.split(':').nth(1).unwrap_or("int").to_string())));
             container_pairs.push_str(&format!(
@@ -4680,7 +4705,7 @@ fn convert_func(fd: &Val) -> String {
         "i8*" => "i8*",
         "float" => "double",
         t if t.starts_with("list:") || t.starts_with("inst:")
-            || t == "str" => "i8*",
+            || t == "str" || t == "buf" => "i8*",
         _ => "i64",
     };
     FN_ALLOCAS.with(|f| {
@@ -4793,6 +4818,62 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
     // json_* builtins over the tagged-union Json representation
     // (jsonparse_json). Mirrors the eval_mod dispatch so that expr_i64
     // (aug-assign rhs, subscript indices) also reaches these builtins.
+    if e.head() == "call" && e.get(1).head() == "name"
+        && e.get(1).get(1).str_of() == "strbuf" {
+        // strbuf(): empty buffer; strbuf(x): fresh copy of x's content
+        let arg = e.get(2).items();
+        if arg.is_empty() {
+            let gname = add_str("");
+            let g = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr [1 x i8], [1 x i8]* @\"{}\", i32 0, i32 0",
+                g, gname));
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i8* @\"rawstr_new_copy\"(i8* %\"{}\", i64 0)",
+                c, g));
+            return Typed::Str(format!("%\"{}\"", c));
+        }
+        if arg.len() == 1 && arg[0].head() == "const" {
+            // const operand: box through create_str, then a FRESH gep +
+            // rawstr_new_copy (probe make evidence)
+            if let Val::Str(lit) = &arg[0].items()[1] {
+                let gname = add_str(lit);
+                let blen = lit.chars().count();
+                let g = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                    g, blen + 1, blen + 1, gname));
+                let cs = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}*\"@create_str\"(i8* %\"{}\", i32 {})",
+                    cs, g, blen));
+                let g2 = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                    g2, blen + 1, blen + 1, gname));
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8*\"@rawstr_new_copy\"(i8* %\"{}\", i64 {})",
+                    c, g2, blen));
+                return Typed::Str(format!("%\"{}\"", c));
+            }
+            bail("strbuf ctor const");
+        }
+        if arg.len() == 1 {
+            let av = eval_mod(b, &arg[0], fslots);
+            match av {
+                Typed::Str(r) | Typed::Inst(r) => {
+                    let c = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", c, r));
+                    return Typed::Str(format!("%\"{}\"", c));
+                }
+                _ => bail("strbuf ctor arg"),
+            }
+        }
+        bail("strbuf args");
+    }
     if e.head() == "call" && e.get(1).head() == "name" {
         let fname = e.get(1).get(1).str_of();
         let jargs = e.get(2).items();
@@ -7363,6 +7444,67 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         }
         b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, n));
         return Typed::I64(format!("%\"{}\"", l));
+    }
+    if e.head() == "call" && e.get(1).head() == "attribute"
+        && e.get(1).get(1).head() == "name"
+        && is_local_buf(&e.get(1).get(1).get(1).str_of())
+        && e.get(1).get(2).str_of() == "push" {
+        // strbuf.push: rawstr_append in place (probe shape: load buf,
+        // gep const, call - no slot silence)
+        let bn = e.get(1).get(1).get(1).str_of();
+        let ld = b.nx();
+        b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", ld, bn));
+        let arg = e.get(2).items();
+        if arg.len() != 1 { bail("push args"); }
+        if arg[0].head() == "const" {
+            if let Val::Str(lit) = &arg[0].items()[1] {
+                let gname = add_str(lit);
+                let g = b.nx();
+                let blen = lit.chars().count();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+                    g, blen + 1, blen + 1, gname));
+                b.line(format!(
+                    "  call void @\"rawstr_append\"(i8* %\"{}\", i8* %\"{}\", i64 {})",
+                    ld, g, blen));
+                return Typed::Pyo("null".into());
+            }
+            bail("push const");
+        }
+        let rv = eval_mod(b, &arg[0], fslots);
+        let r = to_raw(b, rv);
+        let bc = b.nx();
+        b.line(format!(
+            "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*", bc, r));
+        let gl = b.nx();
+        b.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 0",
+            gl, bc));
+        let len = b.nx();
+        b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", len, gl));
+        let gd = b.nx();
+        b.line(format!(
+            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+            gd, bc));
+        let data = b.nx();
+        b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", data, gd));
+        b.line(format!(
+            "  call void @\"rawstr_append\"(i8* %\"{}\", i8* %\"{}\", i64 %\"{}\")",
+            ld, data, len));
+        return Typed::Pyo("null".into());
+    }
+    if e.head() == "call" && e.get(1).head() == "attribute"
+        && e.get(1).get(1).head() == "name"
+        && is_local_buf(&e.get(1).get(1).get(1).str_of())
+        && e.get(1).get(2).str_of() == "to_str" {
+        // strbuf.to_str: rawstr_copy snapshot
+        let bn = e.get(1).get(1).get(1).str_of();
+        let ld = b.nx();
+        b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", ld, bn));
+        let c = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", c, ld));
+        return Typed::Str(format!("%\"{}\"", c));
     }
     if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() == "len" {

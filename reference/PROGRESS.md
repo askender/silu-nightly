@@ -31,11 +31,25 @@ strbuf_probe 的 Python 输出，逐字节对齐用）：
 9. **快照视图**（b[0]/b == s/for ch in b/print(b)）：走 box
    （rawstr_to_pystr(load)）内容快照——Typed::Str 复用即得。
 10. 无注解 `b = strbuf()` 一律 dynamic 报错（双侧行为一致）。
-挂点：FN_SBUF 注册表、conv_ann_assign "strbuf" 分支、conv_assign
-buf 拦截、eval_mod push/to_str/strbuf() arm（内联 attribute-call
-模式）、len 分派、参数/返回注解归一化。harness 的 ll corpus 暂排
-strbuf_probe（diff_harness.py 内注释；语料本体在 selfhost/——benchmarks/
-是 CPython-parity 域，strbuf 是 silu 特有），Oracle 同步后移回并全绿。
+**同步进度（2026-11-08 第二轮，进行中——silu-conv.rs 已含下列改动且
+编译通过，核心链对拍推进到"具名函数调用返回 buf"一处 Typed 映射）**：
+已完成：FN_SBUF/is_local_buf/alloca_ty("buf")、conv_ann_assign strbuf
+分支（无 null 无 silent 直存）、参数链（白名单/"buf"/任一 buf 参数→
+动态 ABI/arg_ll i8*/容器对装载）、返回归一（两处白名单+"strbuf"→
+"buf"+rty_ll）、eval_mod 三 arm（常量 push：load→gep→append 无
+silent；to_str：load→copy；strbuf() 空构造 + 常量构造走 create_str
+盒→再 gep→new_copy——probe make 形状）。
+**剩余清单**：① 具名函数调用的返回 Typed 映射（buf 返回当前落
+I64——搜 call 分派按 ret kind 构造 Typed 的 ~10 处）；② len(buf)
+（field 3 链）；③ conv_assign 已声明 buf 直存（alias = b：load+store
+无 copy 无 free 无 silent）；④ 快照视图（b[i]/b == s/for ch in b 走
+rawstr_to_pystr 快照）；⑤ 类字段族（字段类型表存原样 "strbuf"、
+emit 字段默认值构造 malloc+构造链+store、字段 push/to_str arm：
+load base→gep off→bitcast i8**→load）；⑥ strbuf_probe 移回 ll corpus。
+**方法教训**：heredoc 里 Rust 代码的引号会毁掉 python 补丁脚本
+（两度损坏 silu-conv.rs，git checkout 回滚+原子脚本文件
+/tmp/patch_*.py 方式重放才稳）；插入 eval_mod 的 arm 要落在
+if e.head() 链上而非 match 臂。
 
 > **P5（布尔单例）同日落地**：@silu_true/@silu_false 两个不朽常量盒
 > （tag 3、payload 私有）；create_bool = 一条 select（零 malloc），
