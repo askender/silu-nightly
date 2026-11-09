@@ -1,7 +1,7 @@
 # AGENTS.md
 
 给 AI 代理与本仓库协作者的工作指南。**本文件是代理上下文的唯一权威
-入口**（CLAUDE.md 仅指向本文件）；写作时点：2026-11-07。
+入口**（CLAUDE.md 仅指向本文件）；写作时点：2026-11-07（最近更新 2026-11-09 晚）。
 
 ## 项目是什么
 
@@ -37,7 +37,7 @@
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
-**状态（2026-11-07）：已完成**——前端 IR **19/19**、完整 .ll **19/19**
+**状态（2026-11-07）：已完成**——前端 IR **21/21**、完整 .ll **20/20**（含 utf8_probe）
 全语料逐字节一致。规模对照、参考特性分诊、语言设计建议见校准报告。
 
 **关键文档（都在 reference/）**：
@@ -50,6 +50,7 @@
 | `DYNAMIC_SHAPES.md` | 动态层（pyobj/Json）形状蓝图 |
 | `P1_STRING_RESEARCH.md` | P1 前置研究：窄窗实证（字段/跨函数 1000×）、470× strbuf 基准、自举源码普查（无窄窗外热循环） |
 | `README.md` | Oracle 契约（钉住版本、语料、非目标） |
+| `STATUS.md` | **会话交接锚点**：当前状态、TODO、环境关键、教训（compact/换客户端后先读这个） |
 
 **常用命令**：
 
@@ -57,8 +58,8 @@
 export PATH="$HOME/.cargo/bin:$PATH"        # cargo 常不在默认 PATH
 cd reference/rust && cargo build            # 产出 target/debug/{silu-fe,silu-conv}
 cd <仓库根>                                  # 以下命令都必须在仓库根执行
-python3 reference/diff_harness.py ir fe rustfe    # 前端 IR 平面，应 19/19
-python3 reference/diff_harness.py ll conv rustconv # 完整 .ll 平面，应 18/18
+$PY312 reference/diff_harness.py ir fe rustfe    # 前端 IR 平面，应 21/21
+$PY312 reference/diff_harness.py ll conv rustconv # 完整 .ll 平面，应 20/20
 ./siluc1 < benchmarks/fib.si > /tmp/ref.ll                  # Python 平面参考输出
 reference/rust/target/debug/silu-conv benchmarks/fib.si > /tmp/rust.ll
 cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
@@ -66,7 +67,37 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 ```
 
 注意：`silu-conv` 通过子进程调同目录 `silu-fe`；`.si` 路径按当前工作
-目录解析，**一律从仓库根运行**。
+目录解析，**一律从仓库根运行**。命令里的 `python3` 一律指
+`/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
+homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
+
+## 当前状态锚点（2026-11-10 凌晨）
+
+- HEAD = `bced6d9`（v1.18.1）及其后的 **utf8 语料钉板一轮**均已提交推
+  nightly（utf8_probe 语料、rust-conv 字节域修复、孪生
+  utf8_byte_len bytes 快分支、siluc 驱动缓存加固、动态码点九测试）。
+- 门禁全绿：ll conv rustconv **20/20**、ll conv pyll **20/20**、
+  ir fe rustfe **21/21**、pytest **1361 通过/3 跳过**（解释器 parity
+  真回归已查明修复：双孪生 utf8_byte_len 缺 bytes 分支）。
+- 下一站 TODO（发布链健康度核查等）见
+  **`reference/STATUS.md`——换客户端后的第一站**。
+
+## 环境关键（换客户端/新会话必读，2026-11-09 实证）
+
+1. **$PY312 = `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`**
+   ——pytest、diff_harness、selfhost_build、`-m silu build` 全用它。
+2. `cargo` 不在默认 PATH：`export PATH="$HOME/.cargo/bin:$PATH"`。
+3. siluc 驱动的运行时缓存 `~/.cache/silu-runtime/driver/`（带内容校验 +
+   clang 身份戳；conda LLVM 与 Apple clang 的 LTO 位码互不兼容，缓存失配
+   自动重建；怀疑异常可整目录删）。
+4. pytest 全量失败**先定向重跑再下结论**：定向重跑全绿的多为二进制
+   重建竞态；但**定向重跑仍红的才是真回归**（当前工作树就有 1 个：
+   见最上方"当前状态锚点"）。
+5. SSH 推送降级路径（代理 7897 未开时）：
+   `GIT_SSH_COMMAND="ssh -i $HOME/.ssh/lb_ali_18 -o IdentitiesOnly=yes" git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
+6. **换客户端后的第一站**：`reference/STATUS.md`（当前状态、TODO、
+   环境关键、本会话教训——包括"手写期望值必须用真 CPython 生成"、
+   "Oracle 新 arm 位置敏感"、"改运行时复杂度要同步审视 .ll 渲染器孪生"）。
 
 ## 硬约束（违反即事故）
 
@@ -109,5 +140,12 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 - 仓库根有不少历史遗留实验文件（`.attic/`、`aok*/`、`c_for*` 等），
   与当前链路无关，不要试图"清理"它们。
 - CLAUDE.md 描述的是早期纯解释器时代，已过时；以本文件为准。
+- 手写测试期望值先用真 CPython 跑一遍再写（本会话三次被自己的手写
+  参照误导）；Oracle 新增 arm 的插入位置敏感（放错会短路既有臂），
+  插完必须跑全量 ll 门禁；改运行时函数复杂度要同步审视 .ll 渲染器
+  孪生（llvmlite_text.py + llvmlite.si）——它们是运行时的编译期消费者。
+- 语料已非全 ASCII（selfhost/utf8_probe.si 钉码点语义）；`_rstrip`/
+  `_escape_*` 等孪生热点循环已全部线性化，新增渲染循环时勿再引入
+  逐字符 `+=`/循环内切片。
 - Python 平面跑 `.ll` 全量对拍较慢（typed_codegen_flat 需分钟级），
   IR 平面与 Rust 平面都是毫秒级。

@@ -1,0 +1,60 @@
+# UTF-8 semantics probe: every multibyte-sensitive shape the runtime
+# has gotten wrong at least once (codepoint len/subscript/slice, the
+# cp-offset caches, dynamic-box operations, content-addressed global
+# names for non-ASCII literals, and a giant literal through the .ll
+# renderer's escaper). Corpus file for the ir/ll differential gates.
+#
+# No dynamic-box section: unannotated locals from chr()/concat inits
+# infer differently across the planes (Python keeps pyobj, the oracle
+# promotes to str; `object`-annotated locals bail in the oracle) -
+# g-list #10. Dynamic codepoint semantics are pinned by execution
+# tests instead (tests/test_utf8_runtime.py).
+
+def typed_walk(s: str, target: int) -> int:
+    # typed per-char loop: char_view -> rawstr_cp_off_at (the cache)
+    i: int = 0
+    total: int = 0
+    n: int = len(s)
+    while i < n:
+        if ord(s[i]) == target:
+            total += 1
+        i += 1
+    return total
+
+def typed_slice(s: str) -> int:
+    w: str = s[0:3]
+    z: str = s[1:5:2]
+    if len(w) != 3:
+        return 1
+    if ord(w[1]) != 20013:
+        return 2
+    if len(z) != 2:
+        return 3
+    if ord(z[0]) != 20013:
+        return 4
+    if s[-1] != "x":
+        return 5
+    return 0
+
+def buf_build(first: str, second: str, n: int) -> str:
+    b: strbuf = strbuf()
+    i: int = 0
+    while i < n:
+        b.push(first)
+        b.push(second)
+        i += 1
+    return b.to_str()
+
+LIT: str = "semantics \u00a7 3 \u4e2d\u6587 mix \u00e9\u00e8 \u00df\u00a3"
+
+
+def main() -> int:
+    s: str = buf_build(chr(167), chr(20013), 40)
+    print(typed_walk(s, 167))
+    print(typed_walk(s, 20013))
+    print(typed_slice(s))
+    print(len(LIT))
+    print(ord(LIT[10]))
+    print(typed_walk(LIT, 20013))
+    print(len(LIT[0:14]))
+    return 0

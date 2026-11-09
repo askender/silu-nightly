@@ -1283,7 +1283,7 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
                 && view_ref.is_some() {
                 let view = view_ref.clone().unwrap();
                 let text = e.get(2).get(1).str_of();
-                let blen = text.chars().count() as i64;
+                let blen = text.len() as i64;
                 let gname = add_str(&text);
                 let g = b.nx();
                 b.line(format!(
@@ -1319,7 +1319,7 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
                 let iv = eval_mod(b, &idxe, &fs);
                 let Typed::I64(k) = iv else { bail("fused idx") };
                 let text = e.get(2).get(1).str_of();
-                let blen = text.chars().count() as i64;
+                let blen = text.len() as i64;
                 let gname = add_str(&text);
                 let g = b.nx();
                 b.line(format!(
@@ -1361,7 +1361,7 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
                 && matches!(e.get(2).get(1), Val::Str(_)) {
                 let l = match &lt { Typed::Pyo(r) => r, _ => unreachable!() };
                 let text = e.get(2).get(1).str_of();
-                let blen = text.chars().count() as i64;
+                let blen = text.len() as i64;
                 let gname = add_str(&text);
                 let g = b.nx();
                 b.line(format!(
@@ -1399,7 +1399,7 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
                 let (rr, rlen) = if const_rhs {
                     let text = e.get(2).get(1).str_of();
                     let gname = add_str(&text);
-                    let blen = text.chars().count() as i64;
+                    let blen = text.len() as i64;
                     let g = b.nx();
                     b.line(format!(
                         "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
@@ -2120,7 +2120,7 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
                                                 _ => String::new() };
             let gname = add_str(&text);
             let g = b.nx();
-            let blen = text.chars().count();
+            let blen = text.len();
             b.line(format!(
                 "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
                 g, blen + 1, blen + 1, gname));
@@ -2660,7 +2660,7 @@ fn conv_assign(b: &mut FnB, st: &Val) {
                 Val::Str(v) => v.clone(), _ => bail("str rhs") };
             let gname = add_str(&lit);
             let g = b.nx();
-            let blen = lit.chars().count();
+            let blen = lit.len();
             b.line(format!(
                 "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
                 g, blen + 1, blen + 1, gname));
@@ -4869,7 +4869,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             // rawstr_new_copy (probe make evidence)
             if let Val::Str(lit) = &arg[0].items()[1] {
                 let gname = add_str(lit);
-                let blen = lit.chars().count();
+                let blen = lit.len();
                 let g = b.nx();
                 b.line(format!(
                     "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
@@ -5217,7 +5217,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         // str constant in expression position -> pystr create_str chain
         let text = e.get(1).str_of();
         let gname = add_str(&text);
-        let blen = text.chars().count();
+        let blen = text.len();
         let g = b.nx();
         b.line(format!(
             "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
@@ -5457,7 +5457,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             // the const create_str, then pyobj_eq (probe order .124-)
             let bn = e.get(1).get(1).str_of();
             let lit = e.get(2).get(1).str_of();
-            let blen = lit.chars().count();
+            let blen = lit.len();
             let l = b.nx();
             b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, bn));
             let gname = add_str(&lit);
@@ -5830,6 +5830,44 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             } else if e.get(2).head() == "slice"
                 && (STR_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
                     || is_local_s(&n)) {
+                // stepped slice (s[1:5:2]): rawstr_slice is step-1
+                // only - the reference boxes through pyobj_str_slice
+                // (utf8_probe z: to_pystr, str_slice(step), to_rawstr,
+                // NO dead len read on this path)
+                let sitems = e.get(2).items();
+                let step_is_one = sitems.len() <= 3
+                    || matches!(sitems[3], Val::Null)
+                    || (sitems[3].head() == "const"
+                        && matches!(sitems[3].get(1), Val::Int(1)));
+                if !step_is_one {
+                    let l = b.nx();
+                    let slot0s = if is_local_s(&n) {
+                        format!("%\"{}\"", n)
+                    } else {
+                        format!("@\"{}\"", n)
+                    };
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** {}", l, slot0s));
+                    let ps = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* %\"{}\")",
+                        ps, l));
+                    let sv = eval_expr(b, &e.get(2).get(1), slot_i, slot_f, fslots);
+                    let Typed::I64(sr) = sv else { bail("slice start") };
+                    let ev = eval_expr(b, &e.get(2).get(2), slot_i, slot_f, fslots);
+                    let Typed::I64(er) = ev else { bail("slice end") };
+                    let tv = eval_expr(b, &sitems[3], slot_i, slot_f, fslots);
+                    let Typed::I64(tr) = tv else { bail("slice step") };
+                    let pv = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_str_slice\"({{i32, i8*}}* %\"{}\", i64 {}, i64 {}, i64 {}, i1 true, i1 true)",
+                        pv, ps, sr, er, tr));
+                    let rr = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
+                        rr, pv));
+                    return Typed::Str(format!("%\"{}\"", rr));
+                }
                 // str slice: (dead len read) + slice + copy (calc)
                 let l = b.nx();
                 let slot0 = if is_local_s(&n) { format!("%\"{}\"", n) }
@@ -5866,7 +5904,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 if e.get(2).head() == "const"
                     && matches!(e.get(2).get(1), Val::Str(_)) {
                     let text = e.get(2).get(1).str_of();
-                    let blen = text.chars().count();
+                    let blen = text.len();
                     let gname = add_str(&text);
                     let g = b.nx();
                     b.line(format!(
@@ -6983,7 +7021,7 @@ fn conv_print(b: &mut FnB, st: &Val) {
     for (ai, a) in args.iter().enumerate() {
         if a.head() == "const" && matches!(a.get(1), Val::Str(_)) {
             let text = a.get(1).str_of();
-            let blen = text.chars().count();
+            let blen = text.len();
             let gname = add_str(&text);
             let g = b.nx();
             b.line(format!(
@@ -7388,7 +7426,7 @@ fn emit_const_key_direct(b: &mut FnB, dl: &str, text: &str) -> String {
 fn emit_const_key_get_mode(b: &mut FnB, dl: &str, text: &str,
                            def: Option<i64>) -> String {
     let gname = add_str(text);
-    let blen = text.chars().count();
+    let blen = text.len();
     let g = b.nx();
     b.line(format!(
         "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
@@ -7675,7 +7713,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
             if let Val::Str(lit) = &arg[0].items()[1] {
                 let gname = add_str(lit);
                 let g = b.nx();
-                let blen = lit.chars().count();
+                let blen = lit.len();
                 b.line(format!(
                     "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
                     g, blen + 1, blen + 1, gname));
@@ -7763,7 +7801,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
                     if let Val::Str(lit) = &arg[0].items()[1] {
                         let gname = add_str(lit);
                         let g = b.nx();
-                        let blen = lit.chars().count();
+                        let blen = lit.len();
                         b.line(format!(
                             "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
                             g, blen + 1, blen + 1, gname));
@@ -7949,7 +7987,27 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
                 "  %\"{}\" = call i64 @\"rawlist_len\"(i8* %\"{}\")", c, fldp));
             return Typed::I64(format!("%\"{}\"", c));
         }
-        if ia[0].head() != "name" { bail("len arg"); }
+        if ia[0].head() != "name" {
+            // non-name arg: generic str-expression fallback (probe
+            // t2/utf8_probe: len(LIT[0:14]) - evaluate, then the
+            // rawstr field-3 cp load); anything else is unsupported
+            let av = eval_mod(b, &ia[0], &[]);
+            if let Typed::Str(r) | Typed::Inst(r) = av {
+                let bc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*",
+                    bc, r));
+                let gl = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                    gl, bc));
+                let ld = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = load i64, i64* %\"{}\"", ld, gl));
+                return Typed::I64(format!("%\"{}\"", ld));
+            }
+            bail("len arg");
+        }
         let n = ia[0].get(1).str_of();
         if is_py(&n) {
             let l = b.nx();
@@ -8017,7 +8075,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         // str constant -> pystr (create_str chain); concat/to_rawstr later
         let text = e.get(1).str_of();
         let gname = add_str(&text);
-        let blen = text.chars().count();
+        let blen = text.len();
         let g = b.nx();
         b.line(format!(
             "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",

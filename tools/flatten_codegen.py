@@ -790,7 +790,7 @@ def _builtin_bool(x) -> bool:
         "string_bytes = string_content + '\\x00'")
     out = out.replace(
         "llvmlite.ArrayType(llvmlite.IntType(8), len(string_bytes))",
-        "llvmlite.ArrayType(llvmlite.IntType(8), llvmlite.utf8_len(string_bytes))")
+        "llvmlite.ArrayType(llvmlite.IntType(8), llvmlite.utf8_byte_len(string_bytes))")
     out = out.replace(
         "llvmlite.const_(llvmlite.ArrayType(llvmlite.IntType(8), len(data)), bytearray(data))",
         "llvmlite.const_latin1_(llvmlite.ArrayType(llvmlite.IntType(8), len(data)), data)")
@@ -800,8 +800,8 @@ def _builtin_bool(x) -> bool:
     out = out.replace(
         "bytearray(b'IndexError: string index out of range\\x00')",
         "b'IndexError: string index out of range\\x00'")
-    out = out.replace("len(text.encode('utf-8'))", "llvmlite.utf8_len(text)")
-    out = out.replace("len(value.encode('utf-8'))", "llvmlite.utf8_len(value)")
+    out = out.replace("len(text.encode('utf-8'))", "llvmlite.utf8_byte_len(text)")
+    out = out.replace("len(value.encode('utf-8'))", "llvmlite.utf8_byte_len(value)")
 
     # twin type checks: the twin's IntType is a factory function, not a
     # class - isinstance against it becomes a structural .kind check

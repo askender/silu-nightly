@@ -1020,9 +1020,11 @@ def main() -> None:
         sys.exit(1)
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
-        # if hasattr(args, "debug") and getattr(args, "debug", False):
-        #     import traceback
-        #     logger.error(traceback.format_exc())
+        # SILU_TB=1 prints the full traceback (runtime errors otherwise
+        # surface without any location)
+        if os.environ.get("SILU_TB"):
+            import traceback
+            traceback.print_exc()
         sys.exit(1)
 
 

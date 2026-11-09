@@ -120,19 +120,31 @@ static int run_capture(const char *argv[], const char *stdin_path,
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 
+static const char *g_last_fail_cmd = NULL;
+
 static int run_quiet(const char *argv[]) {
     pid_t pid = fork();
     if (pid < 0) die("fork");
     if (pid == 0) {
         int devnull = open("/dev/null", 1 /*O_WRONLY*/);
         dup2(devnull, 1);
-        dup2(devnull, 2);
+        /* surface the child's stderr on failure paths: diagnostics
+           were being swallowed wholesale (a link error gave only
+           "link failed" with no cause) */
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
     int status;
     waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    int rc = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    if (rc != 0) {
+        g_last_fail_cmd = argv[0];
+        fprintf(stderr, "siluc: %s step failed (rc=%d):", argv[0], rc);
+        for (const char **a = argv + 1; *a; a++)
+            fprintf(stderr, " %s", *a);
+        fprintf(stderr, "\n");
+    }
+    return rc;
 }
 
 /* ---------- runtime prefix split + declaration synthesis ---------- */
@@ -145,6 +157,43 @@ typedef struct {
 
 static Sym g_syms[MAX_SYMS];
 static int g_nsyms = 0;
+
+/* The LTO cache is compiler-identity sensitive: bitcode from a
+   different clang (a conda env's LLVM vs Apple's) cannot be read by
+   this linker's libLTO. rt.clang stamps the builder's --version
+   line; a mismatch rebuilds the cache with the current clang. */
+static void write_clang_stamp(const char *dir) {
+    char stamp[4096];
+    snprintf(stamp, sizeof stamp, "%s/rt.clang", dir);
+    FILE *f = fopen(stamp, "w");
+    if (!f) return;
+    const char *argv[] = { "clang", "--version", NULL };
+    char *out = NULL;
+    if (run_capture(argv, NULL, &out, NULL) == 0 && out) {
+        const char *nl = strchr(out, '\n');
+        size_t n = nl ? (size_t)(nl - out) : strlen(out);
+        fwrite(out, 1, n, f);
+        fputc('\n', f);
+    }
+    fclose(f);
+}
+
+static int clang_stamp_matches(const char *dir) {
+    char stamp[4096], cur[512];
+    snprintf(stamp, sizeof stamp, "%s/rt.clang", dir);
+    FILE *f = fopen(stamp, "r");
+    if (!f) return 0;
+    size_t n = fread(cur, 1, sizeof cur - 1, f);
+    fclose(f);
+    cur[n] = 0;
+    if (n == 0) return 0;
+    const char *argv[] = { "clang", "--version", NULL };
+    char *out = NULL;
+    if (run_capture(argv, NULL, &out, NULL) != 0 || !out) return 0;
+    size_t m = strlen(cur);
+    int ok = strncmp(out, cur, m) == 0;
+    return ok;
+}
 
 static void parse_runtime_symbols(const char *rt_ll) {
     g_nsyms = 0;
@@ -350,12 +399,22 @@ int main(int argc, char **argv) {
     snprintf(rt_ll_path, sizeof rt_ll_path, "%s/rt.ll", g_cache_dir);
     /* separate objects per link mode: LTO bitcode cannot link in a
        plain -O2 link and vice versa */
+    char rt_nolto_path[4096];
+    snprintf(rt_nolto_path, sizeof rt_nolto_path, "%s/rt-nolto.o", g_cache_dir);
     snprintf(rt_o_path, sizeof rt_o_path, "%s/%s", g_cache_dir,
              g_no_lto ? "rt-nolto.o" : "rt.o");
     snprintf(rt_syms_path, sizeof rt_syms_path, "%s/rt.syms", g_cache_dir);
 
     struct stat st;
-    int have_rt = stat(rt_ll_path, &st) == 0 && stat(rt_o_path, &st) == 0;
+    /* rt.o must PAIR with rt.ll: a --no-lto run refreshes rt.ll
+       without touching rt.o, and a cache built by a different clang
+       (e.g. a conda env's LLVM vs Apple's) produces bitcode the
+       linker's libLTO cannot read. Both checks fold into have_rt. */
+    struct stat st_ll, st_o;
+    int have_rt = stat(rt_ll_path, &st_ll) == 0
+        && stat(rt_o_path, &st_o) == 0
+        && st_o.st_mtime >= st_ll.st_mtime
+        && clang_stamp_matches(g_cache_dir);
 
     /* 1. compile: siluc1 < src > full.ll (cwd = src's dir for imports) */
     char *full_ll;
@@ -441,6 +500,8 @@ int main(int argc, char **argv) {
             if (run_quiet(c1) != 0) die("clang failed on the runtime");
         }
     }
+
+    write_clang_stamp(g_cache_dir);
 
     /* 4. split user body (skip header lines before the first
           define/declare/@) and collect header declares */

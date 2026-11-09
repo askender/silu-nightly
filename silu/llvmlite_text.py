@@ -232,6 +232,25 @@ def _escape_byte_val(b):
     return "\\" + _hex2(b)
 
 
+def utf8_byte_len(s):
+    # UTF-8 BYTE length of a str (utf8_len counts code points; the
+    # two differ for non-ASCII, and [N x i8] array sizing needs bytes)
+    if isinstance(s, (bytes, bytearray)):
+        return len(s)
+    n = 0
+    for ch in s:
+        cp = ord(ch)
+        if cp < 0x80:
+            n += 1
+        elif cp < 0x800:
+            n += 2
+        elif cp < 0x10000:
+            n += 3
+        else:
+            n += 4
+    return n
+
+
 def utf8_len(s):
     if isinstance(s, (bytes, bytearray)):
         return len(s)
@@ -250,38 +269,40 @@ def utf8_len(s):
 
 
 def _escape_str(s):
-    # UTF-8 encode + LLVM c"..." escaping, from code points directly
-    out = ""
+    # UTF-8 encode + LLVM c"..." escaping, from code points directly.
+    # append+join keeps giant literals linear (per-char concat was
+    # O(n^2) through the dynamic layer)
+    parts = []
     for ch in s:
         cp = ord(ch)
         if cp < 0x80:
-            out += _escape_byte_val(cp)
+            parts.append(_escape_byte_val(cp))
         elif cp < 0x800:
-            out += _escape_byte_val(0xC0 | (cp // 64))
-            out += _escape_byte_val(0x80 | (cp & 0x3F))
+            parts.append(_escape_byte_val(0xC0 | (cp // 64)))
+            parts.append(_escape_byte_val(0x80 | (cp & 0x3F)))
         elif cp < 0x10000:
-            out += _escape_byte_val(0xE0 | (cp // 4096))
-            out += _escape_byte_val(0x80 | ((cp // 64) & 0x3F))
-            out += _escape_byte_val(0x80 | (cp & 0x3F))
+            parts.append(_escape_byte_val(0xE0 | (cp // 4096)))
+            parts.append(_escape_byte_val(0x80 | ((cp // 64) & 0x3F)))
+            parts.append(_escape_byte_val(0x80 | (cp & 0x3F)))
         else:
-            out += _escape_byte_val(0xF0 | (cp // 262144))
-            out += _escape_byte_val(0x80 | ((cp // 4096) & 0x3F))
-            out += _escape_byte_val(0x80 | ((cp // 64) & 0x3F))
-            out += _escape_byte_val(0x80 | (cp & 0x3F))
-    return out
+            parts.append(_escape_byte_val(0xF0 | (cp // 262144)))
+            parts.append(_escape_byte_val(0x80 | ((cp // 4096) & 0x3F)))
+            parts.append(_escape_byte_val(0x80 | ((cp // 64) & 0x3F)))
+            parts.append(_escape_byte_val(0x80 | (cp & 0x3F)))
+    return "".join(parts)
 
 
 def _escape_bytes(data):
-    out = ""
+    parts = []
     for b in data:
         if ((b >= ord("a") and b <= ord("z"))
                 or (b >= ord("A") and b <= ord("Z"))
                 or (b >= ord("0") and b <= ord("9"))
                 or chr(b) in _PRINTABLE_PUNCT):
-            out += chr(b)
+            parts.append(chr(b))
         else:
-            out += "\\" + _hex2(b)
-    return out
+            parts.append("\\" + _hex2(b))
+    return "".join(parts)
 
 
 def _escape_latin1(data):

@@ -550,3 +550,33 @@ module_text`（.ll 文本渲染器，llvmlite.si 孪生）。消融实证：纯 
 conv/pyll 19/19、ir 20/20（const_prefix 382,443B 二次重钉）。
 教训入档：**改运行时函数复杂度时，必须同时审视所有编译期消费者**
 （本仓库里 .ll 渲染器就是运行时的"用户程序"）。
+
+### utf8_probe 入语料 + 热点扫尾（2026-11-09 晚）
+
+**① 非 ASCII 语料钉板**：selfhost/utf8_probe.si 入 CORPUS_IR（ir 21/21、
+ll 20/20×2 平面）。探针首跑即抓获三个真 bug（全部当场修复）：
+1. 非 ASCII 字面量全局的 `[N x i8]` 尺寸按码点数（flatten 表 len→utf8_len）
+   与 Rust 的 15 处 chars().count()——全改字节长度（utf8_byte_len / .len()）；
+2. **Oracle typed str 步进切片丢步进参数**（s[1:5:2] 发成 rawstr_slice(1,5)
+   ——输出错误字节，违反"宁报 ERROR"；补镜像 Python 的装箱路径
+   to_pystr→pyobj_str_slice(step)→to_rawstr，Null 步进=步 1）；
+3. len(切片表达式) 无 arm（len(LIT[0:14])）——非 name 参数先试通用 str
+   求值（位置在 name 守卫内，避免短路 dict/list 的 pyobj 臂——首版放臂首
+   打破 8 个旧文件，已修正）。
+
+**驱动器（siluc_main.c）两处健壮性**：rt.o↔rt.ll 配对校验（--no-lto 刷新
+rt.ll 不再留下旧 rt.o 被复用）；rt.clang 身份戳（conda 环境 LLVM21 构建
+的 LTO 位码 Apple ld17 读不了——失配自动重建）；run_quiet 失败时输出
+子进程 stderr（"link failed"从此带原因）。
+
+**② 孪生热点扫尾**：_escape_str/_escape_bytes 两处逐字节拼接改 append+join
+（双孪生同步；_escape_latin1 已在此前修）。全源自举源扫描确认：逐字符
+拼接 0 残留、循环内切片仅剩有界的 16 位定长格式化。
+
+**执行级守护**：tests/test_utf8_runtime.py ×3（动态码点九项对 CPython、
+free-reuse 陷阱、50K 码点线性走查）；探针本身无动态段——见下。
+
+**g-清单更新**：新增 #10 未注解局部从 chr()/concat 初始化的推断分歧
+（Python 保持 pyobj vs Oracle 推 str；`object` 注解局部 Oracle 空 bail）
+——动态语义由执行级测试守护而非语料；#2/#3 类部分收窄（len-of-slice、
+步进切片、字节定尺寸已钉）。
