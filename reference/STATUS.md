@@ -25,6 +25,7 @@
 | `silu/llvmlite_text.py` + `selfhost/llvmlite.si` | 新增 utf8_byte_len（含 bytes/bytearray 快分支，与 utf8_len 对齐）；_escape_str/_escape_bytes 改 append+join | ✅ |
 | `tools/flatten_codegen.py` | 改写表 3 行：len(…encode)→utf8_byte_len；string_bytes ArrayType 同 | ⚠️ 见三 |
 | `tools/siluc_main.c` | rt.o↔rt.ll mtime 配对校验；rt.clang 身份戳（conda LLVM21 vs Apple ld17 LTO 位码不兼容）；run_quiet 失败输出 stderr | ✅ 实测修复链接失败 |
+| `tests/test_selfhost_m4.py`（另行提交 bdd39fc） | Linux gates 链接 benchmark 生成 C 补 `-lm`（schedule 层首跑暴露的潜伏缺陷，nbody 的 pow）；Linux gates dispatch 全绿验证 | ✅ |
 | `tests/test_utf8_runtime.py`（新） | 动态码点九项对 CPython / free-reuse 陷阱 / 50K 线性走查 | ✅ 3/3 |
 | `silu/cli.py` | SILU_TB=1 可选 traceback（调试钩子，可保留） | ✅ |
 | `AGENTS.md` / `reference/PROGRESS.md` | 本轮记录 | ✅ |
@@ -63,8 +64,24 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
 
 ## 四、其余 TODO（优先级序）
 
-1. 发布链健康度核查（v1.16→1.18.1 三版本后的 release 工件/公开仓数字）
-   ——建议开场做。
+1. **发布 v1.18.1 到公开仓（阻塞：nightly 的 release run 被确定性取消）**。
+   - 核查结论（2026-11-10）：源 tag 链完整、主仓 CHANGELOG 四件套齐、
+     silu-lang README 全占位符无需改、CHANGELOG 三版条目已补推
+     （silu-lang 30d1de7）。**断点在 nightly 的 release workflow**：
+     v1.17.0 / 1.18.0 / 1.18.1 三个 tag run + 1 次 rerun + 2 次重推
+     tag，全部在创建后 1-20 秒被 cancel（部分在 runner 分配前就死）。
+   - 已排除：仓内 3 个 workflow 无 concurrency/取消调用；无 webhook；
+     本地 git hooks/shell 配置干净；GitHub 状态页无匹配事故；
+     ci.yml 同期一直正常（只杀 release.yml 的 tag run）。
+   - **嫌疑集中在账号级**：`github.com/settings/installations` 查第三方
+     App（有 Actions 写权限的 App 能取消 run），或其它会话/自动化的
+     省分钟数 watcher。当前 token 查不了 App 安装清单。
+   - 解锁后流程：`git push nightly :refs/tags/v1.18.1 && git push
+     nightly v1.18.1` → gates（macos-14，~1h）+ 4 平台 binaries 全绿 →
+     `sh tools/promote_release.sh v1.18.1 <run-id>`。**注意**：promote
+     脚本校验 run 必须 `release completed success v1.18.1`
+     （headBranch=tag），改用 workflow_dispatch 在 main 上跑过不了校验，
+     勿绕。
 2. pytest 全量其余偶发单失败：定向重跑全绿的可疑簇（m4/driver/pipeline）
    ——若 parity 修复后仍偶发，再查并发重建（进程锁方案，STATUS 旧档未决 #1）。
 3. g-清单 #10：未注解局部从 chr()/concat 初始化的推断分歧（Python 保持
