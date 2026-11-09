@@ -8,26 +8,37 @@ class JsonR:
     src: str
     pos: int
 
-    def jr_ws(self) -> int:
+    # The JSON text is materialized ONCE into a codepoint list that
+    # travels as an explicit parameter (same lesson as the Lexer in
+    # silu_fe.si): at(i) is O(1) for any input. Subscripting the
+    # rawstr directly costs O(pos) per char once the text holds ANY
+    # multibyte UTF-8 - one U+00A7 in one string literal was enough
+    # to make parsing the IR JSON ~400x slower (the front end emits
+    # raw UTF-8, not \u escapes).
+
+    def at(self, cps: list[int], i: int) -> str:
+        return chr(cps[i])
+
+    def jr_ws(self, cps: list[int]) -> int:
         # returns 0 (never None): the int annotation must hold, the
         # return value itself is unused
-        while self.pos < len(self.src):
-            ch = self.src[self.pos]
+        while self.pos < len(cps):
+            ch = self.at(cps, self.pos)
             if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
                 self.pos += 1
             else:
                 return 0
         return 0
 
-    def jr_value(self) -> object:
-        self.jr_ws()
-        ch = self.src[self.pos]
+    def jr_value(self, cps: list[int]) -> object:
+        self.jr_ws(cps)
+        ch = self.at(cps, self.pos)
         if ch == "[":
-            return self.jr_array()
+            return self.jr_array(cps)
         if ch == "{":
-            return self.jr_object()
+            return self.jr_object(cps)
         if ch == '"':
-            return self.jr_string()
+            return self.jr_string(cps)
         if ch == "t":
             self.pos += 4
             return True
@@ -37,26 +48,29 @@ class JsonR:
         if ch == "n":
             self.pos += 4
             return None
-        return self.jr_number()
+        return self.jr_number(cps)
 
-    def jr_string(self) -> str:
+    def jr_string(self, cps: list[int]) -> str:
         self.pos += 1
-        out = ""
-        while self.pos < len(self.src):
-            ch = self.src[self.pos]
+        out: list[str] = []
+        while self.pos < len(cps):
+            ch: str = self.at(cps, self.pos)
             if ch == '"':
                 self.pos += 1
-                return out
+                return "".join(out)
             if ch == "\\":
-                esc = self.src[self.pos + 1]
+                esc: str = self.at(cps, self.pos + 1)
                 if esc == "n":
-                    out += "\n"
+                    out.append("\n")
                 elif esc == "t":
-                    out += "\t"
+                    out.append("\t")
                 elif esc == "r":
-                    out += "\r"
+                    out.append("\r")
                 elif esc == "u":
-                    hexs = self.src[self.pos + 2:self.pos + 6]
+                    hexs: str = (
+                        self.at(cps, self.pos + 2) + self.at(cps, self.pos + 3)
+                        + self.at(cps, self.pos + 4) + self.at(cps, self.pos + 5)
+                    )
                     self.pos += 4
                     cp = 0
                     mul = 4096
@@ -70,85 +84,89 @@ class JsonR:
                             d = d - 55
                         cp += d * mul
                         mul = mul // 16
-                    out += chr(cp)
+                    out.append(chr(cp))
                 else:
-                    out += esc
+                    out.append(esc)
                 self.pos += 2
             else:
-                out += ch
+                out.append(ch)
                 self.pos += 1
-        return out
+        return "".join(out)
 
-    def jr_number(self) -> object:
+    def jr_number(self, cps: list[int]) -> object:
         neg = False
-        if self.src[self.pos] == "-":
+        if self.at(cps, self.pos) == "-":
             neg = True
             self.pos += 1
-        text = ""
-        while self.pos < len(self.src):
-            ch = self.src[self.pos]
+        text: list[str] = []
+        while self.pos < len(cps):
+            ch = self.at(cps, self.pos)
             if (ch >= "0" and ch <= "9") or ch == "." or ch == "e" or ch == "E" or ch == "+" or ch == "-":
-                text += ch
+                text.append(ch)
                 self.pos += 1
             else:
                 break
-        if "." not in text and "e" not in text and "E" not in text:
+        s: str = "".join(text)
+        if "." not in s and "e" not in s and "E" not in s:
             iv = 0
             if neg:
                 # accumulate NEGATIVELY: i64::MIN's magnitude (one past
                 # MAX) cannot be held positive, but MIN itself is in range
-                for dc in text:
+                for dc in s:
                     d = ord(dc) - 48
                     if iv < -922337203685477580 or (iv == -922337203685477580 and d > 8):
                         raise ValueError("integer literal out of i64 range in JSON")
                     iv = iv * 10 - d
                 return iv
-            for dc in text:
+            for dc in s:
                 d = ord(dc) - 48
                 if iv > 922337203685477580 or (iv == 922337203685477580 and d > 7):
                     raise ValueError("integer literal out of i64 range in JSON")
                 iv = iv * 10 + d
             return iv
-        fv = float(text)
+        fv = float(s)
         if neg:
             fv = -fv
         return fv
 
-    def jr_array(self) -> object:
+    def jr_array(self, cps: list[int]) -> object:
         self.pos += 1
         out = []
-        while self.pos < len(self.src):
-            self.jr_ws()
-            if self.src[self.pos] == "]":
+        while self.pos < len(cps):
+            self.jr_ws(cps)
+            if self.at(cps, self.pos) == "]":
                 self.pos += 1
                 return out
-            out.append(self.jr_value())
-            self.jr_ws()
-            if self.src[self.pos] == ",":
+            out.append(self.jr_value(cps))
+            self.jr_ws(cps)
+            if self.at(cps, self.pos) == ",":
                 self.pos += 1
         return out
 
-    def jr_object(self) -> object:
+    def jr_object(self, cps: list[int]) -> object:
         self.pos += 1
         out = {}
-        while self.pos < len(self.src):
-            self.jr_ws()
-            if self.src[self.pos] == "}":
+        while self.pos < len(cps):
+            self.jr_ws(cps)
+            if self.at(cps, self.pos) == "}":
                 self.pos += 1
                 return out
-            k = self.jr_string()
-            self.jr_ws()
+            k = self.jr_string(cps)
+            self.jr_ws(cps)
             self.pos += 1
-            out[k] = self.jr_value()
-            self.jr_ws()
-            if self.src[self.pos] == ",":
+            out[k] = self.jr_value(cps)
+            self.jr_ws(cps)
+            if self.at(cps, self.pos) == ",":
                 self.pos += 1
         return out
 
 
 def parse_ir_from_json_string(text):
     j = JsonR(text, 0)
-    return j.jr_value()
+    cps: list[int] = []
+    for ch in text:
+        cps.append(ord(ch))
+    return j.jr_value(cps)
 
 
 def conv_convert(ir_json: str) -> str:

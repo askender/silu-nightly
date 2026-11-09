@@ -55,6 +55,25 @@ def _silu_build_class(func, name, *bases, **kw):
     return cls
 
 
+class _PyStrbuf:
+    """strbuf under pycompat: reference-semantics mutable buffer -
+    the compiled plane's rawstr-header twin (ctor always copies;
+    push appends in place; to_str takes a snapshot; len is code
+    points). Enough surface for the dual-valid selfhost sources."""
+
+    def __init__(self, initial=""):
+        self._parts = [initial]
+
+    def push(self, s):
+        self._parts.append(s)
+
+    def to_str(self):
+        return "".join(self._parts)
+
+    def __len__(self):
+        return len(self.to_str())
+
+
 def run(path):
     with open(path, encoding="utf-8") as handle:
         source = handle.read()
@@ -93,6 +112,7 @@ def run(path):
     g = {
         "__name__": "__silu__",
         "Enum": Enum,
+        "strbuf": _PyStrbuf,
         "read_stdin": read_stdin,
         "read_file": read_file,
         "file_exists": os.path.exists,

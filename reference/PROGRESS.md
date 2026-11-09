@@ -1,6 +1,6 @@
 # Rust 参照实现：进展与 TODO（2026-11-01）
 
-> 钉住版本：silu 1.17.0（P6 重钉；原神谕钉 1.16.2 / 87df40f，
+> 钉住版本：silu 1.18.0（strbuf 重钉；此前 1.17.0（P6/P2/P5），原神谕 1.16.2 / 87df40f，
 > 校准报告记录的是原钉）。本文是唯一的状态锚点——
 > compact 后从这里继续。规约细节在 `reference/README.md`。
 
@@ -420,3 +420,52 @@ print str const = %.*s(len,gep) / print str 名 = 字段0+2 / 函数序言2N+1 /
   mandelbrot（f9cc50b）、wordcount（7f31ccd）、knucleotide（8428fc8）
 - T2c 动态层：calc（c25628d）、jsonparse（cedef08）、jsonparse_json（f9fa865）
 - T2d 终关：ir_interp（e9cffcc）、**silu_fe（18/18 全语料收官）**
+
+
+## siluc1 非 ASCII 源 O(n²) 排查与修复（2026-11-09，v1.18.0 后）
+
+**症状**：siluc1 直喂原始 Python 转换器源（11,877 行，含一个 U+00A7）
+>6 分钟无输出；语料全部秒级。最小复现：字符串/注释里**任何一个多字节
+UTF-8 字符** + 长文件 = 词法 O(n²)（合法程序 87s/3000 行；错误路径更糟）。
+
+**根因**（三层，全部同族）：rawstr 下标在字符串含任意多字节字符后，
+每次访问走 rawutf8_cp_offset 从字节 0 步进到第 i 个码点（O(i)/次；
+ASCII 快路径是 len==cp 时直接用下标）。逐字符下标的三个热点：
+1. silu_fe.si 词法器 peek（src[pos]）
+2. flatten_si_tail.si 的 JsonR（IR JSON 逐 token 切片/读字符）
+3. unescape/parse_fstring 的 `out = out + ch` 逐字符拼接（O(len²)，
+   与多字节无关，巨型 docstring 单独触发 ~30s）
+
+语料 100% ASCII + 解释器语义正确 + 双平面 .ll 字节一致（同错同对）
+→ 三重掩护，门禁全盲。
+
+**修复**（行为保持纯性能重构，cps 物化一次 + append/join 线性构建）：
+- silu_fe.si：cps 以 `list[int]` 参数贯穿 Lexer 方法（peek/text/
+  next_token/advance 签名加 cps）；token 文本 = append+`"".join`；
+  unescape/parse_fstring 同型。类字段不动（避免容器字段新形状）。
+- flatten_si_tail.si：JsonR 同型改造（jr_* 方法带 cps 参数）。
+- Oracle 新 arm ×5（见 silu-conv.rs）：eval_expr 局部 b.to_str()；
+  方法调用的 list:E 参数打包（原先掉进 float 兜底）；buf 局部重赋值
+  `lit = strbuf()`（silent 槽记账：前置语句槽 ×1+后置丢弃槽 ×1）；
+  空列表重赋值 `lit = []`（rawlist_new(8)+store+后置丢弃 silent）；
+  print 的 str 拷贝收窄（调用结果直接打印不 copy，p1 探针）。
+- tools/pycompat.py：补 strbuf 内建（dual-valid 执行器 shim）。
+- tests/test_utf8_lexer_perf.py：性能回归 ×2 + 多字节内容寻址断言。
+
+**验证**：>6min→0.25s（原始 typed_codegen.py）；m8 90KB docstring
+32s→0.45s；m11 87s→0.27s（ASCII 同速）；ll 19/19、ir 20/20、
+pytest 全绿（含 M5 ir2c 工具链——list+join 方案同时被 ir2c 原生支持，
+strbuf 方案曾使其段错误）。
+
+**遗留（未修，已知）**：
+1. 运行时 cp-offset 无缓存——任何 Silu 程序对非 ASCII str 的逐字符
+   下标循环仍是 O(n²)（语言级性能悬崖，非自举链独有；修复 = 改钉字节
+   的运行时形状，需双实现同 commit + 重钉前缀）。
+2. 动态层 str 语义按字节不按码点：pyobj_len_raw 读 rawstr field-0
+   低 32 位（字节长），pyobj_str_char_at 按字节索引/定界——与解释器
+   及 typed 层（码点语义）分歧；ASCII 语料掩护同上。修复同样动前缀。
+3. Oracle 已知缺口（bail，语料未钉）：容器类型类字段（list[int] 字段
+   + ctor 实参）、模块级 `l: L = L(0)` 注解实例赋值、非空列表字面量
+   `cps: list[int] = [65,66]`、链式 `L().f()` 调用。
+4. 错误路径分歧：Python 平面前端接受 `;` 分隔多语句（经 CPython ast），
+   自举前端拒绝——错误路径不在门禁钉住范围。

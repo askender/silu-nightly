@@ -33,26 +33,32 @@ class Lexer:
     col: int
     depth: int
 
-    # The lexer hot loop works on code points (ord(src[i]) decodes a
-    # borrowed char view with zero allocation); strings are only
-    # materialized once per token as the text slice.
-    def peek_cp(self) -> int:
-        if self.pos >= len(self.src):
-            return -1
-        return ord(self.src[self.pos])
+    # The source is materialized ONCE into a codepoint list that
+    # travels as an explicit parameter (cps: list[int]); cps[i] is
+    # O(1) for any source. Indexing the rawstr directly costs O(pos)
+    # per char as soon as the source holds ANY multibyte UTF-8
+    # (rawutf8_cp_offset walks from byte 0 to the i-th codepoint),
+    # which made the whole lexer O(n^2) - one U+00A7 inside a
+    # docstring was enough for siluc1 to spend minutes before even
+    # reporting a parse error.
 
-    def peek2_cp(self) -> int:
-        if self.pos + 1 >= len(self.src):
+    def peek_cp(self, cps: list[int]) -> int:
+        if self.pos >= len(cps):
             return -1
-        return ord(self.src[self.pos + 1])
+        return cps[self.pos]
 
-    def peek3_cp(self) -> int:
-        if self.pos + 2 >= len(self.src):
+    def peek2_cp(self, cps: list[int]) -> int:
+        if self.pos + 1 >= len(cps):
             return -1
-        return ord(self.src[self.pos + 2])
+        return cps[self.pos + 1]
 
-    def advance(self) -> int:
-        c: int = self.peek_cp()
+    def peek3_cp(self, cps: list[int]) -> int:
+        if self.pos + 2 >= len(cps):
+            return -1
+        return cps[self.pos + 2]
+
+    def advance(self, cps: list[int]) -> int:
+        c: int = self.peek_cp(cps)
         self.pos += 1
         if c == 10:
             self.line += 1
@@ -61,14 +67,29 @@ class Lexer:
             self.col += 1
         return c
 
-    def skip_ws_and_comments(self) -> int:
-        while self.pos < len(self.src):
-            c: int = self.peek_cp()
+    def text(self, cps: list[int], a: int, b: int) -> str:
+        # token text = cps[a:b], clamped at both ends like rawstr
+        # slicing; append+join keeps giant tokens (module docstrings)
+        # O(1) amortized per char - plain concat would be O(len^2)
+        if a < 0:
+            a = 0
+        if b > len(cps):
+            b = len(cps)
+        out: list[str] = []
+        i: int = a
+        while i < b:
+            out.append(chr(cps[i]))
+            i += 1
+        return "".join(out)
+
+    def skip_ws_and_comments(self, cps: list[int]) -> int:
+        while self.pos < len(cps):
+            c: int = self.peek_cp(cps)
             if c == 32 or c == 9:
-                self.advance()
+                self.advance(cps)
             elif c == 35:
-                while self.pos < len(self.src) and self.peek_cp() != 10:
-                    self.advance()
+                while self.pos < len(cps) and self.peek_cp(cps) != 10:
+                    self.advance(cps)
             else:
                 return 0
         return 0
@@ -93,138 +114,138 @@ class Lexer:
             or text == "async" or text == "await" or text == "if"
         )
 
-    def next_token(self) -> Token:
-        self.skip_ws_and_comments()
-        if self.pos >= len(self.src):
+    def next_token(self, cps: list[int]) -> Token:
+        self.skip_ws_and_comments(cps)
+        if self.pos >= len(cps):
             return Token(TokKind.END, "", self.line, self.col)
-        c: int = self.peek_cp()
+        c: int = self.peek_cp(cps)
         line = self.line
         col = self.col
         if c == 10:
-            self.advance()
+            self.advance(cps)
             if self.depth > 0:
-                return self.next_token()
+                return self.next_token(cps)
             return Token(TokKind.NL, "\n", line, col)
-        if (c == 98 or c == 66) and (self.peek2_cp() == 34 or self.peek2_cp() == 39):
+        if (c == 98 or c == 66) and (self.peek2_cp(cps) == 34 or self.peek2_cp(cps) == 39):
             # bytes literal: b'...' / b"..." - escapes decoded later
-            qb: int = self.peek2_cp()
-            self.advance()
-            self.advance()
+            qb: int = self.peek2_cp(cps)
+            self.advance(cps)
+            self.advance(cps)
             startb: int = self.pos
-            while self.pos < len(self.src) and self.peek_cp() != qb:
-                if self.peek_cp() == 92:
-                    self.advance()
-                self.advance()
-            rawb: str = self.src[startb:self.pos]
-            self.advance()
+            while self.pos < len(cps) and self.peek_cp(cps) != qb:
+                if self.peek_cp(cps) == 92:
+                    self.advance(cps)
+                self.advance(cps)
+            rawb: str = self.text(cps, startb, self.pos)
+            self.advance(cps)
             return Token(TokKind.BYTES, rawb, line, col)
-        if (c == 102 or c == 70) and (self.peek2_cp() == 34 or self.peek2_cp() == 39):
+        if (c == 102 or c == 70) and (self.peek2_cp(cps) == 34 or self.peek2_cp(cps) == 39):
             # f-string: 'f' + quote ... quote, raw text (braces intact)
-            q0: int = self.peek2_cp()
-            self.advance()
-            self.advance()
+            q0: int = self.peek2_cp(cps)
+            self.advance(cps)
+            self.advance(cps)
             startf: int = self.pos
-            while self.pos < len(self.src) and self.peek_cp() != q0:
-                if self.peek_cp() == 92:
-                    self.advance()
-                self.advance()
-            rawf: str = self.src[startf:self.pos]
-            self.advance()  # closing quote
+            while self.pos < len(cps) and self.peek_cp(cps) != q0:
+                if self.peek_cp(cps) == 92:
+                    self.advance(cps)
+                self.advance(cps)
+            rawf: str = self.text(cps, startf, self.pos)
+            self.advance(cps)  # closing quote
             return Token(TokKind.FSTR, rawf, line, col)
         if self.is_name_start_cp(c):
             start: int = self.pos
-            while self.pos < len(self.src) and self.is_name_char_cp(self.peek_cp()):
-                self.advance()
-            text: str = self.src[start:self.pos]
+            while self.pos < len(cps) and self.is_name_char_cp(self.peek_cp(cps)):
+                self.advance(cps)
+            text: str = self.text(cps, start, self.pos)
             if self.is_kw(text):
                 return Token(TokKind.KW, text, line, col)
             return Token(TokKind.NAME, text, line, col)
         if c >= 48 and c <= 57:
             start: int = self.pos
             # 0x hex literal (and 0b/0o) - one token, no dot/exponent
-            nxt: int = self.peek2_cp()
+            nxt: int = self.peek2_cp(cps)
             if c == 48 and (nxt == 120 or nxt == 88):
-                self.advance()
-                self.advance()
-                while self.pos < len(self.src):
-                    d: int = self.peek_cp()
+                self.advance(cps)
+                self.advance(cps)
+                while self.pos < len(cps):
+                    d: int = self.peek_cp(cps)
                     if (d >= 48 and d <= 57) or (d >= 97 and d <= 102) or (d >= 65 and d <= 70):
-                        self.advance()
+                        self.advance(cps)
                     else:
                         break
-                return Token(TokKind.NUM, self.src[start:self.pos], line, col)
+                return Token(TokKind.NUM, self.text(cps, start, self.pos), line, col)
             if c == 48 and (nxt == 98 or nxt == 66 or nxt == 111 or nxt == 79):
-                self.advance()
-                self.advance()
-                while self.pos < len(self.src):
-                    d: int = self.peek_cp()
+                self.advance(cps)
+                self.advance(cps)
+                while self.pos < len(cps):
+                    d: int = self.peek_cp(cps)
                     if (d >= 48 and d <= 57) or d == 95:
-                        self.advance()
+                        self.advance(cps)
                     else:
                         break
-                return Token(TokKind.NUM, self.src[start:self.pos], line, col)
+                return Token(TokKind.NUM, self.text(cps, start, self.pos), line, col)
             seen_dot: bool = False
             seen_exp: bool = False
-            while self.pos < len(self.src):
-                d: int = self.peek_cp()
+            while self.pos < len(cps):
+                d: int = self.peek_cp(cps)
                 if (d >= 48 and d <= 57) or d == 95:
-                    self.advance()
-                elif d == 46 and not seen_dot and not seen_exp and self.peek2_cp() != 46:
+                    self.advance(cps)
+                elif d == 46 and not seen_dot and not seen_exp and self.peek2_cp(cps) != 46:
                     seen_dot = True
-                    self.advance()
+                    self.advance(cps)
                 elif (d == 101 or d == 69) and not seen_exp:
                     seen_exp = True
-                    self.advance()
-                    nxt2: int = self.peek_cp()
+                    self.advance(cps)
+                    nxt2: int = self.peek_cp(cps)
                     if nxt2 == 43 or nxt2 == 45:
-                        self.advance()
+                        self.advance(cps)
                 else:
-                    return Token(TokKind.NUM, self.src[start:self.pos], line, col)
-            return Token(TokKind.NUM, self.src[start:self.pos], line, col)
+                    return Token(TokKind.NUM, self.text(cps, start, self.pos), line, col)
+            return Token(TokKind.NUM, self.text(cps, start, self.pos), line, col)
         if c == 34 or c == 39:
             # triple-quoted string (multi-line, escapes honored) -
             # module/function docstrings in dual-valid sources
-            if self.peek2_cp() == c and self.peek3_cp() == c:
-                self.advance()
-                self.advance()
-                self.advance()
+            if self.peek2_cp(cps) == c and self.peek3_cp(cps) == c:
+                self.advance(cps)
+                self.advance(cps)
+                self.advance(cps)
                 start: int = self.pos
                 closed: bool = False
-                while self.pos < len(self.src):
+                while self.pos < len(cps):
                     if (
-                        self.peek_cp() == c
-                        and self.peek2_cp() == c
-                        and self.peek3_cp() == c
+                        self.peek_cp(cps) == c
+                        and self.peek2_cp(cps) == c
+                        and self.peek3_cp(cps) == c
                     ):
                         closed = True
                         break
-                    if self.peek_cp() == 92:
-                        self.advance()
-                    self.advance()
-                text: str = self.src[start:self.pos]
+                    if self.peek_cp(cps) == 92:
+                        self.advance(cps)
+                    self.advance(cps)
+                text: str = self.text(cps, start, self.pos)
                 if closed:
-                    self.advance()
-                    self.advance()
-                    self.advance()
+                    self.advance(cps)
+                    self.advance(cps)
+                    self.advance(cps)
                 return Token(TokKind.STR, text, line, col)
-            q: int = self.advance()
+            q: int = self.advance(cps)
             start: int = self.pos
-            while self.pos < len(self.src) and self.peek_cp() != q:
-                if self.peek_cp() == 92:
-                    self.advance()
-                self.advance()
-            text: str = self.src[start:self.pos]
-            self.advance()  # closing quote
+            while self.pos < len(cps) and self.peek_cp(cps) != q:
+                if self.peek_cp(cps) == 92:
+                    self.advance(cps)
+                self.advance(cps)
+            text: str = self.text(cps, start, self.pos)
+            self.advance(cps)  # closing quote
             return Token(TokKind.STR, text, line, col)
         # operators: longest match first
-        two: str = self.src[self.pos : self.pos + 2]
+        two: str = self.text(cps, self.pos, self.pos + 2)
         three: str = two
-        if self.pos + 2 < len(self.src):
-            three = self.src[self.pos : self.pos + 3]
+        if self.pos + 2 < len(cps):
+            three = self.text(cps, self.pos, self.pos + 3)
         if three == "//=" or three == "**=":
-            self.advance()
-            self.advance()
-            self.advance()
+            self.advance(cps)
+            self.advance(cps)
+            self.advance(cps)
             return Token(TokKind.OP, three, line, col)
         if (
             two == "//" or two == "**" or two == "<<" or two == ">>" or two == "<="
@@ -232,22 +253,31 @@ class Lexer:
             or two == "*=" or two == "/=" or two == "%=" or two == "->" or two == ":="
             or two == "|=" or two == "&=" or two == "^="
         ):
-            self.advance()
-            self.advance()
+            self.advance(cps)
+            self.advance(cps)
             return Token(TokKind.OP, two, line, col)
-        self.advance()
+        self.advance(cps)
         if c == 40 or c == 91 or c == 123:
             self.depth += 1
         elif c == 41 or c == 93 or c == 125:
             self.depth -= 1
-        return Token(TokKind.OP, self.src[self.pos - 1 : self.pos], line, col)
+        return Token(TokKind.OP, self.text(cps, self.pos - 1, self.pos), line, col)
+
+
+def src_cps(src: str) -> list[int]:
+    # the one-time O(n) materialization every lexer user starts with
+    cps: list[int] = []
+    for ch in src:
+        cps.append(ord(ch))
+    return cps
 
 
 def tokenize(src: str) -> list[Token]:
     lexer: Lexer = Lexer(src, 0, 1, 0, 0)
+    cps: list[int] = src_cps(src)
     toks: list[Token] = []
     while True:
-        t: Token = lexer.next_token()
+        t: Token = lexer.next_token(cps)
         toks.append(t)
         if t.kind == TokKind.END:
             return toks
@@ -267,66 +297,73 @@ def hex_val(ch: str) -> int:
 def unescape(s: str) -> str:
     # Python-compatible escape decoding: \n \t \r \' \\" \\\\ plus
     # \xNN \uNNNN \NNN (octal) and \a \b \f \v - reference parity
-    # needs the full table, not just the common subset
-    out: str = ""
+    # needs the full table, not just the common subset.
+    # The string is materialized ONCE into cps (chr(cps[i]) is O(1);
+    # s[i] costs O(i) per access once s holds any multibyte UTF-8),
+    # and the output accumulates in a list: `out = out + ch` was
+    # O(len^2) - a single 90KB docstring token spent ~30s here.
+    cps: list[int] = []
+    for ch in s:
+        cps.append(ord(ch))
+    out: list[str] = []
     i: int = 0
     n: int = len(s)
     while i < n:
-        ch = s[i]
+        ch: str = chr(cps[i])
         if ch == "\\" and i + 1 < n:
-            nxt = s[i + 1]
+            nxt: str = chr(cps[i + 1])
             if nxt == "n":
-                out = out + "\n"
+                out.append("\n")
                 i += 2
             elif nxt == "t":
-                out = out + "\t"
+                out.append("\t")
                 i += 2
             elif nxt == "r":
-                out = out + "\r"
+                out.append("\r")
                 i += 2
             elif nxt == '"':
-                out = out + '"'
+                out.append('"')
                 i += 2
             elif nxt == "'":
-                out = out + "'"
+                out.append("'")
                 i += 2
             elif nxt == "\\":
-                out = out + "\\"
+                out.append("\\")
                 i += 2
             elif nxt == "a":
-                out = out + chr(7)
+                out.append(chr(7))
                 i += 2
             elif nxt == "b":
-                out = out + chr(8)
+                out.append(chr(8))
                 i += 2
             elif nxt == "f":
-                out = out + chr(12)
+                out.append(chr(12))
                 i += 2
             elif nxt == "v":
-                out = out + chr(11)
+                out.append(chr(11))
                 i += 2
             elif nxt == "x":
-                if i + 3 < n and hex_val(s[i + 2]) >= 0 and hex_val(s[i + 3]) >= 0:
-                    out = out + chr(hex_val(s[i + 2]) * 16 + hex_val(s[i + 3]))
+                if i + 3 < n and hex_val(chr(cps[i + 2])) >= 0 and hex_val(chr(cps[i + 3])) >= 0:
+                    out.append(chr(hex_val(chr(cps[i + 2])) * 16 + hex_val(chr(cps[i + 3]))))
                     i += 4
                 else:
-                    out = out + ch
+                    out.append(ch)
                     i += 1
             elif nxt == "u":
                 ok4: bool = True
                 val4: int = 0
                 j4: int = 2
                 while j4 < 6:
-                    if i + j4 >= n or hex_val(s[i + j4]) < 0:
+                    if i + j4 >= n or hex_val(chr(cps[i + j4])) < 0:
                         ok4 = False
                         break
-                    val4 = val4 * 16 + hex_val(s[i + j4])
+                    val4 = val4 * 16 + hex_val(chr(cps[i + j4]))
                     j4 += 1
                 if ok4:
-                    out = out + chr(val4)
+                    out.append(chr(val4))
                     i += 6
                 else:
-                    out = out + ch
+                    out.append(ch)
                     i += 1
             else:
                 o8: int = ord(nxt)
@@ -334,25 +371,25 @@ def unescape(s: str) -> str:
                     val8: int = o8 - 48
                     cnt8: int = 1
                     while cnt8 < 3 and i + cnt8 + 1 < n:
-                        d8: int = ord(s[i + cnt8 + 1])
+                        d8: int = cps[i + cnt8 + 1]
                         if d8 >= 48 and d8 <= 55:
                             val8 = val8 * 8 + (d8 - 48)
                             cnt8 += 1
                         else:
                             break
                     if val8 < 256:
-                        out = out + chr(val8)
+                        out.append(chr(val8))
                         i += cnt8 + 1
                     else:
-                        out = out + ch
+                        out.append(ch)
                         i += 1
                 else:
-                    out = out + ch
+                    out.append(ch)
                     i += 1
         else:
-            out = out + ch
+            out.append(ch)
             i += 1
-    return out
+    return "".join(out)
 
 
 # ---------- IR output via JValue-free list assembly ----------
@@ -792,31 +829,41 @@ class Parser:
     def parse_fstring(self, raw: str) -> object:
         # desugar f".." exactly like the reference front end: one
         # fmt(...) call - literal parts ({{ }} unescaped) as const
-        # strings, {expr} parts re-lexed and parsed as expressions
+        # strings, {expr} parts re-lexed and parsed as expressions.
+        # cps + append/join for the same O(1)-per-char reason as unescape.
+        cps: list[int] = []
+        for c0 in raw:
+            cps.append(ord(c0))
         parts = []
-        lit = ""
+        lit: list[str] = []
         i: int = 0
         n: int = len(raw)
         while i < n:
-            ch = raw[i]
-            if ch == "{" and i + 1 < n and raw[i + 1] == "{":
-                lit = lit + "{"
+            ch: str = chr(cps[i])
+            if ch == "{" and i + 1 < n and chr(cps[i + 1]) == "{":
+                lit.append("{")
                 i += 2
-            elif ch == "}" and i + 1 < n and raw[i + 1] == "}":
-                lit = lit + "}"
+            elif ch == "}" and i + 1 < n and chr(cps[i + 1]) == "}":
+                lit.append("}")
                 i += 2
             elif ch == "{":
-                if lit != "":
-                    parts.append(["const", unescape(lit)])
-                    lit = ""
+                if "".join(lit) != "":
+                    parts.append(["const", unescape("".join(lit))])
+                    lit = []
                 j: int = i + 1
-                while j < n and raw[j] != "}":
+                while j < n and chr(cps[j]) != "}":
                     j += 1
-                expr_src: str = raw[i + 1 : j]
+                expr_buf: list[str] = []
+                k: int = i + 1
+                while k < j:
+                    expr_buf.append(chr(cps[k]))
+                    k += 1
+                expr_src: str = "".join(expr_buf)
                 sub_lexer: Lexer = Lexer(expr_src, 0, 1, 0, 0)
+                sub_cps: list[int] = src_cps(expr_src)
                 sub_toks: list[Token] = []
                 while True:
-                    st: Token = sub_lexer.next_token()
+                    st: Token = sub_lexer.next_token(sub_cps)
                     sub_toks.append(st)
                     if st.kind == TokKind.END:
                         break
@@ -824,10 +871,10 @@ class Parser:
                 parts.append(sub_parser.parse_expr())
                 i = j + 1
             else:
-                lit = lit + ch
+                lit.append(ch)
                 i += 1
-        if lit != "":
-            parts.append(["const", unescape(lit)])
+        if "".join(lit) != "":
+            parts.append(["const", unescape("".join(lit))])
         if len(parts) == 0:
             return ["const", ""]
         return ["call", ["name", "fmt"], parts, []]

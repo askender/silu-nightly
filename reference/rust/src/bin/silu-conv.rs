@@ -2349,6 +2349,27 @@ fn conv_assign(b: &mut FnB, st: &Val) {
             }
             _ => bail("inst assign type"),
         }
+    } else if FN_L.with(|f| f.borrow().iter().any(|(k, _)| k == &name))
+        && rhs.head() == "list"
+        && matches!(&rhs.items().get(1), Some(Val::List(v)) if v.is_empty()) {
+        // list local REASSIGNment to a fresh empty list (lit = [] after
+        // a flush): new rawlist straight into the existing slot, no
+        // alloca re-registration (probe p1: rawlist_new(8) + store)
+        let c = b.nx();
+        b.line(format!("  %\"{}\" = call i8* @\"rawlist_new\"(i64 8)", c));
+        b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", c, name));
+        b.silent(); // discarded stmt-result slot (probe p1: .15+.16 before .17)
+    } else if is_local_buf(&name) {
+        // buf local reassignment (lit = strbuf()): the stmt-layer
+        // null-result silent, then the ctor rhs, then a plain store
+        // into the EXISTING slot - no alloca re-registration, no
+        // null store (probe parse_fstring: silent .290, gep @"str."
+        // .291, new_copy .292, store)
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let v = eval_mod(b, &rhs, &fs);
+        let r = to_raw(b, v);
+        b.line(format!("  store i8* {}, i8** %\"{}\"", r, name));
+        b.silent(); // discarded stmt-result slot (probe z6: .20 stmt, .21 pre-push)
     } else if !is_s && !is_local_s(&name)
         && !is_declared(&name) && !is_local_i(&name)
         && !is_local_f(&name) && !is_local_b(&name)
@@ -5409,6 +5430,22 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             }
             Typed::Pyo(format!("%\"{}\"", c))
         }
+                "call" if e.get(1).head() == "attribute"
+            && e.get(1).get(1).head() == "name"
+            && is_local_buf(&e.get(1).get(1).get(1).str_of())
+            && e.get(1).get(2).str_of() == "to_str" => {
+            // b.to_str() in EXPRESSION context (if-guard, call arg):
+            // load + rawstr_copy snapshot - same shape the statement
+            // layer's arm emits (probe: lit.to_str() != "" -> .19 load,
+            // .20 copy, no silence)
+            let bn = e.get(1).get(1).get(1).str_of();
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", l, bn));
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", c, l));
+            return Typed::Str(format!("%\"{}\"", c));
+        }
                 "==" | "!=" | "<" | "<=" | ">" | ">="
             if e.get(1).head() == "name"
                 && is_local_buf(&e.get(1).get(1).str_of())
@@ -6132,6 +6169,20 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                             _ => bail("method arg type"),
                         }
                         continue;
+                    }
+                    if ty.starts_with("list:") {
+                        // container arg to a METHOD: same packing as the
+                        // user-call arm - name -> load the slot pointer
+                        // (self.peek_cp(cps): cps is a list[int] param)
+                        if a.head() == "name" {
+                            let nm = a.get(1).str_of();
+                            let l = b.nx();
+                            b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                                l, lst_slot(&nm)));
+                            parts.push(format!("i8* %\"{}\"", l));
+                            continue;
+                        }
+                        bail("method list arg");
                     }
                     let av = eval_expr(b, a, slot_i, slot_f, fslots);
                     match av {
@@ -6948,7 +6999,10 @@ fn conv_print(b: &mut FnB, st: &Val) {
         } else {
             let v_typed = eval_mod(b, a, &fslots);
             let v_typed = match v_typed {
-                Typed::Inst(r) if is_str_expr(a) => {
+                // owned-read str exprs (attribute/slice heads) print via
+                // a copy; a str-RETURNING CALL prints its temp directly,
+                // no copy (probe p1: print(f("a")) bitcasts the call)
+                Typed::Inst(r) if is_str_expr(a) && a.head() != "call" => {
                     let cp = b.nx();
                     b.line(format!("  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
                     Typed::Str(format!("%\"{}\"", cp))
