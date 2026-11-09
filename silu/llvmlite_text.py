@@ -285,14 +285,14 @@ def _escape_bytes(data):
 
 
 def _escape_latin1(data):
-    out = ""
+    parts = []
     for b in data:
         if isinstance(b, int):
             cp = b
         else:
             cp = ord(b)
-        out += _escape_byte_val(cp)
-    return out
+        parts.append(_escape_byte_val(cp))
+    return "".join(parts)
 
 
 def _double_bits(value):
@@ -504,13 +504,17 @@ class Instr:
 
 
 def _rstrip(s):
-    while len(s) > 0:
-        last = s[len(s) - 1]
+    # scan back to the last non-whitespace INDEX first, then ONE
+    # slice (s[:k] per trimmed char was O(n) per char under the
+    # codepoint-semantics slice)
+    n = len(s)
+    while n > 0:
+        last = s[n - 1]
         if last == " " or last == "\n" or last == "\t":
-            s = s[: len(s) - 1]
+            n -= 1
         else:
-            return s
-    return s
+            return s[:n]
+    return s[:0]
 
 
 def instr_str(i):

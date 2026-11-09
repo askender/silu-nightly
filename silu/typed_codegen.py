@@ -1448,6 +1448,227 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.call(self.rawstr_new_copy, [data_arg, seq_arg])
         )
 
+        # ---- cp-offset side cache ----------------------------------
+        # A non-ASCII rawstr pays O(i) per rawutf8_cp_offset call (the
+        # walk restarts at byte 0), which made per-char loops O(n^2).
+        # The side table caches each string's full codepoint->byte
+        # offset array, keyed by the rawstr STRUCT pointer and
+        # validated by (len, cp):
+        #   - append changes len/cp, so stale entries miss + rebuild
+        #   - rawstr_free purges (malloc may reuse the struct address
+        #     with matching len/cp but different byte layout)
+        #   - eviction overwrites: this is a hint cache, a miss just
+        #     rebuilds the array
+        # ASCII strings never touch the table (rawstr_cp_off_at keeps
+        # the len==cp fast path: the index IS the byte offset).
+        zero32 = ir.const_(i32, 0)
+        CPOFF_SLOTS = 1024
+        one32i = ir.const_(i32, 1)
+        two32i = ir.const_(i32, 2)
+        three32i = ir.const_(i32, 3)
+        i64p = ir.PointerType(i64)
+        cpoff_entry_t = ir.LiteralStructType([i8p, i64, i64, i8p])
+        self.cpoff_tab_gv = ir.gvar_(
+            self.module, ir.ArrayType(cpoff_entry_t, CPOFF_SLOTS), 'cpoff_tab'
+        )
+        self.cpoff_tab_gv.initializer = ir.const_(
+            ir.ArrayType(cpoff_entry_t, CPOFF_SLOTS), None
+        )
+
+        # i64 rawstr_cp_off_at(i8* s, i64 index) - byte offset of the
+        # index-th code point, O(1) amortized through the side cache
+        # (index is caller-clamped into [0, cp])
+        self.rawstr_cp_off_at = ir.func_(
+            self.module, ir.FunctionType(i64, [i8p, i64], False),
+            'rawstr_cp_off_at',
+        )
+        f = self.rawstr_cp_off_at
+        fb_entry = f.append_basic_block("cpo_entry")
+        fb_fast = f.append_basic_block("cpo_fast")
+        fb_hash = f.append_basic_block("cpo_hash")
+        fb_cond = f.append_basic_block("cpo_cond")
+        fb_body = f.append_basic_block("cpo_body")
+        fb_chknull = f.append_basic_block("cpo_chknull")
+        fb_valid = f.append_basic_block("cpo_valid")
+        fb_load = f.append_basic_block("cpo_load")
+        fb_adv = f.append_basic_block("cpo_adv")
+        fb_build = f.append_basic_block("cpo_build")
+        fb_wcond = f.append_basic_block("cpo_wcond")
+        fb_wbody = f.append_basic_block("cpo_wbody")
+        fb_wdone = f.append_basic_block("cpo_wdone")
+        fb_ins = f.append_basic_block("cpo_insert")
+        builder = ir.builder_(fb_entry)
+        s_arg, idx_arg = f.args
+        st = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_len = _rawstr_load_len(builder, st)
+        s_cp = _rawstr_load_cp(builder, st)
+        is_ascii = builder.icmp_signed("==", s_len, s_cp)
+        builder.cbranch(is_ascii, fb_fast, fb_hash)
+
+        builder.position_at_end(fb_fast)
+        builder.ret(idx_arg)
+
+        builder.position_at_end(fb_hash)
+        p64 = builder.ptrtoint(s_arg, i64)
+        h64 = builder.and_(
+            builder.xor(
+                builder.lshr(p64, ir.const_(i64, 4)),
+                builder.lshr(p64, ir.const_(i64, 18)),
+            ),
+            ir.const_(i64, CPOFF_SLOTS - 1),
+        )
+        base_ptr = builder.alloca(i64, None, 'cpo_base')
+        try_ptr = builder.alloca(i64, None, 'cpo_try')
+        builder.store(h64, base_ptr)
+        builder.store(zero64, try_ptr)
+        builder.branch(fb_cond)
+
+        builder.position_at_end(fb_cond)
+        tries = builder.load(try_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", tries, ir.const_(i64, 8)),
+            fb_body, fb_build,
+        )
+
+        builder.position_at_end(fb_body)
+        slot = builder.and_(
+            builder.add(builder.load(base_ptr), tries),
+            ir.const_(i64, CPOFF_SLOTS - 1),
+        )
+        ent = builder.gep(
+            self.cpoff_tab_gv,
+            [zero32, builder.trunc(slot, ir.IntType(32))],
+        )
+        ep = builder.load(builder.gep(ent, [zero32, zero32]))
+        is_null = builder.icmp_signed("==", ep, ir.const_(i8p, None))
+        is_self = builder.icmp_signed("==", ep, s_arg)
+        # a self match goes to validation; a null slot ends the
+        # probe cluster (build + insert); anything else advances
+        builder.cbranch(is_self, fb_valid, fb_chknull)
+        builder.position_at_end(fb_chknull)
+        builder.cbranch(is_null, fb_build, fb_adv)
+        builder.position_at_end(fb_valid)
+        elen = builder.load(builder.gep(ent, [zero32, one32i]))
+        ecp = builder.load(builder.gep(ent, [zero32, two32i]))
+        valid = builder.and_(
+            builder.icmp_signed("==", elen, s_len),
+            builder.icmp_signed("==", ecp, s_cp),
+        )
+        builder.cbranch(valid, fb_load, fb_build)
+
+        builder.position_at_end(fb_load)
+        offs = builder.load(builder.gep(ent, [zero32, three32i]))
+        offs64 = builder.bitcast(offs, i64p)
+        builder.ret(builder.load(builder.gep(offs64, [idx_arg])))
+
+        builder.position_at_end(fb_adv)
+        builder.store(builder.add(tries, one64), try_ptr)
+        builder.branch(fb_cond)
+
+        builder.position_at_end(fb_build)
+        offs_buf = builder.call(
+            self.malloc, [builder.mul(builder.add(s_cp, one64), ir.const_(i64, 8))]
+        )
+        wi_ptr = builder.alloca(i64, None, 'cpo_wi')
+        wo_ptr = builder.alloca(i64, None, 'cpo_wo')
+        builder.store(zero64, wi_ptr)
+        builder.store(zero64, wo_ptr)
+        s_data_b = _rawstr_load_data(builder, st)
+        builder.branch(fb_wcond)
+
+        builder.position_at_end(fb_wcond)
+        wi = builder.load(wi_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<=", wi, s_cp), fb_wbody, fb_wdone
+        )
+
+        builder.position_at_end(fb_wbody)
+        wo = builder.load(wo_ptr)
+        builder.store(wo, builder.gep(builder.bitcast(offs_buf, i64p), [wi]))
+        lead_b = builder.load(builder.gep(s_data_b, [wo]))
+        builder.store(
+            builder.add(wo, self._emit_seq_len(builder, lead_b)), wo_ptr
+        )
+        builder.store(builder.add(wi, one64), wi_ptr)
+        builder.branch(fb_wcond)
+
+        builder.position_at_end(fb_wdone)
+        builder.branch(fb_ins)
+
+        builder.position_at_end(fb_ins)
+        ins_ent = builder.gep(
+            self.cpoff_tab_gv,
+            [zero32, builder.trunc(builder.load(base_ptr), ir.IntType(32))],
+        )
+        builder.store(s_arg, builder.gep(ins_ent, [zero32, zero32]))
+        builder.store(s_len, builder.gep(ins_ent, [zero32, one32i]))
+        builder.store(s_cp, builder.gep(ins_ent, [zero32, two32i]))
+        builder.store(offs_buf, builder.gep(ins_ent, [zero32, three32i]))
+        builder.ret(
+            builder.load(builder.gep(builder.bitcast(offs_buf, i64p), [idx_arg]))
+        )
+
+        # void cpoff_purge(i8* s) - drop s's entry (called by
+        # rawstr_free before the struct goes back to the allocator)
+        self.cpoff_purge = ir.func_(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p], False),
+            'cpoff_purge',
+        )
+        pf = self.cpoff_purge
+        pf_entry = pf.append_basic_block("cpp_entry")
+        pf_cond = pf.append_basic_block("cpp_cond")
+        pf_body = pf.append_basic_block("cpp_body")
+        pf_hit = pf.append_basic_block("cpp_hit")
+        pf_adv = pf.append_basic_block("cpp_adv")
+        pf_done = pf.append_basic_block("cpp_done")
+        builder = ir.builder_(pf_entry)
+        (ps_arg,) = pf.args
+        pp64 = builder.ptrtoint(ps_arg, i64)
+        ph64 = builder.and_(
+            builder.xor(
+                builder.lshr(pp64, ir.const_(i64, 4)),
+                builder.lshr(pp64, ir.const_(i64, 18)),
+            ),
+            ir.const_(i64, CPOFF_SLOTS - 1),
+        )
+        pbase_ptr = builder.alloca(i64, None, 'cpp_base')
+        ptry_ptr = builder.alloca(i64, None, 'cpp_try')
+        builder.store(ph64, pbase_ptr)
+        builder.store(zero64, ptry_ptr)
+        builder.branch(pf_cond)
+
+        builder.position_at_end(pf_cond)
+        pt = builder.load(ptry_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", pt, ir.const_(i64, 8)),
+            pf_body, pf_done,
+        )
+
+        builder.position_at_end(pf_body)
+        pslot = builder.and_(
+            builder.add(builder.load(pbase_ptr), pt),
+            ir.const_(i64, CPOFF_SLOTS - 1),
+        )
+        pent = builder.gep(
+            self.cpoff_tab_gv, [zero32, builder.trunc(pslot, ir.IntType(32))]
+        )
+        pep = builder.load(builder.gep(pent, [zero32, zero32]))
+        p_hit = builder.icmp_signed("==", pep, ps_arg)
+        builder.cbranch(p_hit, pf_hit, pf_adv)
+
+        builder.position_at_end(pf_hit)
+        builder.store(
+            ir.const_(i8p, None), builder.gep(pent, [zero32, zero32])
+        )
+        builder.branch(pf_done)
+
+        builder.position_at_end(pf_adv)
+        builder.store(builder.add(pt, one64), ptry_ptr)
+        builder.branch(pf_cond)
+
+        builder.position_at_end(pf_done)
+        builder.ret_void()
+
         # void rawstr_free(i8* s) - drop a slot's buffer on overwrite
         # (Rust drop). Slots are null-initialized, so free skips null.
         self.rawstr_free = ir.func_(
@@ -1479,6 +1700,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.cbranch(is_immortal, done_block, do_free_block)
 
         builder.position_at_end(do_free_block)
+        # the struct goes back to the allocator: drop its cp-offset
+        # cache entry (a reused address could otherwise validate a
+        # stale offsets array)
+        builder.call(self.cpoff_purge, [free_arg])
         builder.call(self.free, [_rawstr_load_data(builder, free_struct)])
         builder.call(self.free, [free_arg])
         builder.branch(done_block)
@@ -1764,7 +1989,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         builder.position_at_end(walk_block)
         walked_off = builder.call(
-            self.rawutf8_cp_offset, [s_data, index_eff]
+            self.rawstr_cp_off_at, [s_arg, index_eff]
         )
         builder.branch(join_block)
 
@@ -1831,7 +2056,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         builder.position_at_end(walk_block)
         walked_off = builder.call(
-            self.rawutf8_cp_offset, [s_data, index_eff]
+            self.rawstr_cp_off_at, [s_arg, index_eff]
         )
         builder.branch(join_block)
 
@@ -1889,8 +2114,8 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.branch(join_block)
 
         builder.position_at_end(walk_block)
-        walked_lo = builder.call(self.rawutf8_cp_offset, [s_data, lo_eff])
-        walked_hi = builder.call(self.rawutf8_cp_offset, [s_data, hi_eff])
+        walked_lo = builder.call(self.rawstr_cp_off_at, [s_arg, lo_eff])
+        walked_hi = builder.call(self.rawstr_cp_off_at, [s_arg, hi_eff])
         builder.branch(join_block)
 
         builder.position_at_end(join_block)
@@ -1954,8 +2179,8 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.branch(join_block)
 
         builder.position_at_end(walk_block)
-        walked_lo = builder.call(self.rawutf8_cp_offset, [s_data, lo_eff])
-        walked_hi = builder.call(self.rawutf8_cp_offset, [s_data, hi_eff])
+        walked_lo = builder.call(self.rawstr_cp_off_at, [s_arg, lo_eff])
+        walked_hi = builder.call(self.rawstr_cp_off_at, [s_arg, hi_eff])
         builder.branch(join_block)
 
         builder.position_at_end(join_block)
@@ -11458,7 +11683,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         b.branch(join_block)
 
         b.position_at_end(walk_block)
-        walked = b.call(self.rawutf8_cp_offset, [s_data, index_eff])
+        walked = b.call(self.rawstr_cp_off_at, [str_ptr, index_eff])
         b.branch(join_block)
 
         b.position_at_end(join_block)

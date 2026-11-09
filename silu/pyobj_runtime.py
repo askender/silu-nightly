@@ -1430,6 +1430,31 @@ class PyobjRuntimeMixin:
         builder.call(self.printf, [unknown_fmt])
         builder.ret_void()
 
+
+    def _seq_len_inline(self, b, byte_value):
+        """UTF-8 sequence length from a lead byte (invalid -> 1).
+        Self-contained twin of the typed layer's _emit_seq_len: this
+        mixin's creators run on the base converter, where the typed
+        helper is not defined (and no @staticmethod: the self-hosted
+        class model passes self explicitly either way)."""
+        i64 = ir.IntType(64)
+        b8 = ir.IntType(8)
+        two = b.icmp_signed(
+            "==", b.and_(byte_value, ir.const_(b8, 0xE0)),
+            ir.const_(b8, 0xC0),
+        )
+        three = b.icmp_signed(
+            "==", b.and_(byte_value, ir.const_(b8, 0xF0)),
+            ir.const_(b8, 0xE0),
+        )
+        four = b.icmp_signed(
+            "==", b.and_(byte_value, ir.const_(b8, 0xF8)),
+            ir.const_(b8, 0xF0),
+        )
+        l2 = b.select(two, ir.const_(i64, 2), ir.const_(i64, 1))
+        l3 = b.select(three, ir.const_(i64, 3), l2)
+        return b.select(four, ir.const_(i64, 4), l3)
+
     def _create_list_runtime(self):
         """Runtime for list PyObjects (tag 4).
 
@@ -1438,8 +1463,11 @@ class PyobjRuntimeMixin:
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i8p = ir.PointerType(ir.IntType(8))
         zero32 = ir.const_(i32, 0)
         one32 = ir.const_(i32, 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
 
         # create_list() is built in _create_pyobj_constructors so that
         # pyobj_add (list concatenation) can reference it.
@@ -1688,6 +1716,225 @@ class PyobjRuntimeMixin:
         # every iteration allocate one int box AND forced the compare
         # through pyobj_lt (one bool box more). Unsupported tags give
         # 0 (valid programs never reach them).
+        # private code point walkers (self-contained on purpose: this
+        # creator runs during base __init__, before the rawstr family
+        # defines rawutf8_cp_count / rawutf8_cp_offset)
+        self.pyobj_utf8_cp_count = ir.func_(
+            self.module, ir.FunctionType(ir.IntType(64), [i8p, i64], False),
+            'pyobj_utf8_cp_count',
+        )
+        pc = self.pyobj_utf8_cp_count
+        builder = ir.builder_(pc.append_basic_block("pucc_entry"))
+        pc_cond = pc.append_basic_block("pucc_cond")
+        pc_body = pc.append_basic_block("pucc_body")
+        pc_done = pc.append_basic_block("pucc_done")
+        pc_data, pc_len = pc.args
+        pc_i = builder.alloca(i64, None, 'pucc_i')
+        pc_n = builder.alloca(i64, None, 'pucc_n')
+        builder.store(ir.const_(i64, 0), pc_i)
+        builder.store(ir.const_(i64, 0), pc_n)
+        builder.branch(pc_cond)
+        builder.position_at_end(pc_cond)
+        pcv_i = builder.load(pc_i)
+        builder.cbranch(
+            builder.icmp_signed("<", pcv_i, pc_len), pc_body, pc_done
+        )
+        builder.position_at_end(pc_body)
+        pc_byte = builder.load(builder.gep(pc_data, [pcv_i]))
+        pc_lead = builder.icmp_signed(
+            "!=",
+            builder.and_(pc_byte, ir.const_(ir.IntType(8), 0xC0)),
+            ir.const_(ir.IntType(8), 0x80),
+        )
+        builder.store(
+            builder.select(
+                pc_lead, builder.add(builder.load(pc_n), one64),
+                builder.load(pc_n),
+            ),
+            pc_n,
+        )
+        builder.store(builder.add(pcv_i, one64), pc_i)
+        builder.branch(pc_cond)
+        builder.position_at_end(pc_done)
+        builder.ret(builder.load(pc_n))
+
+        self.pyobj_utf8_cp_offset = ir.func_(
+            self.module, ir.FunctionType(i64, [i8p, i64], False),
+            'pyobj_utf8_cp_offset',
+        )
+        po = self.pyobj_utf8_cp_offset
+        builder = ir.builder_(po.append_basic_block("puoc_entry"))
+        po_cond = po.append_basic_block("puoc_cond")
+        po_body = po.append_basic_block("puoc_body")
+        po_done = po.append_basic_block("puoc_done")
+        po_data, po_idx = po.args
+        po_off = builder.alloca(i64, None, 'puoc_off')
+        po_seen = builder.alloca(i64, None, 'puoc_seen')
+        builder.store(ir.const_(i64, 0), po_off)
+        builder.store(ir.const_(i64, 0), po_seen)
+        builder.branch(po_cond)
+        builder.position_at_end(po_cond)
+        pov_seen = builder.load(po_seen)
+        builder.cbranch(
+            builder.icmp_signed("<", pov_seen, po_idx), po_body, po_done
+        )
+        builder.position_at_end(po_body)
+        pov_off = builder.load(po_off)
+        pov_lead = builder.load(builder.gep(po_data, [pov_off]))
+        pov_seq = self._seq_len_inline(builder, pov_lead)
+        builder.store(builder.add(pov_off, pov_seq), po_off)
+        builder.store(builder.add(pov_seen, one64), po_seen)
+        builder.branch(po_cond)
+        builder.position_at_end(po_done)
+        builder.ret(builder.load(po_off))
+
+        # ---- pystr code point side cache --------------------------
+        # pyobj_str boxes are {i32 bytes, i8* data} with no cp field;
+        # code-point semantics (len / s[i] / s[a:b:c]) would otherwise
+        # walk the bytes on EVERY call - O(n) per op, O(n^2) per loop.
+        # This table caches {data_ptr, bytes} -> {cp, offs array}.
+        # Keyed by the DATA pointer: box buffers are never freed in
+        # the dynamic layer (and string literals share immutable
+        # constant globals), so a key can never dangle or get reused
+        # by different content - NO purge hook is needed (if box
+        # freeing is ever introduced, a purge must be added).
+        PYOFF_SLOTS = 1024
+        pyoff_entry_t = ir.LiteralStructType([i8p, i64, i64, i8p])
+        self.pyoff_tab_gv = ir.gvar_(
+            self.module, ir.ArrayType(pyoff_entry_t, PYOFF_SLOTS),
+            'pyoff_tab'
+        )
+        self.pyoff_tab_gv.initializer = ir.const_(
+            ir.ArrayType(pyoff_entry_t, PYOFF_SLOTS), None
+        )
+
+        # {i8* offs, i64 cp} pystr_cp_entry(i8* data, i64 bytes)
+        info_t = ir.LiteralStructType([i8p, i64])
+        self.pystr_cp_entry = ir.func_(
+            self.module,
+            ir.FunctionType(info_t, [i8p, i64], False),
+            'pystr_cp_entry',
+        )
+        pf2 = self.pystr_cp_entry
+        qe = pf2.append_basic_block("pce_entry")
+        qh = pf2.append_basic_block("pce_hash")
+        qc = pf2.append_basic_block("pce_cond")
+        qb = pf2.append_basic_block("pce_body")
+        qn = pf2.append_basic_block("pce_chknull")
+        qv = pf2.append_basic_block("pce_valid")
+        ql = pf2.append_basic_block("pce_load")
+        qa = pf2.append_basic_block("pce_adv")
+        qg = pf2.append_basic_block("pce_build")
+        qw_c = pf2.append_basic_block("pce_wcond")
+        qw_b = pf2.append_basic_block("pce_wbody")
+        qw_d = pf2.append_basic_block("pce_wdone")
+        qi = pf2.append_basic_block("pce_insert")
+        builder = ir.builder_(qe)
+        q_data, q_bytes = pf2.args
+        builder.branch(qh)
+
+        builder.position_at_end(qh)
+        qp = builder.ptrtoint(q_data, i64)
+        qh64 = builder.and_(
+            builder.xor(
+                builder.lshr(qp, ir.const_(i64, 4)),
+                builder.lshr(qp, ir.const_(i64, 18)),
+            ),
+            ir.const_(i64, PYOFF_SLOTS - 1),
+        )
+        q_base = builder.alloca(i64, None, 'pce_base')
+        q_try = builder.alloca(i64, None, 'pce_try')
+        builder.store(qh64, q_base)
+        builder.store(zero64, q_try)
+        builder.branch(qc)
+
+        builder.position_at_end(qc)
+        q_t = builder.load(q_try)
+        builder.cbranch(
+            builder.icmp_signed("<", q_t, ir.const_(i64, 8)), qb, qg
+        )
+
+        builder.position_at_end(qb)
+        q_slot = builder.and_(
+            builder.add(builder.load(q_base), q_t),
+            ir.const_(i64, PYOFF_SLOTS - 1),
+        )
+        q_ent = builder.gep(
+            self.pyoff_tab_gv,
+            [zero32, builder.trunc(q_slot, i32)],
+        )
+        q_key = builder.load(builder.gep(q_ent, [zero32, zero32]))
+        q_self = builder.icmp_signed("==", q_key, q_data)
+        builder.cbranch(q_self, qv, qn)
+
+        builder.position_at_end(qn)
+        q_null = builder.icmp_signed("==", q_key, ir.const_(i8p, None))
+        builder.cbranch(q_null, qg, qa)
+
+        builder.position_at_end(qv)
+        q_elen = builder.load(builder.gep(q_ent, [zero32, one32]))
+        builder.cbranch(
+            builder.icmp_signed("==", q_elen, q_bytes), ql, qg
+        )
+
+        builder.position_at_end(ql)
+        q_offs = builder.load(builder.gep(q_ent, [zero32, ir.const_(i32, 3)]))
+        q_cp = builder.load(builder.gep(q_ent, [zero32, ir.const_(i32, 2)]))
+        q_v0 = builder.insert_value(
+            ir.const_(info_t, ir.Undefined), q_offs, 0)
+        q_v1 = builder.insert_value(q_v0, q_cp, 1)
+        builder.ret(q_v1)
+
+        builder.position_at_end(qa)
+        builder.store(builder.add(q_t, one64), q_try)
+        builder.branch(qc)
+
+        builder.position_at_end(qg)
+        q_cp2 = builder.call(self.pyobj_utf8_cp_count, [q_data, q_bytes])
+        q_offs2 = builder.call(
+            self.malloc,
+            [builder.mul(builder.add(q_cp2, one64), ir.const_(i64, 8))],
+        )
+        q_offs64 = builder.bitcast(q_offs2, ir.PointerType(i64))
+        q_wi = builder.alloca(i64, None, 'pce_wi')
+        q_wo = builder.alloca(i64, None, 'pce_wo')
+        builder.store(zero64, q_wi)
+        builder.store(zero64, q_wo)
+        builder.branch(qw_c)
+
+        builder.position_at_end(qw_c)
+        q_w = builder.load(q_wi)
+        builder.cbranch(
+            builder.icmp_signed("<=", q_w, q_cp2), qw_b, qw_d
+        )
+
+        builder.position_at_end(qw_b)
+        q_o = builder.load(q_wo)
+        builder.store(q_o, builder.gep(q_offs64, [q_w]))
+        q_lead = builder.load(builder.gep(q_data, [q_o]))
+        builder.store(
+            builder.add(q_o, self._seq_len_inline(builder, q_lead)), q_wo
+        )
+        builder.store(builder.add(q_w, one64), q_wi)
+        builder.branch(qw_c)
+
+        builder.position_at_end(qw_d)
+        builder.branch(qi)
+
+        builder.position_at_end(qi)
+        q_ins = builder.gep(
+            self.pyoff_tab_gv,
+            [zero32, builder.trunc(builder.load(q_base), i32)],
+        )
+        builder.store(q_data, builder.gep(q_ins, [zero32, zero32]))
+        builder.store(q_bytes, builder.gep(q_ins, [zero32, one32]))
+        builder.store(q_cp2, builder.gep(q_ins, [zero32, ir.const_(i32, 2)]))
+        builder.store(q_offs2, builder.gep(q_ins, [zero32, ir.const_(i32, 3)]))
+        q_iv0 = builder.insert_value(
+            ir.const_(info_t, ir.Undefined), q_offs2, 0)
+        q_iv1 = builder.insert_value(q_iv0, q_cp2, 1)
+        builder.ret(q_iv1)
+
         self.pyobj_len_raw = ir.func_(
             self.module, ir.FunctionType(ir.IntType(64), [pyobj_ptr], False),
             'pyobj_len_raw',
@@ -1720,9 +1967,14 @@ class PyobjRuntimeMixin:
         str_struct = builder.bitcast(
             data, ir.PointerType(self.pyobj.string_type)
         )
-        builder.ret(
-            builder.sext(builder.load(builder.gep(str_struct, [zero32, zero32])), i64)
+        # code point semantics (Python len): the box stores BYTES, so
+        # count the code points (rawutf8_cp_count walks once)
+        s_bytes = builder.sext(
+            builder.load(builder.gep(str_struct, [zero32, zero32])), i64
         )
+        s_data = builder.load(builder.gep(str_struct, [zero32, one32]))
+        info = builder.call(self.pystr_cp_entry, [s_data, s_bytes])
+        builder.ret(builder.extract_value(info, 1))
         builder.position_at_end(dict_check)
         builder.cbranch(
             builder.icmp_signed("==", tag, ir.const_(i32, 5)),
@@ -3619,9 +3871,15 @@ class PyobjRuntimeMixin:
             builder.load(builder.gep(s_arg, [zero32, one32])),
             ir.PointerType(self.pyobj.string_type),
         )
-        s_len = builder.sext(
+        # code point semantics: the box stores BYTES, so the bounds
+        # check and the element access both count code points
+        s_bytes = builder.sext(
             builder.load(builder.gep(str_struct, [zero32, zero32])), i64
         )
+        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        info = builder.call(self.pystr_cp_entry, [chars, s_bytes])
+        s_len = builder.extract_value(info, 1)
+        cp_offs = builder.extract_value(info, 0)
         is_neg = builder.icmp_signed("<", raw_index, zero64)
         index_eff = builder.select(is_neg, builder.add(raw_index, s_len), raw_index)
         in_range = builder.and_(
@@ -3637,12 +3895,20 @@ class PyobjRuntimeMixin:
         self._emit_panic(builder, idx_msg)
 
         builder.position_at_end(ok_block)
-        chars = builder.load(builder.gep(str_struct, [zero32, one32]))
-        char_buf = builder.call(self.malloc, [one64])
-        builder.store(
-            builder.load(builder.gep(chars, [index_eff])), char_buf
+        char_off = builder.load(builder.gep(
+            builder.bitcast(cp_offs, ir.PointerType(i64)), [index_eff]
+        ))
+        lead = builder.load(builder.gep(chars, [char_off]))
+        seq = self._seq_len_inline(builder, lead)
+        char_buf = builder.call(self.malloc, [seq])
+        builder.call(
+            self.memcpy,
+            [char_buf, builder.gep(chars, [char_off]), seq,
+             ir.const_(ir.IntType(1), 0)],
         )
-        builder.ret(builder.call(self.create_str, [char_buf, one32]))
+        builder.ret(
+            builder.call(self.create_str, [char_buf, builder.trunc(seq, i32)])
+        )
 
         # PyObject* pyobj_str_slice(PyObject* s, i64 lo, i64 hi, i64 step,
         #                           i1 has_lo, i1 has_hi)
@@ -3679,10 +3945,18 @@ class PyobjRuntimeMixin:
             builder.load(builder.gep(s_arg, [zero32, one32])),
             ir.PointerType(self.pyobj.string_type),
         )
-        s_len = builder.sext(
+        # code point semantics: clamps and stepping are in code
+        # points; each selected element copies its whole UTF-8
+        # sequence (1..4 bytes) at a walked byte offset
+        s_bytes = builder.sext(
             builder.load(builder.gep(str_struct, [zero32, zero32])), i64
         )
         chars = builder.load(builder.gep(str_struct, [zero32, one32]))
+        info = builder.call(self.pystr_cp_entry, [chars, s_bytes])
+        s_len = builder.extract_value(info, 1)
+        cp_offs64 = builder.bitcast(
+            builder.extract_value(info, 0), ir.PointerType(i64)
+        )
         step_zero = builder.icmp_signed("==", step_arg, zero64)
         builder.cbranch(step_zero, zero_step, step_ok)
 
@@ -3727,12 +4001,15 @@ class PyobjRuntimeMixin:
             zero64,
         )
         count = builder.select(neg_step, bwd, fwd)
+        # the byte buffer can never exceed the source's own byte count
         alloc_len = builder.select(
-            builder.icmp_signed(">", count, zero64), count, one64
+            builder.icmp_signed(">", count, zero64), s_bytes, one64
         )
         out_buf = builder.call(self.malloc, [alloc_len])
         idx_ptr = builder.alloca(i64, None, 'slice_i')
+        out_len_ptr = builder.alloca(i64, None, 'slice_out')
         builder.store(zero64, idx_ptr)
+        builder.store(zero64, out_len_ptr)
         builder.branch(copy_cond)
 
         builder.position_at_end(copy_cond)
@@ -3741,18 +4018,26 @@ class PyobjRuntimeMixin:
         builder.cbranch(more, copy_body, copy_done)
 
         builder.position_at_end(copy_body)
-        src_index = builder.add(lo_eff, builder.mul(idx, step_arg))
-        builder.store(
-            builder.load(builder.gep(chars, [src_index])),
-            builder.gep(out_buf, [idx]),
+        src_cp = builder.add(lo_eff, builder.mul(idx, step_arg))
+        src_off = builder.load(builder.gep(cp_offs64, [src_cp]))
+        lead = builder.load(builder.gep(chars, [src_off]))
+        seq = self._seq_len_inline(builder, lead)
+        out_now = builder.load(out_len_ptr)
+        builder.call(
+            self.memcpy,
+            [builder.gep(out_buf, [out_now]),
+             builder.gep(chars, [src_off]), seq,
+             ir.const_(ir.IntType(1), 0)],
         )
+        builder.store(builder.add(out_now, seq), out_len_ptr)
         builder.store(builder.add(idx, one64), idx_ptr)
         builder.branch(copy_cond)
 
         builder.position_at_end(copy_done)
         builder.ret(
             builder.call(
-                self.create_str, [out_buf, builder.trunc(count, i32)]
+                self.create_str,
+                [out_buf, builder.trunc(builder.load(out_len_ptr), i32)],
             )
         )
 
@@ -4926,24 +5211,24 @@ class PyobjRuntimeMixin:
                 return chr(b)
             return "_" + hexd[b // 16] + hexd[b % 16]
 
-        out = "str."
+        parts: list[str] = ["str."]
         for ch in string_content:
             cp = ord(ch)
             if cp < 0x80:
-                out += esc(cp, safe, hexd)
+                parts.append(esc(cp, safe, hexd))
             elif cp < 0x800:
-                out += esc(0xC0 | (cp // 64), safe, hexd)
-                out += esc(0x80 | (cp & 0x3F), safe, hexd)
+                parts.append(esc(0xC0 | (cp // 64), safe, hexd))
+                parts.append(esc(0x80 | (cp & 0x3F), safe, hexd))
             elif cp < 0x10000:
-                out += esc(0xE0 | (cp // 4096), safe, hexd)
-                out += esc(0x80 | ((cp // 64) & 0x3F), safe, hexd)
-                out += esc(0x80 | (cp & 0x3F), safe, hexd)
+                parts.append(esc(0xE0 | (cp // 4096), safe, hexd))
+                parts.append(esc(0x80 | ((cp // 64) & 0x3F), safe, hexd))
+                parts.append(esc(0x80 | (cp & 0x3F), safe, hexd))
             else:
-                out += esc(0xF0 | (cp // 262144), safe, hexd)
-                out += esc(0x80 | ((cp // 4096) & 0x3F), safe, hexd)
-                out += esc(0x80 | ((cp // 64) & 0x3F), safe, hexd)
-                out += esc(0x80 | (cp & 0x3F), safe, hexd)
-        return out
+                parts.append(esc(0xF0 | (cp // 262144), safe, hexd))
+                parts.append(esc(0x80 | ((cp // 4096) & 0x3F), safe, hexd))
+                parts.append(esc(0x80 | ((cp // 64) & 0x3F), safe, hexd))
+                parts.append(esc(0x80 | (cp & 0x3F), safe, hexd))
+        return "".join(parts)
 
     def _unique_str_global_name(self, string_content: str) -> str:
         """Resolve the content-addressed name against occupied names.

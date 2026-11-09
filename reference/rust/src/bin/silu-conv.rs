@@ -767,9 +767,11 @@ impl FnB {
         self.line(format!("  br label %\"{}\"", j_lbl));
         self.pos(wb);
         let off = self.nx();
+        // 1.18.1: the walk goes through the cp-offset side cache
+        // (rawstr_cp_off_at takes the STRUCT pointer, not the data)
         self.line(format!(
-            "  %\"{}\" = call i64 @\"rawutf8_cp_offset\"(i8* %\"{}\", i64 %\"{}\")",
-            off, chars, adj));
+            "  %\"{}\" = call i64 @\"rawstr_cp_off_at\"(i8* {}, i64 %\"{}\")",
+            off, objref, adj));
         self.silent();
         self.line(format!("  br label %\"{}\"", j_lbl));
         let jb = self.add_block(&j_lbl);
@@ -7061,6 +7063,42 @@ fn conv_print(b: &mut FnB, st: &Val) {
                     let data = b.nx();
                     b.line(format!(
                         "  %\"{}\" = load i8*, i8** %\"{}\"", data, gd));
+                    let fmt = add_str("%.*s");
+                    let fg = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = getelementptr [5 x i8], [5 x i8]* @\"{}\", i32 0, i32 0",
+                        fg, fmt));
+                    let pr = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i32 (i8*, ...) @\"printf\"(i8* %\"{}\", i64 %\"{}\", i8* %\"{}\")",
+                        pr, fg, len, data));
+                }
+                Typed::Inst(r) if is_str_expr(a) && a.head() == "call" => {
+                    // a str-RETURNING METHOD call: its result is already
+                    // a raw temp - print it directly, no copy (probe
+                    // g11: .14 call -> .15 bitcast walk, mirror of the
+                    // free-function shape p1)
+                    let (len, data) = {
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*",
+                            bc, r));
+                        let gl = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 0",
+                            gl, bc));
+                        let l2 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i64, i64* %\"{}\"", l2, gl));
+                        let gd = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+                            gd, bc));
+                        let d2 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i8*, i8** %\"{}\"", d2, gd));
+                        (l2, d2)
+                    };
                     let fmt = add_str("%.*s");
                     let fg = b.nx();
                     b.line(format!(

@@ -1,6 +1,6 @@
 ; ModuleID = "silu_module"
 target triple = "arm64-apple-darwin24.6.0"
-target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32"
 
 declare i32 @"printf"(i8* %".1", ...)
 
@@ -1612,6 +1612,175 @@ error:
   ret {i32, i8*}* null
 }
 
+define i64 @"pyobj_utf8_cp_count"(i8* %".1", i64 %".2")
+{
+pucc_entry:
+  %"pucc_i" = alloca i64
+  %"pucc_n" = alloca i64
+  store i64 0, i64* %"pucc_i"
+  store i64 0, i64* %"pucc_n"
+  br label %"pucc_cond"
+pucc_cond:
+  %".7" = load i64, i64* %"pucc_i"
+  %".8" = icmp slt i64 %".7", %".2"
+  br i1 %".8", label %"pucc_body", label %"pucc_done"
+pucc_body:
+  %".10" = getelementptr i8, i8* %".1", i64 %".7"
+  %".11" = load i8, i8* %".10"
+  %".12" = and i8 %".11", 192
+  %".13" = icmp ne i8 %".12", 128
+  %".14" = load i64, i64* %"pucc_n"
+  %".15" = add i64 %".14", 1
+  %".16" = load i64, i64* %"pucc_n"
+  %".17" = select  i1 %".13", i64 %".15", i64 %".16"
+  store i64 %".17", i64* %"pucc_n"
+  %".19" = add i64 %".7", 1
+  store i64 %".19", i64* %"pucc_i"
+  br label %"pucc_cond"
+pucc_done:
+  %".22" = load i64, i64* %"pucc_n"
+  ret i64 %".22"
+}
+
+define i64 @"pyobj_utf8_cp_offset"(i8* %".1", i64 %".2")
+{
+puoc_entry:
+  %"puoc_off" = alloca i64
+  %"puoc_seen" = alloca i64
+  store i64 0, i64* %"puoc_off"
+  store i64 0, i64* %"puoc_seen"
+  br label %"puoc_cond"
+puoc_cond:
+  %".7" = load i64, i64* %"puoc_seen"
+  %".8" = icmp slt i64 %".7", %".2"
+  br i1 %".8", label %"puoc_body", label %"puoc_done"
+puoc_body:
+  %".10" = load i64, i64* %"puoc_off"
+  %".11" = getelementptr i8, i8* %".1", i64 %".10"
+  %".12" = load i8, i8* %".11"
+  %".13" = and i8 %".12", 224
+  %".14" = icmp eq i8 %".13", 192
+  %".15" = and i8 %".12", 240
+  %".16" = icmp eq i8 %".15", 224
+  %".17" = and i8 %".12", 248
+  %".18" = icmp eq i8 %".17", 240
+  %".19" = select  i1 %".14", i64 2, i64 1
+  %".20" = select  i1 %".16", i64 3, i64 %".19"
+  %".21" = select  i1 %".18", i64 4, i64 %".20"
+  %".22" = add i64 %".10", %".21"
+  store i64 %".22", i64* %"puoc_off"
+  %".24" = add i64 %".7", 1
+  store i64 %".24", i64* %"puoc_seen"
+  br label %"puoc_cond"
+puoc_done:
+  %".27" = load i64, i64* %"puoc_off"
+  ret i64 %".27"
+}
+
+@"pyoff_tab" = global [1024 x {i8*, i64, i64, i8*}] zeroinitializer
+define {i8*, i64} @"pystr_cp_entry"(i8* %".1", i64 %".2")
+{
+pce_entry:
+  br label %"pce_hash"
+pce_hash:
+  %".5" = ptrtoint i8* %".1" to i64
+  %".6" = lshr i64 %".5", 4
+  %".7" = lshr i64 %".5", 18
+  %".8" = xor i64 %".6", %".7"
+  %".9" = and i64 %".8", 1023
+  %"pce_base" = alloca i64
+  %"pce_try" = alloca i64
+  store i64 %".9", i64* %"pce_base"
+  store i64 0, i64* %"pce_try"
+  br label %"pce_cond"
+pce_cond:
+  %".13" = load i64, i64* %"pce_try"
+  %".14" = icmp slt i64 %".13", 8
+  br i1 %".14", label %"pce_body", label %"pce_build"
+pce_body:
+  %".16" = load i64, i64* %"pce_base"
+  %".17" = add i64 %".16", %".13"
+  %".18" = and i64 %".17", 1023
+  %".19" = trunc i64 %".18" to i32
+  %".20" = getelementptr [1024 x {i8*, i64, i64, i8*}], [1024 x {i8*, i64, i64, i8*}]* @"pyoff_tab", i32 0, i32 %".19"
+  %".21" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".20", i32 0, i32 0
+  %".22" = load i8*, i8** %".21"
+  %".23" = icmp eq i8* %".22", %".1"
+  br i1 %".23", label %"pce_valid", label %"pce_chknull"
+pce_chknull:
+  %".25" = icmp eq i8* %".22", null
+  br i1 %".25", label %"pce_build", label %"pce_adv"
+pce_valid:
+  %".27" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".20", i32 0, i32 1
+  %".28" = load i64, i64* %".27"
+  %".29" = icmp eq i64 %".28", %".2"
+  br i1 %".29", label %"pce_load", label %"pce_build"
+pce_load:
+  %".31" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".20", i32 0, i32 3
+  %".32" = load i8*, i8** %".31"
+  %".33" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".20", i32 0, i32 2
+  %".34" = load i64, i64* %".33"
+  %".35" = insertvalue {i8*, i64} undef, i8* %".32", 0
+  %".36" = insertvalue {i8*, i64} %".35", i64 %".34", 1
+  ret {i8*, i64} %".36"
+pce_adv:
+  %".38" = add i64 %".13", 1
+  store i64 %".38", i64* %"pce_try"
+  br label %"pce_cond"
+pce_build:
+  %".41" = call i64 @"pyobj_utf8_cp_count"(i8* %".1", i64 %".2")
+  %".42" = add i64 %".41", 1
+  %".43" = mul i64 %".42", 8
+  %".44" = call i8* @"malloc"(i64 %".43")
+  %".45" = bitcast i8* %".44" to i64*
+  %"pce_wi" = alloca i64
+  %"pce_wo" = alloca i64
+  store i64 0, i64* %"pce_wi"
+  store i64 0, i64* %"pce_wo"
+  br label %"pce_wcond"
+pce_wcond:
+  %".49" = load i64, i64* %"pce_wi"
+  %".50" = icmp sle i64 %".49", %".41"
+  br i1 %".50", label %"pce_wbody", label %"pce_wdone"
+pce_wbody:
+  %".52" = load i64, i64* %"pce_wo"
+  %".53" = getelementptr i64, i64* %".45", i64 %".49"
+  store i64 %".52", i64* %".53"
+  %".55" = getelementptr i8, i8* %".1", i64 %".52"
+  %".56" = load i8, i8* %".55"
+  %".57" = and i8 %".56", 224
+  %".58" = icmp eq i8 %".57", 192
+  %".59" = and i8 %".56", 240
+  %".60" = icmp eq i8 %".59", 224
+  %".61" = and i8 %".56", 248
+  %".62" = icmp eq i8 %".61", 240
+  %".63" = select  i1 %".58", i64 2, i64 1
+  %".64" = select  i1 %".60", i64 3, i64 %".63"
+  %".65" = select  i1 %".62", i64 4, i64 %".64"
+  %".66" = add i64 %".52", %".65"
+  store i64 %".66", i64* %"pce_wo"
+  %".68" = add i64 %".49", 1
+  store i64 %".68", i64* %"pce_wi"
+  br label %"pce_wcond"
+pce_wdone:
+  br label %"pce_insert"
+pce_insert:
+  %".72" = load i64, i64* %"pce_base"
+  %".73" = trunc i64 %".72" to i32
+  %".74" = getelementptr [1024 x {i8*, i64, i64, i8*}], [1024 x {i8*, i64, i64, i8*}]* @"pyoff_tab", i32 0, i32 %".73"
+  %".75" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 0
+  store i8* %".1", i8** %".75"
+  %".77" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 1
+  store i64 %".2", i64* %".77"
+  %".79" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 2
+  store i64 %".41", i64* %".79"
+  %".81" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 3
+  store i8* %".44", i8** %".81"
+  %".83" = insertvalue {i8*, i64} undef, i8* %".44", 0
+  %".84" = insertvalue {i8*, i64} %".83", i64 %".41", 1
+  ret {i8*, i64} %".84"
+}
+
 define i64 @"pyobj_len_raw"({i32, i8*}* %".1")
 {
 rlr_entry:
@@ -1638,17 +1807,21 @@ rlr_str:
   %".20" = getelementptr {i32, i8*}, {i32, i8*}* %".19", i32 0, i32 0
   %".21" = load i32, i32* %".20"
   %".22" = sext i32 %".21" to i64
-  ret i64 %".22"
+  %".23" = getelementptr {i32, i8*}, {i32, i8*}* %".19", i32 0, i32 1
+  %".24" = load i8*, i8** %".23"
+  %".25" = call {i8*, i64} @"pystr_cp_entry"(i8* %".24", i64 %".22")
+  %".26" = extractvalue {i8*, i64} %".25", 1
+  ret i64 %".26"
 rlr_dict_chk:
-  %".24" = icmp eq i32 %".4", 5
-  br i1 %".24", label %"rlr_dict", label %"rlr_zero"
+  %".28" = icmp eq i32 %".4", 5
+  br i1 %".28", label %"rlr_dict", label %"rlr_zero"
 rlr_dict:
-  %".26" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
-  %".27" = load i8*, i8** %".26"
-  %".28" = bitcast i8* %".27" to {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}*
-  %".29" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".28", i32 0, i32 0
-  %".30" = load i64, i64* %".29"
-  ret i64 %".30"
+  %".30" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
+  %".31" = load i8*, i8** %".30"
+  %".32" = bitcast i8* %".31" to {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}*
+  %".33" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".32", i32 0, i32 0
+  %".34" = load i64, i64* %".33"
+  ret i64 %".34"
 rlr_zero:
   ret i64 0
 }
@@ -4756,25 +4929,42 @@ entry:
   %".11" = getelementptr {i32, i8*}, {i32, i8*}* %".10", i32 0, i32 0
   %".12" = load i32, i32* %".11"
   %".13" = sext i32 %".12" to i64
-  %".14" = icmp slt i64 %".7", 0
-  %".15" = add i64 %".7", %".13"
-  %".16" = select  i1 %".14", i64 %".15", i64 %".7"
-  %".17" = icmp sge i64 %".16", 0
-  %".18" = icmp slt i64 %".16", %".13"
-  %".19" = and i1 %".17", %".18"
-  br i1 %".19", label %"ok", label %"index_error"
+  %".14" = getelementptr {i32, i8*}, {i32, i8*}* %".10", i32 0, i32 1
+  %".15" = load i8*, i8** %".14"
+  %".16" = call {i8*, i64} @"pystr_cp_entry"(i8* %".15", i64 %".13")
+  %".17" = extractvalue {i8*, i64} %".16", 1
+  %".18" = extractvalue {i8*, i64} %".16", 0
+  %".19" = icmp slt i64 %".7", 0
+  %".20" = add i64 %".7", %".17"
+  %".21" = select  i1 %".19", i64 %".20", i64 %".7"
+  %".22" = icmp sge i64 %".21", 0
+  %".23" = icmp slt i64 %".21", %".17"
+  %".24" = and i1 %".22", %".23"
+  br i1 %".24", label %"ok", label %"index_error"
 ok:
-  %".24" = getelementptr {i32, i8*}, {i32, i8*}* %".10", i32 0, i32 1
-  %".25" = load i8*, i8** %".24"
-  %".26" = call i8* @"malloc"(i64 1)
-  %".27" = getelementptr i8, i8* %".25", i64 %".16"
-  %".28" = load i8, i8* %".27"
-  store i8 %".28", i8* %".26"
-  %".30" = call {i32, i8*}* @"create_str"(i8* %".26", i32 1)
-  ret {i32, i8*}* %".30"
+  %".29" = bitcast i8* %".18" to i64*
+  %".30" = getelementptr i64, i64* %".29", i64 %".21"
+  %".31" = load i64, i64* %".30"
+  %".32" = getelementptr i8, i8* %".15", i64 %".31"
+  %".33" = load i8, i8* %".32"
+  %".34" = and i8 %".33", 224
+  %".35" = icmp eq i8 %".34", 192
+  %".36" = and i8 %".33", 240
+  %".37" = icmp eq i8 %".36", 224
+  %".38" = and i8 %".33", 248
+  %".39" = icmp eq i8 %".38", 240
+  %".40" = select  i1 %".35", i64 2, i64 1
+  %".41" = select  i1 %".37", i64 3, i64 %".40"
+  %".42" = select  i1 %".39", i64 4, i64 %".41"
+  %".43" = call i8* @"malloc"(i64 %".42")
+  %".44" = getelementptr i8, i8* %".15", i64 %".31"
+  call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".43", i8* %".44", i64 %".42", i1 0)
+  %".46" = trunc i64 %".42" to i32
+  %".47" = call {i32, i8*}* @"create_str"(i8* %".43", i32 %".46")
+  ret {i32, i8*}* %".47"
 index_error:
-  %".21" = getelementptr [38 x i8], [38 x i8]* @"str.IndexError_3a_20string_20index_20out_20of_20range", i32 0, i32 0
-  call void @"silu_panic"(i8* %".21")
+  %".26" = getelementptr [38 x i8], [38 x i8]* @"str.IndexError_3a_20string_20index_20out_20of_20range", i32 0, i32 0
+  call void @"silu_panic"(i8* %".26")
   unreachable
 }
 
@@ -4787,71 +4977,89 @@ entry:
   %".10" = icmp ne i32 %".9", 2
   br i1 %".10", label %"tag_error", label %"str_case"
 step_ok:
-  %".28" = icmp slt i64 %".4", 0
-  %".29" = sub i64 %".20", 1
-  %".30" = select  i1 %".28", i64 %".29", i64 0
-  %".31" = select  i1 %".28", i64 %".29", i64 %".20"
-  %".32" = icmp slt i64 %".2", 0
-  %".33" = add i64 %".2", %".20"
-  %".34" = select  i1 %".32", i64 %".33", i64 %".2"
-  %".35" = select  i1 %".5", i64 %".34", i64 %".30"
-  %".36" = icmp slt i64 %".35", 0
-  %".37" = select  i1 %".36", i64 0, i64 %".35"
-  %".38" = icmp sgt i64 %".37", %".31"
-  %".39" = select  i1 %".38", i64 %".31", i64 %".37"
-  %".40" = select  i1 %".28", i64 -1, i64 %".20"
-  %".41" = select  i1 %".28", i64 -1, i64 0
-  %".42" = select  i1 %".28", i64 %".29", i64 %".20"
-  %".43" = icmp slt i64 %".3", 0
-  %".44" = add i64 %".3", %".20"
-  %".45" = select  i1 %".43", i64 %".44", i64 %".3"
-  %".46" = select  i1 %".6", i64 %".45", i64 %".40"
-  %".47" = icmp slt i64 %".46", %".41"
-  %".48" = select  i1 %".47", i64 %".41", i64 %".46"
-  %".49" = icmp sgt i64 %".48", %".42"
-  %".50" = select  i1 %".49", i64 %".42", i64 %".48"
-  %".51" = sub i64 %".50", %".39"
-  %".52" = sub i64 %".51", 1
-  %".53" = sdiv i64 %".52", %".4"
-  %".54" = icmp sgt i64 %".51", 0
-  %".55" = add i64 %".53", 1
-  %".56" = select  i1 %".54", i64 %".55", i64 0
-  %".57" = sub i64 0, %".4"
-  %".58" = sub i64 %".39", %".50"
-  %".59" = sub i64 %".58", 1
-  %".60" = sdiv i64 %".59", %".57"
-  %".61" = icmp sgt i64 %".58", 0
-  %".62" = add i64 %".60", 1
-  %".63" = select  i1 %".61", i64 %".62", i64 0
-  %".64" = select  i1 %".28", i64 %".63", i64 %".56"
-  %".65" = icmp sgt i64 %".64", 0
-  %".66" = select  i1 %".65", i64 %".64", i64 1
-  %".67" = call i8* @"malloc"(i64 %".66")
+  %".32" = icmp slt i64 %".4", 0
+  %".33" = sub i64 %".24", 1
+  %".34" = select  i1 %".32", i64 %".33", i64 0
+  %".35" = select  i1 %".32", i64 %".33", i64 %".24"
+  %".36" = icmp slt i64 %".2", 0
+  %".37" = add i64 %".2", %".24"
+  %".38" = select  i1 %".36", i64 %".37", i64 %".2"
+  %".39" = select  i1 %".5", i64 %".38", i64 %".34"
+  %".40" = icmp slt i64 %".39", 0
+  %".41" = select  i1 %".40", i64 0, i64 %".39"
+  %".42" = icmp sgt i64 %".41", %".35"
+  %".43" = select  i1 %".42", i64 %".35", i64 %".41"
+  %".44" = select  i1 %".32", i64 -1, i64 %".24"
+  %".45" = select  i1 %".32", i64 -1, i64 0
+  %".46" = select  i1 %".32", i64 %".33", i64 %".24"
+  %".47" = icmp slt i64 %".3", 0
+  %".48" = add i64 %".3", %".24"
+  %".49" = select  i1 %".47", i64 %".48", i64 %".3"
+  %".50" = select  i1 %".6", i64 %".49", i64 %".44"
+  %".51" = icmp slt i64 %".50", %".45"
+  %".52" = select  i1 %".51", i64 %".45", i64 %".50"
+  %".53" = icmp sgt i64 %".52", %".46"
+  %".54" = select  i1 %".53", i64 %".46", i64 %".52"
+  %".55" = sub i64 %".54", %".43"
+  %".56" = sub i64 %".55", 1
+  %".57" = sdiv i64 %".56", %".4"
+  %".58" = icmp sgt i64 %".55", 0
+  %".59" = add i64 %".57", 1
+  %".60" = select  i1 %".58", i64 %".59", i64 0
+  %".61" = sub i64 0, %".4"
+  %".62" = sub i64 %".43", %".54"
+  %".63" = sub i64 %".62", 1
+  %".64" = sdiv i64 %".63", %".61"
+  %".65" = icmp sgt i64 %".62", 0
+  %".66" = add i64 %".64", 1
+  %".67" = select  i1 %".65", i64 %".66", i64 0
+  %".68" = select  i1 %".32", i64 %".67", i64 %".60"
+  %".69" = icmp sgt i64 %".68", 0
+  %".70" = select  i1 %".69", i64 %".20", i64 1
+  %".71" = call i8* @"malloc"(i64 %".70")
   %"slice_i" = alloca i64
+  %"slice_out" = alloca i64
   store i64 0, i64* %"slice_i"
+  store i64 0, i64* %"slice_out"
   br label %"copy_cond"
 zero_step:
-  %".25" = getelementptr [38 x i8], [38 x i8]* @"str.ValueError_3a_20slice_20step_20cannot_20be_20zero", i32 0, i32 0
-  call void @"silu_panic"(i8* %".25")
+  %".29" = getelementptr [38 x i8], [38 x i8]* @"str.ValueError_3a_20slice_20step_20cannot_20be_20zero", i32 0, i32 0
+  call void @"silu_panic"(i8* %".29")
   unreachable
 copy_cond:
-  %".70" = load i64, i64* %"slice_i"
-  %".71" = icmp slt i64 %".70", %".64"
-  br i1 %".71", label %"copy_body", label %"copy_done"
+  %".75" = load i64, i64* %"slice_i"
+  %".76" = icmp slt i64 %".75", %".68"
+  br i1 %".76", label %"copy_body", label %"copy_done"
 copy_body:
-  %".73" = mul i64 %".70", %".4"
-  %".74" = add i64 %".39", %".73"
-  %".75" = getelementptr i8, i8* %".22", i64 %".74"
-  %".76" = load i8, i8* %".75"
-  %".77" = getelementptr i8, i8* %".67", i64 %".70"
-  store i8 %".76", i8* %".77"
-  %".79" = add i64 %".70", 1
-  store i64 %".79", i64* %"slice_i"
+  %".78" = mul i64 %".75", %".4"
+  %".79" = add i64 %".43", %".78"
+  %".80" = getelementptr i64, i64* %".26", i64 %".79"
+  %".81" = load i64, i64* %".80"
+  %".82" = getelementptr i8, i8* %".22", i64 %".81"
+  %".83" = load i8, i8* %".82"
+  %".84" = and i8 %".83", 224
+  %".85" = icmp eq i8 %".84", 192
+  %".86" = and i8 %".83", 240
+  %".87" = icmp eq i8 %".86", 224
+  %".88" = and i8 %".83", 248
+  %".89" = icmp eq i8 %".88", 240
+  %".90" = select  i1 %".85", i64 2, i64 1
+  %".91" = select  i1 %".87", i64 3, i64 %".90"
+  %".92" = select  i1 %".89", i64 4, i64 %".91"
+  %".93" = load i64, i64* %"slice_out"
+  %".94" = getelementptr i8, i8* %".71", i64 %".93"
+  %".95" = getelementptr i8, i8* %".22", i64 %".81"
+  call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".94", i8* %".95", i64 %".92", i1 0)
+  %".97" = add i64 %".93", %".92"
+  store i64 %".97", i64* %"slice_out"
+  %".99" = add i64 %".75", 1
+  store i64 %".99", i64* %"slice_i"
   br label %"copy_cond"
 copy_done:
-  %".82" = trunc i64 %".64" to i32
-  %".83" = call {i32, i8*}* @"create_str"(i8* %".67", i32 %".82")
-  ret {i32, i8*}* %".83"
+  %".102" = load i64, i64* %"slice_out"
+  %".103" = trunc i64 %".102" to i32
+  %".104" = call {i32, i8*}* @"create_str"(i8* %".71", i32 %".103")
+  ret {i32, i8*}* %".104"
 tag_error:
   %".12" = getelementptr [41 x i8], [41 x i8]* @"str.TypeError_3a_20only_20str_20slicing_20is_20supported", i32 0, i32 0
   call void @"silu_panic"(i8* %".12")
@@ -4865,8 +5073,12 @@ str_case:
   %".20" = sext i32 %".19" to i64
   %".21" = getelementptr {i32, i8*}, {i32, i8*}* %".17", i32 0, i32 1
   %".22" = load i8*, i8** %".21"
-  %".23" = icmp eq i64 %".4", 0
-  br i1 %".23", label %"zero_step", label %"step_ok"
+  %".23" = call {i8*, i64} @"pystr_cp_entry"(i8* %".22", i64 %".20")
+  %".24" = extractvalue {i8*, i64} %".23", 1
+  %".25" = extractvalue {i8*, i64} %".23", 0
+  %".26" = bitcast i8* %".25" to i64*
+  %".27" = icmp eq i64 %".4", 0
+  br i1 %".27", label %"zero_step", label %"step_ok"
 }
 
 @"str.TypeError_3a_20only_20str_20slicing_20is_20supported" = constant [41 x i8] c"TypeError: only str slicing is supported\00"
@@ -6062,6 +6274,162 @@ probe_hit:
   ret i8* %".30"
 }
 
+@"cpoff_tab" = global [1024 x {i8*, i64, i64, i8*}] zeroinitializer
+define i64 @"rawstr_cp_off_at"(i8* %".1", i64 %".2")
+{
+cpo_entry:
+  %".4" = bitcast i8* %".1" to {i64, i64, i8*, i64}*
+  %".5" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".4", i32 0, i32 0
+  %".6" = load i64, i64* %".5"
+  %".7" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".4", i32 0, i32 3
+  %".8" = load i64, i64* %".7"
+  %".9" = icmp eq i64 %".6", %".8"
+  br i1 %".9", label %"cpo_fast", label %"cpo_hash"
+cpo_fast:
+  ret i64 %".2"
+cpo_hash:
+  %".12" = ptrtoint i8* %".1" to i64
+  %".13" = lshr i64 %".12", 4
+  %".14" = lshr i64 %".12", 18
+  %".15" = xor i64 %".13", %".14"
+  %".16" = and i64 %".15", 1023
+  %"cpo_base" = alloca i64
+  %"cpo_try" = alloca i64
+  store i64 %".16", i64* %"cpo_base"
+  store i64 0, i64* %"cpo_try"
+  br label %"cpo_cond"
+cpo_cond:
+  %".20" = load i64, i64* %"cpo_try"
+  %".21" = icmp slt i64 %".20", 8
+  br i1 %".21", label %"cpo_body", label %"cpo_build"
+cpo_body:
+  %".23" = load i64, i64* %"cpo_base"
+  %".24" = add i64 %".23", %".20"
+  %".25" = and i64 %".24", 1023
+  %".26" = trunc i64 %".25" to i32
+  %".27" = getelementptr [1024 x {i8*, i64, i64, i8*}], [1024 x {i8*, i64, i64, i8*}]* @"cpoff_tab", i32 0, i32 %".26"
+  %".28" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".27", i32 0, i32 0
+  %".29" = load i8*, i8** %".28"
+  %".30" = icmp eq i8* %".29", null
+  %".31" = icmp eq i8* %".29", %".1"
+  br i1 %".31", label %"cpo_valid", label %"cpo_chknull"
+cpo_chknull:
+  br i1 %".30", label %"cpo_build", label %"cpo_adv"
+cpo_valid:
+  %".34" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".27", i32 0, i32 1
+  %".35" = load i64, i64* %".34"
+  %".36" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".27", i32 0, i32 2
+  %".37" = load i64, i64* %".36"
+  %".38" = icmp eq i64 %".35", %".6"
+  %".39" = icmp eq i64 %".37", %".8"
+  %".40" = and i1 %".38", %".39"
+  br i1 %".40", label %"cpo_load", label %"cpo_build"
+cpo_load:
+  %".42" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".27", i32 0, i32 3
+  %".43" = load i8*, i8** %".42"
+  %".44" = bitcast i8* %".43" to i64*
+  %".45" = getelementptr i64, i64* %".44", i64 %".2"
+  %".46" = load i64, i64* %".45"
+  ret i64 %".46"
+cpo_adv:
+  %".48" = add i64 %".20", 1
+  store i64 %".48", i64* %"cpo_try"
+  br label %"cpo_cond"
+cpo_build:
+  %".51" = add i64 %".8", 1
+  %".52" = mul i64 %".51", 8
+  %".53" = call i8* @"malloc"(i64 %".52")
+  %"cpo_wi" = alloca i64
+  %"cpo_wo" = alloca i64
+  store i64 0, i64* %"cpo_wi"
+  store i64 0, i64* %"cpo_wo"
+  %".56" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".4", i32 0, i32 2
+  %".57" = load i8*, i8** %".56"
+  br label %"cpo_wcond"
+cpo_wcond:
+  %".59" = load i64, i64* %"cpo_wi"
+  %".60" = icmp sle i64 %".59", %".8"
+  br i1 %".60", label %"cpo_wbody", label %"cpo_wdone"
+cpo_wbody:
+  %".62" = load i64, i64* %"cpo_wo"
+  %".63" = bitcast i8* %".53" to i64*
+  %".64" = getelementptr i64, i64* %".63", i64 %".59"
+  store i64 %".62", i64* %".64"
+  %".66" = getelementptr i8, i8* %".57", i64 %".62"
+  %".67" = load i8, i8* %".66"
+  %".68" = and i8 %".67", 224
+  %".69" = icmp eq i8 %".68", 192
+  %".70" = and i8 %".67", 240
+  %".71" = icmp eq i8 %".70", 224
+  %".72" = and i8 %".67", 248
+  %".73" = icmp eq i8 %".72", 240
+  %".74" = select  i1 %".73", i64 4, i64 1
+  %".75" = select  i1 %".71", i64 3, i64 %".74"
+  %".76" = select  i1 %".69", i64 2, i64 %".75"
+  %".77" = add i64 %".62", %".76"
+  store i64 %".77", i64* %"cpo_wo"
+  %".79" = add i64 %".59", 1
+  store i64 %".79", i64* %"cpo_wi"
+  br label %"cpo_wcond"
+cpo_wdone:
+  br label %"cpo_insert"
+cpo_insert:
+  %".83" = load i64, i64* %"cpo_base"
+  %".84" = trunc i64 %".83" to i32
+  %".85" = getelementptr [1024 x {i8*, i64, i64, i8*}], [1024 x {i8*, i64, i64, i8*}]* @"cpoff_tab", i32 0, i32 %".84"
+  %".86" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".85", i32 0, i32 0
+  store i8* %".1", i8** %".86"
+  %".88" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".85", i32 0, i32 1
+  store i64 %".6", i64* %".88"
+  %".90" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".85", i32 0, i32 2
+  store i64 %".8", i64* %".90"
+  %".92" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".85", i32 0, i32 3
+  store i8* %".53", i8** %".92"
+  %".94" = bitcast i8* %".53" to i64*
+  %".95" = getelementptr i64, i64* %".94", i64 %".2"
+  %".96" = load i64, i64* %".95"
+  ret i64 %".96"
+}
+
+define void @"cpoff_purge"(i8* %".1")
+{
+cpp_entry:
+  %".3" = ptrtoint i8* %".1" to i64
+  %".4" = lshr i64 %".3", 4
+  %".5" = lshr i64 %".3", 18
+  %".6" = xor i64 %".4", %".5"
+  %".7" = and i64 %".6", 1023
+  %"cpp_base" = alloca i64
+  %"cpp_try" = alloca i64
+  store i64 %".7", i64* %"cpp_base"
+  store i64 0, i64* %"cpp_try"
+  br label %"cpp_cond"
+cpp_cond:
+  %".11" = load i64, i64* %"cpp_try"
+  %".12" = icmp slt i64 %".11", 8
+  br i1 %".12", label %"cpp_body", label %"cpp_done"
+cpp_body:
+  %".14" = load i64, i64* %"cpp_base"
+  %".15" = add i64 %".14", %".11"
+  %".16" = and i64 %".15", 1023
+  %".17" = trunc i64 %".16" to i32
+  %".18" = getelementptr [1024 x {i8*, i64, i64, i8*}], [1024 x {i8*, i64, i64, i8*}]* @"cpoff_tab", i32 0, i32 %".17"
+  %".19" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".18", i32 0, i32 0
+  %".20" = load i8*, i8** %".19"
+  %".21" = icmp eq i8* %".20", %".1"
+  br i1 %".21", label %"cpp_hit", label %"cpp_adv"
+cpp_hit:
+  %".23" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".18", i32 0, i32 0
+  store i8* null, i8** %".23"
+  br label %"cpp_done"
+cpp_adv:
+  %".26" = add i64 %".11", 1
+  store i64 %".26", i64* %"cpp_try"
+  br label %"cpp_cond"
+cpp_done:
+  ret void
+}
+
 define void @"rawstr_free"(i8* %".1")
 {
 entry:
@@ -6077,9 +6445,10 @@ do_free:
 free_done:
   ret void
 real_free:
-  %".11" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".6", i32 0, i32 2
-  %".12" = load i8*, i8** %".11"
-  call void @"free"(i8* %".12")
+  call void @"cpoff_purge"(i8* %".1")
+  %".12" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".6", i32 0, i32 2
+  %".13" = load i8*, i8** %".12"
+  call void @"free"(i8* %".13")
   call void @"free"(i8* %".1")
   br label %"free_done"
 }
@@ -6308,7 +6677,7 @@ index_error:
 ascii:
   br label %"join"
 walk:
-  %".26" = call i64 @"rawutf8_cp_offset"(i8* %".20", i64 %".11")
+  %".26" = call i64 @"rawstr_cp_off_at"(i8* %".1", i64 %".11")
   br label %"join"
 join:
   %".28" = phi  i64 [%".11", %"ascii"], [%".26", %"walk"]
@@ -6362,7 +6731,7 @@ index_error:
 ascii:
   br label %"join"
 walk:
-  %".26" = call i64 @"rawutf8_cp_offset"(i8* %".20", i64 %".11")
+  %".26" = call i64 @"rawstr_cp_off_at"(i8* %".1", i64 %".11")
   br label %"join"
 join:
   %".28" = phi  i64 [%".11", %"ascii"], [%".26", %"walk"]
@@ -6421,8 +6790,8 @@ entry:
 ascii:
   br label %"join"
 walk:
-  %".32" = call i64 @"rawutf8_cp_offset"(i8* %".9", i64 %".16")
-  %".33" = call i64 @"rawutf8_cp_offset"(i8* %".9", i64 %".23")
+  %".32" = call i64 @"rawstr_cp_off_at"(i8* %".1", i64 %".16")
+  %".33" = call i64 @"rawstr_cp_off_at"(i8* %".1", i64 %".23")
   br label %"join"
 join:
   %".35" = phi  i64 [%".16", %"ascii"], [%".32", %"walk"]
@@ -6478,8 +6847,8 @@ entry:
 ascii:
   br label %"join"
 walk:
-  %".29" = call i64 @"rawutf8_cp_offset"(i8* %".9", i64 %".16")
-  %".30" = call i64 @"rawutf8_cp_offset"(i8* %".9", i64 %".23")
+  %".29" = call i64 @"rawstr_cp_off_at"(i8* %".1", i64 %".16")
+  %".30" = call i64 @"rawstr_cp_off_at"(i8* %".1", i64 %".23")
   br label %"join"
 join:
   %".32" = phi  i64 [%".16", %"ascii"], [%".29", %"walk"]

@@ -1,6 +1,6 @@
 # Rust 参照实现：进展与 TODO（2026-11-01）
 
-> 钉住版本：silu 1.18.0（strbuf 重钉；此前 1.17.0（P6/P2/P5），原神谕 1.16.2 / 87df40f，
+> 钉住版本：silu 1.18.1（cp-offset 缓存重钉；1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2 / 87df40f，
 > 校准报告记录的是原钉）。本文是唯一的状态锚点——
 > compact 后从这里继续。规约细节在 `reference/README.md`。
 
@@ -469,3 +469,84 @@ strbuf 方案曾使其段错误）。
    `cps: list[int] = [65,66]`、链式 `L().f()` 调用。
 4. 错误路径分歧：Python 平面前端接受 `;` 分隔多语句（经 CPython ast），
    自举前端拒绝——错误路径不在门禁钉住范围。
+
+
+## 1.18.1 重钉：cp-offset 侧缓存 + 动态层码点语义（2026-11-09）
+
+**变更**（输出性变更，Python 转换器 + Oracle 前缀同批重钉，ll 19/19）：
+
+1. **rawstr_cp_off_at 侧表缓存**（typed_codegen._emit_rawstr_core）：
+   1024 槽开寻址提示表 `@cpoff_tab`（{struct_ptr, len, cp, offs*}），
+   键=rawstr 结构指针，校验=(len,cp)；append 改 len/cp 自动失效；
+   **rawstr_free real_free 路径 cpoff_purge**（malloc 复用同址同 len 同
+   cp 不同布局的陷阱由清除钩子封死——trap 探针实证）；逐出=覆写（提示
+   性缓存，miss 重建）。ASCII 走 len==cp 快路径不进表。调用点改接：
+   at_eq_cstr/at_cmp_cstr/slice/slice_parts/_emit_char_view（6 处，
+   rawutf8_cp_offset 本体保留为步行器）。
+   实测：50K 码点循环 minutes → 0.31s（含 strbuf 构建）。
+2. **动态层 str 码点语义**（pyobj_runtime）：pyobj_len_raw str 分支
+   改 pyobj_utf8_cp_count（原读 pystr{i32 字节长}）；pyobj_str_char_at
+   改码点定界 + pyobj_utf8_cp_offset 步行 + 变宽 UTF-8 序列拷贝；
+   pyobj_str_slice 改码点 clamp/步进 + 变宽拷贝。CPython 对齐实证：
+   len(chr(167))=1、ord(s[0])=167（原 2/128）、步进切片全对。
+   早期创建器自包含步行器 pyobj_utf8_cp_count/offset（基类 __init__
+   早于 rawstr 家族；@staticmethod 在 Silu 类模型无效会挤占参数位——
+   用普通方法）。_seq_len_inline 为 _emit_seq_len 的自包含孪生。
+3. **前缀重钉**：const_prefix 368,892→378,133B（含尾随空行——oracle
+   直接拼接用户部，空行属前缀）；tagged 8,882B（14 define + 1 常量，
+   **不含**首尾空行——oracle main 在 tagged 后补 '\n'）。提取流程：
+   fib/dict/jsonparse 三对公共前缀取 min，剥回 `}\n`；tagged 从
+   jsonparse_json 按 tagged 名字集（含点号！str.TypeError…）结构化
+   前进到首个用户 define。
+4. **分号分歧封口**（错误路径，无输出变化）：Python 平面
+   importer.expand_imports_tree 入口 tokenize 扫描拒绝 `;` 语句分隔
+   （字符串/注释免疫）；自举/Rust 前端本就拒绝。tests/test_semicolon_rejected.py。
+
+### Oracle 未钉形状清单（2026-11-09 逐探针实证，g1-g12）
+
+探针法：`siluc1 < gN.si`（Python 平面，恒 rc=0）vs `silu-conv gN.si`，
+比 rc 与（rc=0 时）规范化后字节。**本轮已钉**：表达式内 `b.to_str()`
+（g12 ✓）；`print(str 返回的方法调用)`（g11 ✓，Inst 重定型直打臂）。
+**仍未钉**（语料零出现，bail 或字节分歧即预期行为）：
+
+| # | 形状 | 证据 | 根因 |
+|---|---|---|---|
+| 1 | 容器类型类字段 `cps: list[int]` + ctor 列表实参 | g1 rc=0 但 41 行分歧 | 字段注册丢元素类型（"list"）→ ctor 实参走动态装箱 |
+| 2 | 模块级注解实例赋值 `l: L = L(0)` | g2 bail "ann_assign type" | 模块级 ann_assign 分发落入 int 全局臂 |
+| 3 | 非空列表字面量声明 `xs: list[int] = [1,2]` | g3 bail "local list literal elem" | ann_assign list 臂只认空 `[]`；连锁封死 g5 pop/g8 in/g10 clear（测试声明用字面量） |
+| 4 | 链式构造调用 `L(7).f()` | g4 bail "method base in" | 方法分派要求 base 是 name |
+| 5 | `del d[k]` | g6 bail "delete" | delete 语句无 arm |
+| 6 | `d.setdefault(k,v)` | g7 bail "method base type" | dict 方法族未注册 |
+| 7 | dict[int,*] 存储路径 | g9 rc=0 但 25 行分歧 | 待逐形状细分（get/set 字面量已钉，store 组合有分歧） |
+| 8 | l.pop/l.clear/x in list/d.pop/d.clear/to_pylist/to_pydict | 运行时 47 函数仅 16 被引用普查 | 由 3/6 连锁；补齐需配套语料文件 |
+
+### 1.18.1 追记：m8 中间态回归（355s→0.52s）与孪生双循环
+
+语义修正首版引入回归：m8（90KB 未闭合 docstring）从 0.41s 恶化到 355s。
+采样/lldb 断点定位：热点 `pyobj_str_slice ← _rstrip/_escape_latin1 ←
+module_text`（.ll 文本渲染器，llvmlite.si 孪生）。消融实证：纯 ASCII
+巨型 docstring 也 55.8s（尺寸触发，与多字节无关），§ 再放 ~6×。
+
+**根因（两层叠加）**：
+1. 孪生 `_rstrip` 循环内 `s = s[:len(s)-1]`——每剥一个空白字符一次
+   切片，而语义修正后的切片每次付全串 cp 计数（当时无缓存）；
+2. 孪生 `_escape_latin1` 逐字节 `out += piece`（落在动态层的 O(n)/次
+   拼接）。
+
+**修复**：
+- 双孪生（llvmlite_text.py + llvmlite.si 同改）：`_rstrip` 改索引回扫
+  +单次切片；`_escape_latin1` 改 append+`"".join`。纯渲染层性能改动，
+  输出字节不变。
+- pystr 层新增 **pyoff_tab**（{data_ptr, bytes}→{cp, offs}，1024 槽）：
+  pyobj_len_raw/char_at/str_slice 三入口改走 `pystr_cp_entry`（首访
+  建表 O(n) 一次，后续 O(1)）。键=数据指针且 box 数据永不释放（动态
+  层按设计泄漏、字面量共享不可变常量）故无需 purge——若将来引入 box
+  释放必须补 purge。返回 {offs, cp} 按值（insertvalue 形状，照
+  rawstr_slice_parts 先例；返回 alloca 指针=悬垂）。曾试 ASCII 预扫描
+  快路径——那会让每次调用 O(n)，已删。
+
+**终态**：m8 0.52s / m11 0.29s / 原始 .py 0.24s / trap 探针（free 复用
+同 len 同 cp 不同布局）正确 / perf2（150K 码点访问）0.31s。ll 19/19、
+conv/pyll 19/19、ir 20/20（const_prefix 382,443B 二次重钉）。
+教训入档：**改运行时函数复杂度时，必须同时审视所有编译期消费者**
+（本仓库里 .ll 渲染器就是运行时的"用户程序"）。

@@ -200,9 +200,31 @@ class _AliasRewriter(ast.NodeTransformer):
 SOURCE_DIR = "."
 
 
+def _reject_semicolons(source: str) -> None:
+    """Silu has no `;` statement separators. CPython's ast would
+    accept them (the Python plane rides ast.parse), while the
+    self-hosted and Rust front ends reject - pin the strict subset
+    at the shared parse choke point. Error path only: no accepted
+    program's IR changes; separators inside strings/comments are
+    untouched (tokenize-based scan)."""
+    import io
+    import tokenize
+
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            if tok.type == tokenize.OP and tok.string == ";":
+                raise SyntaxError(
+                    f"; statement separators are not part of Silu "
+                    f"(line {tok.start[0]})"
+                )
+    except tokenize.TokenError:
+        pass  # let ast.parse produce the real diagnostic
+
+
 def expand_imports_tree(source: str, base_dir: str) -> ast.Module:
     """Expand .si imports in source; returns the merged AST. Line
     numbers keep each file's original positions (no re-parse)."""
+    _reject_semicolons(source)
     tree = ast.parse(source)
     aliases: dict = {}
     _expand(tree, os.path.abspath(base_dir), set(), (), aliases)

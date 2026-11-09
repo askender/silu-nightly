@@ -4,6 +4,25 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.18.1
+Runtime: code point offsets get a side cache; the dynamic layer goes
+code-point correct.
+
+- `rawstr_cp_off_at`: a 1024-slot hint table caches each non-ASCII
+  string's full codepoint->byte offset array (keyed by struct pointer,
+  validated by len+cp, purged on free; ASCII keeps the O(1) fast
+  path). Per-char loops over non-ASCII strings drop from O(n^2) to
+  O(n) - a 50K-code-point loop went from minutes to 0.3s.
+- Dynamic-layer str semantics fixed to code points (CPython parity):
+  `len()` counts code points (was byte length), `s[i]` indexes and
+  bounds-checks by code point and copies the whole UTF-8 sequence
+  (was a single byte), `s[a:b:c]` clamps and steps in code points.
+  Evidence: `len(chr(0xa7))` compiled to 2, now 1; `ord(s[0])`
+  compiled to 128, now 167.
+- Self-contained walkers (pyobj_utf8_cp_count/offset) for the early
+  runtime creators; oracle user-part char-view rewired to the cached
+  accessor. const/tagged prefixes re-pinned; oracle ll 19/19.
+
 ### v1.18.0
 strbuf: an explicit, reference-semantics growable buffer (P1 / 1b-lite)
 
