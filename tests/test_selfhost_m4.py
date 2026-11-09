@@ -593,8 +593,12 @@ def test_m5_benchmarks_match_cpython(ir2c_bin):
             cf = os.path.join(td, "x.c"); bf = os.path.join(td, "x")
             with open(cf, "w") as h:
                 h.write(c.stdout)
-            b = subprocess.run(["clang", "-O2", cf, "-o", bf],
-                               capture_output=True, text=True)
+            # generated benchmark C uses pow (nbody); Linux needs -lm
+            # at link time, on macOS libm lives in libSystem
+            link = ["clang", "-O2", cf, "-o", bf]
+            if sys.platform != "darwin":
+                link.append("-lm")
+            b = subprocess.run(link, capture_output=True, text=True)
             assert b.returncode == 0, (f, b.stderr[:300])
             run = subprocess.run([bf], capture_output=True, text=True, timeout=300)
             exp = subprocess.run(
