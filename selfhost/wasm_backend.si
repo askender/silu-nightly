@@ -1,0 +1,495 @@
+# L2 milestone: a WASM backend for the Silu IR (int subset).
+# Pipeline: read IR JSON from stdin -> emit WAT to stdout ->
+# wat2wasm --enable-memory64 -> the program runs under any wasm64 host
+# (the same silu_host shim the playground uses; print goes through the
+# write import). Mirrors ir_interp's subset so wasm/examples/*.si are
+# the differential targets: backend output == CPython == interp.
+# Semantics notes:
+# - ints are i64 locals (no boxing); names are function-scoped
+# - // and % are FLOOR semantics: i64.div_s/rem_s truncate, so the
+#   classic sign-correction expansion restores Python behavior
+# - ** is exponentiation by squaring, skipping the dead final square
+#   (the i64 checked-mul policy would abort on the overflowing square)
+from __future__ import annotations
+
+
+class JKind(Enum):
+    NIL = 0
+    BOOL = 1
+    NUM = 2
+    STR = 3
+    ARR = 4
+    OBJ = 5
+
+
+class JValue:
+    kind: JKind
+    b: bool
+    n: int
+    s: str
+    arr: list[JValue]
+    key: str
+    nxt: JValue
+
+
+class Json:
+    src: str
+    pos: int
+
+    def ws(self) -> int:
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+                self.pos += 1
+            else:
+                return 0
+
+    def value(self) -> JValue:
+        self.ws()
+        ch = self.src[self.pos]
+        if ch == "[":
+            return self.array()
+        if ch == '"':
+            return jstr(self.string())
+        if ch == "t":
+            self.pos += 4
+            return jbool(True)
+        if ch == "f":
+            self.pos += 5
+            return jbool(False)
+        if ch == "n":
+            self.pos += 4
+            return jnull()
+        return self.number()
+
+    def array(self) -> JValue:
+        items: list[JValue] = []
+        self.pos += 1
+        while True:
+            self.ws()
+            if self.src[self.pos] == "]":
+                self.pos += 1
+                return jarr(items)
+            items.append(self.value())
+            self.ws()
+            if self.src[self.pos] == ",":
+                self.pos += 1
+
+    def string(self) -> str:
+        self.pos += 1
+        out: str = ""
+        while self.src[self.pos] != '"':
+            ch = self.src[self.pos]
+            if ch == "\\":
+                self.pos += 1
+                e = self.src[self.pos]
+                if e == "n":
+                    out = out + "\n"
+                elif e == "t":
+                    out = out + "\t"
+                else:
+                    out = out + e
+                self.pos += 1
+            else:
+                out = out + ch
+                self.pos += 1
+        self.pos += 1
+        return out
+
+    def number(self) -> JValue:
+        neg: bool = False
+        if self.src[self.pos] == "-":
+            neg = True
+            self.pos += 1
+        n: int = 0
+        while True:
+            ch = self.src[self.pos]
+            if ch >= "0" and ch <= "9":
+                n = n * 10 + (ord(ch) - 48)
+                self.pos += 1
+            else:
+                if neg:
+                    return jnum(0 - n)
+                return jnum(n)
+
+
+def jbool(v: bool) -> JValue:
+    return JValue(JKind.BOOL, v, 0, "", None, "", None)
+
+
+def jnum(v: int) -> JValue:
+    return JValue(JKind.NUM, False, v, "", None, "", None)
+
+
+def jstr(v: str) -> JValue:
+    return JValue(JKind.STR, False, 0, v, None, "", None)
+
+
+def jnull() -> JValue:
+    return JValue(JKind.NIL, False, 0, "", None, "", None)
+
+
+def jarr(items: list[JValue]) -> JValue:
+    return JValue(JKind.ARR, False, 0, "", items, "", None)
+
+
+def tag(node: JValue) -> str:
+    return node.arr[0].s
+
+
+def elem(node: JValue, i: int) -> JValue:
+    return node.arr[i]
+
+
+def elem_str(node: JValue, i: int) -> str:
+    return node.arr[i].s
+
+
+class Fn:
+    name: str
+    params: JValue
+    body: JValue
+
+
+FUNCS: list[Fn] = []
+
+
+def fn_lookup(name: str) -> int:
+    i: int = 0
+    while i < len(FUNCS):
+        if FUNCS[i].name == name:
+            return i
+        i += 1
+    return -1
+
+
+class Gen:
+    out: str
+    tmp: int
+    names: list[str]
+
+    def emit(self, line: str) -> int:
+        self.out = self.out + line + "\n"
+        return 0
+
+    def fresh(self) -> str:
+        self.tmp += 1
+        nm: str = "$t" + self.show_int(self.tmp)
+        self.names.append(nm)
+        return nm
+
+    def decls(self) -> str:
+        d: str = ""
+        i: int = 0
+        while i < len(self.names):
+            d = d + " (local " + self.names[i] + " i64)"
+            i += 1
+        return d
+
+    def show_int(self, v: int) -> str:
+        if v < 0:
+            return "-" + self.show_int(0 - v)
+        digits: str = ""
+        table: str = "0123456789"
+        n: int = v
+        while True:
+            digits = table[n % 10] + digits
+            n = n // 10
+            if n == 0:
+                return digits
+
+
+def collect_locals(stmts: JValue, names: list[str]) -> int:
+    i: int = 0
+    while i < len(stmts.arr):
+        s = elem(stmts, i)
+        t: str = tag(s)
+        if t == "assign" or t == "ann_assign":
+            # target is the bare name string; aug wraps it as a name node.
+            # no recursion into the value expr - expr nodes are not stmt
+            # lists and tag() would subscript None on bare names
+            nm: str = elem_str(s, 1)
+            if nm not in names:
+                names.append(nm)
+        elif t == "aug_assign":
+            nm: str = elem(elem(s, 1), 1).s
+            if nm not in names:
+                names.append(nm)
+        elif t == "if":
+            collect_locals(elem(s, 2), names)
+            collect_locals(elem(s, 3), names)
+        elif t == "while":
+            collect_locals(elem(s, 2), names)
+        i += 1
+    return 0
+
+
+def emit_expr(g: Gen, node: JValue) -> str:
+    t: str = tag(node)
+    if t == "const":
+        if elem(node, 1).kind == JKind.BOOL:
+            if elem(node, 1).b:
+                return "(i64.const 1)"
+            return "(i64.const 0)"
+        return "(i64.const " + str(elem(node, 1).n) + ")"
+    if t == "name":
+        return "(local.get $" + elem(node, 1).s + ")"
+    if t == "line":
+        return "(i64.const 0)"
+    if t == "call":
+        name: str = elem(elem(node, 1), 1).s
+        args: JValue = elem(node, 2)
+        folded: str = ""
+        i: int = 0
+        while i < len(args.arr):
+            folded = folded + " " + emit_expr(g, elem(args, i))
+            i += 1
+        return "(call $" + name + folded + ")"
+    if t == "+":
+        return "(i64.add " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
+    if t == "*":
+        return "(i64.mul " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
+    if t == "-":
+        if len(node.arr) == 2:
+            return "(i64.sub (i64.const 0) " + emit_expr(g, elem(node, 1)) + ")"
+        return "(i64.sub " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
+    if t == "//":
+        return emit_floordiv(g, elem(node, 1), elem(node, 2))
+    if t == "%":
+        return emit_floormod(g, elem(node, 1), elem(node, 2))
+    if t == "**":
+        return emit_ipow(g, elem(node, 1), elem(node, 2))
+    if t == "<":
+        return "(i64.extend_i32_u (i64.lt_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
+    if t == "<=":
+        return "(i64.extend_i32_u (i64.le_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
+    if t == ">":
+        return "(i64.extend_i32_u (i64.gt_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
+    if t == ">=":
+        return "(i64.extend_i32_u (i64.ge_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
+    if t == "==":
+        return "(i64.extend_i32_u (i64.eq " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
+    if t == "!=":
+        return "(i64.extend_i32_u (i64.ne " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
+    return "(i64.const 0)"
+
+
+def emit_floordiv(g: Gen, a: JValue, b: JValue) -> str:
+    # q = a/b (trunc); correct down when remainder and divisor disagree
+    q: str = g.fresh()
+    r: str = g.fresh()
+    ae: str = emit_expr(g, a)
+    be: str = emit_expr(g, b)
+    g.emit("(local.set " + q + " (i64.div_s " + ae + " " + be + "))")
+    g.emit("(local.set " + r + " (i64.rem_s " + ae + " " + be + "))")
+    # if r != 0 and sign(r) != sign(b): q -= 1
+    cond = "(i32.and (i64.ne (local.get " + r + ") (i64.const 0)) (i64.ne (i64.xor (i64.shr_s (local.get " + r + ") (i64.const 63)) (i64.shr_s " + be + " (i64.const 63))) (i64.const 0)))"
+    return "(if (result i64) " + cond + " (then (i64.sub (local.get " + q + ") (i64.const 1))) (else (local.get " + q + ")))"
+
+
+def emit_floormod(g: Gen, a: JValue, b: JValue) -> str:
+    # r = a%b (trunc); if r != 0 and sign(r) != sign(b): r += b
+    q: str = g.fresh()
+    r: str = g.fresh()
+    ae: str = emit_expr(g, a)
+    be: str = emit_expr(g, b)
+    g.emit("(local.set " + q + " (i64.div_s " + ae + " " + be + "))")
+    g.emit("(local.set " + r + " (i64.rem_s " + ae + " " + be + "))")
+    cond = "(i32.and (i64.ne (local.get " + r + ") (i64.const 0)) (i64.ne (i64.xor (i64.shr_s (local.get " + r + ") (i64.const 63)) (i64.shr_s " + be + " (i64.const 63))) (i64.const 0)))"
+    return "(if (result i64) " + cond + " (then (i64.add (local.get " + r + ") " + be + ")) (else (local.get " + r + ")))"
+
+
+def emit_ipow(g: Gen, a: JValue, b: JValue) -> str:
+    # exponentiation by squaring into a temp; skip the dead final square
+    base: str = g.fresh()
+    e: str = g.fresh()
+    r: str = g.fresh()
+    g.emit("(local.set " + base + " " + emit_expr(g, a) + ")")
+    g.emit("(local.set " + e + " " + emit_expr(g, b) + ")")
+    g.emit("(local.set " + r + " (i64.const 1))")
+    g.emit("(block (loop (br_if 1 (i64.le_s (local.get " + e + ") (i64.const 0))) (if (i32.wrap_i64 (i64.rem_s (local.get " + e + ") (i64.const 2))) (then (local.set " + r + " (i64.mul (local.get " + r + ") (local.get " + base + "))))) (local.set " + e + " (i64.div_s (local.get " + e + ") (i64.const 2))) (br_if 1 (i64.le_s (local.get " + e + ") (i64.const 0))) (local.set " + base + " (i64.mul (local.get " + base + ") (local.get " + base + "))) (br 0)))")
+    return "(local.get " + r + ")"
+
+
+def emit_stmts(g: Gen, stmts: JValue) -> int:
+    i: int = 0
+    while i < len(stmts.arr):
+        emit_stmt(g, elem(stmts, i))
+        i += 1
+    return 0
+
+
+def emit_stmt(g: Gen, stmt: JValue) -> int:
+    t: str = tag(stmt)
+    if t == "line":
+        return 0
+    if t == "assign" or t == "ann_assign":
+        g.emit("(local.set $" + elem_str(stmt, 1) + " " + emit_expr(g, elem(stmt, 2)) + ")")
+        return 0
+    if t == "aug_assign":
+        tgt: str = "$" + elem(elem(stmt, 1), 1).s
+        op: str = elem_str(stmt, 2)
+        rhs: str = emit_expr(g, elem(stmt, 3))
+        if op == "+=":
+            g.emit("(local.set " + tgt + " (i64.add (local.get " + tgt + ") " + rhs + "))")
+        elif op == "-=":
+            g.emit("(local.set " + tgt + " (i64.sub (local.get " + tgt + ") " + rhs + "))")
+        elif op == "*=":
+            g.emit("(local.set " + tgt + " (i64.mul (local.get " + tgt + ") " + rhs + "))")
+        elif op == "//=":
+            g.emit("(local.set " + tgt + " " + emit_floordiv(g, elem(stmt, 1), elem(stmt, 3)) + ")")
+        elif op == "%=":
+            g.emit("(local.set " + tgt + " " + emit_floormod(g, elem(stmt, 1), elem(stmt, 3)) + ")")
+        elif op == "**=":
+            g.emit("(local.set " + tgt + " " + emit_ipow(g, elem(stmt, 1), elem(stmt, 3)) + ")")
+        return 0
+    if t == "print":
+        args: JValue = elem(stmt, 2)
+        i: int = 0
+        while i < len(args.arr):
+            if i > 0:
+                g.emit("(call $print_sp)")
+            g.emit("(call $print_i64 " + emit_expr(g, elem(args, i)) + ")")
+            i += 1
+        g.emit("(call $print_nl)")
+        return 0
+    if t == "call":
+        # the front end emits print as a plain call node
+        name: str = elem(elem(stmt, 1), 1).s
+        args: JValue = elem(stmt, 2)
+        if name == "print":
+            i: int = 0
+            while i < len(args.arr):
+                if i > 0:
+                    g.emit("(call $print_sp)")
+                g.emit("(call $print_i64 " + emit_expr(g, elem(args, i)) + ")")
+                i += 1
+            g.emit("(call $print_nl)")
+            return 0
+        folded: str = ""
+        i: int = 0
+        while i < len(args.arr):
+            folded = folded + " " + emit_expr(g, elem(args, i))
+            i += 1
+        g.emit("(drop (call $" + name + folded + "))")
+        return 0
+    if t == "func_def":
+        return 0
+    if t == "return":
+        g.emit("(local.set $rv " + emit_expr(g, elem(stmt, 1)) + ")")
+        g.emit("(br $fn_exit)")
+        return 0
+    if t == "if":
+        cond: str = emit_expr(g, elem(stmt, 1))
+        g.emit("(if (i32.wrap_i64 " + cond + ") (then")
+        emit_stmts(g, elem(stmt, 2))
+        g.emit(") (else")
+        emit_stmts(g, elem(stmt, 3))
+        g.emit("))")
+        return 0
+    if t == "while":
+        cond: str = emit_expr(g, elem(stmt, 1))
+        g.emit("(block $wexit (loop $wtop")
+        g.emit("(br_if $wexit (i32.eqz (i32.wrap_i64 " + cond + ")))")
+        emit_stmts(g, elem(stmt, 2))
+        g.emit("(br $wtop)))")
+        return 0
+    return 0
+
+
+def emit_fn(g: Gen, fn: Fn) -> int:
+    names: list[str] = []
+    params: list[str] = []
+    i: int = 0
+    sig: str = ""
+    while i < len(fn.params.arr):
+        pn: str = fn.params.arr[i].s
+        sig = sig + " (param $" + pn + " i64)"
+        names.append(pn)
+        params.append(pn)
+        i += 1
+    collect_locals(fn.body, names)
+    # non-param source names + fresh temps all become wasm locals; the
+    # body goes through a scratch Gen so its fresh temps are known
+    # before the header closes
+    local_names: list[str] = []
+    i = 0
+    while i < len(names):
+        nm: str = names[i]
+        if nm not in params:
+            local_names.append("$" + nm)
+        i += 1
+    sub: Gen = Gen("", 0, local_names)
+    emit_stmts(sub, fn.body)
+    head: str = "(func $" + fn.name + sig + " (result i64)" + sub.decls() + " (local $rv i64)"
+    g.emit(head)
+    g.emit("(block $fn_exit")
+    g.out = g.out + sub.out
+    g.emit(")")
+    g.emit("(local.get $rv))")
+    return 0
+
+
+RUNTIME = '''(module
+(import "silu_host" "write" (func $write (param i32 i64 i64)))
+(memory i64 1)
+(export "memory" (memory 0))
+(func $print_i64 (param $v i64)
+(local $p i64) (local $len i64)
+(if (i64.lt_s (local.get $v) (i64.const 0))
+  (then
+    (i64.store8 (i64.const 64) (i64.const 45))
+    (call $write (i32.const 1) (i64.const 64) (i64.const 1))
+    (local.set $v (i64.sub (i64.const 0) (local.get $v)))))
+(local.set $p (i64.const 87))
+(loop $digits
+  (local.set $p (i64.sub (local.get $p) (i64.const 1)))
+  (i64.store8 (local.get $p) (i64.add (i64.const 48) (i64.rem_u (local.get $v) (i64.const 10))))
+  (local.set $v (i64.div_u (local.get $v) (i64.const 10)))
+  (br_if $digits (i64.gt_u (local.get $v) (i64.const 0))))
+(call $write (i32.const 1) (local.get $p) (i64.sub (i64.const 87) (local.get $p))))
+(func $print_sp
+(i64.store8 (i64.const 90) (i64.const 32))
+(call $write (i32.const 1) (i64.const 90) (i64.const 1)))
+(func $print_nl
+(i64.store8 (i64.const 90) (i64.const 10))
+(call $write (i32.const 1) (i64.const 90) (i64.const 1)))'''
+
+
+def main() -> int:
+    src: str = read_stdin()
+    parser: Json = Json(src, 0)
+    root: JValue = parser.value()
+    stmts: JValue = elem(root, 1)
+    # pass 1: register functions (hoisted to the top by the front end)
+    i: int = 0
+    while i < len(stmts.arr):
+        s = elem(stmts, i)
+        if tag(s) == "func_def":
+            fn: Fn = Fn("", None, None)
+            fn.name = elem_str(s, 1)
+            fn.params = elem(s, 2)
+            fn.body = elem(s, 3)
+            FUNCS.append(fn)
+        i += 1
+    g: Gen = Gen("", 0, [])
+    g.out = RUNTIME + "\n"
+    # pass 2: each function, then the top-level statements as $silu_main
+    i = 0
+    while i < len(FUNCS):
+        emit_fn(g, FUNCS[i])
+        i += 1
+    names: list[str] = []
+    collect_locals(stmts, names)
+    local_names: list[str] = []
+    i = 0
+    while i < len(names):
+        local_names.append("$" + names[i])
+        i += 1
+    sub: Gen = Gen("", 0, local_names)
+    emit_stmts(sub, stmts)
+    g.emit("(func $silu_main (export \"silu_main\")" + sub.decls())
+    g.out = g.out + sub.out
+    g.emit("))")
+    print(g.out, end="")
+    return 0
