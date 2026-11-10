@@ -76,6 +76,35 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
 4. 全绿后**整体提交**（含 utf8_probe/驱动器/测试/文档），消息主题
    "utf8 corpus probe + byte-domain fixes + driver cache hardening"
 
+## 三点五、WASM L2 子集 3 进行中（2026-11-11，已回退待续）
+
+**目标**：list[int] 轻量原生运行时（内存式 (ptr,len,cap) 数组 + bump
+分配器，不走 pyobj）。设计与大部分实现已完成但因一个 typed 平面段
+错误**回退到子集 2 绿状态**（wasm_backend.si = c5d2365 版）。
+
+**最小复现（两行即崩，typed 编译的 backend 二进制 SIGSEGV）**：
+    acc: float = 0.0
+    acc = acc + 1.0
+（无 print、无函数也崩；fb = ann+print 不崩 ⇒ 崩点在"普通 assign +
+float RHS"路径：set_type 更新 / get_type 扫描 / to_f / decls 四者之一）
+
+**已完成的实现（本轮回退了，设计仍有效，重做时按此恢复）**：
+- RUNTIME 增 $alloc（bump+memory.grow）、$li_new/$li_append（倍增扩容
+  +memory.copy）/$li_get/$li_set（越界 unreachable）/$li_len/$print_li
+- collect_locals 三参化（names+types），for 目标收集
+- ann_type：["name","float"]→"f"、["subscript",list,*]→"li"
+- emit：list 字面量→$li_new、subscript→$li_get、attribute append→
+  $li_append、assign 下标目标→$li_set、for 解糖（fresh idx + $li_len/
+  $li_get）、print 按 li/f/i 分派
+- 函数参数/返回类型取 IR 节点 4/5 位注解；f64 const 发射原始十进制文本
+**已修的坑（重做时注意）**：Gen 的 names/tnames ctor 传同一 list 会
+alias（fresh 双 append 失配）→ tnames 必须独立拷贝；assign 目标是裸
+字符串而 aug 是包装形；collect 不得递归进值表达式；循环体内注解声明
+曾伴段错误（未定论）；wabt 1.0.42 memory64 默认开（--enable-memory64
+已不存在）；wabt.js API 是 parseWat + _wabt_set_memory64_enabled(1)。
+**调试法**：注释 assign 分支的子步骤 + 退出码二分（段错误吞输出）；
+动态平面可跑通后再对 typed 二进制。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：
