@@ -15,6 +15,19 @@
 
 ## 二、本轮内容（utf8 语料钉板 + 孪生热点扫尾，**已整体提交**）
 
+**⚠️ 事后重大发现（2026-11-11，WASM L1 工作中暴露）**：utf8 轮的
+ll 门禁绿是**陈旧 siluc1 二进制**给出的假绿——`llvmlite.si` 的
+utf8_byte_len 虽在提交前改好，但 siluc1 二进制在门禁之后才被
+重建（flake 实验强制 touch），重建后 bytes-分支在 typed 平面误触发
+（bytes 与 str 同为 rawstr 表示，isinstance 恒真 → len() 按 1.18
+语义返回码点数 26 → 字符串常量 [27 x i8] 装 36 字节内容）。
+**修复**：双孪生 utf8_byte_len 去掉 tuple-isinstance 分支，改为逐元素
+`isinstance(ch, str)`（单类型检查两平面语义一致；dynamic 的 bytes
+迭代出 int 直接计 1 字节）。附带发现并修复：rust oracle 的
+`saved: dict = self.env`（引用绑定）被降级为 rawdict_new 复制——
+新增 dict ann_assign 非字面量 RHS 的引用绑定路径（silu-conv.rs）；
+bail 消息现带类型与参数序号。
+
 主题：**非 ASCII 语料钉板 + 孪生热点扫尾**。改动清单：
 
 | 文件 | 内容 | 状态 |

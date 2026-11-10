@@ -1,0 +1,17 @@
+# recursion + int arithmetic + if/else chains
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def gcd(a: int, b: int) -> int:
+    while b != 0:
+        t: int = b
+        b = a % b
+        a = t
+    return a
+
+print(fib(20))
+print(gcd(1071, 462))
+print(7 // 2, -7 // 2, 7 % 3, -7 % 3)
+print(2 ** 40)

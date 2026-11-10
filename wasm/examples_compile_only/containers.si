@@ -1,0 +1,21 @@
+# list + dict: build, index, iterate, membership
+l: list[int] = []
+i: int = 0
+while i < 8:
+    l.append(i * i)
+    i += 1
+print(l)
+print(l[3], l[-1], len(l))
+total: int = 0
+for x in l:
+    total += x
+print(total)
+
+d: dict[str, int] = {}
+d["a"] = 1
+d["b"] = 2
+d["a"] = d["a"] + 10
+print(d["a"], d["b"], len(d))
+print("a" in d, "z" in d)
+for k in d:
+    print(k, d[k])

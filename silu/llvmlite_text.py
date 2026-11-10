@@ -234,20 +234,27 @@ def _escape_byte_val(b):
 
 def utf8_byte_len(s):
     # UTF-8 BYTE length of a str (utf8_len counts code points; the
-    # two differ for non-ASCII, and [N x i8] array sizing needs bytes)
-    if isinstance(s, (bytes, bytearray)):
-        return len(s)
+    # two differ for non-ASCII, and [N x i8] array sizing needs bytes).
+    # No isinstance(s, bytes) guard: in the typed plane bytes and str
+    # share the rawstr repr, so that check misfires and len() would
+    # return code points. Per-element str check instead - dynamic-plane
+    # bytes iteration yields ints (one byte each), typed-plane yields
+    # code points (same repr as str), and both paths land on the
+    # UTF-8 byte length.
     n = 0
     for ch in s:
-        cp = ord(ch)
-        if cp < 0x80:
-            n += 1
-        elif cp < 0x800:
-            n += 2
-        elif cp < 0x10000:
-            n += 3
+        if isinstance(ch, str):
+            cp = ord(ch)
+            if cp < 0x80:
+                n += 1
+            elif cp < 0x800:
+                n += 2
+            elif cp < 0x10000:
+                n += 3
+            else:
+                n += 4
         else:
-            n += 4
+            n += 1
     return n
 
 

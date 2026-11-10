@@ -1,0 +1,11 @@
+# float arithmetic: promotion, division, formatting
+acc: float = 0.0
+i: int = 0
+while i < 50:
+    acc = acc + float(i) / 4.0
+    i += 1
+print(acc)
+print(7 / 2)
+print(3.5 * 2.0, 1.0 / 3.0)
+import math
+print(math.sqrt(2.0))

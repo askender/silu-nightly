@@ -1832,9 +1832,40 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
         return;
     }
     if IN_FN.with(|v| *v.borrow()) && st.get(3).head() == "subscript"
+        && st.get(3).get(1).get(1).str_of() == "dict"
+        && init.head() != "dict" {
+        // dict-typed ann_assign bound to an existing dict expression:
+        // REFERENCE bind (python-plane semantics - dicts share pointers
+        // on assignment), not a fresh allocation. Registers the local in
+        // the dict slot tables, then stores the RHS's raw pointer.
+        let tp = st.get(3).get(2);
+        let tv = tp.items().get(1).cloned().unwrap_or(Val::Null);
+        let vty = tv_valtype(&tv);
+        FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "list".into())));
+        DCT_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+        DCT_KEYS.with(|m| m.borrow_mut().push((name.clone(), vty)));
+        let va = match &tv { Val::List(vs) if vs.len() == 2 =>
+            vs[1].get(1).str_of(), _ => String::new() };
+        DCT_VALS.with(|m| m.borrow_mut().push((name.clone(), va)));
+        FN_D.with(|f| f.borrow_mut().push(name.clone()));
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let dv = eval_mod(b, &init, &fs);
+        let r = match dv {
+            Typed::Inst(r) | Typed::Str(r) => r,
+            Typed::PStr(_) | Typed::Pyo(_) => to_raw(b, dv),
+            _ => bail("dict reference bind rhs"),
+        };
+        b.silent();
+        b.line(format!("  store i8* {}, i8** %\"{}\"", r, name));
+        return;
+    }
+    if IN_FN.with(|v| *v.borrow()) && st.get(3).head() == "subscript"
         && st.get(3).get(1).get(1).str_of() == "dict" {
         // function-local dict[str,Json]: alloca + rawdict_new + store
-        // (jsonparse_json parse_object o evidence)
+        // (jsonparse_json parse_object o evidence). Only literal {} inits:
+        // a dict-typed ann_assign bound to an existing dict expression is
+        // a REFERENCE bind (pointer share, python-plane semantics) and
+        // falls through to the generic path.
         let tp = st.get(3).get(2);
         let tv = tp.items().get(1).cloned().unwrap_or(Val::Null);
         let vty = tv_valtype(&tv);
@@ -6206,7 +6237,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                                 let r = to_raw(b, av);
                                 parts.push(format!("i8* {}", r));
                             }
-                            _ => bail("method arg type"),
+                            _ => bail(&format!("method arg type {} arg#{}", ty, i + 1)),
                         }
                         continue;
                     }

@@ -332,7 +332,11 @@ function makeHost(files, stdinBytes) {
     memory = obj.instance.exports.memory;
     const run = (async () => {
       try {
-        obj.instance.exports.silu_main();
+        // each built module exports exactly one function (its renamed main)
+        const entry = Object.keys(obj.instance.exports).find(
+          (k) => typeof obj.instance.exports[k] === "function",
+        );
+        obj.instance.exports[entry]();
         if (exitCode === null) exitCode = 0;
       } catch (e) {
         if (!(e instanceof SiluExit)) {

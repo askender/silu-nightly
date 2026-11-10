@@ -62,17 +62,45 @@ def compiler_ll(out_ll):
     )
 
 
-def build_siluc1():
-    os.makedirs(ART, exist_ok=True)
-    ll = os.path.join(ART, "siluc1.ll")
-    compiler_ll(ll)
+TOOLS = {
+    "siluc1": "selfhost/siluc.si",
+    "fe": "selfhost/silu_fe_main.si",
+    "interp": "selfhost/ir_interp.si",
+}
 
-    # wasm-ld treats --export=main as the command ABI (argc/argv wrapper);
-    # rename the entry so we can export the plain () -> i32 function.
-    link_ll = os.path.join(ART, "siluc1_link.ll")
+
+def build_tool(name):
+    """One selfhost tool -> wasm64 (compiler .ll via the Python planes)."""
+    import re
+
+    os.makedirs(ART, exist_ok=True)
+    src = os.path.join(REPO, TOOLS[name])
+    ll = os.path.join(ART, f"{name}.ll")
+
+    if not os.path.exists(ll) or os.path.getmtime(ll) < max(
+        os.path.getmtime(p)
+        for p in [src]
+        + [os.path.join(REPO, "selfhost", f) for f in os.listdir(os.path.join(REPO, "selfhost")) if f.endswith(".si")]
+        + [os.path.join(REPO, "silu", f) for f in os.listdir(os.path.join(REPO, "silu")) if f.endswith(".py")]
+    ):
+        print(f"emitting {name} .ll (self-host)...", file=sys.stderr)
+        sys.path.insert(0, REPO)
+        from tools.selfhost_build import compile_with, ensure_converter, ensure_frontend
+
+        compile_with(
+            ensure_frontend(),
+            ensure_converter(),
+            src,
+            os.path.join(ART, f"_native_probe_{name}"),
+            save_ll=ll,
+        )
+
+    # wasm-ld turns --export=main into an (i32,i32) command-ABI wrapper;
+    # rename the entry so the plain () -> i32 function is exportable
+    link_ll = os.path.join(ART, f"{name}_link.ll")
     text = open(ll, encoding="utf-8").read()
     open(link_ll, "w", encoding="utf-8").write(
-        text.replace('@"main"', '@"silu_main"')
+        text.replace('@"main"', f'@"{name}_main"')
     )
 
     shim_c = os.path.join(WASM, "shim", "shim_libc.c")
@@ -82,34 +110,40 @@ def build_siluc1():
     run([CLANG, "--target=wasm64-unknown-unknown", "-O2", "-ffreestanding",
          "-nostdlib", "-fno-builtin", "-c", shim_c, "-o", shim_o])
 
-    out = os.path.join(ART, "siluc1.wasm")
+    out = os.path.join(ART, f"{name}.wasm")
     run([
         CLANG, "--target=wasm64-unknown-unknown", "-O2", "-nostdlib",
-        "-Wl,--no-entry", "-Wl,--export=silu_main", "-Wl,--export-memory",
+        "-Wl,--no-entry", f"-Wl,--export={name}_main", "-Wl,--export-memory",
         "-Wl,--import-undefined", "-Wl,-z,stack-size=16777216",
         shim_o, link_ll, "-o", out,
     ])
     size = os.path.getsize(out)
-    print(f"siluc1.wasm: {size} bytes ({size / 1e6:.2f} MB)")
+    print(f"{name}.wasm: {size} bytes ({size / 1e6:.2f} MB)")
+
+
+def build_siluc1():
+    build_tool("siluc1")
 
 
 def build_web():
     """Assemble the self-contained playground dir: wasm/web/."""
     import shutil
 
-    build_siluc1()
+    for tool in TOOLS:
+        build_tool(tool)
     web = os.path.join(WASM, "web")
     os.makedirs(web, exist_ok=True)
     shutil.copy(os.path.join(WASM, "shim", "host.mjs"),
                 os.path.join(web, "host_core.mjs"))
-    shutil.copy(os.path.join(ART, "siluc1.wasm"), web)
+    for tool in TOOLS:
+        shutil.copy(os.path.join(ART, f"{tool}.wasm"), web)
     print(f"playground ready: serve {web}/ (index + host_core.mjs + siluc1.wasm)")
 
 
 if __name__ == "__main__":
     what = sys.argv[1] if len(sys.argv) > 1 else "siluc1"
-    if what == "siluc1":
-        build_siluc1()
+    if what in TOOLS:
+        build_tool(what)
     elif what == "web":
         build_web()
     else:

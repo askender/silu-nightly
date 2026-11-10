@@ -28,14 +28,18 @@
     border-radius: 8px; resize: none; overflow: auto; white-space: pre;
   }
   textarea:focus { outline: 1px solid #3b82f6; }
-  #bar { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+  #bar { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
   button {
     font: inherit; font-weight: 600; padding: 6px 16px; border: 0;
     border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer;
   }
+  button.alt { background: #0e7c66; }
   button:disabled { opacity: .5; cursor: default; }
+  select {
+    font: inherit; padding: 5px 8px; border-radius: 6px;
+    background: #1a2129; color: #d8dee6; border: 1px solid #232a32;
+  }
   #stats { font-size: 12px; color: #8b96a5; font-family: var(--mono); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #err { color: #ff8080; white-space: pre-wrap; }
   @media (max-width: 900px) {
     main { grid-template-columns: 1fr; height: auto; }
     textarea, pre { min-height: 300px; }
@@ -45,85 +49,186 @@
 <body>
 <header>
   <h1>Silu Playground</h1>
-  <p>The self-hosted Silu compiler (<code>siluc1</code>), compiled to a
-  2.8&nbsp;MB WebAssembly module, runs entirely in your tab — the .ll you
-  see is byte-identical to what the native compiler prints. No server.
-  Docs: <a href="https://silu.askender.xyz/">silu.askender.xyz</a></p>
+  <p>The self-hosted Silu compiler, compiled to WebAssembly, runs entirely
+  in your tab — the .ll is byte-identical to what the native compiler
+  prints, and the Run pipeline interprets the same IR the native tools
+  see. No server. Docs: <a href="https://silu.askender.xyz/">silu.askender.xyz</a></p>
 </header>
 <main>
   <div class="pane">
     <div id="bar">
       <button id="go">Compile → .ll</button>
-      <span id="stats">loading siluc1.wasm…</span>
+      <button id="run" class="alt">Run ▶</button>
+      <select id="examples"></select>
+      <span id="stats">loading modules…</span>
     </div>
     <h2>silu source</h2>
     <textarea id="src" spellcheck="false"></textarea>
   </div>
   <div class="pane">
-    <h2>llvm ir (byte-identical to native output)</h2>
-    <pre id="out"># press Compile</pre>
+    <h2 id="outTitle">llvm ir (byte-identical to native output)</h2>
+    <pre id="out"># press Compile or Run</pre>
   </div>
 </main>
 <script type="module">
-const FIB = `# fibonacci, the classic warm-up
+const EXAMPLES = {
+  "recursion.si": "wasm/examples/recursion.si",
+  "loops.si": "wasm/examples/loops.si",
+  "strings.si (compile-only)": "wasm/examples_compile_only/strings.si",
+  "containers.si (compile-only)": "wasm/examples_compile_only/containers.si",
+  "floats.si (compile-only)": "wasm/examples_compile_only/floats.si",
+};
+const EXAMPLE_TEXT = {
+  "recursion.si": `# recursion + int arithmetic + if/else chains
 def fib(n: int) -> int:
     if n < 2:
         return n
     return fib(n - 1) + fib(n - 2)
 
-print(fib(25))
-`;
+def gcd(a: int, b: int) -> int:
+    while b != 0:
+        t: int = b
+        b = a % b
+        a = t
+    return a
+
+print(fib(20))
+print(gcd(1071, 462))
+print(7 // 2, -7 // 2, 7 % 3, -7 % 3)
+print(2 ** 40)
+`,
+  "loops.si": `# while loops, counters, augmented assignment
+i: int = 0
+total: int = 0
+while i < 10:
+    total += i * i
+    i += 1
+print(total)
+
+n: int = 27
+steps: int = 0
+while n != 1:
+    if n % 2 == 0:
+        n //= 2
+    else:
+        n = 3 * n + 1
+    steps += 1
+print(steps)
+
+d: int = 1
+c: int = 0
+while d <= 4096:
+    d *= 2
+    c += 1
+print(d, c)
+
+def digits_sum(n: int) -> int:
+    s: int = 0
+    while n > 0:
+        s += n % 10
+        n //= 10
+    return s
+
+print(digits_sum(2 ** 30))
+`,
+};
 
 const src = document.getElementById("src");
 const out = document.getElementById("out");
+const outTitle = document.getElementById("outTitle");
 const go = document.getElementById("go");
+const run = document.getElementById("run");
 const stats = document.getElementById("stats");
-src.value = FIB;
+const sel = document.getElementById("examples");
+src.value = EXAMPLE_TEXT["recursion.si"];
+for (const k of Object.keys(EXAMPLES)) {
+  const o = document.createElement("option");
+  o.textContent = k;
+  sel.appendChild(o);
+}
+sel.addEventListener("change", () => {
+  const k = sel.value;
+  if (EXAMPLE_TEXT[k]) {
+    src.value = EXAMPLE_TEXT[k];
+  } else {
+    fetch(EXAMPLES[k]).then((r) => r.text()).then((t) => (src.value = t));
+  }
+});
 
-// boot without top-level await: register the handler first, then load.
-// (an orphaned TLA promise left the button dead on slow in-app webviews)
-let readyPromise = null;
+// boot without top-level await: register handlers first, then load
 let core = null;
+let modules = {}; // name -> Uint8Array
+let readyPromise = null;
+
+async function loadOne(name) {
+  const resp = await fetch("./" + name + ".wasm");
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${name}.wasm`);
+  modules[name] = new Uint8Array(await resp.arrayBuffer());
+}
 
 async function boot() {
   core = await import("./host_core.mjs");
-  const resp = await fetch("./siluc1.wasm");
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} for siluc1.wasm`);
-  const buf = await resp.arrayBuffer();
-  wasmBytes = new Uint8Array(buf);
-  stats.textContent = `siluc1.wasm loaded (${(wasmBytes.length / 1e6).toFixed(2)} MB)`;
+  await Promise.all([loadOne("fe"), loadOne("interp")]);
+  stats.textContent = `fe+interp loaded (${((modules.fe.length + modules.interp.length) / 1e6).toFixed(2)} MB); loading compiler…`;
+  await loadOne("siluc1");
+  const total = (modules.fe.length + modules.interp.length + modules.siluc1.length) / 1e6;
+  stats.textContent = `3 modules loaded (${total.toFixed(2)} MB)`;
 }
 
-let wasmBytes = null;
 readyPromise = boot().catch((e) => {
   stats.textContent = "load failed: " + (e.message || e);
 });
 
-go.addEventListener("click", async () => {
-  go.disabled = true;
-  out.textContent = "compiling…";
+async function ensureReady() {
+  await readyPromise;
+}
+
+async function compileLL() {
+  await ensureReady();
   const t0 = performance.now();
+  const stdin = new TextEncoder().encode(src.value);
+  const { done } = await core.runWasm({ wasmBytes: modules.siluc1, stdin });
+  const r = await done;
+  const ms = (performance.now() - t0).toFixed(0);
+  if (r.exitCode !== 0) throw new Error(`compiler exited ${r.exitCode}\n` + new TextDecoder().decode(r.stderr));
+  const text = new TextDecoder().decode(r.stdout);
+  outTitle.textContent = "llvm ir (byte-identical to native output)";
+  out.textContent = text;
+  stats.textContent = `${text.length.toLocaleString()} bytes of .ll in ${ms} ms`;
+}
+
+async function runProgram() {
+  await ensureReady();
+  const t0 = performance.now();
+  const stdin = new TextEncoder().encode(src.value);
+  let fe = await core.runWasm({ wasmBytes: modules.fe, stdin });
+  fe = await fe.done;
+  if (fe.exitCode !== 0) throw new Error("front end exited " + fe.exitCode + "\n" + new TextDecoder().decode(fe.stderr));
+  let it = await core.runWasm({ wasmBytes: modules.interp, stdin: fe.stdout });
+  it = await it.done;
+  const ms = (performance.now() - t0).toFixed(0);
+  outTitle.textContent = "program output (ir interpreter)";
+  out.textContent = new TextDecoder().decode(it.stdout) +
+    (it.stderr.length ? "\n# " + new TextDecoder().decode(it.stderr) : "");
+  stats.textContent = `ran in ${ms} ms (exit ${it.exitCode})`;
+}
+
+async function guarded(fn) {
+  go.disabled = true;
+  run.disabled = true;
   try {
-    await readyPromise;
-    const stdin = new TextEncoder().encode(src.value);
-    const { done } = await core.runWasm({ wasmBytes, stdin });
-    const r = await done;
-    const ms = (performance.now() - t0).toFixed(0);
-    if (r.exitCode !== 0) {
-      out.textContent = `# compiler exited ${r.exitCode}\n` +
-        new TextDecoder().decode(r.stderr);
-      stats.textContent = `failed in ${ms} ms`;
-    } else {
-      const text = new TextDecoder().decode(r.stdout);
-      out.textContent = text;
-      stats.textContent = `${text.length.toLocaleString()} bytes of .ll in ${ms} ms (byte-identical to native)`;
-    }
+    await fn();
   } catch (e) {
-    out.textContent = "# host error: " + (e.message || e);
+    outTitle.textContent = "error";
+    out.textContent = "# " + (e.message || e);
     stats.textContent = "error";
   }
   go.disabled = false;
-});
+  run.disabled = false;
+}
+
+go.addEventListener("click", () => guarded(compileLL));
+run.addEventListener("click", () => guarded(runProgram));
 </script>
 </body>
 </html>

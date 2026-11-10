@@ -160,3 +160,5 @@ siluc1
 wasm/artifacts/
 wasm/web/host_core.mjs
 wasm/web/siluc1.wasm
+wasm/web/fe.wasm
+wasm/web/interp.wasm

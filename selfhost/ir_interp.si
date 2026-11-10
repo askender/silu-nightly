@@ -2,9 +2,11 @@
 from __future__ import annotations
 # interpreter for a Silu IR subset, written in Silu itself.
 # Pipeline: read JSON IR from stdin -> parse to JValue trees -> execute.
-# Supported IR subset: module, line, const (int/str/bool), name,
-# assign/ann_assign, binops (+ - * //), compare, if, while,
-# call (print / user function), func_def, return.
+# Supported IR subset: module, line, const (int), name,
+# assign/ann_assign, aug_assign, binops (+ - * // %), compare, if,
+# while, print(int-expr), call of user-defined int functions (with
+# per-call env, recursion), func_def, return. Anything else silently
+# evaluates to 0 (M2 scope - NOT an error signal; known gap).
 # Usage: python -m silu ir prog.py --output prog.ir.json
 #        silu build ir_interp.si && ./ir_interp < prog.ir.json
 
@@ -163,14 +165,60 @@ def elem_int(node: JValue, i: int) -> int:
     return node.arr[i].n
 
 
+# function registry lives at module level: the R2 oracle does not take
+# instance-typed method args through instance-list-field indexing, so
+# call_user is a top-level function and the registry is global state
+FNP: list[JValue] = []
+FNB: list[JValue] = []
+
+
+def fn_register(params: JValue, body: JValue) -> int:
+    FNP.append(params)
+    FNB.append(body)
+    return 0
+
+
+def fn_params_get(i: int) -> JValue:
+    return FNP[i]
+
+
+def fn_body_get(i: int) -> JValue:
+    return FNB[i]
+
+
 class Interp:
     env: dict[str, int]
     out: str
+    funcs: dict[str, int]
+    ret: int
+    has_ret: bool
 
     def get_int(self, name: str) -> int:
         if name in self.env:
             return self.env[name]
         return 0
+
+    def call_user(self, name: str, args: JValue) -> int:
+        # evaluate args in the CALLER's env first, then swap in a fresh
+        # env and bind (arg exprs may reference caller locals like `n`)
+        idx: int = self.funcs[name]
+        vals: list[int] = []
+        i: int = 0
+        while i < len(args.arr):
+            vals.append(self.eval_int(elem(args, i)))
+            i += 1
+        saved: dict[str, int] = self.env
+        self.env = {}
+        params: JValue = fn_params_get(idx)
+        i = 0
+        while i < len(params.arr):
+            self.env[params.arr[i].s] = vals[i]
+            i += 1
+        self.has_ret = False
+        self.ret = 0
+        self.exec_stmts(fn_body_get(idx))
+        self.env = saved
+        return self.ret
 
     def eval_int(self, node: JValue) -> int:
         t: str = tag(node)
@@ -180,9 +228,17 @@ class Interp:
             return self.get_int(elem(node, 1).s)
         if t == "line":
             return 0
+        if t == "call":
+            cname: str = elem(elem(node, 1), 1).s
+            if cname in self.funcs:
+                return self.call_user(cname, elem(node, 2))
+            return 0
         if t == "+":
             return self.eval_int(elem(node, 1)) + self.eval_int(elem(node, 2))
         if t == "-":
+            if len(node.arr) == 2:
+                # unary minus: ["-", x]
+                return 0 - self.eval_int(elem(node, 1))
             return self.eval_int(elem(node, 1)) - self.eval_int(elem(node, 2))
         if t == "*":
             return self.eval_int(elem(node, 1)) * self.eval_int(elem(node, 2))
@@ -190,7 +246,25 @@ class Interp:
             return self.eval_int(elem(node, 1)) // self.eval_int(elem(node, 2))
         if t == "%":
             return self.eval_int(elem(node, 1)) % self.eval_int(elem(node, 2))
+        if t == "**":
+            return self.ipow(self.eval_int(elem(node, 1)), self.eval_int(elem(node, 2)))
         return 0
+
+    def ipow(self, base: int, e: int) -> int:
+        # int pow, exponentiation by squaring; negative exponent is a
+        # documented silent-0 gap (CPython would go float)
+        if e < 0:
+            return 0
+        r: int = 1
+        while e > 0:
+            if e % 2 == 1:
+                r = r * base
+            e = e // 2
+            if e > 0:
+                # the final square would be dead work - and any
+                # intermediate past the result overflows i64
+                base = base * base
+        return r
 
     def truthy(self, node: JValue) -> bool:
         t: str = tag(node)
@@ -248,16 +322,41 @@ class Interp:
                 self.env[tgt] = cur + rhs
             elif op == "-=":
                 self.env[tgt] = cur - rhs
-            else:
+            elif op == "*=":
                 self.env[tgt] = cur * rhs
+            elif op == "//=":
+                self.env[tgt] = cur // rhs
+            elif op == "%=":
+                self.env[tgt] = cur % rhs
+            elif op == "**=":
+                self.env[tgt] = self.ipow(cur, rhs)
             return 0
         if t == "print":
             self.out = self.out + self.show_int(self.eval_int(elem(stmt, 1))) + "\n"
             return 0
+        if t == "func_def":
+            self.funcs[elem_str(stmt, 1)] = len(FNP)
+            fn_register(elem(stmt, 2), elem(stmt, 3))
+            return 0
+        if t == "return":
+            self.ret = self.eval_int(elem(stmt, 1))
+            self.has_ret = True
+            return 1
         if t == "call":
             name: str = elem(elem(stmt, 1), 1).s
             if name == "print":
-                self.out = self.out + self.show_int(self.eval_int(elem(elem(stmt, 2), 0))) + "\n"
+                # CPython print: args space-separated, newline-terminated
+                args: JValue = elem(stmt, 2)
+                i: int = 0
+                while i < len(args.arr):
+                    if i > 0:
+                        self.out = self.out + " "
+                    self.out = self.out + self.show_int(self.eval_int(elem(args, i)))
+                    i += 1
+                self.out = self.out + "\n"
+            elif name in self.funcs:
+                # statement-level user call; the value is discarded
+                junk: int = self.call_user(name, elem(stmt, 2))
             return 0
         if t == "if":
             if self.truthy(elem(stmt, 1)):
@@ -272,11 +371,12 @@ class Interp:
         return 0
 
 
+
 def main() -> int:
     src: str = read_stdin()
     parser: Json = Json(src, 0)
     root: JValue = parser.value()
-    interp: Interp = Interp({}, "")
+    interp: Interp = Interp({}, "", {}, 0, False)
     interp.exec_stmts(elem(root, 1))
     print(interp.out, end="")
     return 0
