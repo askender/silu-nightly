@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Silu Playground — the self-hosted compiler, compiled to WebAssembly</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, system-ui, sans-serif;
+    background: #101418; color: #d8dee6;
+  }
+  header { padding: 14px 20px; border-bottom: 1px solid #232a32; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header p { margin: 4px 0 0; font-size: 13px; color: #8b96a5; }
+  header a { color: #6cb2ff; text-decoration: none; }
+  main {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    padding: 12px 20px; height: calc(100vh - 92px);
+  }
+  .pane { display: flex; flex-direction: column; min-height: 0; }
+  .pane h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: #8b96a5; text-transform: uppercase; letter-spacing: .05em; }
+  textarea, pre {
+    flex: 1; width: 100%; margin: 0; padding: 12px;
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.45;
+    background: #0b0e12; color: #d8dee6; border: 1px solid #232a32;
+    border-radius: 8px; resize: none; overflow: auto; white-space: pre;
+  }
+  textarea:focus { outline: 1px solid #3b82f6; }
+  #bar { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+  button {
+    font: inherit; font-weight: 600; padding: 6px 16px; border: 0;
+    border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  #stats { font-size: 12px; color: #8b96a5; font-family: var(--mono); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #err { color: #ff8080; white-space: pre-wrap; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; height: auto; }
+    textarea, pre { min-height: 300px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Silu Playground</h1>
+  <p>The self-hosted Silu compiler (<code>siluc1</code>), compiled to a
+  2.8&nbsp;MB WebAssembly module, runs entirely in your tab — the .ll you
+  see is byte-identical to what the native compiler prints. No server.
+  Docs: <a href="https://silu.askender.xyz/">silu.askender.xyz</a></p>
+</header>
+<main>
+  <div class="pane">
+    <div id="bar">
+      <button id="go">Compile → .ll</button>
+      <span id="stats">loading siluc1.wasm…</span>
+    </div>
+    <h2>silu source</h2>
+    <textarea id="src" spellcheck="false"></textarea>
+  </div>
+  <div class="pane">
+    <h2>llvm ir (byte-identical to native output)</h2>
+    <pre id="out"># press Compile</pre>
+  </div>
+</main>
+<script type="module">
+const FIB = `# fibonacci, the classic warm-up
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+print(fib(25))
+`;
+
+const src = document.getElementById("src");
+const out = document.getElementById("out");
+const go = document.getElementById("go");
+const stats = document.getElementById("stats");
+src.value = FIB;
+
+// boot without top-level await: register the handler first, then load.
+// (an orphaned TLA promise left the button dead on slow in-app webviews)
+let readyPromise = null;
+let core = null;
+
+async function boot() {
+  core = await import("./host_core.mjs");
+  const resp = await fetch("./siluc1.wasm");
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} for siluc1.wasm`);
+  const buf = await resp.arrayBuffer();
+  wasmBytes = new Uint8Array(buf);
+  stats.textContent = `siluc1.wasm loaded (${(wasmBytes.length / 1e6).toFixed(2)} MB)`;
+}
+
+let wasmBytes = null;
+readyPromise = boot().catch((e) => {
+  stats.textContent = "load failed: " + (e.message || e);
+});
+
+go.addEventListener("click", async () => {
+  go.disabled = true;
+  out.textContent = "compiling…";
+  const t0 = performance.now();
+  try {
+    await readyPromise;
+    const stdin = new TextEncoder().encode(src.value);
+    const { done } = await core.runWasm({ wasmBytes, stdin });
+    const r = await done;
+    const ms = (performance.now() - t0).toFixed(0);
+    if (r.exitCode !== 0) {
+      out.textContent = `# compiler exited ${r.exitCode}\n` +
+        new TextDecoder().decode(r.stderr);
+      stats.textContent = `failed in ${ms} ms`;
+    } else {
+      const text = new TextDecoder().decode(r.stdout);
+      out.textContent = text;
+      stats.textContent = `${text.length.toLocaleString()} bytes of .ll in ${ms} ms (byte-identical to native)`;
+    }
+  } catch (e) {
+    out.textContent = "# host error: " + (e.message || e);
+    stats.textContent = "error";
+  }
+  go.disabled = false;
+});
+</script>
+</body>
+</html>

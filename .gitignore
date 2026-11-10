@@ -158,3 +158,5 @@ silu_conv
 siluc
 siluc1
 wasm/artifacts/
+wasm/web/host_core.mjs
+wasm/web/siluc1.wasm

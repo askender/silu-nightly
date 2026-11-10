@@ -18,11 +18,14 @@ const NATIVE = REPO + "siluc1";
 const argv = process.argv.slice(2);
 let files = argv;
 if (files.length === 0) {
+  // diff_harness CORPUS_LL: all benchmarks + the selfhost probes; the
+  // 12k-line typed_codegen_flat stays IR-plane-only there and here.
   files = readdirSync(REPO + "benchmarks")
     .filter((f) => f.endsWith(".si"))
     .map((f) => "benchmarks/" + f);
-  if (existsSync(REPO + "selfhost/utf8_probe.si")) {
-    files.push("selfhost/utf8_probe.si");
+  for (const f of ["calc.si", "strbuf_probe.si", "utf8_probe.si",
+                   "ir_interp.si", "silu_fe.si"]) {
+    if (existsSync(REPO + "selfhost/" + f)) files.push("selfhost/" + f);
   }
 }
 
