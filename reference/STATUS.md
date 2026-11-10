@@ -65,23 +65,15 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
 
 ## 四、其余 TODO（优先级序）
 
-1. **发布 v1.18.1 到公开仓——根因已找到（11-10 用户在 UI 上看到报错）**：
-   `The configuration 'macos-14-arm64-us-default' is not supported`
-   ——**GitHub 平台侧退役/不支持该 runner 池**。此前 7 次"确定性秒杀"
-   全部由此解释：release.yml 是唯一用 `macos-14` 的 workflow（gates
-   runs-on: macos-14；binaries 第一档也是 macos-14），job 落到该池即被
-   平台拒绝取消，无 runner 日志、无取消署名；与账号 App/自动化/代理
-   均无关（此前的账号级排查方向可关闭）。
-   - **修法（下次会话第一件事）**：release.yml 两处 `macos-14` →
-     `macos-15`（gates 的 runs-on + binaries macos-arm64 档的 os）；
-     macos-15-intel（Intel 档）不动。改完跑一遍重推 tag 验证（gates
-     ~1h + 4 平台 binaries）。
-   - 全绿后：`sh tools/promote_release.sh v1.18.1 <run-id>` → 公开
-     release。**注意**：promote 脚本校验 run 必须
-     `release completed success v1.18.1`（headBranch=tag），勿用
-     workflow_dispatch 绕过。
-   - 前置已备齐：源 tag 链完整、主仓 CHANGELOG 四件套齐、silu-lang
-     README 全占位符、CHANGELOG 三版条目已补推（silu-lang 30d1de7）。
+1. ✅ **v1.18.1 已公开发布（2026-11-10）**：
+   https://github.com/askender/silu-lang/releases/tag/v1.18.1
+   （gates + 4 平台全绿，promote 校验通过）。**根因备忘**：GitHub 退役
+   `macos-14-arm64-us-default` 池，release.yml 是唯一用 macos-14 的
+   workflow——7 次秒杀全部由此；已迁 macos-15（b9b1e4d）。**注意**：
+   tag push 用 tag 所在 commit 的 workflow 文件，改 CI 后必须把 tag
+   前移（v1.18.1 现指 e3f5713，编译器源码与 bced6d9 一致）。驱动速度
+   门禁 0.25→0.50（macos-15 镜像慢 ~15%，e3f5713）。
+   **当前工作重心已切换：WASM 化 L0/L1/L2，计划见 `docs/wasm_plan.md`。**
 2. pytest 全量其余偶发单失败（m4/driver/pipeline 簇）：**本轮调查未复现**
    ——串行 ×1 + xdist -n4（缓存态）×1 + 强制 touch 源造并发重建 ×1，
    74 测试全绿（2026-11-10）。代码审查确认竞态面存在：tools/selfhost_build.py

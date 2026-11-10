@@ -71,16 +71,17 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
 homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
 
-## 当前状态锚点（2026-11-10 凌晨）
+## 当前状态锚点（2026-11-10 晚）
 
-- HEAD = `bced6d9`（v1.18.1）及其后的 **utf8 语料钉板一轮**均已提交推
-  nightly（utf8_probe 语料、rust-conv 字节域修复、孪生
-  utf8_byte_len bytes 快分支、siluc 驱动缓存加固、动态码点九测试）。
-- 门禁全绿：ll conv rustconv **20/20**、ll conv pyll **20/20**、
-  ir fe rustfe **21/21**、pytest **1361 通过/3 跳过**（解释器 parity
-  真回归已查明修复：双孪生 utf8_byte_len 缺 bytes 分支）。
-- 下一站 TODO（发布链健康度核查等）见
-  **`reference/STATUS.md`——换客户端后的第一站**。
+- **v1.18.1 已公开发布**（silu-lang release 8 资产，gates + 4 平台全绿）。
+  发布链根因已修复：GitHub 退役 macos-14 池 → release.yml 迁 macos-15；
+  **tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
+- 门禁全绿：ll conv rustconv **20/20**、ir fe rustfe **21/21**、
+  pytest **1361 通过/3 跳过**。HEAD 见 git log（utf8 轮 → 发布链修复 →
+  阈值放宽均在 11-10 落库）。
+- **当前工作重心：WASM 化 L0/L1/L2**（在线编译/运行/浏览器真编译），
+  计划与验收标准见 **`docs/wasm_plan.md`**，新产物在 `wasm/`。
+- 其余 TODO 见 **`reference/STATUS.md`——换客户端后的第一站**。
 
 ## 环境关键（换客户端/新会话必读，2026-11-09 实证）
 
