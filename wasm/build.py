@@ -66,6 +66,7 @@ TOOLS = {
     "siluc1": "selfhost/siluc.si",
     "fe": "selfhost/silu_fe_main.si",
     "interp": "selfhost/ir_interp.si",
+    "backend": "selfhost/wasm_backend.si",
 }
 
 

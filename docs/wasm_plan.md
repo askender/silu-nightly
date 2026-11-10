@@ -90,7 +90,11 @@ binaryen 优化后 ~1.5-2.5MB，brotli/gzip 传输 **<1MB**——比 Monaco 编�
 4. web 页加"Run"标签页。
 - 验收：语料执行输出三面对拍一致。→ commit
 
-### L2 IR→WASM 后端（浏览器内真编译）【子集 1 完成 2026-11-11，ce059ab】
+### L2 IR→WASM 后端（浏览器内真编译）【子集 1-2 完成：ce059ab、c5d2365；浏览器集成完成 2026-11-11】
+
+浏览器集成：wabt.js（Apache-2.0 单文件，memory64 开关）vendor 进
+web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
+（735B .wasm / 165ms 编译 / 1ms 执行，产物可下载）。
 
 `selfhost/wasm_backend.si`：消费 IR JSON，产出 WAT；本地 wat2wasm
 （wabt，brew 装；官方也有 wasm 版）→ .wasm。跑通后评估是否切直接二进制

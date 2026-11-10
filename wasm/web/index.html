@@ -34,6 +34,8 @@
     border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer;
   }
   button.alt { background: #0e7c66; }
+  button.alt2 { background: #7c5c0e; }
+  #dl { color: #6cb2ff; font-size: 12px; font-family: var(--mono); }
   button:disabled { opacity: .5; cursor: default; }
   select {
     font: inherit; padding: 5px 8px; border-radius: 6px;
@@ -54,11 +56,14 @@
   prints, and the Run pipeline interprets the same IR the native tools
   see. No server. Docs: <a href="https://silu.askender.xyz/">silu.askender.xyz</a></p>
 </header>
+<script src="wabt.js"></script>
 <main>
   <div class="pane">
     <div id="bar">
       <button id="go">Compile → .ll</button>
       <button id="run" class="alt">Run ▶</button>
+      <button id="wasmc" class="alt2">Compile → .wasm</button>
+      <a id="dl" download="program.wasm" style="display:none">⬇ .wasm</a>
       <select id="examples"></select>
       <span id="stats">loading modules…</span>
     </div>
@@ -138,6 +143,8 @@ const out = document.getElementById("out");
 const outTitle = document.getElementById("outTitle");
 const go = document.getElementById("go");
 const run = document.getElementById("run");
+const wasmc = document.getElementById("wasmc");
+const dl = document.getElementById("dl");
 const stats = document.getElementById("stats");
 const sel = document.getElementById("examples");
 src.value = EXAMPLE_TEXT["recursion.si"];
@@ -168,11 +175,11 @@ async function loadOne(name) {
 
 async function boot() {
   core = await import("./host_core.mjs");
-  await Promise.all([loadOne("fe"), loadOne("interp")]);
-  stats.textContent = `fe+interp loaded (${((modules.fe.length + modules.interp.length) / 1e6).toFixed(2)} MB); loading compiler…`;
+  await Promise.all([loadOne("fe"), loadOne("interp"), loadOne("backend")]);
+  stats.textContent = `fe+interp+backend loaded; loading full compiler…`;
   await loadOne("siluc1");
-  const total = (modules.fe.length + modules.interp.length + modules.siluc1.length) / 1e6;
-  stats.textContent = `3 modules loaded (${total.toFixed(2)} MB)`;
+  const total = (modules.fe.length + modules.interp.length + modules.backend.length + modules.siluc1.length) / 1e6;
+  stats.textContent = `4 modules loaded (${total.toFixed(2)} MB)`;
 }
 
 readyPromise = boot().catch((e) => {
@@ -213,6 +220,41 @@ async function runProgram() {
   stats.textContent = `ran in ${ms} ms (exit ${it.exitCode})`;
 }
 
+async function compileWasm() {
+  await ensureReady();
+  const t0 = performance.now();
+  const stdin = new TextEncoder().encode(src.value);
+  let fe = await core.runWasm({ wasmBytes: modules.fe, stdin });
+  fe = await fe.done;
+  if (fe.exitCode !== 0) throw new Error("front end exited " + fe.exitCode);
+  let be = await core.runWasm({ wasmBytes: modules.backend, stdin: fe.stdout });
+  be = await be.done;
+  if (be.exitCode !== 0) throw new Error("backend exited " + be.exitCode);
+  const wat = new TextDecoder().decode(be.stdout);
+  const wabt = await window.WabtModule();
+  wabt._wabt_set_memory64_enabled(1);
+  const mod = wabt.parseWat("program.wat", wat, {});
+  const { buffer } = mod.toBinary({ log: false });
+  wasmBytes2 = buffer;
+  dl.href = URL.createObjectURL(new Blob([buffer], { type: "application/wasm" }));
+  dl.style.display = "inline";
+  const ms = (performance.now() - t0).toFixed(0);
+  return `${buffer.length.toLocaleString()} byte .wasm compiled in ${ms} ms - click ⬇ to download, or press WASM ▶ again to run it`;
+}
+
+async function runWasmProgram() {
+  await ensureReady();
+  const t0 = performance.now();
+  const { done } = await core.runWasm({ wasmBytes: wasmBytes2, stdin: new Uint8Array() });
+  const r = await done;
+  const ms = (performance.now() - t0).toFixed(0);
+  outTitle.textContent = "program output (real wasm compilation)";
+  out.textContent = new TextDecoder().decode(r.stdout) +
+    (r.stderr.length ? "\n# " + new TextDecoder().decode(r.stderr) : "");
+  stats.textContent = `executed in ${ms} ms (exit ${r.exitCode})`;
+}
+
+let wasmBytes2 = null;
 async function guarded(fn) {
   go.disabled = true;
   run.disabled = true;
@@ -229,6 +271,31 @@ async function guarded(fn) {
 
 go.addEventListener("click", () => guarded(compileLL));
 run.addEventListener("click", () => guarded(runProgram));
+
+wasmc.addEventListener("click", async () => {
+  wasmc.disabled = true;
+  go.disabled = true;
+  run.disabled = true;
+  try {
+    if (wasmBytes2) {
+      await runWasmProgram();
+    } else {
+      const msg = await compileWasm();
+      outTitle.textContent = "webassembly module (L2 backend)";
+      out.textContent = "# " + msg;
+      stats.textContent = msg;
+      wasmc.textContent = "WASM ▶";
+      wasmc.classList.add("alt");
+    }
+  } catch (e) {
+    outTitle.textContent = "error";
+    out.textContent = "# " + (e.message || e);
+    stats.textContent = "error";
+  }
+  wasmc.disabled = false;
+  go.disabled = false;
+  run.disabled = false;
+});
 </script>
 </body>
 </html>
