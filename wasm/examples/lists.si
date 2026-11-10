@@ -1,0 +1,17 @@
+# list[int]: append, subscript, len, for-in iteration
+l: list[int] = []
+l.append(5)
+l.append(9)
+print(l[0] + l[1])
+print(len(l))
+total: int = 0
+for x in l:
+    total += x
+print(total)
+
+squares: list[int] = []
+i: int = 0
+while i < 6:
+    squares.append(i * i)
+    i += 1
+print(squares)

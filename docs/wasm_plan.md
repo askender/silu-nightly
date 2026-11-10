@@ -103,7 +103,10 @@ web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
 子集推进（**每个子集一个 commit**，全部三面对拍）：
 1. int/bool、算术/比较、if/while、print → fib.si 绿
 2. float、位运算 → nbody 类
-3. list/dict → 容器运行时（合并 rt 模块，wasm-merge 路线）
+3. list/dict → list[int] 完成（2026-11-11）：轻量原生运行时（内存式
+   (ptr,len,cap) + bump 分配器 + memory.copy 扩容），for-in 解糖为索引
+   循环，print(list) 渲染 [a, b]——对拍 examples/lists.si；dict 待做
+   （哈希表运行时，同样轻量路线，不走 pyobj）
 4. str 全语义（码点索引/切片）→ utf8_probe 绿
 5. 视覆盖面决定：record/pyobj、strbuf、closure 族
 

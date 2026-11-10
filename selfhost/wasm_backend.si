@@ -190,10 +190,13 @@ def fn_lookup(name: str) -> int:
 
 
 def ann_type(node: JValue) -> str:
-    # ["name", "float"] -> "f"; anything else -> "i"
+    # ["name", "float"] -> "f"; ["subscript", list, X] -> "li";
+    # anything else -> "i"
     if node.kind == JKind.ARR and len(node.arr) > 1:
         if node.arr[1].s == "float":
             return "f"
+        if tag(node) == "subscript":
+            return "li"
     return "i"
 
 
@@ -304,12 +307,26 @@ def collect_locals(stmts: JValue, names: list[str], types: list[str]) -> int:
             collect_locals(elem(s, 3), names, types)
         elif t == "while":
             collect_locals(elem(s, 2), names, types)
+        elif t == "for":
+            vn: str = elem_str(elem(s, 1), 1)
+            if vn not in names:
+                names.append(vn)
+                types.append("i")
+            collect_locals(elem(s, 3), names, types)
         i += 1
     return 0
 
 
 def expr_type(g: Gen, node: JValue) -> str:
     t: str = tag(node)
+    if t == "list":
+        return "li"
+    if t == "subscript":
+        if expr_type(g, elem(node, 1)) == "li":
+            return "i"
+        return "i"
+    if t == "len":
+        return "i"
     if t == "const":
         if elem(node, 1).kind == JKind.FLOAT:
             return "f"
@@ -361,6 +378,14 @@ def emit_expr(g: Gen, node: JValue) -> str:
         return "(i64.const " + str(elem(node, 1).n) + ")"
     if t == "name":
         return "(local.get $" + elem(node, 1).s + ")"
+    if t == "list":
+        # empty list literal; elements are not supported in this subset
+        return "(call $li_new)"
+    if t == "subscript":
+        return "(call $li_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
+    if t == "len":
+        # len(x): lists are the supported container in this subset
+        return "(call $li_len " + emit_expr(g, elem(node, 1)) + ")"
     if t == "line":
         return "(i64.const 0)"
     if t == "call":
@@ -368,6 +393,8 @@ def emit_expr(g: Gen, node: JValue) -> str:
         args: JValue = elem(node, 2)
         if name == "float":
             return "(f64.convert_i64_s " + emit_expr(g, elem(args, 0)) + ")"
+        if name == "len":
+            return "(call $li_len " + emit_expr(g, elem(args, 0)) + ")"
         folded: str = ""
         fi: int = fn_lookup(name)
         i: int = 0
@@ -526,8 +553,18 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             i += 1
         g.emit("(call $print_nl)")
         return 0
+    if t == "assign" and tag(elem(stmt, 1)) == "subscript":
+        g.emit("(call $li_set " + emit_expr(g, elem(elem(stmt, 1), 1)) + " " + emit_expr(g, elem(elem(stmt, 1), 2)) + " " + emit_expr(g, elem(stmt, 2)) + ")")
+        return 0
     if t == "call":
-        # the front end emits print as a plain call node
+        # the front end emits print as a plain call node; method calls
+        # (l.append(x)) arrive as attribute calls
+        head: JValue = elem(stmt, 1)
+        if tag(head) == "attribute":
+            mname: str = elem_str(head, 2)
+            if mname == "append":
+                g.emit("(call $li_append " + emit_expr(g, elem(head, 1)) + " " + emit_expr(g, elem(elem(stmt, 2), 0)) + ")")
+                return 0
         name: str = elem(elem(stmt, 1), 1).s
         args: JValue = elem(stmt, 2)
         if name == "print":
@@ -535,8 +572,11 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             while i < len(args.arr):
                 if i > 0:
                     g.emit("(call $print_sp)")
-                if expr_type(g, elem(args, i)) == "f":
+                at = expr_type(g, elem(args, i))
+                if at == "f":
                     g.emit("(call $print_f64 " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "li":
+                    g.emit("(call $print_li " + emit_expr(g, elem(args, i)) + ")")
                 else:
                     g.emit("(call $print_i64 " + emit_expr(g, elem(args, i)) + ")")
                 i += 1
@@ -562,6 +602,21 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         g.emit(") (else")
         emit_stmts(g, elem(stmt, 3))
         g.emit("))")
+        return 0
+    if t == "for":
+        # for x in l: body  ->  index temp; while idx < len(l): x = l[idx]
+        var: str = "$" + elem(elem(stmt, 1), 1).s
+        lst: str = emit_expr(g, elem(stmt, 2))
+        li: str = g.fresh()
+        idx: str = g.fresh()
+        g.emit("(local.set " + li + " " + lst + ")")
+        g.emit("(local.set " + idx + " (i64.const 0))")
+        g.emit("(block $fexit (loop $ftop")
+        g.emit("(br_if $fexit (i64.ge_u (local.get " + idx + ") (call $li_len (local.get " + li + "))))")
+        g.emit("(local.set " + var + " (call $li_get (local.get " + li + ") (local.get " + idx + ")))")
+        emit_stmts(g, elem(stmt, 3))
+        g.emit("(local.set " + idx + " (i64.add (local.get " + idx + ") (i64.const 1)))")
+        g.emit("(br $ftop)))")
         return 0
     if t == "while":
         cond: str = emit_expr(g, elem(stmt, 1))
@@ -637,7 +692,73 @@ RUNTIME = '''(module
 (import "silu_host" "fmt_double" (func $fmt_double (param i64 i64 f64 i32 i32) (result i64)))
 (memory i64 1)
 (export "memory" (memory 0))
-(func $print_i64 (param $v i64)
+(global $heap (mut i64) (i64.const 1024))
+(func $alloc (param $n i64) (result i64)
+(local $old i64) (local $want i64) (local $pages i64) (local $cur i64)
+(local.set $old (global.get $heap))
+(local.set $want (i64.add (local.get $old) (local.get $n)))
+(local.set $cur (i64.mul (memory.size) (i64.const 65536)))
+(if (i64.gt_u (local.get $want) (local.get $cur))
+  (then
+    (local.set $pages (i64.div_u (i64.sub (i64.add (local.get $want) (i64.const 65535)) (local.get $cur)) (i64.const 65536)))
+    (drop (memory.grow (local.get $pages)))))
+(global.set $heap (local.get $want))
+(local.get $old))
+(func $li_new (result i64)
+(local $p i64)
+(local.set $p (call $alloc (i64.const 24)))
+(i64.store (local.get $p) (i64.const 0))
+(i64.store (i64.add (local.get $p) (i64.const 8)) (i64.const 0))
+(i64.store (i64.add (local.get $p) (i64.const 16)) (i64.const 0))
+(local.get $p))
+(func $li_append (param $l i64) (param $v i64)
+(local $len i64) (local $cap i64) (local $data i64) (local $ndata i64) (local $ncap i64)
+(local.set $len (i64.load (local.get $l)))
+(local.set $cap (i64.load (i64.add (local.get $l) (i64.const 8))))
+(local.set $data (i64.load (i64.add (local.get $l) (i64.const 16))))
+(if (i64.ge_u (local.get $len) (local.get $cap))
+  (then
+    (local.set $ncap (i64.mul (i64.add (local.get $cap) (i64.const 1)) (i64.const 2)))
+    (local.set $ndata (call $alloc (i64.mul (local.get $ncap) (i64.const 8))))
+    (memory.copy (local.get $ndata) (local.get $data) (i64.mul (local.get $len) (i64.const 8)))
+    (i64.store (i64.add (local.get $l) (i64.const 16)) (local.get $ndata))
+    (i64.store (i64.add (local.get $l) (i64.const 8)) (local.get $ncap))
+    (local.set $data (local.get $ndata))))
+(i64.store (i64.add (local.get $data) (i64.mul (local.get $len) (i64.const 8))) (local.get $v))
+(i64.store (local.get $l) (i64.add (local.get $len) (i64.const 1))))
+(func $li_get (param $l i64) (param $i i64) (result i64)
+(local $data i64)
+(if (i64.ge_u (local.get $i) (i64.load (local.get $l)))
+  (then unreachable))
+(local.set $data (i64.load (i64.add (local.get $l) (i64.const 16))))
+(i64.load (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 8)))))
+(func $li_set (param $l i64) (param $i i64) (param $v i64)
+(local $data i64)
+(if (i64.ge_u (local.get $i) (i64.load (local.get $l)))
+  (then unreachable))
+(local.set $data (i64.load (i64.add (local.get $l) (i64.const 16))))
+(i64.store (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 8))) (local.get $v)))
+(func $li_len (param $l i64) (result i64)
+(i64.load (local.get $l)))
+(func $print_li (param $l i64)
+(local $i i64) (local $n i64)
+(i64.store8 (i64.const 96) (i64.const 91))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $n (i64.load (local.get $l)))
+(local.set $i (i64.const 0))
+(block $done
+(loop $again
+(br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+(if (i64.gt_u (local.get $i) (i64.const 0))
+  (then
+    (i64.store8 (i64.const 96) (i64.const 44))
+    (i64.store8 (i64.const 97) (i64.const 32))
+    (call $write (i32.const 1) (i64.const 96) (i64.const 2))))
+(call $print_i64 (call $li_get (local.get $l) (local.get $i)))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $again)))
+(i64.store8 (i64.const 96) (i64.const 93))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1)))(func $print_i64 (param $v i64)
 (local $p i64) (local $len i64)
 (if (i64.lt_s (local.get $v) (i64.const 0))
   (then

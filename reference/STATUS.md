@@ -76,11 +76,12 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
 4. 全绿后**整体提交**（含 utf8_probe/驱动器/测试/文档），消息主题
    "utf8 corpus probe + byte-domain fixes + driver cache hardening"
 
-## 三点五、WASM L2 子集 3 进行中（2026-11-11，已回退待续）
+## 三点五、WASM L2 子集 3 已完成（2026-11-11 第二轮）
 
-**目标**：list[int] 轻量原生运行时（内存式 (ptr,len,cap) 数组 + bump
-分配器，不走 pyobj）。设计与大部分实现已完成但因一个 typed 平面段
-错误**回退到子集 2 绿状态**（wasm_backend.si = c5d2365 版）。
+**结果**：list[int] 轻量原生运行时（内存式 (ptr,len,cap) 数组 + bump
+分配器，不走 pyobj）端到端对拍 CPython 4/4（lists.si 含 append/下标/
+len/for-in/while 构建/print(list) 渲染）。上一轮的段错误是**多轮补丁
+叠加的文件损伤**——本轮干净重放全部变更，一次通过。
 
 **最小复现（两行即崩，typed 编译的 backend 二进制 SIGSEGV）**：
     acc: float = 0.0
@@ -104,6 +105,12 @@ alias（fresh 双 append 失配）→ tnames 必须独立拷贝；assign 目标�
 已不存在）；wabt.js API 是 parseWat + _wabt_set_memory64_enabled(1)。
 **调试法**：注释 assign 分支的子步骤 + 退出码二分（段错误吞输出）；
 动态平面可跑通后再对 typed 二进制。
+**本轮新增教训**：①生成 WAT 后必须**程序化校验括号平衡**（手写
+print_li 尾部多一个括号把 module 提前关闭，报错误导性的 undefined
+function）；②多轮区域替换会吞分支（emit_stmt 的 for 分支被后续补丁
+抹掉）——改完必须 grep 验证分支存在；③attribute 调用的方法名在 IR
+节点 index 2（obj 在 1）；④ir_interp 是 int-only——float/list 示例
+须加进 test_run 的 INTERP_SKIP。
 
 ## 四、其余 TODO（优先级序）
 
