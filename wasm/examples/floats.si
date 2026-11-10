@@ -1,0 +1,18 @@
+# float arithmetic: promotion, true division, CPython repr printing
+acc: float = 0.0
+i: int = 0
+while i < 10:
+    acc = acc + i / 4.0
+    i += 1
+print(acc)
+print(7 / 2)
+print(1.0 / 3.0)
+print(3.5 * 2.0)
+print(100.0)
+print(-2.5)
+
+def area(r: float) -> float:
+    return 3.14159 * r * r
+
+print(area(2.0))
+print(float(7))

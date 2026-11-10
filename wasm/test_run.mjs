@@ -26,12 +26,17 @@ if (!existsSync(NATIVE_INTERP)) {
   execFileSync("clang", [ll, "-o", NATIVE_INTERP], { cwd: REPO });
 }
 
+// ir_interp is int-only: float-bearing examples go through the L2
+// backend gate (test_backend.mjs) instead of the three-way run gate
+const INTERP_SKIP = new Set(["wasm/examples/floats.si"]);
+
 const argv = process.argv.slice(2);
 const files = argv.length
   ? argv
   : readdirSync(REPO + "wasm/examples")
       .filter((f) => f.endsWith(".si"))
       .map((f) => "wasm/examples/" + f)
+      .filter((f) => !INTERP_SKIP.has(f))
       .sort();
 
 let pass = 0;

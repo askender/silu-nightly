@@ -71,6 +71,56 @@ function fixExp(s, upper) {
   return m + e;
 }
 
+/* CPython repr(v): shortest round-trip digits (identical to JS
+ * String(v) by the shortest-repr guarantee), CPython's thresholds
+ * (exponential when decpt <= -4 or > 16) and the ADD_DOT_0 rule. */
+function cReprDouble(v) {
+  if (Number.isNaN(v)) return "nan";
+  if (v === Infinity) return "inf";
+  if (v === -Infinity) return "-inf";
+  const neg = Object.is(v, -0) || v < 0;
+  const abs = Math.abs(v);
+  let s = String(abs);
+  let mant, intLen;
+  if (s.includes("e")) {
+    const parts = s.split("e");
+    const m = parts[0];
+    const e = parseInt(parts[1], 10);
+    mant = m.replace(".", "");
+    if (m.includes(".")) intLen = m.indexOf(".") + e;
+    else intLen = m.length + e;
+  } else if (s.includes(".")) {
+    const idx = s.indexOf(".");
+    mant = s.replace(".", "");
+    intLen = idx;
+  } else {
+    mant = s;
+    intLen = s.length;
+  }
+  const decpt = intLen;
+  let body;
+  const mkExp = () => {
+    let d = mant;
+    let e10 = decpt - 1;
+    while (d.length > 1 && d.endsWith("0")) d = d.slice(0, -1);
+    const sign = e10 < 0 ? "-" : "+";
+    const frac = d.length > 1 ? "." + d.slice(1) : "";
+    return d[0] + frac + "e" + sign + String(Math.abs(e10)).padStart(2, "0");
+  };
+  if (decpt <= -4 || decpt > 16) {
+    body = mkExp();
+  } else if (decpt <= 0) {
+    let f = "0." + "0".repeat(-decpt) + mant;
+    if (!f.includes(".") || f.split(".")[1] === "") f += "0";
+    body = f;
+  } else if (decpt >= mant.length) {
+    body = mant + "0".repeat(decpt - mant.length) + ".0";
+  } else {
+    body = mant.slice(0, decpt) + "." + mant.slice(decpt);
+  }
+  return (neg ? "-" : "") + body;
+}
+
 function cFormatDouble(v, spec, prec) {
   if (prec < 0) prec = 6;
   const { neg, expF, frac } = decompose(v);
@@ -266,7 +316,8 @@ function makeHost(files, stdinBytes) {
         out(Number(fd), ptr, len);
       },
       fmt_double(buf, cap, v, spec, prec) {
-        const s = cFormatDouble(Number(v), String.fromCharCode(Number(spec)), Number(prec));
+        const sp = String.fromCharCode(Number(spec));
+        const s = sp === "r" ? cReprDouble(Number(v)) : cFormatDouble(Number(v), sp, Number(prec));
         const bytes = new TextEncoder().encode(s); // ascii-only by construction
         if (bytes.length >= Number(cap)) return -1n;
         new Uint8Array(memory.buffer, Number(buf), bytes.length).set(bytes);
@@ -392,4 +443,4 @@ if (isMain) {
   process.exit(r.exitCode ?? 1);
 }
 
-export { cFormatDouble, cStrtod }; // unit-test surface
+export { cFormatDouble, cStrtod, cReprDouble }; // unit-test surface
