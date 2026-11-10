@@ -74,6 +74,10 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
    - 已排除：仓内 3 个 workflow 无 concurrency/取消调用；无 webhook；
      本地 git hooks/shell 配置干净；GitHub 状态页无匹配事故；
      ci.yml 同期一直正常（只杀 release.yml 的 tag run）。
+   - **第 7 次确认（11-10 上午，用户提供代理提示后重试）**：仍秒杀
+     （run 42732970411）。本机 crontab/launchd/工作区自动化全查无；
+     被杀 job 的 runner 日志 blob 不存在（写出日志前已被杀）。
+     代理与取消无关——取消发生在 GitHub 服务端，推送只是触发器。
    - **嫌疑集中在账号级**：`github.com/settings/installations` 查第三方
      App（有 Actions 写权限的 App 能取消 run），或其它会话/自动化的
      省分钟数 watcher。当前 token 查不了 App 安装清单。
@@ -112,7 +116,12 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
 - 一切从仓库根执行；siluc rt 缓存 `~/.cache/silu-runtime/driver/`（自带
   内容校验+clang 身份戳，异常可整删）。
 - SSH 降级：`GIT_SSH_COMMAND="ssh -i $HOME/.ssh/lb_ali_18 -o IdentitiesOnly=yes"
-  git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
+git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
+- git 推送三档路径（11-10 实证）：①直连 `ssh.github.com:443` 通常可用；
+  ②直连失败且代理已开：HTTPS/gh 用 `export https_proxy=http://127.0.0.1:7897
+  http_proxy=http://127.0.0.1:7897 all_proxy=socks5://127.0.0.1:7897`，
+  SSH 用 `GIT_SSH_COMMAND="ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:7897 %h %p'"`
+  （两条均实测通）；③代理也未开时用上面 lb_ali_18 直连降级。
 
 ## 六、本会话教训（新增四条）
 
