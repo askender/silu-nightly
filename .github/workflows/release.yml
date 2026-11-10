@@ -16,7 +16,11 @@ jobs:
     # (target triple, libm, gc-sections) is covered by the fast CI that
     # runs on every push, and each binaries job smoke-compiles and runs
     # real programs on its platform.
-    runs-on: macos-14
+    # macos-15 (not macos-14): GitHub retired the
+    # macos-14-arm64-us-default pool; jobs landing on it were rejected
+    # instantly with "The configuration ... is not supported" (7 tag
+    # runs cancelled 1-20s in during 11-08/11-10, v1.17.0-v1.18.1).
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +49,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             platform: macos-arm64
           - os: macos-15-intel
             platform: macos-x86_64
