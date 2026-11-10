@@ -37,9 +37,20 @@ binaryen 优化后 ~1.5-2.5MB，brotli/gzip 传输 **<1MB**——比 Monaco 编�
      └── + rt 模块（wasm-merge 合并运行时）→ 可下载的 .wasm
 ```
 
-- 一次性原生构建（CI 或本地）：`./siluc1 < selfhost/X.si > X.ll` →
-  `clang --target=wasm64-unknown-wasi --sysroot=<wasi-sysroot> -O2` → .wasm。
-- 浏览器运行器：自写 stdio-only WASI shim（~200 行 JS），不引重量级依赖。
+- 一次性原生构建（CI 或本地）：编译器自身 .ll 经 Python 管线
+  `compile_with(..., save_ll=...)` 取得（`./siluc1 < selfhost/siluc.si`
+  不行——stdin 输入无法展开 import）。目标 **wasm64-unknown-unknown
+  （裸机，非 wasi）**：实测 wasi-sdk-34 sysroot 只有 wasm32 库，而 IR
+  的 i64 签名在 wasm64 下天然匹配，无需 libc 改造。
+- **运行时支撑双层**：①模块内 C shim（wasi-sdk clang -ffreestanding
+  编译，wasm64）：分配器家族 malloc/calloc/realloc/free、mem*/strlen、
+  mini-vsnprintf（wasm 不支持变参函数，printf/snprintf 不能做 import）、
+  strtod/strtol；②JS 宿主 import（定长签名，可导入）：虚拟 FS
+  （fopen/fread/fseek/ftell/fclose——import 展开要读 .si 文件）、
+  getchar/stdin、write(stdout/stderr)、exit、pow。strtod 用正确舍入
+  实现（浮点字面量进 IR，错一位就字节不一致）。不支持的格式/路径
+  一律 abort（宁报 ERROR）。
+- 浏览器运行器：上述 JS 宿主即 shim，不依赖 node:wasi / wasmer。
 - L2 运行时复用：构建期把 rt.ll 编成独立 wasm 模块；浏览器内用
   **binaryen 的 wasm-merge**（官方有 wasm 构建）把用户模块与 rt 模块合并。
 
