@@ -56,7 +56,7 @@ binaryen 优化后 ~1.5-2.5MB，brotli/gzip 传输 **<1MB**——比 Monaco 编�
 
 ## 3. 里程碑与验收标准（每步：测试绿 → commit → 推 nightly）
 
-### M0 探针（先证明链路，~半天）
+### M0 探针（先证明链路，~半天）【已完成 2026-11-10，efcdf62】
 
 1. 安装 wasi-sdk（brew；代理网络走 socks5）。
 2. `wasm/build.py build-compiler`：`./siluc1 < selfhost/siluc.si` 取编译器
@@ -66,7 +66,7 @@ binaryen 优化后 ~1.5-2.5MB，brotli/gzip 传输 **<1MB**——比 Monaco 编�
 4. 记录实测尺寸（裸/gzip）。
 - 验收：fib.si 字节一致 + siluc1.wasm 可重建。→ commit
 
-### L0 在线编译（看 .ll）
+### L0 在线编译（看 .ll）【已完成 2026-11-10，de58c53】
 
 1. `wasm/build.py` 转正：artifacts 重建脚本（编译器、后续全部 wasm 工件）。
 2. `wasm/shim/wasi_shim.mjs`：stdio-only WASI（fd_read/fd_write/fd_close/
@@ -78,7 +78,7 @@ binaryen 优化后 ~1.5-2.5MB，brotli/gzip 传输 **<1MB**——比 Monaco 编�
 - （部署到 silu.askender.xyz 属后续运维，代码同步走 silu-lang checkout，
   遵守"源码不进公开仓"拓扑。）
 
-### L1 在线运行（解释执行）
+### L1 在线运行（解释执行）【已完成 2026-11-11，704310f；含 ir_interp 运行时增强与 utf8 sizing 回归修复】
 
 1. 构建 `silu_fe.wasm`（先验证 `selfhost/silu_fe.si` main 是
    read_stdin→print(json)；它以 json_dumps 收尾，形态吻合）与
@@ -90,7 +90,7 @@ binaryen 优化后 ~1.5-2.5MB，brotli/gzip 传输 **<1MB**——比 Monaco 编�
 4. web 页加"Run"标签页。
 - 验收：语料执行输出三面对拍一致。→ commit
 
-### L2 IR→WASM 后端（浏览器内真编译）
+### L2 IR→WASM 后端（浏览器内真编译）【子集 1 完成 2026-11-11，ce059ab】
 
 `selfhost/wasm_backend.si`：消费 IR JSON，产出 WAT；本地 wat2wasm
 （wabt，brew 装；官方也有 wasm 版）→ .wasm。跑通后评估是否切直接二进制

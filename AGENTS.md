@@ -71,16 +71,21 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
 homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
 
-## 当前状态锚点（2026-11-10 晚）
+## 当前状态锚点（2026-11-11 凌晨）
 
-- **v1.18.1 已公开发布**（silu-lang release 8 资产，gates + 4 平台全绿）。
-  发布链根因已修复：GitHub 退役 macos-14 池 → release.yml 迁 macos-15；
-  **tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
-- 门禁全绿：ll conv rustconv **20/20**、ir fe rustfe **21/21**、
-  pytest **1361 通过/3 跳过**。HEAD 见 git log（utf8 轮 → 发布链修复 →
-  阈值放宽均在 11-10 落库）。
-- **当前工作重心：WASM 化 L0/L1/L2**（在线编译/运行/浏览器真编译），
-  计划与验收标准见 **`docs/wasm_plan.md`**，新产物在 `wasm/`。
+- **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
+  入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
+- 门禁全绿：ll 20/20、ir 21/21、pytest **1361 通过/3 跳过**。
+- **WASM 化进展（`wasm/`，计划见 `docs/wasm_plan.md`）**：
+  M0 探针 ✅ efcdf62、L0 在线编译 ✅ de58c53、L1 在线运行 ✅ 704310f、
+  **L2 子集 1（Silu 写的 WASM 后端，int 子集，端到端对拍 CPython）✅ ce059ab**。
+  门禁：wasm compile 20/20、wasm run 2/2、shim 148/148、L2 backend 2/2。
+- **教训（11-11）**：①selfhost 的 utf8_byte_len bytes 分支在 typed 平面
+  误触发（bytes≡str 同表示，isinstance 恒真）→ 字符串常量按码点定尺寸
+  ——跨平面语义差异要用逐元素检查表达；②ll 门禁的绿可能是**陈旧二进制**
+  的假绿——改 selfhost 源后必须确认 siluc1 真的被重建（mtime 链）再跑门禁；
+  ③ir_interp/wasm_backend 这类"解释器/后端程序"此前只测编译不测运行
+  ——现在 wasm/test_run.mjs 与 test_backend.mjs 补上了执行级对拍。
 - 其余 TODO 见 **`reference/STATUS.md`——换客户端后的第一站**。
 
 ## 环境关键（换客户端/新会话必读，2026-11-09 实证）
