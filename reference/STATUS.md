@@ -65,28 +65,23 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
 
 ## 四、其余 TODO（优先级序）
 
-1. **发布 v1.18.1 到公开仓（阻塞：nightly 的 release run 被确定性取消）**。
-   - 核查结论（2026-11-10）：源 tag 链完整、主仓 CHANGELOG 四件套齐、
-     silu-lang README 全占位符无需改、CHANGELOG 三版条目已补推
-     （silu-lang 30d1de7）。**断点在 nightly 的 release workflow**：
-     v1.17.0 / 1.18.0 / 1.18.1 三个 tag run + 1 次 rerun + 2 次重推
-     tag，全部在创建后 1-20 秒被 cancel（部分在 runner 分配前就死）。
-   - 已排除：仓内 3 个 workflow 无 concurrency/取消调用；无 webhook；
-     本地 git hooks/shell 配置干净；GitHub 状态页无匹配事故；
-     ci.yml 同期一直正常（只杀 release.yml 的 tag run）。
-   - **第 7 次确认（11-10 上午，用户提供代理提示后重试）**：仍秒杀
-     （run 42732970411）。本机 crontab/launchd/工作区自动化全查无；
-     被杀 job 的 runner 日志 blob 不存在（写出日志前已被杀）。
-     代理与取消无关——取消发生在 GitHub 服务端，推送只是触发器。
-   - **嫌疑集中在账号级**：`github.com/settings/installations` 查第三方
-     App（有 Actions 写权限的 App 能取消 run），或其它会话/自动化的
-     省分钟数 watcher。当前 token 查不了 App 安装清单。
-   - 解锁后流程：`git push nightly :refs/tags/v1.18.1 && git push
-     nightly v1.18.1` → gates（macos-14，~1h）+ 4 平台 binaries 全绿 →
-     `sh tools/promote_release.sh v1.18.1 <run-id>`。**注意**：promote
-     脚本校验 run 必须 `release completed success v1.18.1`
-     （headBranch=tag），改用 workflow_dispatch 在 main 上跑过不了校验，
-     勿绕。
+1. **发布 v1.18.1 到公开仓——根因已找到（11-10 用户在 UI 上看到报错）**：
+   `The configuration 'macos-14-arm64-us-default' is not supported`
+   ——**GitHub 平台侧退役/不支持该 runner 池**。此前 7 次"确定性秒杀"
+   全部由此解释：release.yml 是唯一用 `macos-14` 的 workflow（gates
+   runs-on: macos-14；binaries 第一档也是 macos-14），job 落到该池即被
+   平台拒绝取消，无 runner 日志、无取消署名；与账号 App/自动化/代理
+   均无关（此前的账号级排查方向可关闭）。
+   - **修法（下次会话第一件事）**：release.yml 两处 `macos-14` →
+     `macos-15`（gates 的 runs-on + binaries macos-arm64 档的 os）；
+     macos-15-intel（Intel 档）不动。改完跑一遍重推 tag 验证（gates
+     ~1h + 4 平台 binaries）。
+   - 全绿后：`sh tools/promote_release.sh v1.18.1 <run-id>` → 公开
+     release。**注意**：promote 脚本校验 run 必须
+     `release completed success v1.18.1`（headBranch=tag），勿用
+     workflow_dispatch 绕过。
+   - 前置已备齐：源 tag 链完整、主仓 CHANGELOG 四件套齐、silu-lang
+     README 全占位符、CHANGELOG 三版条目已补推（silu-lang 30d1de7）。
 2. pytest 全量其余偶发单失败（m4/driver/pipeline 簇）：**本轮调查未复现**
    ——串行 ×1 + xdist -n4（缓存态）×1 + 强制 touch 源造并发重建 ×1，
    74 测试全绿（2026-11-10）。代码审查确认竞态面存在：tools/selfhost_build.py
