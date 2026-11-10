@@ -26,6 +26,7 @@
 | `tools/flatten_codegen.py` | 改写表 3 行：len(…encode)→utf8_byte_len；string_bytes ArrayType 同 | ⚠️ 见三 |
 | `tools/siluc_main.c` | rt.o↔rt.ll mtime 配对校验；rt.clang 身份戳（conda LLVM21 vs Apple ld17 LTO 位码不兼容）；run_quiet 失败输出 stderr | ✅ 实测修复链接失败 |
 | `tests/test_selfhost_m4.py`（另行提交 bdd39fc） | Linux gates 链接 benchmark 生成 C 补 `-lm`（schedule 层首跑暴露的潜伏缺陷，nbody 的 pow）；Linux gates dispatch 全绿验证 | ✅ |
+| `.gitignore`（另行提交） | 加 `.zcode/`（代理会话目录）与 `test.txt`（scratch，内容仅 "test"） | ✅ |
 | `tests/test_utf8_runtime.py`（新） | 动态码点九项对 CPython / free-reuse 陷阱 / 50K 线性走查 | ✅ 3/3 |
 | `silu/cli.py` | SILU_TB=1 可选 traceback（调试钩子，可保留） | ✅ |
 | `AGENTS.md` / `reference/PROGRESS.md` | 本轮记录 | ✅ |
@@ -82,16 +83,25 @@ pytest **1 failed**（见下）, 1360 passed, 3 skipped。
      脚本校验 run 必须 `release completed success v1.18.1`
      （headBranch=tag），改用 workflow_dispatch 在 main 上跑过不了校验，
      勿绕。
-2. pytest 全量其余偶发单失败：定向重跑全绿的可疑簇（m4/driver/pipeline）
-   ——若 parity 修复后仍偶发，再查并发重建（进程锁方案，STATUS 旧档未决 #1）。
+2. pytest 全量其余偶发单失败（m4/driver/pipeline 簇）：**本轮调查未复现**
+   ——串行 ×1 + xdist -n4（缓存态）×1 + 强制 touch 源造并发重建 ×1，
+   74 测试全绿（2026-11-10）。代码审查确认竞态面存在：tools/selfhost_build.py
+   的 ensure_* 无锁，CONV_FLAT/FE_BIN/CONV_BIN/siluc1/siluc 均在最终路径
+   非原子直写（对照 silu/runtime_cache.py:97 有 os.replace 原子写），
+   并发重建时读方可撕读。**修复设计已备**：flock 串行化 ensure_* +
+   构建到临时路径 os.replace 落位；**无复现证据不动构建工具链**（release
+   链正用），等真复现（CI 慢机器窗口更宽）再实施。另注意教训 5：本簇
+   历史偶发可能是 parity 真回归的误判，已被 02b53a3/bdd39fc 顺手消灭。
 3. g-清单 #10：未注解局部从 chr()/concat 初始化的推断分歧（Python 保持
    pyobj vs Oracle 推 str；`object` 注解 Oracle 空 bail）→ utf8_probe 因此
    无动态段；动态语义由 tests/test_utf8_runtime.py 执行级守护。深水区，
    等需要时再做。
 4. g-清单其余（PROGRESS.md"Oracle 未钉形状清单"）：等语料压力（T3）。
 5. P7（Rust 独立编译器）：T1/T2/T3 未触发（reference/P7_RUST_STANDALONE.md）。
-6. 小项：pyobj_utf8_cp_offset 死函数（下次动前缀时顺手）；docs/ 补一句
-   UTF-8 码点语义声明。
+6. 小项：pyobj_utf8_cp_offset 死函数（**纯 Python 运行时独有**，孪生
+   llvmlite.si 与 Rust 参照均无此函数；删除后 .ll 变化需重钉一轮门禁
+   ——下次动前缀时顺手）。docs/ UTF-8 码点语义声明**已核实存在**
+   （主仓 docs/semantics.md §2 + 公开仓 semantics_zh.md），此项完成。
 
 ## 五、环境关键（换客户端必读，AGENTS.md 已同步）
 
