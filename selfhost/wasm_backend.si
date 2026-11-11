@@ -716,8 +716,11 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 elif at == "li":
                     g.emit("(call $print_li " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "s":
-                    se: str = emit_expr(g, elem(args, i))
-                    g.emit("(call $write (i32.const 1) " + se + " (call $str_blen " + se + "))")
+                    # single evaluation: the slice result goes to a fresh
+                    # local; write reads it twice (ptr + blen)
+                    se: str = g.fresh()
+                    g.emit("(local.set " + se + " " + emit_expr(g, elem(args, i)) + ")")
+                    g.emit("(call $write (i32.const 1) (local.get " + se + ") (call $str_blen (local.get " + se + ")))")
                 else:
                     g.emit("(call $print_i64 " + emit_expr(g, elem(args, i)) + ")")
                 i += 1

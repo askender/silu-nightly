@@ -123,7 +123,9 @@ function）；②多轮区域替换会吞分支（emit_stmt 的 for 分支被后
 ⑦**UTF-8 码点字节长的判断是 (b & 0xC0) != 0x80——三字节 lead 0xE6
 & 0xC0 = 0xC0 ≠ 0x80**（曾把 lead 误判成续字节导致切片差 1 字节）；
 ⑧WAT 前向函数引用在 wat2wasm 完全合法（曾误判为前向引用错误而
-浪费多轮）。
+浪费多轮）；⑨**带副作用的表达式（alloc/状态变更）绝不能在发射中
+求值两次**——print(str) 的 slice 双次调用是本轮最后真凶，单次求值
+存 local 是唯一正确模式（对一切"分配型"发射成立）。
 
 ## 三点六、WASM L2 子集 4b（str 索引/切片）——WIP 待续（2026-11-12）
 
@@ -138,19 +140,16 @@ tag（裸名字 JValue 的 arr=None——`tag(裸名)` 就是此前"float assign
 更新**前**计算（否则双重步进，"bb"/"aa" 错位）；③slice 默认值跳过
 负数调整（step<0 的 b 默认 -1 被负数调整 +clen → 循环立即空转）。
 
-**剩余 1 类 bug（2026-11-12 第三轮，证据与工具齐备）**：多码点正
-步进切片的 copy 边界——`u[1:3]` 输出 文+2 字节垃圾（输出 hex：e6 96
-87 0a | e6 96 87 | e6 b5 | e6——copy#1=文 3 字节 ✓，copy#2 拷 2 字
-节、copy#3 多跑一次），ASCII 切片/[::-1]/单码点/中文单码点全部正确
-（[::-1]=dcba ✓ 已被 heap 修复解决）。**本轮修复并已入 WIP**：b 钳
-制的 gt_u 无符号比较对 step<0 默认值 b=-1 误钳（-1 的无符号=2^64-1
-> clen → 钳成 clen → 空转）→ 已按 step 方向分守卫；advance 守卫
-（nxt < b 才推进）；nxt 双重步进修复。**剩余嫌疑**：advance 的
-cp_len_at 读到续字节（off 错位）或 nxt/idx 时序。**调试法**：export
-harness（slice4/clen 导出 + Node 直调 + memory dump）+ 在 copy 循环
-里临时把 off/idx/n/w 写进输出缓冲（trace 已证实 copy#1 参数全对）。
-直接调用务必用正确基址：strings.si 里 中文測試 intern 在 1029（不是
-1039——1039 是試 的中間字節，曾据此误判 slice4 全坏）。
+**✅ 子集 4b 完成（2026-11-12 第四轮）**：str 索引/切片端到端对拍
+CPython 5/5（strings.si 含 [::-1]、负索引、多码点切片、中文）。
+**最后真凶**：print(str) 的**双重 slice4 发射**（write 的 ptr 与
+blen 各调一次 slice4）——两次调用各自 alloc 缓冲，write 读 #1 而
+blen 扫 #2——修复：单次求值（slice 结果存 fresh local，write 读
+local 两次）。此前三轮的修复全部有效（heap-after-data、defaults
+skip-neg-adjust、b-clamp step-guard、nxt 先于 idx、advance 守卫、
+guard 的 kind 先行）。**调试法沉淀**：export harness（slice4/clen
+导出 + Node 直调 + memory dump）+ copy 循环插桩（idx/off/n/w 打印）
++ 最小化用例（单 print 的 2 行程序）。
 
 ## 四、其余 TODO（优先级序）
 
