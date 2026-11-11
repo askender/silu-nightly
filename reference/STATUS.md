@@ -105,7 +105,13 @@ alias（fresh 双 append 失配）→ tnames 必须独立拷贝；assign 目标�
 已不存在）；wabt.js API 是 parseWat + _wabt_set_memory64_enabled(1)。
 **调试法**：注释 assign 分支的子步骤 + 退出码二分（段错误吞输出）；
 动态平面可跑通后再对 typed 二进制。
-**本轮新增教训**：①生成 WAT 后必须**程序化校验括号平衡**（手写
+**本轮新增教训**：⓮ **git checkout <commit> -- <file> 会静默清掉
+未提交的同文件工作**——多轮补丁前先提交或先存档（本会话丢过一次
+4b 实现，靠 /tmp 的 exp 副本救回）；⓯ **多个补丁脚本链式 replace
+时用错变量（src vs text）会静默只应用最后一个**——补丁脚本本身也
+要自查；⓮⓯ 合并教训：**同一文件累积 5+ 轮补丁后应整体重写**（本
+轮 backend 重写后门禁立即全绿）。
+①生成 WAT 后必须**程序化校验括号平衡**（手写
 print_li 尾部多一个括号把 module 提前关闭，报错误导性的 undefined
 function）；②多轮区域替换会吞分支（emit_stmt 的 for 分支被后续补丁
 抹掉）——改完必须 grep 验证分支存在；③attribute 调用的方法名在 IR
@@ -128,11 +134,14 @@ tag（裸名字 JValue 的 arr=None——`tag(裸名)` 就是此前"float assign
 更新**前**计算（否则双重步进，"bb"/"aa" 错位）；③slice 默认值跳过
 负数调整（step<0 的 b 默认 -1 被负数调整 +clen → 循环立即空转）。
 
-**剩余 2 个 bug（字节级证据已捕获）**：`s[::-1]` 空结果；
-`u[1:3]` = 文 + 2 字节垃圾（hex：e6 96 87 | e6 b5 | e6——copy#2 拷 2
-字节、copy#3 多跑一次）。**调试法**：wb_exp2.si 式的 export harness
-（导出 slice4/clen + Node 直接调用 + memory 字节检查）——直接调用
-slice4(1024,0,0,-1,0,0) 曾返回全零缓冲，一次定位"copy 循环零拷贝"。
+**剩余 1 类 bug（字节级证据已捕获，2026-11-12 第二轮）**：多码点
+正步进切片的 copy 边界——`u[1:3]` 输出 文+2 字节垃圾（hex：e6 96 87
+| e6 b5 | e6——copy#1=文 3 字节 ✓，copy#2 拷 2 字节、copy#3 多跑一
+次），ASCII 切片/[::-1]/单码点全部正确。heap 重叠（上轮根因）已修
+（heap 全局移到数据段后，初值=arena 终值）——修复后 [::-1]=dcba ✓。
+copy#2 n=2 的嫌疑：advance 的 cp_len_at 读到续字节（off 错位）或
+nxt/idx 时序。**调试法**：export harness（slice4/clen 导出 + Node 直
+调 + memory dump）+ 在 copy 循环里临时把 off/idx/n/w 写进输出缓冲。
 
 ## 四、其余 TODO（优先级序）
 
