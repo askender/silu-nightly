@@ -119,7 +119,11 @@ function）；②多轮区域替换会吞分支（emit_stmt 的 for 分支被后
 示例须加进 test_run 的 INTERP_SKIP；⑤**bump 分配器堆起点必须等于
 数据段终值**——$heap 硬编码 1024 与 intern 数据段重叠，alloc 踩烂
 字面量（str_eq 恒假）；⑥FE 的 json_dumps 对非 ASCII 发 \uXXXX——
-自写 JSON 解析器必须处理 \u 转义（ir_interp 原版有，重写时丢过）。
+自写 JSON 解析器必须处理 \u 转义（ir_interp 原版有，重写时丢过）；
+⑦**UTF-8 码点字节长的判断是 (b & 0xC0) != 0x80——三字节 lead 0xE6
+& 0xC0 = 0xC0 ≠ 0x80**（曾把 lead 误判成续字节导致切片差 1 字节）；
+⑧WAT 前向函数引用在 wat2wasm 完全合法（曾误判为前向引用错误而
+浪费多轮）。
 
 ## 三点六、WASM L2 子集 4b（str 索引/切片）——WIP 待续（2026-11-12）
 
@@ -134,14 +138,19 @@ tag（裸名字 JValue 的 arr=None——`tag(裸名)` 就是此前"float assign
 更新**前**计算（否则双重步进，"bb"/"aa" 错位）；③slice 默认值跳过
 负数调整（step<0 的 b 默认 -1 被负数调整 +clen → 循环立即空转）。
 
-**剩余 1 类 bug（字节级证据已捕获，2026-11-12 第二轮）**：多码点
-正步进切片的 copy 边界——`u[1:3]` 输出 文+2 字节垃圾（hex：e6 96 87
-| e6 b5 | e6——copy#1=文 3 字节 ✓，copy#2 拷 2 字节、copy#3 多跑一
-次），ASCII 切片/[::-1]/单码点全部正确。heap 重叠（上轮根因）已修
-（heap 全局移到数据段后，初值=arena 终值）——修复后 [::-1]=dcba ✓。
-copy#2 n=2 的嫌疑：advance 的 cp_len_at 读到续字节（off 错位）或
-nxt/idx 时序。**调试法**：export harness（slice4/clen 导出 + Node 直
-调 + memory dump）+ 在 copy 循环里临时把 off/idx/n/w 写进输出缓冲。
+**剩余 1 类 bug（2026-11-12 第三轮，证据与工具齐备）**：多码点正
+步进切片的 copy 边界——`u[1:3]` 输出 文+2 字节垃圾（输出 hex：e6 96
+87 0a | e6 96 87 | e6 b5 | e6——copy#1=文 3 字节 ✓，copy#2 拷 2 字
+节、copy#3 多跑一次），ASCII 切片/[::-1]/单码点/中文单码点全部正确
+（[::-1]=dcba ✓ 已被 heap 修复解决）。**本轮修复并已入 WIP**：b 钳
+制的 gt_u 无符号比较对 step<0 默认值 b=-1 误钳（-1 的无符号=2^64-1
+> clen → 钳成 clen → 空转）→ 已按 step 方向分守卫；advance 守卫
+（nxt < b 才推进）；nxt 双重步进修复。**剩余嫌疑**：advance 的
+cp_len_at 读到续字节（off 错位）或 nxt/idx 时序。**调试法**：export
+harness（slice4/clen 导出 + Node 直调 + memory dump）+ 在 copy 循环
+里临时把 off/idx/n/w 写进输出缓冲（trace 已证实 copy#1 参数全对）。
+直接调用务必用正确基址：strings.si 里 中文測試 intern 在 1029（不是
+1039——1039 是試 的中間字節，曾据此误判 slice4 全坏）。
 
 ## 四、其余 TODO（优先级序）
 
