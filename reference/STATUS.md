@@ -115,6 +115,25 @@ function）；②多轮区域替换会吞分支（emit_stmt 的 for 分支被后
 字面量（str_eq 恒假）；⑥FE 的 json_dumps 对非 ASCII 发 \uXXXX——
 自写 JSON 解析器必须处理 \u 转义（ir_interp 原版有，重写时丢过）。
 
+## 三点六、WASM L2 子集 4b（str 索引/切片）——WIP 待续（2026-11-12）
+
+**状态**：实现 ~95% 完成存于 `reference/wasm_str4b_wip.si`（相比已提交
+的 d0ad45a 后端，新增 $cp_len_at/$str_get/$str_slice4 运行时、下标按
+基类型分派、slice 节点 has-flags 发射；文件头两行多 2 个诊断用 export
+——续作时删除）。已提交的 d0ad45a 后端保持 5/5 绿（str 基础面）。
+
+**本轮已验证的修复（在 wip 里）**：①下标赋值守卫必须先查 kind 再
+tag（裸名字 JValue 的 arr=None——`tag(裸名)` 就是此前"float assign
+段错误"的真根，动态/typed 两平面同崩）；②切片循环 nxt 必须在 idx
+更新**前**计算（否则双重步进，"bb"/"aa" 错位）；③slice 默认值跳过
+负数调整（step<0 的 b 默认 -1 被负数调整 +clen → 循环立即空转）。
+
+**剩余 2 个 bug（字节级证据已捕获）**：`s[::-1]` 空结果；
+`u[1:3]` = 文 + 2 字节垃圾（hex：e6 96 87 | e6 b5 | e6——copy#2 拷 2
+字节、copy#3 多跑一次）。**调试法**：wb_exp2.si 式的 export harness
+（导出 slice4/clen + Node 直接调用 + memory 字节检查）——直接调用
+slice4(1024,0,0,-1,0,0) 曾返回全零缓冲，一次定位"copy 循环零拷贝"。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：
