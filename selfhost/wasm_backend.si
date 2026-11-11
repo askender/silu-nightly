@@ -441,6 +441,11 @@ def expr_type(g: Gen, node: JValue) -> str:
         if expr_type(g, elem(node, 2)) == "s":
             return "s"
     if t == "call":
+        if tag(elem(node, 1)) == "attribute":
+            recv: JValue = elem(elem(node, 1), 1)
+            mname: str = elem_str(elem(node, 1), 2)
+            if expr_type(g, recv) == "s" and (mname == "upper" or mname == "lower"):
+                return "s"
         name: str = elem(elem(node, 1), 1).s
         if name == "float":
             return "f"
@@ -538,6 +543,13 @@ def emit_expr(g: Gen, node: JValue) -> str:
     if t == "call":
         name: str = elem(elem(node, 1), 1).s
         args: JValue = elem(node, 2)
+        if tag(elem(node, 1)) == "attribute":
+            recv: JValue = elem(elem(node, 1), 1)
+            mname: str = elem_str(elem(node, 1), 2)
+            if expr_type(g, recv) == "s" and mname == "upper":
+                return "(call $str_upper " + emit_expr(g, recv) + ")"
+            if expr_type(g, recv) == "s" and mname == "lower":
+                return "(call $str_lower " + emit_expr(g, recv) + ")"
         if name == "float":
             return "(f64.convert_i64_s " + emit_expr(g, elem(args, 0)) + ")"
         if name == "str":
@@ -735,6 +747,8 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                     g.emit("(call $print_f64 " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "li":
                     g.emit("(call $print_li " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "ds":
+                    g.emit("(call $print_ds " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "s":
                     # single evaluation: the slice result goes to a fresh
                     # local; write reads it twice (ptr + blen)
@@ -863,12 +877,14 @@ def emit_fn(g: Gen, fn: Fn) -> int:
     return 0
 
 
-RUNTIME = '''(module
+RT_HEAD = '''(module
 (import "silu_host" "write" (func $write (param i32 i64 i64)))
 (import "silu_host" "fmt_double" (func $fmt_double (param i64 i64 f64 i32 i32) (result i64)))
 (memory i64 1)
 (export "memory" (memory 0))
-(func $alloc (param $n i64) (result i64)
+'''
+
+RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (local $old i64) (local $want i64) (local $pages i64) (local $cur i64)
 (local.set $old (global.get $heap))
 (local.set $want (i64.add (local.get $old) (local.get $n)))
@@ -1143,6 +1159,63 @@ RUNTIME = '''(module
 (local $data i64)
 (local.set $data (i64.load (i64.add (local.get $d) (i64.const 8))))
 (i64.load (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16)))))
+(func $print_ds (param $d i64)
+(local $data i64) (local $count i64) (local $i i64) (local $ek i64) (local $ev i64)
+(i64.store8 (i64.const 96) (i64.const 123))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $count (i64.load (local.get $d)))
+(local.set $data (i64.load (i64.add (local.get $d) (i64.const 8))))
+(local.set $i (i64.const 0))
+(block $done (loop $again
+(br_if $done (i64.ge_u (local.get $i) (local.get $count)))
+(if (i64.gt_u (local.get $i) (i64.const 0))
+  (then
+    (i64.store8 (i64.const 96) (i64.const 44))
+    (i64.store8 (i64.const 97) (i64.const 32))
+    (call $write (i32.const 1) (i64.const 96) (i64.const 2))))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $ek (i64.load (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16)))))
+(call $write (i32.const 1) (local.get $ek) (call $str_blen (local.get $ek)))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(i64.store8 (i64.const 96) (i64.const 58))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(call $print_i64 (i64.load (i64.add (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16))) (i64.const 8))))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $again)))
+(i64.store8 (i64.const 96) (i64.const 125))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1)))
+(func $str_upper (param $p i64) (result i64)
+(local $n i64) (local $p2 i64) (local $i i64) (local $b i64)
+(local.set $n (call $str_blen (local.get $p)))
+(local.set $p2 (call $alloc (i64.add (local.get $n) (i64.const 1))))
+(local.set $i (i64.const 0))
+(block $done (loop $again
+(br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+(local.set $b (i64.load8_u (i64.add (local.get $p) (local.get $i))))
+(if (i32.and (i64.ge_u (local.get $b) (i64.const 97)) (i64.le_u (local.get $b) (i64.const 122)))
+  (then (local.set $b (i64.sub (local.get $b) (i64.const 32)))))
+(i64.store8 (i64.add (local.get $p2) (local.get $i)) (local.get $b))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $again)))
+(i64.store8 (i64.add (local.get $p2) (local.get $n)) (i64.const 0))
+(local.get $p2))
+(func $str_lower (param $p i64) (result i64)
+(local $n i64) (local $p2 i64) (local $i i64) (local $b i64)
+(local.set $n (call $str_blen (local.get $p)))
+(local.set $p2 (call $alloc (i64.add (local.get $n) (i64.const 1))))
+(local.set $i (i64.const 0))
+(block $done (loop $again
+(br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+(local.set $b (i64.load8_u (i64.add (local.get $p) (local.get $i))))
+(if (i32.and (i64.ge_u (local.get $b) (i64.const 65)) (i64.le_u (local.get $b) (i64.const 90)))
+  (then (local.set $b (i64.add (local.get $b) (i64.const 32)))))
+(i64.store8 (i64.add (local.get $p2) (local.get $i)) (local.get $b))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $again)))
+(i64.store8 (i64.add (local.get $p2) (local.get $n)) (i64.const 0))
+(local.get $p2))
 (func $print_i64 (param $v i64)
 (local $p i64) (local $len i64)
 (if (i64.lt_s (local.get $v) (i64.const 0))
@@ -1211,12 +1284,11 @@ def main() -> int:
             FUNCS.append(fn)
         i += 1
     ar: Arena = Arena(1024, [])
-    g: Gen = Gen("", 0, [], [], [], ar)
-    g.out = RUNTIME + "\n"
-    # pass 2: each function, then the top-level statements as $silu_main
+    body: Gen = Gen("", 0, [], [], [], ar)
+    # pass 2: user functions, then the top-level statements as $silu_main
     i = 0
     while i < len(FUNCS):
-        emit_fn(g, FUNCS[i])
+        emit_fn(body, FUNCS[i])
         i += 1
     names: list[str] = []
     types: list[str] = []
@@ -1235,9 +1307,21 @@ def main() -> int:
         i += 1
     sub: Gen = Gen("", 0, local_names, tcopy2, local_types, ar)
     emit_stmts(sub, stmts)
-    g.emit("(func $silu_main (export \"silu_main\")" + sub.decls())
-    g.out = g.out + sub.out
-    g.emit(")")
+    body.emit("(func $silu_main (export \"silu_main\")" + sub.decls())
+    body.out = body.out + sub.out
+    body.emit(")")
+    # assemble: head + heap (past all data) + data segs + funcs + close
+    out: str = RT_HEAD
+    si: int = 0
+    out = out + "(global $heap (mut i64) (i64.const " + str(ar.off) + "))\n"
+    while si < len(ar.segs):
+        out = out + ar.segs[si] + "\n"
+        si += 1
+    out = out + RT_FUNCS
+    out = out + body.out
+    out = out + ")"
+    print(out, end="")
+    return 0
     si: int = 0
     while si < len(ar.segs):
         g.emit(ar.segs[si])

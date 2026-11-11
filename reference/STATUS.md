@@ -161,9 +161,10 @@ subscript_assign（非 assign+下标目标）——此前 list[i]=v 静默丢弃
 现按基类型分派 li_set/ds_set；②dict 的标注 arr[1] 是嵌套数组
 （["name","dict"]），ann_type 须按 tag+名字判断（arr[1].s 永远是
 空串）；③for-in 的循环变量与索引临时不得共用同一 local（键是指针，
-+1 后变垃圾指针提前退出）。dict 哈希加速、dict 值类型扩展（float/
-str 值）、print(dict) 渲染待做。切片版 strings.si 已毕业进正式门禁
-（6/6）。
++1 后变垃圾指针提前退出）。print(dict) 渲染（{'k': v}）、str.upper/lower（ASCII 域字节变换）
+与表达式级方法分派已入运行时并进正式门禁——切片版 strings.si 已
+毕业（6/6，含 upper/lower 与 dict 渲染验证）。dict 哈希加速、dict
+值类型扩展（float/str 值）待做。
 
 ## 四、其余 TODO（优先级序）
 

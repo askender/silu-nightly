@@ -105,8 +105,10 @@ web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
 2. float、位运算 → nbody 类
 3. list/dict → 均完成：list[int]（2026-11-11）+ dict[str,int]
    （2026-11-12，插入序线性扫描表：$ds_new/set/get/has/len/key，
-   for-in 键迭代，in 成员，print 不含 dict 渲染）——对拍 examples/
-   lists.si 与 dicts.si；dict 哈希加速与 dict 值类型扩展待做
+   for-in 键迭代，in 成员）+ print(dict) 渲染（{'k': v} 格式）+
+   str.upper/lower（ASCII 域）与表达式级方法分派——对拍 examples/
+   lists.si、dicts.si、strings.si（含 upper/lower）；dict 哈希加速
+   与 dict 值类型扩展待做
 4. str 基础完成（2026-11-12）：字面量进数据段（Arena + UTF-8 转义）、
    拼接（$str_concat）、码点 len（$str_clen 跳过续字节）、比较（字节序
    ==码点序）、str(int)、print(str)——对拍 examples/strings.si 含中文。

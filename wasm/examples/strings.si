@@ -21,3 +21,5 @@ if s < "z":
     print(2)
 n: int = 42
 print(str(n))
+print(s.upper())
+print(t.lower())
