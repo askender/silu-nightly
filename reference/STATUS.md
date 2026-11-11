@@ -109,8 +109,11 @@ alias（fresh 双 append 失配）→ tnames 必须独立拷贝；assign 目标�
 print_li 尾部多一个括号把 module 提前关闭，报错误导性的 undefined
 function）；②多轮区域替换会吞分支（emit_stmt 的 for 分支被后续补丁
 抹掉）——改完必须 grep 验证分支存在；③attribute 调用的方法名在 IR
-节点 index 2（obj 在 1）；④ir_interp 是 int-only——float/list 示例
-须加进 test_run 的 INTERP_SKIP。
+节点 index 2（obj 在 1）；④ir_interp 是 int-only——float/list/str
+示例须加进 test_run 的 INTERP_SKIP；⑤**bump 分配器堆起点必须等于
+数据段终值**——$heap 硬编码 1024 与 intern 数据段重叠，alloc 踩烂
+字面量（str_eq 恒假）；⑥FE 的 json_dumps 对非 ASCII 发 \uXXXX——
+自写 JSON 解析器必须处理 \u 转义（ir_interp 原版有，重写时丢过）。
 
 ## 四、其余 TODO（优先级序）
 

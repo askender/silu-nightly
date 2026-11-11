@@ -1,15 +1,22 @@
-# L2 milestone: a WASM backend for the Silu IR (int subset).
-# Pipeline: read IR JSON from stdin -> emit WAT to stdout ->
-# wat2wasm --enable-memory64 -> the program runs under any wasm64 host
-# (the same silu_host shim the playground uses; print goes through the
-# write import). Mirrors ir_interp's subset so wasm/examples/*.si are
-# the differential targets: backend output == CPython == interp.
-# Semantics notes:
-# - ints are i64 locals (no boxing); names are function-scoped
-# - // and % are FLOOR semantics: i64.div_s/rem_s truncate, so the
-#   classic sign-correction expansion restores Python behavior
-# - ** is exponentiation by squaring, skipping the dead final square
-#   (the i64 checked-mul policy would abort on the overflowing square)
+# L2 milestone: a WASM backend for the Silu IR (int/float/str/list[int]
+# subset). Pipeline: read IR JSON from stdin -> emit WAT to stdout ->
+# wat2wasm (memory64 is default-on in wabt >= 1.0.38) -> the program
+# runs under any wasm64 host (the playground's silu_host shim; print
+# goes through the write import, floats through fmt_double repr).
+# Differential targets: wasm/examples/*.si vs CPython.
+# Semantics mirrored from CPython:
+# - ints are i64 locals, floats f64, strs i64 pointers to NUL-terminated
+#   UTF-8 in linear memory, list[int] a (ptr,len,cap) struct
+# - // and % are FLOOR semantics (sign-correction over the truncating
+#   i64 ops); ** squaring skips the dead final square; / always float
+# - str len() counts CODE POINTS (byte scan skipping continuations);
+#   comparisons are byte order (== codepoint order for UTF-8)
+# Unsupported nodes evaluate to 0 (documented gap model, like
+# ir_interp). Supported: const (int/float/bool/str), name, assign/
+# ann_assign/aug_assign, binops, compare, if, while, for(list),
+# call (print/str/len/float/user functions), func_def, return,
+# subscript read/write on lists, attribute append.
+
 from __future__ import annotations
 
 
@@ -89,6 +96,23 @@ class Json:
                     out = out + "\n"
                 elif e == "t":
                     out = out + "\t"
+                elif e == "u":
+                    self.pos += 1
+                    code: int = 0
+                    k: int = 0
+                    while k < 4:
+                        h = self.src[self.pos]
+                        self.pos += 1
+                        code = code * 16
+                        if h >= "0" and h <= "9":
+                            code += ord(h) - ord("0")
+                        elif h >= "a" and h <= "f":
+                            code += ord(h) - ord("a") + 10
+                        else:
+                            code += ord(h) - ord("A") + 10
+                        k += 1
+                    self.pos -= 1
+                    out = out + chr(code)
                 else:
                     out = out + e
                 self.pos += 1
@@ -110,7 +134,6 @@ class Json:
             if ch >= "0" and ch <= "9":
                 self.pos += 1
             elif ch == "." or ch == "e" or ch == "E" or ch == "+" or ch == "-":
-                # only a sign right after e/E belongs to the number
                 if ch == "+" or ch == "-":
                     prev = self.src[self.pos - 1]
                     if prev != "e" and prev != "E":
@@ -169,6 +192,83 @@ def elem_str(node: JValue, i: int) -> str:
     return node.arr[i].s
 
 
+def p2(e: int) -> int:
+    r: int = 1
+    while e > 0:
+        r *= 2
+        e -= 1
+    return r
+
+
+def utf8_blen(s: str) -> int:
+    n: int = 0
+    i: int = 0
+    while i < len(s):
+        cp = ord(s[i])
+        if cp < 0x80:
+            n += 1
+        elif cp < 0x800:
+            n += 2
+        elif cp < 0x10000:
+            n += 3
+        else:
+            n += 4
+        i += 1
+    return n
+
+
+def str_utf8_escape(s: str) -> str:
+    # UTF-8 bytes of s, WAT-escaped: printable ASCII as-is, " and \\
+    # backslash-escaped, everything else as \\XX hex
+    out: str = ""
+    i: int = 0
+    while i < len(s):
+        cp = ord(s[i])
+        n: int = 1
+        if cp >= 0x80:
+            n = 2
+        if cp >= 0x800:
+            n = 3
+        if cp >= 0x10000:
+            n = 4
+        k: int = 0
+        while k < n:
+            sh: int = 6 * (n - 1 - k)
+            part: int = cp // p2(sh)
+            bv: int = part
+            if k == 0:
+                if n == 2:
+                    bv = 192 + part
+                elif n == 3:
+                    bv = 224 + part
+                elif n == 4:
+                    bv = 240 + part
+            else:
+                bv = 128 + part % 64
+            if bv >= 32 and bv < 127 and bv != 34 and bv != 92:
+                out = out + chr(bv)
+            else:
+                h: str = "0123456789abcdef"
+                out = out + "\\" + h[bv // 16] + h[bv % 16]
+            k += 1
+        i += 1
+    return out
+
+
+class Arena:
+    off: int
+    segs: list[str]
+
+    def intern(self, s: str) -> int:
+        # place s (UTF-8 + NUL) in the data arena; return its offset
+        off: int = self.off
+        esc: str = str_utf8_escape(s)
+        blen: int = utf8_blen(s)
+        self.segs.append("(data (i64.const " + str(off) + ") \"" + esc + "\\00\")")
+        self.off = off + blen + 1
+        return off
+
+
 class Fn:
     name: str
     params: JValue
@@ -190,95 +290,16 @@ def fn_lookup(name: str) -> int:
 
 
 def ann_type(node: JValue) -> str:
-    # ["name", "float"] -> "f"; ["subscript", list, X] -> "li";
-    # anything else -> "i"
+    # ["name", "float"] -> "f"; ["name", "str"] -> "s";
+    # ["subscript", list, X] -> "li"; anything else -> "i"
     if node.kind == JKind.ARR and len(node.arr) > 1:
         if node.arr[1].s == "float":
             return "f"
+        if node.arr[1].s == "str":
+            return "s"
         if tag(node) == "subscript":
             return "li"
     return "i"
-
-
-class Gen:
-    out: str
-    tmp: int
-    names: list[str]
-    tnames: list[str]
-    ttypes: list[str]
-
-    def emit(self, line: str) -> int:
-        self.out = self.out + line + "\n"
-        return 0
-
-    def fresh(self) -> str:
-        self.tmp += 1
-        nm: str = "$t" + self.show_int(self.tmp)
-        self.names.append(nm)
-        self.tnames.append(nm)
-        self.ttypes.append("i")
-        return nm
-
-    def decls(self) -> str:
-        if len(self.ttypes) < len(self.tnames):
-            # self-diagnosing: type-name/type lists must grow in lockstep
-            tnall: str = ""
-            i2: int = 0
-            while i2 < len(self.tnames):
-                tnall = tnall + self.tnames[i2] + ","
-                i2 += 1
-            ttall: str = ""
-            i2 = 0
-            while i2 < len(self.ttypes):
-                ttall = ttall + self.ttypes[i2] + ","
-                i2 += 1
-            return ";; TN=" + tnall + " TT=" + ttall
-        d: str = ""
-        i: int = 0
-        while i < len(self.names):
-            ty: str = "i64"
-            j: int = 0
-            while j < len(self.tnames):
-                if self.tnames[j] == self.names[i]:
-                    if self.ttypes[j] == "f":
-                        ty = "f64"
-                j += 1
-            d = d + " (local " + self.names[i] + " " + ty + ")"
-            i += 1
-        return d
-
-    def set_type(self, name: str, ty: str) -> int:
-        i: int = 0
-        while i < len(self.tnames):
-            if self.tnames[i] == name:
-                self.ttypes[i] = ty
-                return 0
-            i += 1
-        self.tnames.append(name)
-        self.ttypes.append(ty)
-        return 0
-
-    def get_type(self, name: str) -> str:
-        i: int = 0
-        while i < len(self.tnames):
-            if self.tnames[i] == name:
-                if i >= len(self.ttypes):
-                    return ";; LENBAD tn=" + self.show_int(len(self.tnames)) + " tt=" + self.show_int(len(self.ttypes))
-                return self.ttypes[i]
-            i += 1
-        return "i"
-
-    def show_int(self, v: int) -> str:
-        if v < 0:
-            return "-" + self.show_int(0 - v)
-        digits: str = ""
-        table: str = "0123456789"
-        n: int = v
-        while True:
-            digits = table[n % 10] + digits
-            n = n // 10
-            if n == 0:
-                return digits
 
 
 def collect_locals(stmts: JValue, names: list[str], types: list[str]) -> int:
@@ -317,28 +338,104 @@ def collect_locals(stmts: JValue, names: list[str], types: list[str]) -> int:
     return 0
 
 
+class Gen:
+    out: str
+    tmp: int
+    names: list[str]
+    tnames: list[str]
+    ttypes: list[str]
+    ar: Arena
+
+    def emit(self, line: str) -> int:
+        self.out = self.out + line + "\n"
+        return 0
+
+    def fresh(self) -> str:
+        self.tmp += 1
+        nm: str = "$t" + self.show_int(self.tmp)
+        self.names.append(nm)
+        self.tnames.append(nm)
+        self.ttypes.append("i")
+        return nm
+
+    def set_type(self, name: str, ty: str) -> int:
+        i: int = 0
+        while i < len(self.tnames):
+            if self.tnames[i] == name:
+                self.ttypes[i] = ty
+                return 0
+            i += 1
+        self.tnames.append(name)
+        self.ttypes.append(ty)
+        return 0
+
+    def get_type(self, name: str) -> str:
+        i: int = 0
+        while i < len(self.tnames):
+            if self.tnames[i] == name:
+                return self.ttypes[i]
+            i += 1
+        return "i"
+
+    def decls(self) -> str:
+        # names/tnames/ttypes grow in lockstep (fresh and the ctor append
+        # to all three); params live only in tnames/ttypes
+        d: str = ""
+        i: int = 0
+        while i < len(self.names):
+            ty: str = "i64"
+            j: int = 0
+            while j < len(self.tnames):
+                if self.tnames[j] == self.names[i]:
+                    if self.ttypes[j] == "f":
+                        ty = "f64"
+                j += 1
+            d = d + " (local " + self.names[i] + " " + ty + ")"
+            i += 1
+        return d
+
+    def show_int(self, v: int) -> str:
+        if v < 0:
+            return "-" + self.show_int(0 - v)
+        digits: str = ""
+        table: str = "0123456789"
+        n: int = v
+        while True:
+            digits = table[n % 10] + digits
+            n = n // 10
+            if n == 0:
+                return digits
+
+
 def expr_type(g: Gen, node: JValue) -> str:
     t: str = tag(node)
     if t == "list":
         return "li"
     if t == "subscript":
-        if expr_type(g, elem(node, 1)) == "li":
-            return "i"
         return "i"
     if t == "len":
         return "i"
     if t == "const":
         if elem(node, 1).kind == JKind.FLOAT:
             return "f"
+        if elem(node, 1).kind == JKind.STR:
+            return "s"
         return "i"
     if t == "name":
         return g.get_type("$" + elem(node, 1).s)
     if t == "/":
         return "f"
+    if t == "+":
+        if expr_type(g, elem(node, 1)) == "s":
+            return "s"
+        if expr_type(g, elem(node, 2)) == "s":
+            return "s"
     if t == "call":
         name: str = elem(elem(node, 1), 1).s
         if name == "float":
             return "f"
+        if name == "str":
+            return "s"
         fi: int = fn_lookup(name)
         if fi >= 0:
             return FUNCS[fi].rtype
@@ -352,9 +449,16 @@ def expr_type(g: Gen, node: JValue) -> str:
                 return "f"
         return "i"
     if t == "//" or t == "%":
-        # floor semantics are int-only in this subset
         return "i"
     return "i"
+
+
+def to_s(g: Gen, node: JValue) -> str:
+    if expr_type(g, node) == "s":
+        return emit_expr(g, node)
+    if expr_type(g, node) == "i":
+        return "(call $str_from_int " + emit_expr(g, node) + ")"
+    return "(i64.const 0)"
 
 
 def to_f(g: Gen, node: JValue) -> str:
@@ -364,13 +468,14 @@ def to_f(g: Gen, node: JValue) -> str:
 
 
 def emit_expr(g: Gen, node: JValue) -> str:
-    ty: str = expr_type(g, node)
     t: str = tag(node)
     if t == "const":
         if elem(node, 1).kind == JKind.FLOAT:
             # the original decimal text is a valid WAT f64 constant and
             # wat2wasm parses it correctly-rounded, same as CPython
             return "(f64.const " + elem(node, 1).s + ")"
+        if elem(node, 1).kind == JKind.STR:
+            return "(i64.const " + str(g.ar.intern(elem(node, 1).s)) + ")"
         if elem(node, 1).kind == JKind.BOOL:
             if elem(node, 1).b:
                 return "(i64.const 1)"
@@ -379,13 +484,10 @@ def emit_expr(g: Gen, node: JValue) -> str:
     if t == "name":
         return "(local.get $" + elem(node, 1).s + ")"
     if t == "list":
-        # empty list literal; elements are not supported in this subset
+        # empty list literal; element initializers are not in this subset
         return "(call $li_new)"
     if t == "subscript":
         return "(call $li_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
-    if t == "len":
-        # len(x): lists are the supported container in this subset
-        return "(call $li_len " + emit_expr(g, elem(node, 1)) + ")"
     if t == "line":
         return "(i64.const 0)"
     if t == "call":
@@ -393,7 +495,12 @@ def emit_expr(g: Gen, node: JValue) -> str:
         args: JValue = elem(node, 2)
         if name == "float":
             return "(f64.convert_i64_s " + emit_expr(g, elem(args, 0)) + ")"
+        if name == "str":
+            return to_s(g, elem(args, 0))
         if name == "len":
+            at2: str = expr_type(g, elem(args, 0))
+            if at2 == "s":
+                return "(call $str_clen " + emit_expr(g, elem(args, 0)) + ")"
             return "(call $li_len " + emit_expr(g, elem(args, 0)) + ")"
         folded: str = ""
         fi: int = fn_lookup(name)
@@ -408,47 +515,58 @@ def emit_expr(g: Gen, node: JValue) -> str:
                 folded = folded + " " + emit_expr(g, elem(args, i))
             i += 1
         return "(call $" + name + folded + ")"
-    if ty == "f":
-        folded2: str = ""
-        if t == "+":
-            folded2 = "(f64.add " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
-        elif t == "-":
-            if len(node.arr) == 2:
-                folded2 = "(f64.neg " + emit_expr(g, elem(node, 1)) + ")"
-            else:
-                folded2 = "(f64.sub " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
-        elif t == "*":
-            folded2 = "(f64.mul " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
-        elif t == "/":
-            folded2 = "(f64.div " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
-        elif t == "**":
-            folded2 = "(f64.const 0)"
-        return folded2
     if t == "+":
+        ty: str = expr_type(g, node)
+        if ty == "f":
+            return "(f64.add " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
+        if ty == "s":
+            return "(call $str_concat " + to_s(g, elem(node, 1)) + " " + to_s(g, elem(node, 2)) + ")"
         return "(i64.add " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
     if t == "*":
+        if expr_type(g, node) == "f":
+            return "(f64.mul " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
         return "(i64.mul " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
     if t == "-":
+        if expr_type(g, node) == "f":
+            if len(node.arr) == 2:
+                return "(f64.neg " + emit_expr(g, elem(node, 1)) + ")"
+            return "(f64.sub " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
         if len(node.arr) == 2:
             return "(i64.sub (i64.const 0) " + emit_expr(g, elem(node, 1)) + ")"
         return "(i64.sub " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
+    if t == "/":
+        return "(f64.div " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
     if t == "//":
         return emit_floordiv(g, elem(node, 1), elem(node, 2))
     if t == "%":
         return emit_floormod(g, elem(node, 1), elem(node, 2))
     if t == "**":
+        if expr_type(g, node) == "f":
+            return "(f64.const 0)"
         return emit_ipow(g, elem(node, 1), elem(node, 2))
     if t == "<":
+        if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
+            return "(i64.extend_i32_u (i32.wrap_i64 (call $str_lt " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")))"
         return "(i64.extend_i32_u (i64.lt_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
     if t == "<=":
+        if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
+            return "(i64.extend_i32_u (i32.wrap_i64 (i64.xor (call $str_lt " + emit_expr(g, elem(node, 2)) + " " + emit_expr(g, elem(node, 1)) + ") (i64.const 1))))"
         return "(i64.extend_i32_u (i64.le_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
     if t == ">":
+        if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
+            return "(i64.extend_i32_u (i32.wrap_i64 (call $str_lt " + emit_expr(g, elem(node, 2)) + " " + emit_expr(g, elem(node, 1)) + ")))"
         return "(i64.extend_i32_u (i64.gt_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
     if t == ">=":
+        if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
+            return "(i64.extend_i32_u (i32.wrap_i64 (i64.xor (call $str_lt " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ") (i64.const 1))))"
         return "(i64.extend_i32_u (i64.ge_s " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
     if t == "==":
+        if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
+            return "(i64.extend_i32_u (i32.wrap_i64 (call $str_eq " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")))"
         return "(i64.extend_i32_u (i64.eq " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
     if t == "!=":
+        if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
+            return "(i64.extend_i32_u (i32.wrap_i64 (i64.xor (call $str_eq " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ") (i64.const 1))))"
         return "(i64.extend_i32_u (i64.ne " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
     return "(i64.const 0)"
 
@@ -461,7 +579,7 @@ def emit_floordiv(g: Gen, a: JValue, b: JValue) -> str:
     be: str = emit_expr(g, b)
     g.emit("(local.set " + q + " (i64.div_s " + ae + " " + be + "))")
     g.emit("(local.set " + r + " (i64.rem_s " + ae + " " + be + "))")
-    cond = "(i32.and (i64.ne (local.get " + r + ") (i64.const 0)) (i64.ne (i64.xor (i64.shr_s (local.get " + r + ") (i64.const 63)) (i64.shr_s " + be + " (i64.const 63))) (i64.const 0)))"
+    cond: str = "(i32.and (i64.ne (local.get " + r + ") (i64.const 0)) (i64.ne (i64.xor (i64.shr_s (local.get " + r + ") (i64.const 63)) (i64.shr_s " + be + " (i64.const 63))) (i64.const 0)))"
     return "(if (result i64) " + cond + " (then (i64.sub (local.get " + q + ") (i64.const 1))) (else (local.get " + q + ")))"
 
 
@@ -473,7 +591,7 @@ def emit_floormod(g: Gen, a: JValue, b: JValue) -> str:
     be: str = emit_expr(g, b)
     g.emit("(local.set " + q + " (i64.div_s " + ae + " " + be + "))")
     g.emit("(local.set " + r + " (i64.rem_s " + ae + " " + be + "))")
-    cond = "(i32.and (i64.ne (local.get " + r + ") (i64.const 0)) (i64.ne (i64.xor (i64.shr_s (local.get " + r + ") (i64.const 63)) (i64.shr_s " + be + " (i64.const 63))) (i64.const 0)))"
+    cond: str = "(i32.and (i64.ne (local.get " + r + ") (i64.const 0)) (i64.ne (i64.xor (i64.shr_s (local.get " + r + ") (i64.const 63)) (i64.shr_s " + be + " (i64.const 63))) (i64.const 0)))"
     return "(if (result i64) " + cond + " (then (i64.add (local.get " + r + ") " + be + ")) (else (local.get " + r + ")))"
 
 
@@ -501,16 +619,20 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
     t: str = tag(stmt)
     if t == "line":
         return 0
+    if t == "assign" and elem(stmt, 1).kind == JKind.ARR and tag(elem(stmt, 1)) == "subscript":
+        g.emit("(call $li_set " + emit_expr(g, elem(elem(stmt, 1), 1)) + " " + emit_expr(g, elem(elem(stmt, 1), 2)) + " " + emit_expr(g, elem(stmt, 2)) + ")")
+        return 0
     if t == "assign" or t == "ann_assign":
         nm: str = "$" + elem_str(stmt, 1)
         if t == "ann_assign":
             g.set_type(nm, ann_type(elem(stmt, 3)))
-        else:
-            vt: str = expr_type(g, elem(stmt, 2))
-            if vt == "f":
-                g.set_type(nm, "f")
+        vt: str = expr_type(g, elem(stmt, 2))
+        if vt == "f":
+            g.set_type(nm, "f")
         if g.get_type(nm) == "f":
             g.emit("(local.set " + nm + " " + to_f(g, elem(stmt, 2)) + ")")
+        elif g.get_type(nm) == "s":
+            g.emit("(local.set " + nm + " " + to_s(g, elem(stmt, 2)) + ")")
         else:
             g.emit("(local.set " + nm + " " + emit_expr(g, elem(stmt, 2)) + ")")
         return 0
@@ -543,22 +665,7 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         elif op == "**=":
             g.emit("(local.set " + tgt + " " + emit_ipow(g, elem(stmt, 1), elem(stmt, 3)) + ")")
         return 0
-    if t == "print":
-        args: JValue = elem(stmt, 2)
-        i: int = 0
-        while i < len(args.arr):
-            if i > 0:
-                g.emit("(call $print_sp)")
-            g.emit("(call $print_i64 " + emit_expr(g, elem(args, i)) + ")")
-            i += 1
-        g.emit("(call $print_nl)")
-        return 0
-    if t == "assign" and tag(elem(stmt, 1)) == "subscript":
-        g.emit("(call $li_set " + emit_expr(g, elem(elem(stmt, 1), 1)) + " " + emit_expr(g, elem(elem(stmt, 1), 2)) + " " + emit_expr(g, elem(stmt, 2)) + ")")
-        return 0
     if t == "call":
-        # the front end emits print as a plain call node; method calls
-        # (l.append(x)) arrive as attribute calls
         head: JValue = elem(stmt, 1)
         if tag(head) == "attribute":
             mname: str = elem_str(head, 2)
@@ -572,11 +679,14 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             while i < len(args.arr):
                 if i > 0:
                     g.emit("(call $print_sp)")
-                at = expr_type(g, elem(args, i))
+                at: str = expr_type(g, elem(args, i))
                 if at == "f":
                     g.emit("(call $print_f64 " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "li":
                     g.emit("(call $print_li " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "s":
+                    se: str = emit_expr(g, elem(args, i))
+                    g.emit("(call $write (i32.const 1) " + se + " (call $str_blen " + se + "))")
                 else:
                     g.emit("(call $print_i64 " + emit_expr(g, elem(args, i)) + ")")
                 i += 1
@@ -656,7 +766,6 @@ def emit_fn(g: Gen, fn: Fn) -> int:
     # non-param source names + fresh temps all become wasm locals; the
     # body goes through a scratch Gen so its fresh temps are known
     # before the header closes
-    # the first len(params) entries of names are the params themselves
     local_names: list[str] = []
     local_types: list[str] = []
     i = len(params)
@@ -669,7 +778,7 @@ def emit_fn(g: Gen, fn: Fn) -> int:
     while i < len(local_names):
         tcopy.append(local_names[i])
         i += 1
-    sub: Gen = Gen("", 0, local_names, tcopy, local_types)
+    sub: Gen = Gen("", 0, local_names, tcopy, local_types, g.ar)
     i = 0
     while i < len(params):
         sub.set_type("$" + params[i], ptypes[i])
@@ -692,7 +801,6 @@ RUNTIME = '''(module
 (import "silu_host" "fmt_double" (func $fmt_double (param i64 i64 f64 i32 i32) (result i64)))
 (memory i64 1)
 (export "memory" (memory 0))
-(global $heap (mut i64) (i64.const 1024))
 (func $alloc (param $n i64) (result i64)
 (local $old i64) (local $want i64) (local $pages i64) (local $cur i64)
 (local.set $old (global.get $heap))
@@ -740,6 +848,97 @@ RUNTIME = '''(module
 (i64.store (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 8))) (local.get $v)))
 (func $li_len (param $l i64) (result i64)
 (i64.load (local.get $l)))
+(func $str_blen (param $p i64) (result i64)
+(local $n i64)
+(block $done (loop $again
+(br_if $done (i64.eqz (i64.load8_u (local.get $p))))
+(local.set $n (i64.add (local.get $n) (i64.const 1)))
+(local.set $p (i64.add (local.get $p) (i64.const 1)))
+(br $again)))
+(local.get $n))
+(func $str_clen (param $p i64) (result i64)
+(local $n i64) (local $b i64)
+(block $done (loop $again
+(local.set $b (i64.load8_u (local.get $p)))
+(br_if $done (i64.eqz (local.get $b)))
+(if (i64.ne (i64.and (local.get $b) (i64.const 192)) (i64.const 128))
+  (then (local.set $n (i64.add (local.get $n) (i64.const 1)))))
+(local.set $p (i64.add (local.get $p) (i64.const 1)))
+(br $again)))
+(local.get $n))
+(func $str_concat (param $a i64) (param $b i64) (result i64)
+(local $la i64) (local $lb i64) (local $p i64)
+(local.set $la (call $str_blen (local.get $a)))
+(local.set $lb (call $str_blen (local.get $b)))
+(local.set $p (call $alloc (i64.add (i64.add (local.get $la) (local.get $lb)) (i64.const 1))))
+(memory.copy (local.get $p) (local.get $a) (local.get $la))
+(memory.copy (i64.add (local.get $p) (local.get $la)) (local.get $b) (local.get $lb))
+(i64.store8 (i64.add (local.get $p) (i64.add (local.get $la) (local.get $lb))) (i64.const 0))
+(local.get $p))
+(func $str_eq (param $a i64) (param $b i64) (result i64)
+(local $ca i64) (local $cb i64) (local $r i64)
+(local.set $r (i64.const 1))
+(block $done (loop $again
+(local.set $ca (i64.load8_u (local.get $a)))
+(local.set $cb (i64.load8_u (local.get $b)))
+(if (i64.ne (local.get $ca) (local.get $cb))
+  (then (local.set $r (i64.const 0)) (br $done)))
+(br_if $done (i64.eqz (local.get $ca)))
+(local.set $a (i64.add (local.get $a) (i64.const 1)))
+(local.set $b (i64.add (local.get $b) (i64.const 1)))
+(br $again)))
+(local.get $r))
+(func $str_lt (param $a i64) (param $b i64) (result i64)
+(local $ca i64) (local $cb i64) (local $r i64)
+(local.set $r (i64.const 0))
+(block $done (loop $again
+(local.set $ca (i64.load8_u (local.get $a)))
+(local.set $cb (i64.load8_u (local.get $b)))
+(if (i64.ne (local.get $ca) (local.get $cb))
+  (then
+    (if (i64.lt_u (local.get $ca) (local.get $cb))
+      (then (local.set $r (i64.const 1))))
+    (br $done)))
+(br_if $done (i64.eqz (local.get $ca)))
+(local.set $a (i64.add (local.get $a) (i64.const 1)))
+(local.set $b (i64.add (local.get $b) (i64.const 1)))
+(br $again)))
+(local.get $r))
+(func $str_from_int (param $v i64) (result i64)
+(local $p i64) (local $q i64) (local $neg i64)
+(local.set $p (call $alloc (i64.const 21)))
+(local.set $q (i64.add (local.get $p) (i64.const 19)))
+(if (i64.lt_s (local.get $v) (i64.const 0))
+  (then (local.set $neg (i64.const 1)) (local.set $v (i64.sub (i64.const 0) (local.get $v)))))
+(block $done (loop $again
+(local.set $q (i64.sub (local.get $q) (i64.const 1)))
+(i64.store8 (local.get $q) (i64.add (i64.const 48) (i64.rem_u (local.get $v) (i64.const 10))))
+(local.set $v (i64.div_u (local.get $v) (i64.const 10)))
+(br_if $again (i64.gt_u (local.get $v) (i64.const 0)))))
+(if (i64.eq (local.get $neg) (i64.const 1))
+  (then
+    (local.set $q (i64.sub (local.get $q) (i64.const 1)))
+    (i64.store8 (local.get $q) (i64.const 45))))
+(i64.store8 (i64.add (local.get $p) (i64.const 20)) (i64.const 0))
+(local.get $q))
+(func $print_i64 (param $v i64)
+(local $p i64) (local $len i64)
+(if (i64.lt_s (local.get $v) (i64.const 0))
+  (then
+    (i64.store8 (i64.const 64) (i64.const 45))
+    (call $write (i32.const 1) (i64.const 64) (i64.const 1))
+    (local.set $v (i64.sub (i64.const 0) (local.get $v)))))
+(local.set $p (i64.const 87))
+(loop $digits
+  (local.set $p (i64.sub (local.get $p) (i64.const 1)))
+  (i64.store8 (local.get $p) (i64.add (i64.const 48) (i64.rem_u (local.get $v) (i64.const 10))))
+  (local.set $v (i64.div_u (local.get $v) (i64.const 10)))
+  (br_if $digits (i64.gt_u (local.get $v) (i64.const 0))))
+(call $write (i32.const 1) (local.get $p) (i64.sub (i64.const 87) (local.get $p))))
+(func $print_f64 (param $v f64)
+(local $n i64)
+(local.set $n (call $fmt_double (i64.const 64) (i64.const 400) (local.get $v) (i32.const 114) (i32.const 17)))
+(call $write (i32.const 1) (i64.const 64) (local.get $n)))
 (func $print_li (param $l i64)
 (local $i i64) (local $n i64)
 (i64.store8 (i64.const 96) (i64.const 91))
@@ -758,24 +957,7 @@ RUNTIME = '''(module
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br $again)))
 (i64.store8 (i64.const 96) (i64.const 93))
-(call $write (i32.const 1) (i64.const 96) (i64.const 1)))(func $print_i64 (param $v i64)
-(local $p i64) (local $len i64)
-(if (i64.lt_s (local.get $v) (i64.const 0))
-  (then
-    (i64.store8 (i64.const 64) (i64.const 45))
-    (call $write (i32.const 1) (i64.const 64) (i64.const 1))
-    (local.set $v (i64.sub (i64.const 0) (local.get $v)))))
-(local.set $p (i64.const 87))
-(loop $digits
-  (local.set $p (i64.sub (local.get $p) (i64.const 1)))
-  (i64.store8 (local.get $p) (i64.add (i64.const 48) (i64.rem_u (local.get $v) (i64.const 10))))
-  (local.set $v (i64.div_u (local.get $v) (i64.const 10)))
-  (br_if $digits (i64.gt_u (local.get $v) (i64.const 0))))
-(call $write (i32.const 1) (local.get $p) (i64.sub (i64.const 87) (local.get $p))))
-(func $print_f64 (param $v f64)
-(local $n i64)
-(local.set $n (call $fmt_double (i64.const 64) (i64.const 400) (local.get $v) (i32.const 114) (i32.const 17)))
-(call $write (i32.const 1) (i64.const 64) (local.get $n)))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1)))
 (func $print_sp
 (i64.store8 (i64.const 90) (i64.const 32))
 (call $write (i32.const 1) (i64.const 90) (i64.const 1)))
@@ -806,19 +988,13 @@ def main() -> int:
                 fn.rtype = ann_type(rt)
             FUNCS.append(fn)
         i += 1
-    g: Gen = Gen("", 0, [], [], [])
+    ar: Arena = Arena(1024, [])
+    g: Gen = Gen("", 0, [], [], [], ar)
     g.out = RUNTIME + "\n"
     # pass 2: each function, then the top-level statements as $silu_main
     i = 0
     while i < len(FUNCS):
         emit_fn(g, FUNCS[i])
-        i += 1
-    names: list[str] = []
-    collect_locals(stmts, names)
-    local_names: list[str] = []
-    i = 0
-    while i < len(names):
-        local_names.append("$" + names[i])
         i += 1
     names: list[str] = []
     types: list[str] = []
@@ -835,10 +1011,16 @@ def main() -> int:
     while i < len(local_names):
         tcopy2.append(local_names[i])
         i += 1
-    sub: Gen = Gen("", 0, local_names, tcopy2, local_types)
+    sub: Gen = Gen("", 0, local_names, tcopy2, local_types, ar)
     emit_stmts(sub, stmts)
     g.emit("(func $silu_main (export \"silu_main\")" + sub.decls())
     g.out = g.out + sub.out
-    g.emit("))")
+    g.emit(")")
+    si: int = 0
+    while si < len(ar.segs):
+        g.emit(ar.segs[si])
+        si += 1
+    g.emit("(global $heap (mut i64) (i64.const " + str(ar.off) + "))")
+    g.emit(")")
     print(g.out, end="")
     return 0

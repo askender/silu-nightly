@@ -107,7 +107,10 @@ web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
    (ptr,len,cap) + bump 分配器 + memory.copy 扩容），for-in 解糖为索引
    循环，print(list) 渲染 [a, b]——对拍 examples/lists.si；dict 待做
    （哈希表运行时，同样轻量路线，不走 pyobj）
-4. str 全语义（码点索引/切片）→ utf8_probe 绿
+4. str 基础完成（2026-11-12）：字面量进数据段（Arena + UTF-8 转义）、
+   拼接（$str_concat）、码点 len（$str_clen 跳过续字节）、比较（字节序
+   ==码点序）、str(int)、print(str)——对拍 examples/strings.si 含中文；
+   索引/切片/方法（4b）待做
 5. 视覆盖面决定：record/pyobj、strbuf、closure 族
 
 - 验收：当前子集在语料中所有可编译文件上输出三面一致；不支持构造
