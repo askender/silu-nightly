@@ -1,0 +1,15 @@
+# str: literals, concat, codepoint len, comparison, str(int)
+s: str = "Hello, Silu!"
+print(s)
+print(len(s))
+t: str = s + "!"
+print(t)
+u: str = "中文" + "测试"
+print(u)
+print(len(u))
+if s == "Hello, Silu!":
+    print(1)
+if s < "Zebra":
+    print(2)
+n: int = 42
+print(str(n))

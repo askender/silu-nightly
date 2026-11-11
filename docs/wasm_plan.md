@@ -109,8 +109,12 @@ web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
    （哈希表运行时，同样轻量路线，不走 pyobj）
 4. str 基础完成（2026-11-12）：字面量进数据段（Arena + UTF-8 转义）、
    拼接（$str_concat）、码点 len（$str_clen 跳过续字节）、比较（字节序
-   ==码点序）、str(int)、print(str)——对拍 examples/strings.si 含中文；
-   索引/切片/方法（4b）待做
+   ==码点序）、str(int)、print(str)——对拍 examples/strings.si 含中文。
+   **4b（索引/切片）WIP**：$cp_len_at/$str_get/$str_slice4（含负数/
+   默认值/钳制/双向走查）已写入 `reference/wasm_str4b_wip.si`，三真
+   bug 已修（下标守卫 kind 先行/nxt 双重步进/默认值负数调整），剩 2
+   个运行时 bug（[::-1] 空、多码点切片尾垃圾——字节证据已捕获），
+   调试用 export-harness 法（STATUS §3.6）
 5. 视覆盖面决定：record/pyobj、strbuf、closure 族
 
 - 验收：当前子集在语料中所有可编译文件上输出三面一致；不支持构造

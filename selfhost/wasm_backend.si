@@ -412,6 +412,9 @@ def expr_type(g: Gen, node: JValue) -> str:
     if t == "list":
         return "li"
     if t == "subscript":
+        bt: str = expr_type(g, elem(node, 1))
+        if bt == "s":
+            return "s"
         return "i"
     if t == "len":
         return "i"
@@ -487,7 +490,35 @@ def emit_expr(g: Gen, node: JValue) -> str:
         # empty list literal; element initializers are not in this subset
         return "(call $li_new)"
     if t == "subscript":
-        return "(call $li_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
+        bt: str = expr_type(g, elem(node, 1))
+        idx: JValue = elem(node, 2)
+        if bt == "s":
+            if tag(idx) == "slice":
+                sa: JValue = elem(idx, 1)
+                sb: JValue = elem(idx, 2)
+                sc: JValue = elem(idx, 3)
+                base: str = emit_expr(g, elem(node, 1))
+                if sa.kind == JKind.NIL:
+                    a2: str = "(i64.const 0)"
+                else:
+                    a2 = emit_expr(g, sa)
+                if sb.kind == JKind.NIL:
+                    b2: str = "(i64.const 0)"
+                else:
+                    b2 = emit_expr(g, sb)
+                if sc.kind == JKind.NIL:
+                    s2: str = "(i64.const 1)"
+                else:
+                    s2 = emit_expr(g, sc)
+                ha: str = "0"
+                if sa.kind != JKind.NIL:
+                    ha = "1"
+                hb: str = "0"
+                if sb.kind != JKind.NIL:
+                    hb = "1"
+                return "(call $str_slice4 " + base + " " + a2 + " " + b2 + " " + s2 + " (i64.const " + ha + ") (i64.const " + hb + "))"
+            return "(call $str_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, idx) + ")"
+        return "(call $li_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, idx) + ")"
     if t == "line":
         return "(i64.const 0)"
     if t == "call":
@@ -921,6 +952,101 @@ RUNTIME = '''(module
     (i64.store8 (local.get $q) (i64.const 45))))
 (i64.store8 (i64.add (local.get $p) (i64.const 20)) (i64.const 0))
 (local.get $q))
+(func $cp_len_at (param $p i64) (result i64)
+(local $b i64)
+(local.set $b (i64.load8_u (local.get $p)))
+(if (result i64) (i64.lt_u (local.get $b) (i64.const 128))
+  (then (i64.const 1))
+  (else (if (result i64) (i64.lt_u (local.get $b) (i64.const 224))
+    (then (i64.const 2))
+    (else (if (result i64) (i64.lt_u (local.get $b) (i64.const 240))
+      (then (i64.const 3))
+      (else (i64.const 4))))))))
+(func $str_get (param $s i64) (param $i i64) (result i64)
+(local $clen i64) (local $off i64) (local $k i64) (local $n i64) (local $p i64)
+(local.set $clen (call $str_clen (local.get $s)))
+(if (i64.lt_s (local.get $i) (i64.const 0))
+  (then (local.set $i (i64.add (local.get $i) (local.get $clen)))))
+(if (i64.ge_u (local.get $i) (local.get $clen))
+  (then unreachable))
+(local.set $off (i64.const 0))
+(local.set $k (i64.const 0))
+(block $skipdone (loop $skip
+(br_if $skipdone (i64.ge_u (local.get $k) (local.get $i)))
+(local.set $off (i64.add (local.get $off) (call $cp_len_at (i64.add (local.get $s) (local.get $off)))))
+(local.set $k (i64.add (local.get $k) (i64.const 1)))
+(br $skip)))
+(local.set $n (call $cp_len_at (i64.add (local.get $s) (local.get $off))))
+(local.set $p (call $alloc (i64.add (local.get $n) (i64.const 1))))
+(memory.copy (local.get $p) (i64.add (local.get $s) (local.get $off)) (local.get $n))
+(i64.store8 (i64.add (local.get $p) (local.get $n)) (i64.const 0))
+(local.get $p))
+(func $str_slice4 (param $s i64) (param $a i64) (param $b i64) (param $step i64) (param $ha i64) (param $hb i64) (result i64)
+(local $clen i64) (local $off i64) (local $k i64) (local $n i64) (local $p i64) (local $w i64) (local $idx i64) (local $nxt i64)
+(local.set $clen (call $str_clen (local.get $s)))
+;; a: defaults skip the negative-adjust (they are already in-range)
+(if (i64.eqz (local.get $ha))
+  (then (if (i64.lt_s (local.get $step) (i64.const 0))
+    (then (local.set $a (i64.sub (local.get $clen) (i64.const 1))))
+    (else (local.set $a (i64.const 0))))))
+(if (i32.and (i32.wrap_i64 (local.get $ha)) (i64.lt_s (local.get $a) (i64.const 0)))
+  (then (local.set $a (i64.add (local.get $a) (local.get $clen)))))
+(if (i64.lt_s (local.get $step) (i64.const 0))
+  (then (if (i64.gt_s (local.get $a) (i64.sub (local.get $clen) (i64.const 1)))
+    (then (local.set $a (i64.sub (local.get $clen) (i64.const 1))))))
+  (else (if (i64.gt_u (local.get $a) (local.get $clen))
+    (then (local.set $a (local.get $clen))))))
+;; b: defaults skip the negative-adjust
+(if (i64.eqz (local.get $hb))
+  (then (if (i64.lt_s (local.get $step) (i64.const 0))
+    (then (local.set $b (i64.const -1)))
+    (else (local.set $b (local.get $clen))))))
+(if (i32.and (i32.wrap_i64 (local.get $hb)) (i64.lt_s (local.get $b) (i64.const 0)))
+  (then (local.set $b (i64.add (local.get $b) (local.get $clen)))))
+(if (i64.lt_s (local.get $step) (i64.const 0))
+  (then (if (i64.lt_s (local.get $b) (i64.const -1))
+    (then (local.set $b (i64.const -1)))))
+  (else (if (i64.gt_u (local.get $b) (local.get $clen))
+    (then (local.set $b (local.get $clen))))))
+;; byte offset of a
+(local.set $off (i64.const 0))
+(local.set $k (i64.const 0))
+(block $skipdone (loop $skip
+(br_if $skipdone (i64.ge_u (local.get $k) (local.get $a)))
+(local.set $off (i64.add (local.get $off) (call $cp_len_at (i64.add (local.get $s) (local.get $off)))))
+(local.set $k (i64.add (local.get $k) (i64.const 1)))
+(br $skip)))
+;; copy selected codepoints
+(local.set $p (call $alloc (i64.add (local.get $clen) (i64.const 1))))
+(local.set $w (i64.const 0))
+(local.set $idx (local.get $a))
+(block $done (loop $again
+(if (i64.gt_s (local.get $step) (i64.const 0))
+  (then (br_if $done (i64.ge_s (local.get $idx) (local.get $b)))))
+(if (i64.lt_s (local.get $step) (i64.const 0))
+  (then (br_if $done (i64.le_s (local.get $idx) (local.get $b)))))
+(local.set $n (call $cp_len_at (i64.add (local.get $s) (local.get $off))))
+(memory.copy (i64.add (local.get $p) (local.get $w)) (i64.add (local.get $s) (local.get $off)) (local.get $n))
+(local.set $w (i64.add (local.get $w) (local.get $n)))
+(local.set $nxt (i64.add (local.get $idx) (local.get $step)))
+(local.set $idx (i64.add (local.get $idx) (local.get $step)))
+(if (i64.gt_s (local.get $step) (i64.const 0))
+  (then
+    (if (i64.lt_s (local.get $nxt) (local.get $b))
+      (then
+        (local.set $off (i64.add (local.get $off) (call $cp_len_at (i64.add (local.get $s) (local.get $off)))))))))
+(if (i64.lt_s (local.get $step) (i64.const 0))
+  (then
+    (if (i64.gt_s (local.get $nxt) (local.get $b))
+      (then
+        (local.set $off (i64.sub (local.get $off) (i64.const 1)))
+        (block $bwend (loop $bw
+(br_if $bwend (i64.ne (i64.and (i64.load8_u (local.get $off)) (i64.const 192)) (i64.const 128)))
+(local.set $off (i64.sub (local.get $off) (i64.const 1)))
+(br $bw)))))))
+(br $again)))
+(i64.store8 (i64.add (local.get $p) (local.get $w)) (i64.const 0))
+(local.get $p))
 (func $print_i64 (param $v i64)
 (local $p i64) (local $len i64)
 (if (i64.lt_s (local.get $v) (i64.const 0))

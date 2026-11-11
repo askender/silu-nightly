@@ -1047,8 +1047,6 @@ RUNTIME = '''(module
 (br $again)))
 (i64.store8 (i64.add (local.get $p) (local.get $w)) (i64.const 0))
 (local.get $p))
-(export "slice4" (func $str_slice4))
-(export "clen" (func $str_clen))
 (func $print_i64 (param $v i64)
 (local $p i64) (local $len i64)
 (if (i64.lt_s (local.get $v) (i64.const 0))
