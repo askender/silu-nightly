@@ -151,6 +151,20 @@ guard 的 kind 先行）。**调试法沉淀**：export harness（slice4/clen
 导出 + Node 直调 + memory dump）+ copy 循环插桩（idx/off/n/w 打印）
 + 最小化用例（单 print 的 2 行程序）。
 
+## 三点七、WASM L2 子集 5 已完成（2026-11-12）：dict[str,int]
+
+轻量插入序运行时（线性扫描表：$ds_new/set/get/has/len/key——str 键
+$str_eq 比较，值 i64；set 未命中时整体拷贝扩容）——对拍 examples/
+dicts.si（set/get/len/for-in 键迭代/in 成员/重复赋值更新）全部与
+CPython 一致。**同轮修复**：①list 的元素存储 FE 节点是
+subscript_assign（非 assign+下标目标）——此前 list[i]=v 静默丢弃，
+现按基类型分派 li_set/ds_set；②dict 的标注 arr[1] 是嵌套数组
+（["name","dict"]），ann_type 须按 tag+名字判断（arr[1].s 永远是
+空串）；③for-in 的循环变量与索引临时不得共用同一 local（键是指针，
++1 后变垃圾指针提前退出）。dict 哈希加速、dict 值类型扩展（float/
+str 值）、print(dict) 渲染待做。切片版 strings.si 已毕业进正式门禁
+（6/6）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

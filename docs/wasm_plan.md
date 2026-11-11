@@ -103,16 +103,16 @@ web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
 子集推进（**每个子集一个 commit**，全部三面对拍）：
 1. int/bool、算术/比较、if/while、print → fib.si 绿
 2. float、位运算 → nbody 类
-3. list/dict → list[int] 完成（2026-11-11）：轻量原生运行时（内存式
-   (ptr,len,cap) + bump 分配器 + memory.copy 扩容），for-in 解糖为索引
-   循环，print(list) 渲染 [a, b]——对拍 examples/lists.si；dict 待做
-   （哈希表运行时，同样轻量路线，不走 pyobj）
+3. list/dict → 均完成：list[int]（2026-11-11）+ dict[str,int]
+   （2026-11-12，插入序线性扫描表：$ds_new/set/get/has/len/key，
+   for-in 键迭代，in 成员，print 不含 dict 渲染）——对拍 examples/
+   lists.si 与 dicts.si；dict 哈希加速与 dict 值类型扩展待做
 4. str 基础完成（2026-11-12）：字面量进数据段（Arena + UTF-8 转义）、
    拼接（$str_concat）、码点 len（$str_clen 跳过续字节）、比较（字节序
    ==码点序）、str(int)、print(str)——对拍 examples/strings.si 含中文。
    **4b（索引/切片）完成（2026-11-12）**：$cp_len_at/$str_get/
    $str_slice4（负数/默认值/钳制/双向 UTF-8 走查）——对拍切片版
-   strings.si 含 [::-1] 与中文；print(str) 单次求值修复后 5/5
+   strings.si 含 [::-1] 与中文；print(str) 单次求值修复后 6/6
 5. 视覆盖面决定：record/pyobj、strbuf、closure 族
 
 - 验收：当前子集在语料中所有可编译文件上输出三面一致；不支持构造
