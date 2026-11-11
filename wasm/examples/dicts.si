@@ -1,0 +1,15 @@
+# dict[str, int]: set, get, len, for-in keys, membership
+d: dict[str, int] = {}
+d["a"] = 1
+d["b"] = 2
+print(d["a"])
+print(d["b"])
+print(len(d))
+total: int = 0
+for k in d:
+    total += d[k]
+print(total)
+if "a" in d:
+    print(1)
+d["a"] = 10
+print(d["a"])

@@ -1,3 +1,23 @@
 # str: literals, concat, codepoint len, comparison, index, slice
+s: str = "abcd"
+print(s[0])
+print(s[3])
+print(s[1:3])
+print(s[:2])
+print(s[2:])
+print(s[-1])
+print(s[-2:])
+print(s[::-1])
+print(len(s[1:3]))
 u: str = "中文测试"
+print(u[1])
 print(u[1:3])
+print(len(u))
+t: str = s + "!"
+print(t)
+if s == "abcd":
+    print(1)
+if s < "z":
+    print(2)
+n: int = 42
+print(str(n))
