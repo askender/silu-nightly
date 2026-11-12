@@ -29,6 +29,9 @@
 # (CPython scoping). A bare top-level assign infers its type from the
 # first initializer; ann_assign fixes it. Top-level for-loop targets are
 # $silu_main locals (not visible to functions) - a documented gap.
+# list[float] = "lf" (same bit-packing as dsf); dict.get(k[, default]);
+# input() builtin (one line via getchar, 4096-byte line cap). Unknown
+# callees (class constructors etc.) are loud unreachable traps.
 # LOUD traps (unreachable), not silent zeros: /= on ints, non-empty
 # list literals, str(float)/str(list)/str(dict), float(str), str*int,
 # step=0 slices. str(float) uses one shared scratch buffer - at most
@@ -322,6 +325,14 @@ def top_type(node: JValue) -> str:
     if node.kind == JKind.BOOL:
         return "b"
     t: str = tag(node)
+    if t == "const":
+        if elem(node, 1).kind == JKind.FLOAT:
+            return "f"
+        if elem(node, 1).kind == JKind.STR:
+            return "s"
+        if elem(node, 1).kind == JKind.BOOL:
+            return "b"
+        return "i"
     if t == "list":
         return "li"
     if t == "dict":
@@ -366,6 +377,12 @@ def ann_type(node: JValue) -> str:
             return "b"
         if tag(node) == "subscript":
             # ["subscript", ["name","dict"], ...] -> ds; else list
+            if elem_str(elem(node, 1), 1) == "list":
+                # element type rides at elem(node,2)'s name slot
+                et: str = elem_str(elem(node, 2), 1)
+                if et == "float":
+                    return "lf"
+                return "li"
             if elem_str(elem(node, 1), 1) == "dict":
                 # dict[K, V]: ["tuple", [[K],[V]]], each T a ["name","x"]
                 # node - the name sits at arr[1].s (three hops per side)
@@ -514,7 +531,7 @@ def expr_type(g: Gen, node: JValue) -> str:
         bt: str = expr_type(g, elem(node, 1))
         if bt == "s" or bt == "dss" or bt == "dsis":
             return "s"
-        if bt == "dsf" or bt == "dsif":
+        if bt == "dsf" or bt == "dsif" or bt == "lf":
             return "f"
         return "i"
     if t == "in":
@@ -543,6 +560,8 @@ def expr_type(g: Gen, node: JValue) -> str:
             if expr_type(g, recv) == "s" and (mname == "upper" or mname == "lower"):
                 return "s"
         name: str = elem(elem(node, 1), 1).s
+        if name == "input":
+            return "(call $read_line)"
         if name == "float":
             return "f"
         if name == "str":
@@ -555,9 +574,14 @@ def expr_type(g: Gen, node: JValue) -> str:
         a: str = expr_type(g, elem(node, 1))
         if a == "f":
             return "f"
+        if a == "li" and t == "*":
+            return "li"
         if len(node.arr) == 3:
-            if expr_type(g, elem(node, 2)) == "f":
+            b: str = expr_type(g, elem(node, 2))
+            if b == "f":
                 return "f"
+            if b == "li" and t == "*":
+                return "li"
         return "i"
     if t == "//" or t == "%":
         if expr_type(g, elem(node, 1)) == "f" or expr_type(g, elem(node, 2)) == "f":
@@ -614,11 +638,18 @@ def emit_expr(g: Gen, node: JValue) -> str:
             return "(global.get $" + nm + ")"
         return "(local.get $" + nm + ")"
     if t == "list":
-        # the element container is node.arr[1]; non-empty literals would
-        # silently lose their elements otherwise
-        if len(elem(node, 1).arr) > 0:
-            return "(unreachable)"
-        return "(call $li_new)"
+        # element container is node.arr[1]; build via appends, each
+        # element evaluated exactly once, float elements bit-packed
+        lv: str = g.fresh()
+        g.emit("(local.set " + lv + " (call $li_new))")
+        ei: int = 0
+        while ei < len(elem(node, 1).arr):
+            it: str = emit_expr(g, elem(elem(node, 1), ei))
+            if expr_type(g, elem(elem(node, 1), ei)) == "f":
+                it = "(i64.reinterpret_f64 " + it + ")"
+            g.emit("(call $li_append (local.get " + lv + ") " + it + ")")
+            ei += 1
+        return "(local.get " + lv + ")"
     if t == "dict":
         if len(elem(node, 1).arr) > 0:
             return "(unreachable)"
@@ -644,6 +675,8 @@ def emit_expr(g: Gen, node: JValue) -> str:
             if bt == "dsif":
                 return "(f64.reinterpret_i64 " + base + ")"
             return base
+        if bt == "lf":
+            return "(f64.reinterpret_i64 (call $li_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, idx) + "))"
         if bt == "s":
             if tag(idx) == "slice":
                 sa: JValue = elem(idx, 1)
@@ -683,6 +716,26 @@ def emit_expr(g: Gen, node: JValue) -> str:
                 return "(call $str_upper " + emit_expr(g, recv) + ")"
             if expr_type(g, recv) == "s" and mname == "lower":
                 return "(call $str_lower " + emit_expr(g, recv) + ")"
+            if mname == "get":
+                ct2: str = expr_type(g, recv)
+                gargs: JValue = elem(node, 2)
+                # get(k[, default]): single evaluation into fresh locals
+                kl: str = g.fresh()
+                dl: str = g.fresh()
+                g.emit("(local.set " + kl + " " + emit_expr(g, elem(gargs, 0)) + ")")
+                if len(gargs.arr) > 1:
+                    g.emit("(local.set " + dl + " " + emit_expr(g, elem(gargs, 1)) + ")")
+                else:
+                    g.emit("(local.set " + dl + " (i64.const 0))")
+                finder: str = "$ds_get_or"
+                if ct2 == "dsi" or ct2 == "dsif" or ct2 == "dsis":
+                    finder = "$dsi_get_or"
+                base2: str = "(call " + finder + " " + emit_expr(g, recv) + " (local.get " + kl + ") (local.get " + dl + "))"
+                if ct2 == "dsf" or ct2 == "dsif" or ct2 == "lf":
+                    return "(f64.reinterpret_i64 " + base2 + ")"
+                return base2
+        if name == "input":
+            return "(call $read_line)"
         if name == "float":
             if expr_type(g, elem(args, 0)) == "s":
                 return "(unreachable)"
@@ -696,13 +749,15 @@ def emit_expr(g: Gen, node: JValue) -> str:
             if at2 == "ds" or at2 == "dsf" or at2 == "dss" or at2 == "dsi" or at2 == "dsif" or at2 == "dsis":
                 return "(call $ds_len " + emit_expr(g, elem(args, 0)) + ")"
             return "(call $li_len " + emit_expr(g, elem(args, 0)) + ")"
+        fi = fn_lookup(name)
+        if fi < 0:
+            # unknown callee (class constructor, missing builtin): loud
+            return "(unreachable)"
         folded: str = ""
-        fi: int = fn_lookup(name)
-        i: int = 0
+        i = 0
         while i < len(args.arr):
             pt: str = "i"
-            if fi >= 0:
-                pt = ann_type(elem(FUNCS[fi].ptypes, i))
+            pt = ann_type(elem(FUNCS[fi].ptypes, i))
             if pt == "f":
                 folded = folded + " " + to_f(g, elem(args, i))
             else:
@@ -719,6 +774,17 @@ def emit_expr(g: Gen, node: JValue) -> str:
     if t == "*":
         if expr_type(g, node) == "f":
             return "(f64.mul " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + ")"
+        if expr_type(g, elem(node, 1)) == "li" or expr_type(g, elem(node, 2)) == "li":
+            # [x] * n: element-wise repeat into a fresh list
+            lp: str = g.fresh()
+            kp: str = g.fresh()
+            if expr_type(g, elem(node, 1)) == "li":
+                g.emit("(local.set " + lp + " " + emit_expr(g, elem(node, 1)) + ")")
+                g.emit("(local.set " + kp + " " + emit_expr(g, elem(node, 2)) + ")")
+            else:
+                g.emit("(local.set " + lp + " " + emit_expr(g, elem(node, 2)) + ")")
+                g.emit("(local.set " + kp + " " + emit_expr(g, elem(node, 1)) + ")")
+            return "(call $li_repeat (local.get " + lp + ") (local.get " + kp + "))"
         if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
             return "(unreachable)"
         return "(i64.mul " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + ")"
@@ -862,22 +928,29 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         return 0
     if t == "subscript_assign":
         bt: str = expr_type(g, elem(stmt, 1))
-        if bt == "ds" or bt == "dsf" or bt == "dss":
-            val: str = emit_expr(g, elem(stmt, 3))
-            if bt == "dsf":
-                val = "(i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + ")"
-            elif bt == "dss":
-                val = to_s(g, elem(stmt, 3))
-            g.emit("(call $ds_set " + emit_expr(g, elem(stmt, 1)) + " " + emit_expr(g, elem(stmt, 2)) + " " + val + ")")
-        elif bt == "dsi" or bt == "dsif" or bt == "dsis":
-            val = emit_expr(g, elem(stmt, 3))
+        d: str = emit_expr(g, elem(stmt, 1))
+        k: str = emit_expr(g, elem(stmt, 2))
+        # value emitted exactly once per branch (side-effect safety)
+        if bt == "ds" or bt == "dsi":
+            v: str = emit_expr(g, elem(stmt, 3))
+            setter: str = "$ds_set"
+            if bt == "dsi":
+                setter = "$dsi_set"
+            g.emit("(call " + setter + " " + d + " " + k + " " + v + ")")
+        elif bt == "dsf" or bt == "dsif":
+            setter = "$ds_set"
             if bt == "dsif":
-                val = "(i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + ")"
-            elif bt == "dsis":
-                val = to_s(g, elem(stmt, 3))
-            g.emit("(call $dsi_set " + emit_expr(g, elem(stmt, 1)) + " " + emit_expr(g, elem(stmt, 2)) + " " + val + ")")
+                setter = "$dsi_set"
+            g.emit("(call " + setter + " " + d + " " + k + " (i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + "))")
+        elif bt == "lf":
+            g.emit("(call $li_set " + d + " " + k + " (i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + "))")
+        elif bt == "dss" or bt == "dsis":
+            setter = "$ds_set"
+            if bt == "dsis":
+                setter = "$dsi_set"
+            g.emit("(call " + setter + " " + d + " " + k + " " + to_s(g, elem(stmt, 3)) + ")")
         else:
-            g.emit("(call $li_set " + emit_expr(g, elem(stmt, 1)) + " " + emit_expr(g, elem(stmt, 2)) + " " + emit_expr(g, elem(stmt, 3)) + ")")
+            g.emit("(call $li_set " + d + " " + k + " " + emit_expr(g, elem(stmt, 3)) + ")")
         return 0
     if t == "assign" or t == "ann_assign":
         nm: str = "$" + elem_str(stmt, 1)
@@ -899,9 +972,15 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             g.set_type(nm, ann_type(elem(stmt, 3)))
         vt: str = expr_type(g, elem(stmt, 2))
         if vt == "f" or vt == "s" or vt == "li" or vt == "ds" or vt == "b":
-            # an empty dict literal infers plain "ds" - never downgrade a
-            # declared dict[str, float]/dict[str, str] back to it
-            if vt != "ds" or not (g.get_type(nm) == "dsf" or g.get_type(nm) == "dss"):
+            # empty container literals infer plain "ds"/"li" - never
+            # downgrade a declared richer type back to them
+            cur3: str = g.get_type(nm)
+            downgrade: int = 0
+            if vt == "ds" and (cur3 == "dsf" or cur3 == "dss" or cur3 == "dsi" or cur3 == "dsif" or cur3 == "dsis"):
+                downgrade = 1
+            if vt == "li" and cur3 == "lf":
+                downgrade = 1
+            if downgrade == 0:
                 g.set_type(nm, vt)
         if g.get_type(nm) == "f":
             g.emit("(local.set " + nm + " " + to_f(g, elem(stmt, 2)) + ")")
@@ -917,17 +996,36 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             bt: str = expr_type(g, elem(elem(stmt, 1), 1))
             cl2: str = g.fresh()
             il2: str = g.fresh()
-            vl2: str = g.fresh()
             g.emit("(local.set " + cl2 + " " + emit_expr(g, elem(elem(stmt, 1), 1)) + ")")
             g.emit("(local.set " + il2 + " " + emit_expr(g, elem(elem(stmt, 1), 2)) + ")")
-            g.emit("(local.set " + vl2 + " " + emit_expr(g, elem(stmt, 3)) + ")")
             op2: str = elem_str(stmt, 2)
             cur: str = "(call $li_get (local.get " + cl2 + ") (local.get " + il2 + "))"
             setter: str = "$li_set"
-            if bt == "dsf" or bt == "dss" or bt == "dsif" or bt == "dsis":
-                # float/str dict values have no read-modify-write here
+            if bt == "dss" or bt == "dsif" or bt == "dsis":
+                # str dict values have no read-modify-write here
                 g.emit("(unreachable)")
                 return 0
+            if bt == "dsf" or bt == "lf":
+                # float slots: read-modify-write through the bit packing;
+                # the RHS is evaluated once into an f64 fresh local
+                vf: str = g.fresh()
+                g.set_type(vf, "f")
+                g.emit("(local.set " + vf + " " + to_f(g, elem(stmt, 3)) + ")")
+                cur2: str = "(f64.reinterpret_i64 " + cur + ")"
+                if op2 == "+=":
+                    body3: str = "(i64.reinterpret_f64 (f64.add " + cur2 + " (local.get " + vf + ")))"
+                elif op2 == "-=":
+                    body3 = "(i64.reinterpret_f64 (f64.sub " + cur2 + " (local.get " + vf + ")))"
+                elif op2 == "*=":
+                    body3 = "(i64.reinterpret_f64 (f64.mul " + cur2 + " (local.get " + vf + ")))"
+                else:
+                    g.emit("(unreachable)")
+                    return 0
+                g.emit("(call " + setter + " (local.get " + cl2 + ") (local.get " + il2 + ") " + body3 + ")")
+                return 0
+            # integer-valued slots: RHS evaluated once into an i64 fresh
+            vl2: str = g.fresh()
+            g.emit("(local.set " + vl2 + " " + emit_expr(g, elem(stmt, 3)) + ")")
             if bt == "dsi":
                 cur = "(call $dsi_get (local.get " + cl2 + ") (local.get " + il2 + "))"
                 setter = "$dsi_set"
@@ -950,7 +1048,6 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         op: str = elem_str(stmt, 2)
         if CTX[0] == 1 and tgt not in g.names and elem_str(elem(stmt, 1), 1) in GNAMES:
             # module-level variable: read-modify-write the global
-            rhs_g: str = emit_expr(g, elem(stmt, 3))
             gi: int = 0
             gt3: str = "i"
             while gi < len(GNAMES):
@@ -974,6 +1071,7 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                     g.emit("(local.set " + qf + " (f64.floor (f64.div (global.get " + tgt + ") " + rhs_g + ")))")
                     g.emit("(global.set " + tgt + " (f64.sub (global.get " + tgt + ") (f64.mul (local.get " + qf + ") " + rhs_g + ")))")
                 return 0
+            rhs_g = emit_expr(g, elem(stmt, 3))
             if op == "+=":
                 g.emit("(global.set " + tgt + " (i64.add (global.get " + tgt + ") " + rhs_g + "))")
             elif op == "-=":
@@ -1028,7 +1126,10 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         if tag(head) == "attribute":
             mname: str = elem_str(head, 2)
             if mname == "append":
-                g.emit("(call $li_append " + emit_expr(g, elem(head, 1)) + " " + emit_expr(g, elem(elem(stmt, 2), 0)) + ")")
+                av: str = emit_expr(g, elem(elem(stmt, 2), 0))
+                if expr_type(g, elem(head, 1)) == "lf":
+                    av = "(i64.reinterpret_f64 " + to_f(g, elem(elem(stmt, 2), 0)) + ")"
+                g.emit("(call $li_append " + emit_expr(g, elem(head, 1)) + " " + av + ")")
                 return 0
         name: str = elem(elem(stmt, 1), 1).s
         args: JValue = elem(stmt, 2)
@@ -1044,6 +1145,8 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                     g.emit("(call $print_f64 " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "li":
                     g.emit("(call $print_li " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "lf":
+                    g.emit("(call $print_lf " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "ds":
                     g.emit("(call $print_ds " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "dsf":
@@ -1066,8 +1169,12 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 i += 1
             g.emit("(call $print_nl)")
             return 0
+        if fn_lookup(name) < 0:
+            # unknown callee at statement level: loud trap
+            g.emit("(unreachable)")
+            return 0
         folded: str = ""
-        i: int = 0
+        i = 0
         while i < len(args.arr):
             folded = folded + " " + emit_expr(g, elem(args, i))
             i += 1
@@ -1133,7 +1240,11 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         g.loop_top = ft
         g.emit("(block " + fe + " (loop " + ft)
         g.emit("(br_if " + fe + " (i64.ge_u (local.get " + idx + ") (call $li_len (local.get " + li + "))))")
-        g.emit("(local.set " + var + " (call $li_get (local.get " + li + ") (local.get " + idx + ")))")
+        if bt == "lf":
+            g.set_type(var, "f")
+            g.emit("(local.set " + var + " (f64.reinterpret_i64 (call $li_get (local.get " + li + ") (local.get " + idx + "))))")
+        else:
+            g.emit("(local.set " + var + " (call $li_get (local.get " + li + ") (local.get " + idx + ")))")
         emit_stmts(g, elem(stmt, 3))
         g.emit("(local.set " + idx + " (i64.add (local.get " + idx + ") (i64.const 1)))")
         g.emit("(br " + ft + ")))")
@@ -1242,6 +1353,7 @@ RT_HEAD = '''(module
 (import "silu_host" "write" (func $write (param i32 i64 i64)))
 (import "silu_host" "fmt_double" (func $fmt_double (param i64 i64 f64 i32 i32) (result i64)))
 (import "silu_host" "pow" (func $f64_pow (param f64 f64) (result f64)))
+(import "silu_host" "getchar" (func $getchar (result i32)))
 (memory i64 1)
 (export "memory" (memory 0))
 '''
@@ -1787,6 +1899,72 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br $again)))
 (i64.store8 (i64.const 96) (i64.const 125))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1)))
+(func $li_repeat (param $l i64) (param $k i64) (result i64)
+(local $out i64) (local $i i64) (local $j i64) (local $len i64) (local $d i64) (local $v i64)
+(local.set $len (i64.load (local.get $l)))
+(local.set $d (i64.load (i64.add (local.get $l) (i64.const 16))))
+(local.set $out (call $li_new))
+(local.set $i (i64.const 0))
+(block $done (loop $outer
+(br_if $done (i64.ge_u (local.get $i) (local.get $k)))
+(local.set $j (i64.const 0))
+(block $d2 (loop $inner
+(br_if $d2 (i64.ge_u (local.get $j) (local.get $len)))
+(local.set $v (i64.load (i64.add (local.get $d) (i64.mul (local.get $j) (i64.const 8)))))
+(call $li_append (local.get $out) (local.get $v))
+(local.set $j (i64.add (local.get $j) (i64.const 1)))
+(br $inner)))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $outer)))
+(local.get $out))
+(func $ds_get_or (param $d i64) (param $k i64) (param $def i64) (result i64)
+(local $ei i64)
+(local.set $ei (call $ds_find (local.get $d) (local.get $k)))
+(if (i64.eq (local.get $ei) (i64.const 0))
+  (then (return (local.get $def))))
+(i64.load (i64.add (i64.add (i64.load (i64.add (local.get $d) (i64.const 8))) (i64.mul (i64.sub (local.get $ei) (i64.const 1)) (i64.const 16))) (i64.const 8))))
+(func $dsi_get_or (param $d i64) (param $k i64) (param $def i64) (result i64)
+(local $ei i64)
+(local.set $ei (call $dsi_find (local.get $d) (local.get $k)))
+(if (i64.eq (local.get $ei) (i64.const 0))
+  (then (return (local.get $def))))
+(i64.load (i64.add (i64.add (i64.load (i64.add (local.get $d) (i64.const 8))) (i64.mul (i64.sub (local.get $ei) (i64.const 1)) (i64.const 16))) (i64.const 8))))
+;; input(): one line via getchar into scratch 200..4159, then an exact
+;; allocation (scratch is reused between calls by design)
+(func $read_line (result i64)
+(local $i i64) (local $ch i64) (local $n i64)
+(local.set $i (i64.const 0))
+(block $done (loop $rd
+(local.set $ch (i64.extend_i32_s (call $getchar)))
+(br_if $done (i64.eq (local.get $ch) (i64.const -1)))
+(br_if $done (i64.eq (local.get $ch) (i64.const 10)))
+(i64.store8 (i64.add (i64.const 200) (local.get $i)) (local.get $ch))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br_if $done (i64.ge_u (local.get $i) (i64.const 4096)))
+(br $rd)))
+(local.set $n (call $alloc (i64.add (local.get $i) (i64.const 1))))
+(memory.copy (local.get $n) (i64.const 200) (local.get $i))
+(i64.store8 (i64.add (local.get $n) (local.get $i)) (i64.const 0))
+(local.get $n))
+(func $print_lf (param $l i64)
+(local $i i64) (local $n i64)
+(i64.store8 (i64.const 96) (i64.const 91))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $n (i64.load (local.get $l)))
+(local.set $i (i64.const 0))
+(block $done
+(loop $again
+(br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+(if (i64.gt_u (local.get $i) (i64.const 0))
+  (then
+    (i64.store8 (i64.const 96) (i64.const 44))
+    (i64.store8 (i64.const 97) (i64.const 32))
+    (call $write (i32.const 1) (i64.const 96) (i64.const 2))))
+(call $print_f64 (f64.reinterpret_i64 (call $li_get (local.get $l) (local.get $i))))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $again)))
+(i64.store8 (i64.const 96) (i64.const 93))
 (call $write (i32.const 1) (i64.const 96) (i64.const 1)))
 (func $str_upper (param $p i64) (result i64)
 (local $n i64) (local $p2 i64) (local $i i64) (local $b i64)

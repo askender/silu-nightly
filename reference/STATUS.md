@@ -320,12 +320,27 @@ $ds_grow 用 str 版 djb2 扫 int 键指针 → 错位 → len 895 vs 500**）�
 类型标记 dsif/dsis（int 键 float/str 值）已进 ann_type/分派面、
 render 响亮 gap。examples/globals.si 新增（13 输出对拍 CPython）。
 
-**剩余（下轮逐个）**：①fannkuch TRAP（越界，int 程序不应）；②
-jsonparse.si：类构造 JArr(...) → (call $JArr) 未定义（pyobj/record
-类 = 子集外，应响亮）；③jsonparse_json.si：$input 未定义（stdin 全局
-的 collect/声明形态）；④knucleotide/wordcount：empty identifier
-（疑 for 双变量解包或下标目标形态）；⑤nbody：local.set i64 got f64
-（某 float 局部漏 collect 传播）；⑥spectral：call 实参 i64 got f64。
+**剩余 7 项处置完毕（2026-11-14 深夜），语料 11/15 实质 PASS**：
+①fannkuch：`[0] * n` **list×int 重复**（$li_repeat + expr_type "*" li
+臂）+ **非空 list 字面量**从响亮 trap 改为 build-via-append（单次求值，
+float 元素位打包）；②nbody/spectral：**list[float]**（"lf" 标记，
+li_get/li_set 位打包、for 元素 "f"、print_lf、append reinterpret）+
+nbody 顶层裸 assign 全局的 top_type **缺 const 臂**（["const",...] 外
+层是 ARR，kind 检查全 miss → 兜 "i"）；③spectral 的 lf 下标赋值走
+ds_set——**lf 被误并进 dict 值臂**（setter 默认 ds_set）——最小复现
+mini1（v[1]=9.5 后读变 1.0）定位，lf 单独 li_set 臂；④aug 下标/全局臂
+的 rhs **双次求值重构**（副作用安全，float 臂 fresh 标 f）；⑤
+wordcount/knucleotide：**dict.get(k[,default])**（$ds_get_or/
+$dsi_get_or 单次求值）+ **input() 内建**（getchar 行读，4096 上限）+
+未知 callee 响亮化——两程序仍 TIMEOUT（**stdin 数据程序**，探针空
+stdin 假死，接入 diff_harness 的 stdin 机制后对拍）；⑥jsonparse ×2：
+pyobj 类构造响亮 unreachable（子集外 ✓）。
+
+**语料账**：11/15 逐字节一致（arith/dict/fannkuch/fib/float/list/
+mandelbrot/string/trees/nbody/spectral）；knucleotide/wordcount 待
+stdin 接入；jsonparse ×2 = pyobj 类子集外（响亮）。**探针假象警示**：
+/tmp/corpus_probe.py 的 console.log 自动加 \n——所有 DIFF 行都多一个
+尾部空行，实为 PASS（正确性以 test_backend 门禁与门禁示例为准）。
 
 ## 四、其余 TODO（优先级序）
 
