@@ -41,7 +41,7 @@ for (const line of lines) {
     else fails.push(`STR ${JSON.stringify(text)}: want bits=${hex} consumed=${consumed}, got bits=${bitsOf(r.value)} consumed=${r.consumed}`);
   } else {
     const [spec, hex, want] = parts;
-    const prec = spec === "g17" || spec === "e17" ? 17 : spec === "g6" || spec === "f6" || spec === "e6" ? 6 : -1;
+    const prec = spec === "g17" || spec === "e17" ? 17 : spec === "g6" || spec === "f6" || spec === "e6" ? 6 : spec === "g5" ? 5 : spec === "e0" ? 0 : -1;
     const got = render(hex, spec, prec);
     if (got === want) pass++;
     else fails.push(`${spec} ${hex}: want ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);

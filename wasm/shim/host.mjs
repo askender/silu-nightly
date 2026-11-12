@@ -62,6 +62,43 @@ function fixedExact(v, prec) {
   return s;
 }
 
+// exact decimal expansion of a finite |v| > 0, rounded to `sig`
+// significant digits with half-even ties (C printf semantics; JS
+// toExponential rounds half-UP on the decimal approximation instead)
+function expExact(abs, sig) {
+  const { M, E } = decompose(abs);
+  // |v| = M * 2^E; its decimal expansion is finite:
+  //   E >= 0: integer M * 2^E        E < 0: num = M * 5^(-E) over 10^(-E)
+  let digits, e10;
+  if (E >= 0) {
+    digits = (M << BigInt(E)).toString();
+    e10 = digits.length - 1;
+  } else {
+    const k = BigInt(-E);
+    const num = (M * 5n ** k).toString();
+    e10 = num.length - 1 - Number(k);
+    digits = num;
+  }
+  let keep, rest;
+  if (digits.length > sig) {
+    keep = digits.slice(0, sig);
+    rest = digits.slice(sig);
+  } else {
+    keep = digits.padEnd(sig, "0");
+    rest = "0";
+  }
+  const restNonzero = /[1-9]/.test(rest.slice(1));
+  const gtHalf = rest[0] > "5" || (rest[0] === "5" && restNonzero);
+  const tie = rest[0] === "5" && !restNonzero;
+  const inc = gtHalf || (tie && BigInt(keep) % 2n === 1n);
+  if (inc) {
+    keep = (BigInt(keep) + 1n).toString();
+    if (keep.length > sig) return { d: "1", frac: "0".repeat(sig - 1), e10: e10 + 1 };
+    keep = keep.padStart(sig, "0");
+  }
+  return { d: keep[0], frac: keep.slice(1), e10 };
+}
+
 function fixExp(s, upper) {
   // JS "1.5e+0" -> C "1.500000e+00" (exponent >= 2 digits)
   let [m, e] = s.split("e");
@@ -134,18 +171,25 @@ function cFormatDouble(v, spec, prec) {
   if (expF === 0x7ff) return sign + (frac === 0n ? "inf" : "nan");
   const abs = Math.abs(v);
   if (spec === "f") return sign + fixedExact(abs, prec);
-  if (spec === "e" || spec === "E") return sign + fixExp(abs.toExponential(prec), spec === "E");
-  // %g / %G
+  if (spec === "e" || spec === "E") {
+    if (abs === 0) return sign + (prec > 0 ? "0." + "0".repeat(prec) : "0") + "e+00";
+    const { d, frac, e10 } = expExact(abs, prec + 1);
+    const body = d + (prec > 0 ? "." + frac : "");
+    return sign + body + (spec === "E" ? "E" : "e") + (e10 < 0 ? "-" : "+")
+      + String(Math.abs(e10)).padStart(2, "0");
+  }
+  // %g / %G: round to P significant digits FIRST, then decide the style
+  // on the rounded exponent (matches C)
   const P = prec === 0 ? 1 : prec;
   if (abs === 0) return sign + "0";
-  const xs = abs.toExponential(P - 1);
-  const X = parseInt(xs.split("e")[1], 10);
+  const r = expExact(abs, P);
+  const X = r.e10;
   if (X >= -4 && X < P) {
-    return sign + fixExpTail(fixedExact(abs, Math.max(P - 1 - X, 0)));
+    return sign + fixExpTail(fixedExact(abs, P - 1 - X));
   }
-  const s = fixExp(xs, spec === "G");
-  const ei = s.search(/e[+-]/);
-  return sign + s.slice(0, ei).replace(/0+$/, "").replace(/\.$/, "") + s.slice(ei);
+  const gf = r.frac.replace(/0+$/, "");
+  return sign + r.d + (gf ? "." + gf : "") + (spec === "G" ? "E" : "e")
+    + (X < 0 ? "-" : "+") + String(Math.abs(X)).padStart(2, "0");
 }
 
 function fixExpTail(s) {
