@@ -98,16 +98,22 @@ function cReprDouble(v) {
     intLen = s.length;
   }
   const decpt = intLen;
+  // JS gives fixed form "0.000xyz" down to 1e-6, so mant carries the
+  // integer-part zero plus fractional leading zeros; the repr
+  // exponential rule keys on the ADJUSTED exponent (leading digit),
+  // not the raw decpt.
+  const lz = mant.length - mant.replace(/^0+/, "").length;
+  const adjExp = decpt - 1 - lz;
   let body;
   const mkExp = () => {
-    let d = mant;
-    let e10 = decpt - 1;
+    let d = mant.replace(/^0+/, "");
+    const e10 = adjExp;
     while (d.length > 1 && d.endsWith("0")) d = d.slice(0, -1);
     const sign = e10 < 0 ? "-" : "+";
     const frac = d.length > 1 ? "." + d.slice(1) : "";
     return d[0] + frac + "e" + sign + String(Math.abs(e10)).padStart(2, "0");
   };
-  if (decpt <= -4 || decpt > 16) {
+  if (adjExp <= -5 || adjExp >= 16) {
     body = mkExp();
   } else if (decpt <= 0) {
     let f = "0." + "0".repeat(-decpt) + mant;
@@ -182,6 +188,7 @@ function hexFloat(neg, hexStr, fracLen, pexp) {
     if (mant >> 52n === 1n) { mant >>= 1n; exp = -1021; }
   } else {
     mant -= 1n << BigInt(bl - 1); // remove the implicit leading bit
+    mant <<= BigInt(52 - (bl - 1)); // fraction field is top-aligned
   }
   const bits = (BigInt(neg ? 1 : 0) << 63n) | BigInt(exp + 1023) << 52n | mant;
   hexpow.setBigUint64(0, bits);
@@ -194,7 +201,11 @@ function cStrtod(bytes, offset, len) {
   const isWs = (c) => c === 32 || (c >= 9 && c <= 13);
   while (i < end && isWs(bytes[i])) i++;
   let j = i;
-  if (j < end && (bytes[j] === 43 || bytes[j] === 45)) j++;
+  let neg = false;
+  if (j < end && (bytes[j] === 43 || bytes[j] === 45)) {
+    neg = bytes[j] === 45;
+    j++;
+  }
   const wordStart = j;
   // infinity / nan words
   const lowerFrom = (k, n) => {
@@ -206,15 +217,13 @@ function cStrtod(bytes, offset, len) {
     return true;
   };
   if (lowerFrom(j, 8) && latin1(bytes.subarray(j, j + 8)).toLowerCase() === "infinity") {
-    const val = bytes[j] === 45 ? -Infinity : Infinity;
-    return { value: val, consumed: j + 8 - offset };
+    return { value: neg ? -Infinity : Infinity, consumed: j + 8 - offset };
   }
   if (j + 3 <= end && latin1(bytes.subarray(j, j + 3)).toLowerCase() === "inf") {
-    const val = bytes[j] === 45 ? -Infinity : Infinity;
-    return { value: val, consumed: j + 3 - offset };
+    return { value: neg ? -Infinity : Infinity, consumed: j + 3 - offset };
   }
   if (j + 3 <= end && latin1(bytes.subarray(j, j + 3)).toLowerCase() === "nan") {
-    return { value: NaN, consumed: j + 3 - offset };
+    return { value: neg ? -NaN : NaN, consumed: j + 3 - offset };
   }
   // hex float: 0x hexdigits [ . hexdigits ] [ pP [sign] decimals ]
   if (j + 2 < end && bytes[j] === 48 && (bytes[j + 1] === 120 || bytes[j + 1] === 88)) {
@@ -237,12 +246,11 @@ function cStrtod(bytes, offset, len) {
         while (e < end && bytes[e] >= 48 && bytes[e] <= 57) e++, ed++;
         if (ed > 0) {
           pexp = parseInt(latin1(bytes.subarray(k + 1, e)), 10);
-          if (bytes[k + 1] === 45) pexp = -pexp;
           last = e;
         }
       }
       const hexStr = latin1(bytes.subarray(j + 2, k)).replace(".", "");
-      const value = hexFloat(bytes[j] === 45, hexStr, fl, pexp);
+      const value = hexFloat(neg, hexStr, fl, pexp);
       return { value, consumed: last - offset };
     }
     // "0x" without hex digits: C consumes just the leading "0"

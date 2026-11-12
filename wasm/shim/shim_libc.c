@@ -120,12 +120,14 @@ void *malloc(u64 n) {
 void free(void *p) {
     if (!p) return;
     hdr_t *h = (hdr_t *)p - 1;
+    if (!h->used) shim_die("shim: double free");
     h->used = 0;
     h->flink = free_head;
     free_head = h;
 }
 
 void *calloc(u64 a, u64 b) {
+    if (b != 0 && a > (u64)-1 / b) return 0;
     u64 n = a * b;
     char *p = malloc(n);
     for (u64 i = 0; i < n; i++) p[i] = 0;

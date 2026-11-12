@@ -168,6 +168,27 @@ subscript_assign（非 assign+下标目标）——此前 list[i]=v 静默丢弃
 毕业（6/6，含 upper/lower 与 dict 渲染验证）。dict 哈希加速、dict
 值类型扩展（float/str 值）待做。
 
+## 三点八、代理代码审查修复轮（2026-11-13）：shim 符号群 bug
+
+四个审查代理（backend/host-shim/build-tests/架构）发现的问题处置：
+架构轮 6 个 P1 已全部修复并提交（9e7ca2d）。host/shim 轮 3 个 P1 本轮修复：
+①**cStrtod 符号系统性丢失**（4 处）——`bytes[j]===45` 在 j 越过符号位后
+永远为假：-inf/-Infinity/-nan 全变正、负 hex 丢号；现统一用前置 `neg`
+记录。②**hex p 指数双重取负**（"0x1p-3"→8.0）——parseInt 已含符号，删掉
+手动翻转。③**hexFloat 尾数低位置放**——fraction 域必须顶端对齐
+（mant <<= 52-(bl-1)）；"0x10" 等整数恰好剩余位为 0，旧门禁全绿是巧合。
+④**cReprDouble 小值区间错一个量级**——JS 对 [1e-6,1e-4) 给定点形式
+"0.000xyz"，旧代码 decpt=idx 从不看前导零：指数阈值永不触发且重构分支
+输出错位数；改用**调整指数 decpt-1-lz**（lz=mant 前导零）判阈值，mkExp
+同步剥前导零。15 值直接对拍 CPython repr 全绿。
+**门禁加固**：test_shim_ref.c 补 10 条符号用例（±inf/±nan/±hex/p 负指数
+），门禁 148→158。廉价 P2：calloc 乘法溢出检查、free 双重释放 shim_die。
+四门禁：compile 20/20、run 2/2、backend 6/6+web 冒烟、shim 158/158。
+
+**遗留（下轮候选）**：P2 %e/%g 半偶平局（JS toExponential 半上 vs C
+半偶，"2.5" 的 %.0e 触发；修法=指数路径走 fixedExact 式精确展开，中等
+复杂度）；P2 strtol 溢出回绕 + \v\f 空白缺失；P3 若干（agent 报告在案）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：
