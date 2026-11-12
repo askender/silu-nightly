@@ -4,9 +4,11 @@ from __future__ import annotations
 # Pipeline: read JSON IR from stdin -> parse to JValue trees -> execute.
 # Supported IR subset: module, line, const (int), name,
 # assign/ann_assign, aug_assign, binops (+ - * // %), compare, if,
-# while, print(int-expr), call of user-defined int functions (with
-# per-call env, recursion), func_def, return. Anything else silently
-# evaluates to 0 (M2 scope - NOT an error signal; known gap).
+# while (with break/continue), and/or/not (short-circuit truthiness
+# in conditions, 0/1 in int contexts), print(int-expr), call of
+# user-defined int functions (with per-call env, recursion), func_def,
+# return. Anything else silently evaluates to 0 (NOT an error signal;
+# known gap - containers/floats/strs live in the wasm backend gate).
 # Usage: python -m silu ir prog.py --output prog.ir.json
 #        silu build ir_interp.si && ./ir_interp < prog.ir.json
 
@@ -248,6 +250,22 @@ class Interp:
             return self.eval_int(elem(node, 1)) % self.eval_int(elem(node, 2))
         if t == "**":
             return self.ipow(self.eval_int(elem(node, 1)), self.eval_int(elem(node, 2)))
+        if t == "and":
+            if self.eval_int(elem(node, 1)) == 0:
+                return 0
+            if self.eval_int(elem(node, 2)) == 0:
+                return 0
+            return 1
+        if t == "or":
+            if self.eval_int(elem(node, 1)) != 0:
+                return 1
+            if self.eval_int(elem(node, 2)) != 0:
+                return 1
+            return 0
+        if t == "not":
+            if self.eval_int(elem(node, 1)) == 0:
+                return 1
+            return 0
         return 0
 
     def ipow(self, base: int, e: int) -> int:
@@ -270,6 +288,16 @@ class Interp:
         t: str = tag(node)
         if t == "const":
             return elem(node, 1).b
+        if t == "and":
+            if not self.truthy(elem(node, 1)):
+                return False
+            return self.truthy(elem(node, 2))
+        if t == "or":
+            if self.truthy(elem(node, 1)):
+                return True
+            return self.truthy(elem(node, 2))
+        if t == "not":
+            return not self.truthy(elem(node, 1))
         if t == "<":
             return self.eval_int(elem(node, 1)) < self.eval_int(elem(node, 2))
         if t == "<=":
@@ -342,6 +370,10 @@ class Interp:
             self.ret = self.eval_int(elem(stmt, 1))
             self.has_ret = True
             return 1
+        if t == "break":
+            return 2
+        if t == "continue":
+            return 3
         if t == "call":
             name: str = elem(elem(stmt, 1), 1).s
             if name == "print":
@@ -365,7 +397,9 @@ class Interp:
         if t == "while":
             while self.truthy(elem(stmt, 1)):
                 r2: int = self.exec_stmts(elem(stmt, 2))
-                if r2 != 0:
+                if r2 == 2:
+                    return 0
+                if r2 != 0 and r2 != 3:
                     return r2
             return 0
         return 0

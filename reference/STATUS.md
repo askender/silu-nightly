@@ -191,9 +191,18 @@ subscript_assign（非 assign+下标目标）——此前 list[i]=v 静默丢弃
 
 ## 三点九、backend 审查代理两轮修复（2026-11-13 深夜）：分派层补全
 
-**门禁扩容 6→8**：新增 examples/bool_ops.si（and/or/not 短路、break/
-continue、嵌套 while True、复合 while 条件）与 float_ops.si（浮点比较
-六臂、f64.pow 宿主导入、浮点 floordiv/floormod、str(float)）。
+**门禁扩容 6→9**：新增 examples/bool_ops.si（and/or/not 短路、break/
+continue、嵌套 while True、复合 while 条件）、float_ops.si（浮点比较
+六臂、f64.pow 宿主导入、浮点 floordiv/floormod、str(float)）、
+aug_sub.si（list/dict 下标读改写 + 渲染）。
+
+**ir_interp 补全（2026-11-14，解除 bool_ops SKIP）**：truthy/eval_int
+补 and/or/not（条件域短路真值；int 域 0/1），exec_stmt 补 break/continue
+（信号 2/3，while 循环处理传播）。三平面 run 门禁 2/2→**3/3**
+（bool_ops 毕业）。注意：改 ir_interp.si 后 /tmp/ir_interp_native 是
+existsSync 缓存——必须删除强制重建（陈旧二进制假绿教训②又验一次）；
+wasm 侧 interp.wasm 同步 build.py interp。aug_sub 永久 SKIP（ir_interp
+int-only 无容器，容器平面归 backend 门禁）。
 
 **P0×3（均实证后修复）**：①and/or/not 无分派静默 0 → 短路真值发射
 （fresh temp + if 链，操作数各求值一次）；②break/continue 被静默丢弃
