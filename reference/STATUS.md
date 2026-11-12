@@ -288,6 +288,45 @@ ensure_siluc→ensure_converter 嵌套；锁内双检 mtime——排队进程解
 test_llvmlite_text 28/28（历史竞态受害者簇）、全量 pytest 绿。
 .gitignore 加 .silu_build.lock。
 
+## 三点十一、wasm 后端进语料（2026-11-14）：全局变量 + int 键 dict
+
+**语料探测**（benchmarks 15 文件：fe → wasm_backend → wat2wasm → 执行
+→ 对拍 CPython）：此前 7 个 RUN / 8 个失败；本轮实现两个大缺口后
+**8 个 PASS**（arith/fib/float/list/mandelbrot/string/trees/dict——
+全部输出逐字节一致），剩 6 个 WAT-ERR（每文件一个具体缺口，见下）+
+fannkuch 1 个执行 TRAP。
+
+**缺口 1：模块级全局变量**（nbody/spectral 等的 NO-EMIT 根因）：顶层
+assign/ann_assign → wasm global（global.get/set；f → mut f64）。实现：
+pass 0 收集 GNAMES/GTYPES（ann_type 定型；裸 assign 用 top_type 从首
+初始化器推断）；函数 Gen 与 main Gen 都注入全局类型（**漏 main 注入
+曾让方法分派 recv 变 "i" → (call $) 空名**）；局部/参数名判定用
+g.names + **新 Gen 字段 g.pars**（参数名不进 names——曾把
+digits_sum(n) 的参数 n 误判全局 → 读走 global → 返回值错成 1）。
+**语义对齐**：函数内 aug 全局在 native 平面是响亮拒绝——wasm 的
+全局 aug 臂用 **CTX[0] list 变异标记**限定 $silu_main 顶层。首版用
+模块级 bool flag（MAIN_GEN = True）**静默失效**——本程序由 Silu 写
+成，函数内 assign 全局 = 局部遮蔽（正是它自己发射的语义），flag 永远
+False → 顶层 aug 全走局部 → 8 示例回归 undefined local。**教训：
+backend 的全局状态要用 list 变异（引用语义），bool flag 会被自己的
+作用域规则吃掉**。函数读全局 ✓（CPython 对拍 globals.si 绿）。
+**WAT 坑**：global 声明必须带初始化器且 mut 类型与初值是两个并列子项
+——`(mut i64 (i64.const 0))` 会被 wat2wasm 拒。
+
+**缺口 2：int 键 dict**（dict.si 的 DIFF 根因）：键 i64 值直接比较
+（乘法混淆 hash），结构体复用 $ds_new 布局；$dsi_find/set/get/has/
+print_dsi + **$dsi_grow**（**grow 必须按键类型重哈希——首版共享
+$ds_grow 用 str 版 djb2 扫 int 键指针 → 错位 → len 895 vs 500**）。
+类型标记 dsif/dsis（int 键 float/str 值）已进 ann_type/分派面、
+render 响亮 gap。examples/globals.si 新增（13 输出对拍 CPython）。
+
+**剩余（下轮逐个）**：①fannkuch TRAP（越界，int 程序不应）；②
+jsonparse.si：类构造 JArr(...) → (call $JArr) 未定义（pyobj/record
+类 = 子集外，应响亮）；③jsonparse_json.si：$input 未定义（stdin 全局
+的 collect/声明形态）；④knucleotide/wordcount：empty identifier
+（疑 for 双变量解包或下标目标形态）；⑤nbody：local.set i64 got f64
+（某 float 局部漏 collect 传播）；⑥spectral：call 实参 i64 got f64。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

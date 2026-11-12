@@ -1,0 +1,22 @@
+# module-level variables: functions READ them (global.get); writes
+# happen at the top level only (function-scope writes are locals)
+counter: int = 0
+scale: float = 2.5
+label: str = "v"
+
+def bump(by: int) -> int:
+    return counter + by
+
+print(bump(3))
+counter = 100
+print(bump(4))
+print(scale * 2.0)
+print(label + "1")
+
+xs: list[int] = []
+xs.append(7)
+def first() -> int:
+    return xs[0]
+print(first())
+xs[0] = 9
+print(first())
