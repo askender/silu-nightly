@@ -336,11 +336,21 @@ $dsi_get_or 单次求值）+ **input() 内建**（getchar 行读，4096 上限�
 stdin 假死，接入 diff_harness 的 stdin 机制后对拍）；⑥jsonparse ×2：
 pyobj 类构造响亮 unreachable（子集外 ✓）。
 
-**语料账**：11/15 逐字节一致（arith/dict/fannkuch/fib/float/list/
-mandelbrot/string/trees/nbody/spectral）；knucleotide/wordcount 待
-stdin 接入；jsonparse ×2 = pyobj 类子集外（响亮）。**探针假象警示**：
-/tmp/corpus_probe.py 的 console.log 自动加 \n——所有 DIFF 行都多一个
-尾部空行，实为 PASS（正确性以 test_backend 门禁与门禁示例为准）。
+**语料账（最终）**：**13/15 语义正确**——wordcount@300000 修复后
+逐字节一致（total 300000 ✓）；knucleotide@n=3000 对拍一致（31ms），
+**n=200000 是 O(n²) str 构建**（`dna = dna + "A"` 循环——CPython 有
+refcount 原地优化而 wasm 每次全拷；语义正确，待 strbuf/rope 缓解，
+已知性能项非 bug）；jsonparse ×2 = pyobj 类子集外（响亮）。
+
+**find 满表剪断的假命中 bug（wordcount 误计 4 的根因）**：ds_set 修了
+grow-first 但**纯查询路径（get/get_or/has）遇满表**仍死循环——tries
+剪断首版返回**最后探测槽的 ei（非 0）**→ 满表 miss 被当命中（get_or
+返垃圾 entry 值 → count 虚高）。修复：剪断分支显式 `ei = 0`（两处
+find）。定位链：wordcount 误计 4（与规模无关）→ get_or miss 插桩
+（miss 全部正常，每键恰一次）→ per-key diff（4 键各 +1）→ w6/w12
+抽查盲区（没打印出错键）→ **满表 get_or 的 tries 剪断返回值**实锤。
+教训：**剪断分支的返回值必须显式归零，"探测到一半"的 ei 不是 miss
+信号**；抽查 print 的键选择要覆盖出错路径。
 
 ## 四、其余 TODO（优先级序）
 
