@@ -191,7 +191,18 @@ subscript_assign（非 assign+下标目标）——此前 list[i]=v 静默丢弃
 
 ## 三点九、backend 审查代理两轮修复（2026-11-13 深夜）：分派层补全
 
-**门禁扩容 6→9**：新增 examples/bool_ops.si（and/or/not 短路、break/
+**dict 值类型扩展（2026-11-14）：dict[str, float] / dict[str, str]**：
+值槽统一 i64——float 走 f64.reinterpret_i64 位打包、str 走指针；类型标
+记 ds/dsf/dss 由 ann_type 从 ["subscript",["name","dict"],["tuple",
+[[K],[V]]]] 解析（V 是 ["name","x"] 节点，**取值要三跳 elem**：tuple→
+kv 数组→val_t→名字字符串——两次写成一跳/两跳被 get_type 兜回 "ds"
+静默错误，靠 print 分派与 reinterpret 缺失的 wat2wasm 类型错暴露）。
+emit 分派面：subscript 读/写、print（$print_dsf 经 fmt_double repr、
+$print_dss 带引号）、len、for 键迭代、aug（dsf/dss 响亮拒绝）；assign
+传播守卫防空 dict 字面量 "ds" 把已声明 dsf/dss 降级。门禁示例
+dicts_f.si 对拍 CPython 绿（渲染 {'mon': 21.5} 插入序 + repr float）。
+
+**门禁扩容 6→9→10**：新增 examples/bool_ops.si（and/or/not 短路、break/
 continue、嵌套 while True、复合 while 条件）、float_ops.si（浮点比较
 六臂、f64.pow 宿主导入、浮点 floordiv/floormod、str(float)）、
 aug_sub.si（list/dict 下标读改写 + 渲染）。

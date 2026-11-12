@@ -1,0 +1,18 @@
+# dict values: float (bit-packed) and str (pointer); rendering vs CPython
+temps: dict[str, float] = {}
+temps["mon"] = 21.5
+temps["tue"] = 3.25
+print(temps)
+print(temps["mon"] + temps["tue"])
+caps: dict[str, str] = {}
+caps["fr"] = "Paris"
+caps["jp"] = "Tokyo"
+print(caps)
+print(caps["jp"] + "!")
+print(len(caps))
+if "fr" in caps:
+    print(1)
+n: int = 0
+for k in temps:
+    n += 1
+print(n)

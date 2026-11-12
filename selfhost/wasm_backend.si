@@ -18,6 +18,9 @@
 # for (list + dict), call (print/str/len/float/user functions),
 # func_def, return, subscript read/write on lists/dicts/strs,
 # attribute append/upper/lower, in (list + dict).
+# dict[K,V] value types: int (ds), float (dsf - bit-packed in the i64
+# slot via reinterpret), str (dss - pointer); print repr matches
+# CPython per value type. Subscript aug on dsf/dss is a loud trap.
 # LOUD traps (unreachable), not silent zeros: /= on ints, non-empty
 # list literals, str(float)/str(list)/str(dict), float(str), str*int,
 # step=0 slices. str(float) uses one shared scratch buffer - at most
@@ -312,6 +315,13 @@ def ann_type(node: JValue) -> str:
         if tag(node) == "subscript":
             # ["subscript", ["name","dict"], ...] -> ds; else list
             if elem_str(elem(node, 1), 1) == "dict":
+                # dict[K, V]: ["tuple", [[K],[V]]] and each T is a
+                # ["name","x"] node - the value type needs three hops
+                vt: str = elem_str(elem(elem(elem(node, 2), 1), 1), 1)
+                if vt == "float":
+                    return "dsf"
+                if vt == "str":
+                    return "dss"
                 return "ds"
             return "li"
     return "i"
@@ -442,8 +452,10 @@ def expr_type(g: Gen, node: JValue) -> str:
         return "ds"
     if t == "subscript":
         bt: str = expr_type(g, elem(node, 1))
-        if bt == "s":
+        if bt == "s" or bt == "dss":
             return "s"
+        if bt == "dsf":
+            return "f"
         return "i"
     if t == "in":
         return "i"
@@ -549,8 +561,12 @@ def emit_expr(g: Gen, node: JValue) -> str:
     if t == "subscript":
         bt: str = expr_type(g, elem(node, 1))
         idx: JValue = elem(node, 2)
-        if bt == "ds":
-            return "(call $ds_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, idx) + ")"
+        if bt == "ds" or bt == "dsf" or bt == "dss":
+            base: str = "(call $ds_get " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, idx) + ")"
+            if bt == "dsf":
+                # float values are stored bit-packed in the i64 slot
+                return "(f64.reinterpret_i64 " + base + ")"
+            return base
         if bt == "s":
             if tag(idx) == "slice":
                 sa: JValue = elem(idx, 1)
@@ -600,7 +616,7 @@ def emit_expr(g: Gen, node: JValue) -> str:
             at2: str = expr_type(g, elem(args, 0))
             if at2 == "s":
                 return "(call $str_clen " + emit_expr(g, elem(args, 0)) + ")"
-            if at2 == "ds":
+            if at2 == "ds" or at2 == "dsf" or at2 == "dss":
                 return "(call $ds_len " + emit_expr(g, elem(args, 0)) + ")"
             return "(call $li_len " + emit_expr(g, elem(args, 0)) + ")"
         folded: str = ""
@@ -769,8 +785,13 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         return 0
     if t == "subscript_assign":
         bt: str = expr_type(g, elem(stmt, 1))
-        if bt == "ds":
-            g.emit("(call $ds_set " + emit_expr(g, elem(stmt, 1)) + " " + emit_expr(g, elem(stmt, 2)) + " " + emit_expr(g, elem(stmt, 3)) + ")")
+        if bt == "ds" or bt == "dsf" or bt == "dss":
+            val: str = emit_expr(g, elem(stmt, 3))
+            if bt == "dsf":
+                val = "(i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + ")"
+            elif bt == "dss":
+                val = to_s(g, elem(stmt, 3))
+            g.emit("(call $ds_set " + emit_expr(g, elem(stmt, 1)) + " " + emit_expr(g, elem(stmt, 2)) + " " + val + ")")
         else:
             g.emit("(call $li_set " + emit_expr(g, elem(stmt, 1)) + " " + emit_expr(g, elem(stmt, 2)) + " " + emit_expr(g, elem(stmt, 3)) + ")")
         return 0
@@ -780,7 +801,10 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             g.set_type(nm, ann_type(elem(stmt, 3)))
         vt: str = expr_type(g, elem(stmt, 2))
         if vt == "f" or vt == "s" or vt == "li" or vt == "ds":
-            g.set_type(nm, vt)
+            # an empty dict literal infers plain "ds" - never downgrade a
+            # declared dict[str, float]/dict[str, str] back to it
+            if vt != "ds" or not (g.get_type(nm) == "dsf" or g.get_type(nm) == "dss"):
+                g.set_type(nm, vt)
         if g.get_type(nm) == "f":
             g.emit("(local.set " + nm + " " + to_f(g, elem(stmt, 2)) + ")")
         elif g.get_type(nm) == "s":
@@ -802,6 +826,10 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             op2: str = elem_str(stmt, 2)
             cur: str = "(call $li_get (local.get " + cl2 + ") (local.get " + il2 + "))"
             setter: str = "$li_set"
+            if bt == "dsf" or bt == "dss":
+                # float/str dict values have no read-modify-write here
+                g.emit("(unreachable)")
+                return 0
             if bt == "ds":
                 cur = "(call $ds_get (local.get " + cl2 + ") (local.get " + il2 + "))"
                 setter = "$ds_set"
@@ -876,6 +904,10 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                     g.emit("(call $print_li " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "ds":
                     g.emit("(call $print_ds " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "dsf":
+                    g.emit("(call $print_dsf " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "dss":
+                    g.emit("(call $print_dss " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "s":
                     # single evaluation: the slice result goes to a fresh
                     # local; write reads it twice (ptr + blen)
@@ -918,7 +950,7 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         bt: str = expr_type(g, elem(stmt, 2))
         var: str = "$" + elem(elem(stmt, 1), 1).s
         lst: str = emit_expr(g, elem(stmt, 2))
-        if bt == "ds":
+        if bt == "ds" or bt == "dsf" or bt == "dss":
             di: str = g.fresh()
             dii: str = g.fresh()
             g.emit("(local.set " + di + " " + lst + ")")
@@ -1372,6 +1404,68 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (i64.store8 (i64.const 97) (i64.const 32))
 (call $write (i32.const 1) (i64.const 96) (i64.const 2))
 (call $print_i64 (i64.load (i64.add (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16))) (i64.const 8))))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $again)))
+(i64.store8 (i64.const 96) (i64.const 125))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1)))
+(func $print_dsf (param $d i64)
+(local $data i64) (local $count i64) (local $i i64) (local $ek i64) (local $ev i64)
+(i64.store8 (i64.const 96) (i64.const 123))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $count (i64.load (local.get $d)))
+(local.set $data (i64.load (i64.add (local.get $d) (i64.const 8))))
+(local.set $i (i64.const 0))
+(block $done (loop $again
+(br_if $done (i64.ge_u (local.get $i) (local.get $count)))
+(if (i64.gt_u (local.get $i) (i64.const 0))
+  (then
+    (i64.store8 (i64.const 96) (i64.const 44))
+    (i64.store8 (i64.const 97) (i64.const 32))
+    (call $write (i32.const 1) (i64.const 96) (i64.const 2))))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $ek (i64.load (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16)))))
+(call $write (i32.const 1) (local.get $ek) (call $str_blen (local.get $ek)))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(i64.store8 (i64.const 96) (i64.const 58))
+(i64.store8 (i64.const 97) (i64.const 32))
+(call $write (i32.const 1) (i64.const 96) (i64.const 2))
+(drop (call $fmt_double (i64.const 64) (i64.const 400) (f64.reinterpret_i64 (i64.load (i64.add (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16))) (i64.const 8)))) (i32.const 114) (i32.const 17)))
+(call $write (i32.const 1) (i64.const 64) (call $str_blen (i64.const 64)))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
+(br $again)))
+(i64.store8 (i64.const 96) (i64.const 125))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1)))
+(func $print_dss (param $d i64)
+(local $data i64) (local $count i64) (local $i i64) (local $ek i64) (local $ev i64)
+(i64.store8 (i64.const 96) (i64.const 123))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $count (i64.load (local.get $d)))
+(local.set $data (i64.load (i64.add (local.get $d) (i64.const 8))))
+(local.set $i (i64.const 0))
+(block $done (loop $again
+(br_if $done (i64.ge_u (local.get $i) (local.get $count)))
+(if (i64.gt_u (local.get $i) (i64.const 0))
+  (then
+    (i64.store8 (i64.const 96) (i64.const 44))
+    (i64.store8 (i64.const 97) (i64.const 32))
+    (call $write (i32.const 1) (i64.const 96) (i64.const 2))))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $ek (i64.load (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16)))))
+(call $write (i32.const 1) (local.get $ek) (call $str_blen (local.get $ek)))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(i64.store8 (i64.const 96) (i64.const 58))
+(i64.store8 (i64.const 97) (i64.const 32))
+(call $write (i32.const 1) (i64.const 96) (i64.const 2))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
+(local.set $ev (i64.load (i64.add (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16))) (i64.const 8))))
+(call $write (i32.const 1) (local.get $ev) (call $str_blen (local.get $ev)))
+(i64.store8 (i64.const 96) (i64.const 39))
+(call $write (i32.const 1) (i64.const 96) (i64.const 1))
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br $again)))
 (i64.store8 (i64.const 96) (i64.const 125))
