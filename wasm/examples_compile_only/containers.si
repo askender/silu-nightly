@@ -1,4 +1,6 @@
 # list + dict: build, index, iterate, membership
+# NOTE(backend gap): l[-1] negative list indexing is NOT implemented in
+# the wasm backend (li_get traps out-of-range). Compile-only reference.
 l: list[int] = []
 i: int = 0
 while i < 8:

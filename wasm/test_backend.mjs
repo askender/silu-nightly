@@ -60,23 +60,23 @@ for (const f of files) {
 const webBackend = REPO + "wasm/web/backend.wasm";
 if (existsSync(webBackend)) {
   try {
-    const src = readFileSync(REPO + "wasm/examples/dicts.si");
-    const { done } = await runWasm({ wasmBytes: new Uint8Array(readFileSync(webBackend)), stdin: src });
+    // the published backend must produce the SAME WAT as the native
+    // backend for the same IR JSON (the program pipeline needs wabt in
+    // Node - not available - so the WAT byte-compare IS the smoke)
+    const json = execFileSync(REPO + "silu_fe", {
+      input: readFileSync(REPO + "wasm/examples/dicts.si"), maxBuffer: 1 << 26,
+    });
+    const nativeWat = execFileSync("/tmp/wasm_backend_native", { input: json, maxBuffer: 1 << 26 });
+    const { done } = await runWasm({ wasmBytes: new Uint8Array(readFileSync(webBackend)), stdin: json });
     const r = await done;
-    const json = execFileSync(REPO + "silu_fe", { input: src, maxBuffer: 1 << 26 });
-    const wat = execFileSync("/tmp/wasm_backend_native", { input: json, maxBuffer: 1 << 26 });
-    const watPath = "/tmp/web_smoke.wat";
-    writeFileSync(watPath, wat);
-    execFileSync("wat2wasm", [watPath, "-o", "/tmp/web_smoke.wasm"]);
-    const rr = await runWasm({ wasmBytes: new Uint8Array(readFileSync("/tmp/web_smoke.wasm")), stdin: new Uint8Array() });
-    const rr2 = await rr.done;
-    const out = new TextDecoder().decode(rr2.stdout);
-    const expected = execFileSync("python3", [REPO + "wasm/examples/dicts.si"], { maxBuffer: 1 << 26, timeout: 120 }).toString();
-    if (out === expected) {
-      console.log(`PASS web/backend.wasm artifact smoke (dicts.si via L2 backend)`);
+    if (r.exitCode !== 0) {
+      throw new Error("web backend exited " + r.exitCode + " - stderr: " + new TextDecoder().decode(r.stderr).slice(0, 100));
+    }
+    const webWat = r.stdout;
+    if (Buffer.compare(webWat, nativeWat) === 0) {
+      console.log(`PASS web/backend.wasm artifact smoke (WAT byte-identical to native, ${webWat.length} bytes)`);
     } else {
-      failures.push("web/backend.wasm artifact smoke");
-      console.log(`FAIL web/backend.wasm artifact smoke: wasm=${JSON.stringify(out.slice(0, 60))} cpython=${JSON.stringify(expected.slice(0, 60))}`);
+      throw new Error(`WAT differs: web ${webWat.length}B vs native ${nativeWat.length}B`);
     }
   } catch (e) {
     failures.push("web/backend.wasm artifact smoke");

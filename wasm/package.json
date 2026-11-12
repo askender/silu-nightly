@@ -1,0 +1,8 @@
+{
+  "name": "silu-wasm-gates",
+  "private": true,
+  "description": "Silu WASM gate tests - requires Node >= 24.3 (memory64 default-on)",
+  "engines": {
+    "node": ">=24.3"
+  }
+}
