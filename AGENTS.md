@@ -71,24 +71,32 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
 homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
 
-## 当前状态锚点（2026-11-11 凌晨）
+## 当前状态锚点（2026-11-14 凌晨）
 
 - **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
 - 门禁全绿：ll 20/20、ir 21/21、pytest **1361 通过/3 跳过**。
-- **WASM 化进展（`wasm/`，计划见 `docs/wasm_plan.md`）**：
-  M0 ✅ efcdf62、L0 ✅ de58c53、L1 ✅ 704310f、**L2 全部子集完成**
-  （int ce059ab → float c5d2365 → list 0af445f → str 基础 d0ad45a →
-  索引切片 57211aa → **dict 3fd04ec**）+ 浏览器集成 0bf3e15 +
-  print 渲染与 str 方法 bce8e62。门禁：wasm compile 20/20、
-  wasm run 2/2、shim 148/148、**L2 backend 6/6**（floats/lists/
-  loops/recursion/strings/dicts 全部对拍 CPython）+ web 产物冒烟。
-- **教训（11-11）**：①selfhost 的 utf8_byte_len bytes 分支在 typed 平面
-  误触发（bytes≡str 同表示，isinstance 恒真）→ 字符串常量按码点定尺寸
-  ——跨平面语义差异要用逐元素检查表达；②ll 门禁的绿可能是**陈旧二进制**
-  的假绿——改 selfhost 源后必须确认 siluc1 真的被重建（mtime 链）再跑门禁；
-  ③ir_interp/wasm_backend 这类"解释器/后端程序"此前只测编译不测运行
-  ——现在 wasm/test_run.mjs 与 test_backend.mjs 补上了执行级对拍。
+- **WASM 化（`wasm/`，计划见 `docs/wasm_plan.md`）**：M0-L2 全部完成 +
+  **审查修复轮（2026-11-13/14，HEAD d9b0551 后续）**：
+  - shim 层（host.mjs）：cStrtod 符号群修复（-inf/-nan/负 hex/p 指数
+    四处）、hexFloat fraction 顶端对齐、cReprDouble 调整指数、%e/%g
+    精确展开半偶舍入（expExact）、calloc/free 加固、fmt_double 补 NUL。
+    shim 门禁 148→**252**（对拍真 C 库 bit-exact）。
+  - wasm_backend：and/or/not 短路、break/continue、未注解 str/list/dict
+    类型传播、浮点比较/floordiv/floormod 臂、$str_from_int 堆下溢、
+    print_ds 冒号空格、collect_locals 失同步、下标 aug_assign（l[i]+=）、
+    **dict 值类型**（dsf=float 位打包/dss=str 指针 + per-type repr）；
+    静默 gap 全面响亮化（unreachable）。门禁 **10/10** 对拍 CPython。
+  - ir_interp：and/or/not + break/continue 补全。run 门禁 2/2→**3/3**。
+  - **语言 bug 误报澄清**：嵌套同函数调用四平面（CPython/参考解释器/
+    原生/wasm 后端）探针全部正确——代理报告的"错求值"实为 aug 下标
+    目标缺口，已实现。
+  - 门禁示例扩到 10 个（bool_ops/float_ops/aug_sub/dicts_f 新增）。
+- **教训（11-13/14）**：①"门禁绿"的覆盖面极窄——示例集外的真实程序
+  曾有整类静默缺分派（and/break/浮点比较），审查代理先实证再报告才可信；
+  ②/tmp 下的 native 二进制（ir_interp_native 等）是 existsSync 缓存，
+  改 selfhost 源后必须删除强制重建（教训②的第三种形态）；③代理审查
+  报告的"语言级 bug"必须四平面探针复核后才动手——本次为误报。
 - 其余 TODO 见 **`reference/STATUS.md`——换客户端后的第一站**。
 
 ## 环境关键（换客户端/新会话必读，2026-11-09 实证）
