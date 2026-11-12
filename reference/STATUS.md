@@ -202,6 +202,19 @@ $print_dss 带引号）、len、for 键迭代、aug（dsf/dss 响亮拒绝）；
 传播守卫防空 dict 字面量 "ds" 把已声明 dsf/dss 降级。门禁示例
 dicts_f.si 对拍 CPython 绿（渲染 {'mon': 21.5} 插入序 + repr float）。
 
+**dict 哈希加速（2026-11-14）**：线性扫描 + 整表 realloc（O(n) 插入）
+→ djb2 哈希索引 + 开放寻址线性探测（O(1) 查找）。结构：header
+(count, data, hmask, htab) 32B——entry 数组追加式**保持插入序**（迭代
+/渲染/for 键序全部不变，CPython 语义 ✓），htab 槽存 entry idx+1（0=空），
+满载即 grow（cap 8→16→32，逐键重哈希）。**死循环教训**：ds_set 首版
+"先 find 后 grow"——第 9 键时表满无空槽，find 的线性探测永转（N 键
+二分 7/8 绿、9 卡死定位）；修复 = 先 grow 再 find（load factor < 1
+恒有空槽）。扩容压力示例 dsbig.si（12 键 + 更新 + 插入序渲染）对拍
+CPython 绿。**构建工具链首笔真实 SIGSEGV 观测**：build.py web 一次
+silu_conv SIGSEGV（backend.ll 编译期），重跑未复现——TODO #2 竞态面
+从"无复现证据"升级为"偶发已观测"，仍待更宽窗口（CI 慢机）再实施
+flock 修复。
+
 **P2 边角批（2026-11-14）：bool repr + 负下标**。比较/and/or/not/bool
 常量携带类型标记 "b"（expr_type 六臂 + 短路臂 + const BOOL + ann_type
 bool→"b"，assign 传播加 "b"）——print 走 $print_bool（True/False repr，

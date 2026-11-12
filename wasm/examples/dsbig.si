@@ -1,0 +1,14 @@
+# dict growth: 12 keys force table resize (8 -> 16), update + order
+big: dict[str, int] = {}
+n: int = 0
+while n < 12:
+    big["k" + str(n)] = n * n
+    n += 1
+big["k3"] = 999
+big["k0"] = 42
+print(big)
+print(big["k3"])
+print(big["k0"])
+print(len(big))
+if "k11" in big:
+    print(big["k11"])
