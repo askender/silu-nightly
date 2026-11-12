@@ -1,0 +1,24 @@
+# subscript aug-assign on lists and dicts; print rendering
+l: list[int] = []
+l.append(5)
+l.append(9)
+l[0] += 1
+l[1] *= 3
+print(l)
+
+d: dict[str, int] = {}
+d["a"] = 1
+d["a"] += 2
+d["b"] = 10
+d["b"] -= 3
+print(d)
+
+total: int = 0
+for k in d:
+    total += d[k]
+print(total)
+
+m: dict[str, int] = {}
+m["x"] = 2
+m["x"] = m["x"] * 8
+print(m["x"])

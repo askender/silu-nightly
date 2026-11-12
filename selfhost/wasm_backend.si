@@ -340,10 +340,13 @@ def collect_locals(stmts: JValue, names: list[str], types: list[str]) -> int:
                         types[j2] = ann_type(elem(s, 3))
                     j2 += 1
         elif t == "aug_assign":
-            nm: str = elem_str(elem(s, 1), 1)
-            if nm not in names:
-                names.append(nm)
-                types.append("")
+            # only bare-name targets need a local; subscript targets
+            # (l[0] += 1) read-modify-write through their container
+            if tag(elem(s, 1)) == "name":
+                nm: str = elem_str(elem(s, 1), 1)
+                if nm not in names:
+                    names.append(nm)
+                    types.append("")
         elif t == "if":
             collect_locals(elem(s, 2), names, types)
             collect_locals(elem(s, 3), names, types)
@@ -786,6 +789,34 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             g.emit("(local.set " + nm + " " + emit_expr(g, elem(stmt, 2)) + ")")
         return 0
     if t == "aug_assign":
+        if tag(elem(stmt, 1)) == "subscript":
+            # l[i] op= v / d[k] op= v: read-modify-write, each operand
+            # evaluated once into a fresh local; only += -= *= here
+            bt: str = expr_type(g, elem(elem(stmt, 1), 1))
+            cl2: str = g.fresh()
+            il2: str = g.fresh()
+            vl2: str = g.fresh()
+            g.emit("(local.set " + cl2 + " " + emit_expr(g, elem(elem(stmt, 1), 1)) + ")")
+            g.emit("(local.set " + il2 + " " + emit_expr(g, elem(elem(stmt, 1), 2)) + ")")
+            g.emit("(local.set " + vl2 + " " + emit_expr(g, elem(stmt, 3)) + ")")
+            op2: str = elem_str(stmt, 2)
+            cur: str = "(call $li_get (local.get " + cl2 + ") (local.get " + il2 + "))"
+            setter: str = "$li_set"
+            if bt == "ds":
+                cur = "(call $ds_get (local.get " + cl2 + ") (local.get " + il2 + "))"
+                setter = "$ds_set"
+            if op2 == "+=":
+                body2: str = "(i64.add " + cur + " (local.get " + vl2 + "))"
+            elif op2 == "-=":
+                body2 = "(i64.sub " + cur + " (local.get " + vl2 + "))"
+            elif op2 == "*=":
+                body2 = "(i64.mul " + cur + " (local.get " + vl2 + "))"
+            else:
+                # //= %= **= on subscripts: unsupported (loud)
+                g.emit("(unreachable)")
+                return 0
+            g.emit("(call " + setter + " (local.get " + cl2 + ") (local.get " + il2 + ") " + body2 + ")")
+            return 0
         tgt: str = "$" + elem_str(elem(stmt, 1), 1)
         op: str = elem_str(stmt, 2)
         ftarget: str = g.get_type(tgt)

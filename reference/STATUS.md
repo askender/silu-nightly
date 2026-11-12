@@ -221,11 +221,17 @@ step=0 切片 unreachable；memory.grow -1 检查（memory64 返回 i64！）。
 但 str(float) 的 $str_blen 扫 NUL 读到历史残留 → "7.55.0"）。
 main() 尾部死代码删除；头部 gap 清单全面刷新。
 
-**⚠️ 语言级 bug 上报（未修，双平面复现）**：嵌套同函数调用
-`elem(elem(stmt4,1),1)` 返回内层结果（少套一层）——解释器与
-`silu build` 原生平面都错；逐步拆中间变量则正确；直接导致
-`l[0] += 1` 的 aug_assign 目标提取得到空串。本文件已用跨函数包装
-elem_str(elem(...)) 绕过（两处），最小复现在审查记录 /tmp/na.si。
+**语言级 bug 调查结论（2026-11-14）：误报**。代理复现 na.si 的输出
+"l","","l" 经逐层分析语义正确（r2 = stmt4.arr[1].arr[1] = nm，
+nm.s 本来就是 ""）；四平面探针（嵌套同函数调用 inc(inc(inc(0)))、
+twice、带深度 4）在 CPython/参考解释器/原生编译/wasm 后端全部一致
+（3,12,4,9）。**真缺陷是 aug_assign 不支持下标目标**（l[0] += 1 的
+目标提取得空串 → 空 local 标识符编译失败）——已实现：subscript 目标
+读改写（li_set/ds_set + 复合运算，容器/索引/值各求值一次进 fresh
+local，+= -= *= 支持、其余 unreachable）；collect_locals 对下标目标
+不再收集空名 local。门禁示例 aug_sub.si 对拍 CPython 绿（list/dict
+渲染一并覆盖）。附带记录：ir_interp 平面缺 break/and 分派
+（bool_ops/aug_sub 已入 INTERP_SKIP，补全待做）。
 
 ## 四、其余 TODO（优先级序）
 

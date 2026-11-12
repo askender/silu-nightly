@@ -33,7 +33,7 @@ if (!existsSync(NATIVE_INTERP)) {
 // backend gate (test_backend.mjs) instead of the three-way run gate.
 // bool_ops also skips: ir_interp has no break/continue or and/or
 // dispatch yet - `while True: break` dead-loops the interpreter plane.
-const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si", "wasm/examples/float_ops.si", "wasm/examples/bool_ops.si"]);
+const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si", "wasm/examples/float_ops.si", "wasm/examples/bool_ops.si", "wasm/examples/aug_sub.si"]);
 
 const argv = process.argv.slice(2);
 const files = argv.length
