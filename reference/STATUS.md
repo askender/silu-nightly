@@ -274,6 +274,20 @@ local，+= -= *= 支持、其余 unreachable）；collect_locals 对下标目标
 渲染一并覆盖）。附带记录：ir_interp 平面缺 break/and 分派
 （bool_ops/aug_sub 已入 INTERP_SKIP，补全待做）。
 
+## 三点十、构建竞态 flock 修复（2026-11-14，TODO #2 落地）
+
+**触发**：dict 哈希轮的 build.py web 首笔真实 silu_conv SIGSEGV（重跑
+未复现）——从"无复现证据不动"升级为"偶发已观测"。修复设计早已备好，
+本轮实施：①**可重入 flock**（.silu_build.lock，REPO 内，深度计数支持
+ensure_siluc→ensure_converter 嵌套；锁内双检 mtime——排队进程解锁后
+跳过已完成重建）；②**原子落位**：silu build 产物、typed_codegen_flat.si
+再生、clang 驱动、save_ll 全部走 write-to-temp + os.replace（读方永不
+撕读）。**并发压测**：4 fork 进程强制 touch 源后并发 ensure 全部三
+工具——仅一次 flat 再生/一次 conv 重建/一次 siluc1 重建（锁生效证据：
+输出无重复 building），全部 ok 无撕读。**回归**：ll 20/20、ir 21/21、
+test_llvmlite_text 28/28（历史竞态受害者簇）、全量 pytest 绿。
+.gitignore 加 .silu_build.lock。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

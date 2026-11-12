@@ -163,3 +163,4 @@ wasm/web/siluc1.wasm
 wasm/web/fe.wasm
 wasm/web/interp.wasm
 wasm/web/backend.wasm
+.silu_build.lock

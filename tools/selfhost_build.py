@@ -15,11 +15,50 @@ from the converter .py sources via tools/flatten_codegen.py.
 """
 
 import argparse
+import fcntl
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# pytest xdist / parallel builds once produced a real silu_conv SIGSEGV:
+# concurrent ensure_* rebuilt the same binary while another process was
+# reading it (non-atomic write). Every ensure_* therefore holds a
+# process-level reentrant flock, and every artifact lands via
+# write-to-temp + os.replace so readers never see a torn file.
+LOCK_PATH = os.path.join(REPO, ".silu_build.lock")
+_LOCK_DEPTH = 0
+_LOCK_FD = None
+
+
+@contextmanager
+def build_lock():
+    global _LOCK_DEPTH, _LOCK_FD
+    if _LOCK_DEPTH == 0:
+        _LOCK_FD = open(LOCK_PATH, "w")
+        fcntl.flock(_LOCK_FD, fcntl.LOCK_EX)
+    _LOCK_DEPTH += 1
+    try:
+        yield
+    finally:
+        _LOCK_DEPTH -= 1
+        if _LOCK_DEPTH == 0:
+            fcntl.flock(_LOCK_FD, fcntl.LOCK_UN)
+            _LOCK_FD.close()
+            _LOCK_FD = None
+
+
+def _replace(tmp, out):
+    os.replace(tmp, out)
+
+
+def _atomic_write(path, data):
+    tmp = path + f".tmp{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as h:
+        h.write(data)
+    _replace(tmp, path)
 
 SELFHOST = os.path.join(REPO, "selfhost")
 FE_BIN = os.path.join(REPO, "silu_fe")
@@ -53,32 +92,35 @@ def _newer(a, b):
 
 def _build(src, out, what):
     print(f"building {what} (source newer)...", file=sys.stderr)
+    tmp = out + f".tmp{os.getpid()}"
     subprocess.run(
-        [sys.executable, "-m", "silu", "build", src, "-o", out],
+        [sys.executable, "-m", "silu", "build", src, "-o", tmp],
         check=True, capture_output=True, cwd=REPO,
     )
+    _replace(tmp, out)
 
 
 def ensure_frontend():
-    if any(_newer(d, FE_BIN) for d in FE_DEPS):
-        _build(FE_MAIN, FE_BIN, "silu_fe")
+    with build_lock():
+        if any(_newer(d, FE_BIN) for d in FE_DEPS):
+            _build(FE_MAIN, FE_BIN, "silu_fe")
     return FE_BIN
 
 
 def ensure_converter():
-    if any(_newer(d, CONV_FLAT) for d in CONV_DEPS[3:]):
-        print("regenerating typed_codegen_flat.si (converter sources newer)...",
-              file=sys.stderr)
-        gen = subprocess.run(
-            [sys.executable, "tools/flatten_codegen.py", "--si"],
-            capture_output=True, text=True, cwd=REPO,
-        )
-        if gen.returncode != 0:
-            raise RuntimeError(f"flatten failed:\n{gen.stderr[:2000]}")
-        with open(CONV_FLAT, "w", encoding="utf-8") as h:
-            h.write(gen.stdout)
-    if any(_newer(d, CONV_BIN) for d in CONV_DEPS[:3]):
-        _build(CONV_MAIN, CONV_BIN, "silu_conv")
+    with build_lock():
+        if any(_newer(d, CONV_FLAT) for d in CONV_DEPS[3:]):
+            print("regenerating typed_codegen_flat.si (converter sources newer)...",
+                  file=sys.stderr)
+            gen = subprocess.run(
+                [sys.executable, "tools/flatten_codegen.py", "--si"],
+                capture_output=True, text=True, cwd=REPO,
+            )
+            if gen.returncode != 0:
+                raise RuntimeError(f"flatten failed:\n{gen.stderr[:2000]}")
+            _atomic_write(CONV_FLAT, gen.stdout)
+        if any(_newer(d, CONV_BIN) for d in CONV_DEPS[:3]):
+            _build(CONV_MAIN, CONV_BIN, "silu_conv")
     return CONV_BIN
 
 
@@ -89,15 +131,18 @@ DRIVER_SRC = os.path.join(REPO, "tools", "siluc_main.c")
 def ensure_siluc():
     """siluc1 = the native compiler core (stdin .si -> stdout .ll);
     siluc = the C driver (file-in binary-out, no Python anywhere)."""
-    ensure_converter()  # flat regeneration feeds the monolith too
-    if any(_newer(d, SILUC1_BIN) for d in SILUC_DEPS):
-        _build(SILUC_SRC, SILUC1_BIN, "siluc1 (one-shot, ~25s)")
-    driver_deps = [DRIVER_SRC] + [SILUC1_BIN]
-    if any(_newer(d, SILUC_BIN) for d in driver_deps):
-        subprocess.run(
-            ["clang", "-O2", DRIVER_SRC, "-o", SILUC_BIN],
-            check=True, capture_output=True, cwd=REPO,
-        )
+    with build_lock():
+        ensure_converter()  # flat regeneration feeds the monolith too
+        if any(_newer(d, SILUC1_BIN) for d in SILUC_DEPS):
+            _build(SILUC_SRC, SILUC1_BIN, "siluc1 (one-shot, ~25s)")
+        driver_deps = [DRIVER_SRC] + [SILUC1_BIN]
+        if any(_newer(d, SILUC_BIN) for d in driver_deps):
+            tmp = SILUC_BIN + f".tmp{os.getpid()}"
+            subprocess.run(
+                ["clang", "-O2", DRIVER_SRC, "-o", tmp],
+                check=True, capture_output=True, cwd=REPO,
+            )
+            _replace(tmp, SILUC_BIN)
     return SILUC_BIN
 
 
@@ -146,8 +191,7 @@ def build(source, out_path, save_ll=None, static_only=False):
 
 def _link(full_ll, out_path, save_ll=None):
     if save_ll:
-        with open(save_ll, "w", encoding="utf-8") as h:
-            h.write(full_ll)
+        _atomic_write(save_ll, full_ll)
     sys.path.insert(0, REPO)
     from silu import runtime_cache
 
