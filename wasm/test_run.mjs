@@ -30,8 +30,10 @@ if (!existsSync(NATIVE_INTERP)) {
 }
 
 // ir_interp is int-only: float-bearing examples go through the L2
-// backend gate (test_backend.mjs) instead of the three-way run gate
-const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si"]);
+// backend gate (test_backend.mjs) instead of the three-way run gate.
+// bool_ops also skips: ir_interp has no break/continue or and/or
+// dispatch yet - `while True: break` dead-loops the interpreter plane.
+const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si", "wasm/examples/float_ops.si", "wasm/examples/bool_ops.si"]);
 
 const argv = process.argv.slice(2);
 const files = argv.length

@@ -1,0 +1,46 @@
+# boolean operators (short-circuit), break/continue, nested loops
+n: int = 27
+steps: int = 0
+while n != 1 and steps < 40:
+    if n % 2 == 0:
+        n = n // 2
+    else:
+        n = 3 * n + 1
+    steps += 1
+print(n, steps)
+
+a: int = 5
+b: int = 3
+score: int = 0
+if a > 4 and b > 2:
+    score += 1
+if a > 100 or b > 2:
+    score += 10
+if not (a < b):
+    score += 100
+if a < 0 and b < 0:
+    score += 1000
+print(score)
+
+total: int = 0
+i: int = 0
+while i < 20:
+    i += 1
+    if i % 3 != 0:
+        continue
+    if i > 15:
+        break
+    total += i
+print(total)
+
+grid: int = 0
+r: int = 0
+while r < 4:
+    c: int = 0
+    while True:
+        if c == 3:
+            break
+        grid += 1
+        c += 1
+    r += 1
+print(grid)

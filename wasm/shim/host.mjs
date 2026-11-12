@@ -371,8 +371,10 @@ function makeHost(files, stdinBytes) {
         const sp = String.fromCharCode(Number(spec));
         const s = sp === "r" ? cReprDouble(Number(v)) : cFormatDouble(Number(v), sp, Number(prec));
         const bytes = new TextEncoder().encode(s); // ascii-only by construction
-        if (bytes.length >= Number(cap)) return -1n;
-        new Uint8Array(memory.buffer, Number(buf), bytes.length).set(bytes);
+        if (bytes.length + 1 >= Number(cap)) return -1n;
+        const dst = new Uint8Array(memory.buffer, Number(buf), bytes.length + 1);
+        dst.set(bytes);
+        dst[bytes.length] = 0; // NUL: str(blen) scans this buffer too
         return BigInt(bytes.length);
       },
       strtod(ptr, len, consumedPtr) {

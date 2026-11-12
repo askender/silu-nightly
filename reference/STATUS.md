@@ -189,6 +189,44 @@ subscript_assign（非 assign+下标目标）——此前 list[i]=v 静默丢弃
 半偶，"2.5" 的 %.0e 触发；修法=指数路径走 fixedExact 式精确展开，中等
 复杂度）；P2 strtol 溢出回绕 + \v\f 空白缺失；P3 若干（agent 报告在案）。
 
+## 三点九、backend 审查代理两轮修复（2026-11-13 深夜）：分派层补全
+
+**门禁扩容 6→8**：新增 examples/bool_ops.si（and/or/not 短路、break/
+continue、嵌套 while True、复合 while 条件）与 float_ops.si（浮点比较
+六臂、f64.pow 宿主导入、浮点 floordiv/floormod、str(float)）。
+
+**P0×3（均实证后修复）**：①and/or/not 无分派静默 0 → 短路真值发射
+（fresh temp + if 链，操作数各求值一次）；②break/continue 被静默丢弃
+（while True 死循环）→ Gen 加 loop_exit/loop_top 标签栈（循环嵌套唯一
+标签 $weN/$wtN 等由 tmp 计数生成，不占 local）；③未注解 str/list/dict
+assign 丢类型（str 相加=指针相加）→ assign 传播 f/s/li/ds 四类。
+
+**P1 修复**：$str_from_int 负号堆下溢（缓冲 22、q 起 p+20、NUL p+21
+——19 位负数曾覆盖相邻对象尾字节）；print(dict) 冒号后补空格（CPython
+{'k': v}）；浮点比较六臂 f64.lt 等（此前 i64.lt_s 编译失败）；for-dict
+循环变量 set_type "s"（曾打印指针值）；return 按 rtype 走 to_f/to_s；
+Json.string 补 \r\b\f；Json.number 双重负号（start 移到负号消费后）；
+collect_locals 平行表失同步（assign 重复赋值 types 多 append → ann 类
+型左移错挂，ann_assign 对已存在名字就地更新）；整型 /= 响亮 unreachable
+（CPython 会变 float，子集不支持）；floordiv/floormod 操作数单次求值
+（曾 2-4 次重复发射——print(str) slice 事故同型残留）+ 浮点臂
+（f64.floor(f64.div)；% = a - floor(a/b)*b，fresh 临时须 set_type "f"）。
+
+**响亮化（铁律）**：非空 list/dict 字面量 unreachable（元素曾静默丢弃
+——注意空字面量 IR 是 ["list", []]，判空用 elem(node,1).arr）；str(float)
+走 fmt_double scratch（单操作数限制已注释）；float(str)/str*int /
+step=0 切片 unreachable；memory.grow -1 检查（memory64 返回 i64！）。
+
+**连带修复**：宿主 fmt_double 补 NUL 终止（print_f64 用显式长度无碍，
+但 str(float) 的 $str_blen 扫 NUL 读到历史残留 → "7.55.0"）。
+main() 尾部死代码删除；头部 gap 清单全面刷新。
+
+**⚠️ 语言级 bug 上报（未修，双平面复现）**：嵌套同函数调用
+`elem(elem(stmt4,1),1)` 返回内层结果（少套一层）——解释器与
+`silu build` 原生平面都错；逐步拆中间变量则正确；直接导致
+`l[0] += 1` 的 aug_assign 目标提取得到空串。本文件已用跨函数包装
+elem_str(elem(...)) 绕过（两处），最小复现在审查记录 /tmp/na.si。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：
