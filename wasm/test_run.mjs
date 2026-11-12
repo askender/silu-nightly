@@ -8,7 +8,7 @@
 // selfhost/ir_interp.si via ./siluc1 + clang; built automatically if
 // missing). CPython runs the .si source unmodified.
 
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { runWasm } from "./shim/host.mjs";
 
@@ -19,11 +19,14 @@ const dec = new TextDecoder();
 // native interp reference, built on demand from the self-hosted chain
 const NATIVE_INTERP = "/tmp/ir_interp_native";
 if (!existsSync(NATIVE_INTERP)) {
-  const ll = execFileSync(REPO + "siluc1", {
+  // siluc1 emits the .ll TEXT on stdout - it must land in a file before
+  // clang sees it (passing the text as an argv filename fails)
+  const llPath = "/tmp/ir_interp.ll";
+  writeFileSync(llPath, execFileSync(REPO + "siluc1", {
     input: readFileSync(REPO + "selfhost/ir_interp.si"),
     maxBuffer: 1 << 26,
-  });
-  execFileSync("clang", [ll, "-o", NATIVE_INTERP], { cwd: REPO });
+  }));
+  execFileSync("clang", [llPath, "-o", NATIVE_INTERP], { cwd: REPO });
 }
 
 // ir_interp is int-only: float-bearing examples go through the L2

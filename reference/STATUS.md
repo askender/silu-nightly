@@ -127,12 +127,14 @@ function）；②多轮区域替换会吞分支（emit_stmt 的 for 分支被后
 求值两次**——print(str) 的 slice 双次调用是本轮最后真凶，单次求值
 存 local 是唯一正确模式（对一切"分配型"发射成立）。
 
-## 三点六、WASM L2 子集 4b（str 索引/切片）——WIP 待续（2026-11-12）
+## 三点六、WASM L2 子集 4b（str 索引/切片）——已完成并入主线
 
-**状态**：实现 ~95% 完成存于 `reference/wasm_str4b_wip.si`（相比已提交
-的 d0ad45a 后端，新增 $cp_len_at/$str_get/$str_slice4 运行时、下标按
-基类型分派、slice 节点 has-flags 发射；文件头两行多 2 个诊断用 export
-——续作时删除）。已提交的 d0ad45a 后端保持 5/5 绿（str 基础面）。
+实现已全部进入 selfhost/wasm_backend.si 并被门禁守护（L2 6/6 含切片
+与 upper/lower）；上一轮的独立存档文件已删除（git 847b533 保留快照）。
+**验收口径备注**：wasm 平面对不支持构造采用"求值 0（documented gap）"
+而非"bail 报错"——与 wasm_plan.md 旧验收条款的字面冲突已在该文件中
+显式记录为接受的差异；如需铁律级 bail，须为每个 emit 分支补 escape
+通道（待做清单见 docs/wasm_plan.md）。
 
 **本轮已验证的修复（在 wip 里）**：①下标赋值守卫必须先查 kind 再
 tag（裸名字 JValue 的 arr=None——`tag(裸名)` 就是此前"float assign

@@ -138,7 +138,13 @@ def build_web():
                 os.path.join(web, "host_core.mjs"))
     for tool in TOOLS:
         shutil.copy(os.path.join(ART, f"{tool}.wasm"), web)
-    print(f"playground ready: serve {web}/ (index + host_core.mjs + siluc1.wasm)")
+    stamp = os.path.join(web, "BUILD_INFO.txt")
+    with open(stamp, "w") as h:
+        for t in TOOLS:
+            h.write(f"{t}.wasm {os.path.getsize(os.path.join(ART, t + '.wasm'))} bytes\n")
+        h.write("host_core.mjs copied from wasm/shim/host.mjs\n")
+    print(f"playground ready: serve {web}/ (index + host_core.mjs + "
+          + ", ".join(f"{t}.wasm" for t in TOOLS) + ")")
 
 
 if __name__ == "__main__":

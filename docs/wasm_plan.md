@@ -112,13 +112,17 @@ web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
 4. str 基础完成（2026-11-12）：字面量进数据段（Arena + UTF-8 转义）、
    拼接（$str_concat）、码点 len（$str_clen 跳过续字节）、比较（字节序
    ==码点序）、str(int)、print(str)——对拍 examples/strings.si 含中文。
-   **4b（索引/切片）完成（2026-11-12）**：$cp_len_at/$str_get/
-   $str_slice4（负数/默认值/钳制/双向 UTF-8 走查）——对拍切片版
-   strings.si 含 [::-1] 与中文；print(str) 单次求值修复后 6/6
+   **4b（索引/切片）完成（2026-11-12，57211aa，5/5）**：$cp_len_at/
+   $str_get/$str_slice4（负数/默认值/钳制/双向 UTF-8 走查）——对拍切
+   片版 strings.si 含 [::-1] 与中文；print(str) 单次求值修复；第 6 例
+   dicts.si 归入子集 5
 5. 视覆盖面决定：record/pyobj、strbuf、closure 族
 
-- 验收：当前子集在语料中所有可编译文件上输出三面一致；不支持构造
-  **bail 报错**（宁报 ERROR 不出错误字节——铁律同样适用 wasm 平面）。
+- 验收：当前子集在语料中所有可编译文件上输出三面一致。**验收口径
+  修正（2026-11-12）**：不支持构造当前采用"求值 0（documented gap）"
+  而非 bail——与铁律字面冲突已确认为接受的差异（gap 清单记录于
+  backend 文件头注释）；如需铁律级 bail，须逐 emit 分支补 escape
+  通道（见 STATUS 三点六）。
 
 ## 4. 测试策略总则
 

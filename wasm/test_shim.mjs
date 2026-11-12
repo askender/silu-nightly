@@ -6,10 +6,18 @@
 // Every value is compared BIT-EXACT (hex of the f64) and every rendered
 // string byte-exact against the platform C library.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, openSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { cFormatDouble, cStrtod } from "./shim/host.mjs";
 
-const lines = readFileSync(process.argv[2], "utf8").split("\n").filter(Boolean);
+const REPO = new URL("..", import.meta.url).pathname;
+const REF = "/tmp/shim_ref.txt";
+if (!existsSync(REF)) {
+  // ground truth from the REAL C library (test_shim_ref.c)
+  execFileSync("clang", [REPO + "wasm/test_shim_ref.c", "-o", "/tmp/shim_ref"], { stdio: "inherit" });
+  execFileSync("/tmp/shim_ref", { stdio: ["ignore", openSync(REF, "w"), "inherit"] });
+}
+const lines = readFileSync(REF, "utf8").split("\n").filter(Boolean);
 const bitsOf = (v) => {
   const b = new Uint8Array(8);
   new DataView(b.buffer).setFloat64(0, v);

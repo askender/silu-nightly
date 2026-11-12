@@ -77,9 +77,12 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
 - 门禁全绿：ll 20/20、ir 21/21、pytest **1361 通过/3 跳过**。
 - **WASM 化进展（`wasm/`，计划见 `docs/wasm_plan.md`）**：
-  M0 探针 ✅ efcdf62、L0 在线编译 ✅ de58c53、L1 在线运行 ✅ 704310f、
-  **L2 子集 1（Silu 写的 WASM 后端，int 子集，端到端对拍 CPython）✅ ce059ab**。
-  门禁：wasm compile 20/20、wasm run 2/2、shim 148/148、L2 backend 2/2。
+  M0 ✅ efcdf62、L0 ✅ de58c53、L1 ✅ 704310f、**L2 全部子集完成**
+  （int ce059ab → float c5d2365 → list 0af445f → str 基础 d0ad45a →
+  索引切片 57211aa → **dict 3fd04ec**）+ 浏览器集成 0bf3e15 +
+  print 渲染与 str 方法 bce8e62。门禁：wasm compile 20/20、
+  wasm run 2/2、shim 148/148、**L2 backend 6/6**（floats/lists/
+  loops/recursion/strings/dicts 全部对拍 CPython）+ web 产物冒烟。
 - **教训（11-11）**：①selfhost 的 utf8_byte_len bytes 分支在 typed 平面
   误触发（bytes≡str 同表示，isinstance 恒真）→ 字符串常量按码点定尺寸
   ——跨平面语义差异要用逐元素检查表达；②ll 门禁的绿可能是**陈旧二进制**

@@ -1,0 +1,5 @@
+siluc1.wasm 2782906 bytes
+fe.wasm 410638 bytes
+interp.wasm 53510 bytes
+backend.wasm 177700 bytes
+host_core.mjs copied from wasm/shim/host.mjs
