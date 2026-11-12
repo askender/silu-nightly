@@ -21,6 +21,9 @@
 # dict[K,V] value types: int (ds), float (dsf - bit-packed in the i64
 # slot via reinterpret), str (dss - pointer); print repr matches
 # CPython per value type. Subscript aug on dsf/dss is a loud trap.
+# Comparisons/and/or/not/bool consts carry type tag "b"; print renders
+# True/False (CPython repr). str(bool) is a loud trap. Negative list
+# subscripts adjust like CPython (str already did).
 # LOUD traps (unreachable), not silent zeros: /= on ints, non-empty
 # list literals, str(float)/str(list)/str(dict), float(str), str*int,
 # step=0 slices. str(float) uses one shared scratch buffer - at most
@@ -312,6 +315,8 @@ def ann_type(node: JValue) -> str:
             return "f"
         if node.arr[1].s == "str":
             return "s"
+        if node.arr[1].s == "bool":
+            return "b"
         if tag(node) == "subscript":
             # ["subscript", ["name","dict"], ...] -> ds; else list
             if elem_str(elem(node, 1), 1) == "dict":
@@ -503,6 +508,13 @@ def expr_type(g: Gen, node: JValue) -> str:
         if expr_type(g, elem(node, 1)) == "f" or expr_type(g, elem(node, 2)) == "f":
             return "f"
         return "i"
+    if t == "and" or t == "or" or t == "not":
+        return "b"
+    if t == "<" or t == "<=" or t == ">" or t == ">=" or t == "==" or t == "!=":
+        return "b"
+    if t == "const":
+        if elem(node, 1).kind == JKind.BOOL:
+            return "b"
     return "i"
 
 
@@ -800,7 +812,7 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         if t == "ann_assign":
             g.set_type(nm, ann_type(elem(stmt, 3)))
         vt: str = expr_type(g, elem(stmt, 2))
-        if vt == "f" or vt == "s" or vt == "li" or vt == "ds":
+        if vt == "f" or vt == "s" or vt == "li" or vt == "ds" or vt == "b":
             # an empty dict literal infers plain "ds" - never downgrade a
             # declared dict[str, float]/dict[str, str] back to it
             if vt != "ds" or not (g.get_type(nm) == "dsf" or g.get_type(nm) == "dss"):
@@ -898,7 +910,9 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 if i > 0:
                     g.emit("(call $print_sp)")
                 at: str = expr_type(g, elem(args, i))
-                if at == "f":
+                if at == "b":
+                    g.emit("(call $print_bool " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "f":
                     g.emit("(call $print_f64 " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "li":
                     g.emit("(call $print_li " + emit_expr(g, elem(args, i)) + ")")
@@ -1125,12 +1139,16 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (i64.store (local.get $l) (i64.add (local.get $len) (i64.const 1))))
 (func $li_get (param $l i64) (param $i i64) (result i64)
 (local $data i64)
+(if (i64.lt_s (local.get $i) (i64.const 0))
+  (then (local.set $i (i64.add (local.get $i) (i64.load (local.get $l))))))
 (if (i64.ge_u (local.get $i) (i64.load (local.get $l)))
   (then unreachable))
 (local.set $data (i64.load (i64.add (local.get $l) (i64.const 16))))
 (i64.load (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 8)))))
 (func $li_set (param $l i64) (param $i i64) (param $v i64)
 (local $data i64)
+(if (i64.lt_s (local.get $i) (i64.const 0))
+  (then (local.set $i (i64.add (local.get $i) (i64.load (local.get $l))))))
 (if (i64.ge_u (local.get $i) (i64.load (local.get $l)))
   (then unreachable))
 (local.set $data (i64.load (i64.add (local.get $l) (i64.const 16))))
@@ -1470,6 +1488,19 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (br $again)))
 (i64.store8 (i64.const 96) (i64.const 125))
 (call $write (i32.const 1) (i64.const 96) (i64.const 1)))
+(func $print_bool (param $v i64)
+(i64.store8 (i64.const 90) (i64.const 84))
+(i64.store8 (i64.const 91) (i64.const 114))
+(i64.store8 (i64.const 92) (i64.const 117))
+(i64.store8 (i64.const 93) (i64.const 101))
+(i64.store8 (i64.const 94) (i64.const 70))
+(i64.store8 (i64.const 95) (i64.const 97))
+(i64.store8 (i64.const 96) (i64.const 108))
+(i64.store8 (i64.const 97) (i64.const 115))
+(i64.store8 (i64.const 98) (i64.const 101))
+(if (i64.eq (local.get $v) (i64.const 0))
+  (then (call $write (i32.const 1) (i64.const 94) (i64.const 5)))
+  (else (call $write (i32.const 1) (i64.const 90) (i64.const 4)))))
 (func $str_upper (param $p i64) (result i64)
 (local $n i64) (local $p2 i64) (local $i i64) (local $b i64)
 (local.set $n (call $str_blen (local.get $p)))

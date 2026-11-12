@@ -32,7 +32,7 @@ if (!existsSync(NATIVE_INTERP)) {
 // ir_interp is int-only: float-bearing examples go through the L2
 // backend gate (test_backend.mjs) instead of the three-way run gate.
 // aug_sub also skips: ir_interp is int-only (no containers).
-const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si", "wasm/examples/float_ops.si", "wasm/examples/aug_sub.si", "wasm/examples/dicts_f.si"]);
+const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si", "wasm/examples/float_ops.si", "wasm/examples/aug_sub.si", "wasm/examples/dicts_f.si", "wasm/examples/edge.si"]);
 
 const argv = process.argv.slice(2);
 const files = argv.length

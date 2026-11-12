@@ -202,7 +202,15 @@ $print_dss 带引号）、len、for 键迭代、aug（dsf/dss 响亮拒绝）；
 传播守卫防空 dict 字面量 "ds" 把已声明 dsf/dss 降级。门禁示例
 dicts_f.si 对拍 CPython 绿（渲染 {'mon': 21.5} 插入序 + repr float）。
 
-**门禁扩容 6→9→10**：新增 examples/bool_ops.si（and/or/not 短路、break/
+**P2 边角批（2026-11-14）：bool repr + 负下标**。比较/and/or/not/bool
+常量携带类型标记 "b"（expr_type 六臂 + 短路臂 + const BOOL + ann_type
+bool→"b"，assign 传播加 "b"）——print 走 $print_bool（True/False repr，
+scratch 90-98；**笔误把 l/s 写到 98/99 而非 96/97 → "Fa\0\0l"**，
+write 5 字节含两个 NUL 抓获）；bool 参与 i64 算术与 CPython 恰好一致
+（True+1=2）无需特判；str(bool) 响亮 gap。$li_get/$li_set 补负下标调整
+（$str_get 原有）。门禁示例 edge.si 对拍 CPython 绿。
+
+**门禁扩容 6→9→10→11**：新增 examples/bool_ops.si（and/or/not 短路、break/
 continue、嵌套 while True、复合 while 条件）、float_ops.si（浮点比较
 六臂、f64.pow 宿主导入、浮点 floordiv/floormod、str(float)）、
 aug_sub.si（list/dict 下标读改写 + 渲染）。

@@ -1,0 +1,25 @@
+# bool repr, negative indices, mixed-type edges
+t: bool = True
+print(t)
+f: bool = False
+print(f)
+print(1 < 2)
+print(2 < 1)
+b: bool = 1 < 2 and 2 < 3
+print(b)
+print(not (1 < 2))
+print((1 < 2) + 1)
+
+l: list[int] = []
+l.append(5)
+l.append(9)
+print(l[-1])
+print(l[-2])
+l[-1] = 100
+print(l)
+
+s: str = "hello"
+print(s[-1])
+d: dict[str, int] = {}
+d["k"] = 7
+print(len(d))
