@@ -5,14 +5,16 @@
 
 ## 一、现状快照
 
-- HEAD：`92a7eb1` 后续（str ABI v2 轮，main，nightly 已推）。门禁全绿：
-  **wasm compile 20/20 · wasm run 3/3（三方对拍）· L2 backend 14/14（对拍
-  CPython，新增 strbuf_sem）+ web 产物冒烟 · shim 252/252（对拍真 C 库
-  bit-exact）· 主链 ll 20/20 · ir 21/21 · pytest 1361 通过/3 跳过**。
-- **语料 15/15 处置完毕**：13 个 benchmark 逐字节对拍 CPython——
-  **knucleotide@200000 从"O(n²) 超时 + 内存耗尽"降到 45ms 线性**（str
-  ABI v2，见 TODO #2 已关闭）；wordcount@300000 23ms；jsonparse ×2 =
-  pyobj 类子集外（构造点响亮 unreachable；文档本身走 stdin，待 #3）。
+- HEAD：`bacbca4` 后续（corpus 门禁轮，main，nightly 已推）。门禁全绿：
+  **wasm compile 20/20 · wasm run 3/3（三方对拍）· L2 backend 15/15（对拍
+  CPython，新增 strbuf_sem/stdin_demo）+ web 产物冒烟 · 语料门禁
+  test_corpus 13/13（全尺寸逐字节）+ jsonparse ×2 响亮 · shim 252/252
+  （对拍真 C 库 bit-exact）· 主链 ll 20/20 · ir 21/21 · pytest 1361
+  通过/3 跳过**。
+- **语料 15/15 处置完毕**：13 个 benchmark 全尺寸逐字节对拍 CPython——
+  **knucleotide@200000 从"O(n²) 超时 + 内存耗尽"降到 40ms 线性**（str
+  ABI v2，见 TODO #2 已关闭）；wordcount@300000 20ms；jsonparse ×2 =
+  pyobj 类子集外（构造点响亮 unreachable，门禁断言非零退出）。
 - 本地 playground 完全可用：`python3 -m http.server -d wasm/web` 后浏览器
   打开即可 Compile→.ll / Run / Compile→.wasm 三条管线全闭环。
   **公网部署（silu.askender.xyz）尚未做**——见 TODO #1。
@@ -29,8 +31,10 @@
 | `host_core.mjs` | 0.02 MB | silu_host shim（stdio/fmt_double/strtod/pow/getchar）|
 
 构建：`python3 wasm/build.py web`（artifacts/ 不提交，web/ 提交）。
-门禁脚本：`node wasm/test_{compile,run,backend,shim}.mjs`；语料探针
-`/tmp/corpus_probe.py`（fe→backend→wat2wasm→node→对拍 CPython，含计时）。
+门禁脚本：`node wasm/test_{compile,run,backend,shim,corpus}.mjs`——
+corpus 门禁全尺寸对拍（fe→backend→wat2wasm→执行→CPython，打印计时，
+backend 二进制缺失时经 PY312 自动构建；jsonparse ×2 断言响亮陷阱）；
+test_backend 支持 `<示例>.stdin` sidecar 双端喂养（input() 管道）。
 
 ## 三、里程碑进度
 
@@ -112,9 +116,11 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    （$str_extend：堆顶+堆基双守卫，字面量绝不原地改；`x = x + x` 回退
    concat 防重叠拷贝）。knucleotide@200000 45ms（原超时），语义仍
    13/15 逐字节一致。CPython 式 refcount 优化的无 refcount 等价物。
-3. **stdin 数据管道**：diff_harness 的 stdin 喂养机制接入 wasm 门禁
-   （jsonparse 全尺寸进正式对拍；探针脚本 /tmp/corpus_probe.py 目前
-   手动维护，正式化时一并入 gates）。
+3. ✅ ~~stdin 数据管道 + 语料探针正式化~~（2026-11-14 关闭）：语料门禁
+   入仓为 `wasm/test_corpus.mjs`（全尺寸 13 项逐字节 + jsonparse ×2 响亮
+   断言 + 计时）；test_backend 加 `<示例>.stdin` sidecar 管道（stdin_demo
+   示例守护 input() 端到端）。**遗留真对拍**：jsonparse 全尺寸语义对拍
+   等 pyobj（TODO #4）解锁——现在只能断言"响亮失败"。
 4. **pyobj/record 类**（L2 子集 5 剩余）：class 定义/构造/字段访问/
    方法调用。jsonparse 语料依赖此解锁；评估 record 单态化 vs 动态
    pyobj 路线。

@@ -1,0 +1,7 @@
+# stdin pipeline: the gate feeds examples/stdin_demo.stdin to BOTH the
+# wasm program (runWasm stdin) and CPython (same bytes); outputs must
+# match byte for byte. Exercises the input() builtin end to end.
+line: str = input()
+print("got:" + line, len(line))
+second: str = input()
+print(second + "!")

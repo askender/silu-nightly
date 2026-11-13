@@ -414,6 +414,24 @@ ir_interp 两文件本轮零改动=非回归）。处置：strbuf_sem 入 INTERP
 小项）。教训：**给示例集新增文件要过一遍四门禁的每一门**——test_run
 自动吃 examples/ 全目录，新示例会静默进入不兼容的解释器平面。
 
+## 三点十三、语料门禁正式化 + stdin 管道（2026-11-14，TODO #3 关闭）
+
+- **`wasm/test_corpus.mjs` 入仓**（/tmp 探针转正，会话间不再丢失）：
+  13 个非动态 benchmark **全尺寸**逐字节对拍 CPython + 打印 wasm 执行
+  计时（knucleotide@200000 40ms / wordcount@300000 20ms = str ABI
+  金丝雀）；jsonparse ×2 喂 scripts/gen_json_input.py 生成的共享文档，
+  CPython 正常解析、wasm 断言**非零退出**（pyobj 构造点响亮陷阱——
+  真语义对拍等 TODO #4 pyobj 解锁）。backend 二进制缺失时经 PY312
+  自动构建。**execFileSync 的 timeout 是毫秒**——首版写 600 让
+  CPython knucleotide（~3s）ETIMEDOUT 假红，改 600000。
+- **stdin 管道**：test_backend 支持 `<示例>.stdin` sidecar（存在即双端
+  喂养 wasm runWasm 与 CPython execFileSync input）；新示例
+  stdin_demo.si + stdin_demo.stdin 守护 input() 端到端（backend 门禁
+  14→**15**）。stdin_demo/strbuf_sem 同入 run 门禁 INTERP_SKIP
+  （ir_interp int-only，见 §3.12）。
+- 门禁现状：compile 20/20 · run 3/3 · backend 15/15 + web 冒烟 ·
+  corpus 13/13 + loud 2/2 · shim 252/252。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

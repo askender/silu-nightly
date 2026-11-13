@@ -89,12 +89,15 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   16 字节前缀 [blen][clen]（指针指向字节区，O(1) len）+ 值语义绑定
   （$s_copy：assign/global/实参/dict 键值/for 变量）+ 窄窗 `x = x + e`/
   `x += e` 原地扩展（$str_extend：堆顶+堆基双守卫）+ ASCII 快路。
-  **knucleotide@200000 从 O(n²) 超时+内存耗尽降到 45ms**，语料 15/15
-  （13 逐字节一致 + 2 pyobj SKIP）；backend 门禁 13→**14**（新
-  strbuf_sem.si）。连带修复：**`s += e` 曾是静默指针算术**（铁律违反）、
-  slice4 按源串长度分配（二次方堆耗的真根因）、top_type name 臂、
-  `in` 类型标记、print_dsf scratch。详见 STATUS.md §3.12。
-  **遗留**：stdin 数据管道接入 diff_harness。
+  **knucleotide@200000 从 O(n²) 超时+内存耗尽降到 40ms**，语料 15/15
+  （13 逐字节一致 + 2 pyobj SKIP）；backend 门禁 13→**15**（新
+  strbuf_sem.si + stdin_demo.si）。连带修复：**`s += e` 曾是静默指针
+  算术**（铁律违反）、slice4 按源串长度分配（二次方堆耗的真根因）、
+  top_type name 臂、`in` 类型标记、print_dsf scratch。**语料门禁入仓**
+  `wasm/test_corpus.mjs`（全尺寸对拍+计时+jsonparse 响亮断言），
+  test_backend 加 `.stdin` sidecar 管道。ir_interp 对 str 重程序会
+  崩/挂（非回归，int-only 边界无声响化）——响亮化列为后续小项。
+  详见 STATUS.md §3.12-3.13。
 - **WASM 化（`wasm/`，计划见 `docs/wasm_plan.md`）**：M0-L2 全部完成 +
   **审查修复轮（2026-11-13/14，HEAD d9b0551 后续）**：
   - shim 层（host.mjs）：cStrtod 符号群修复（-inf/-nan/负 hex/p 指数

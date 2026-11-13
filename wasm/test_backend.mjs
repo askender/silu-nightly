@@ -27,6 +27,10 @@ const failures = [];
 for (const f of files) {
   const src = readFileSync(REPO + f);
   try {
+    // stdin sidecar: examples/<name>.stdin (if present) feeds BOTH the
+    // wasm program and CPython - the input() pipeline under test
+    const sidecar = REPO + f.replace(/\.si$/, ".stdin");
+    const stdinBytes = existsSync(sidecar) ? new Uint8Array(readFileSync(sidecar)) : new Uint8Array();
     // front end: si -> IR JSON
     const json = execFileSync(REPO + "silu_fe", { input: src, maxBuffer: 1 << 26 });
     // backend: IR JSON -> WAT
@@ -37,11 +41,11 @@ for (const f of files) {
     writeFileSync(watPath, wat);
     execFileSync("wat2wasm", [watPath, "-o", wasmPath]);
     // execute
-    const { done } = await runWasm({ wasmBytes: new Uint8Array(readFileSync(wasmPath)), stdin: new Uint8Array() });
+    const { done } = await runWasm({ wasmBytes: new Uint8Array(readFileSync(wasmPath)), stdin: stdinBytes });
     const r = await done;
     if (r.exitCode !== 0) throw new Error("program exit " + r.exitCode + " " + dec.decode(r.stderr).slice(0, 100));
     const out = dec.decode(r.stdout);
-    const expected = execFileSync("python3", [REPO + f], { maxBuffer: 1 << 26, timeout: 120 }).toString();
+    const expected = execFileSync("python3", [REPO + f], { input: Buffer.from(stdinBytes), maxBuffer: 1 << 26, timeout: 120 }).toString();
     if (out === expected) {
       pass++;
       console.log(`PASS ${f} (${JSON.stringify(out.slice(0, 40))})`);
