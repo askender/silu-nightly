@@ -108,8 +108,16 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   线性）、pass 顺序（全局推断须在函数注册后）、**`case` 不能做变量名
   （自举 FE 关键字，Python FE 宽容——两前端分歧）**。backend 门禁
   15→**17**（record_sem.si + and_or_nary.si）。详见 STATUS.md
-  §3.12-3.14。**遗留**：jsonparse_json（Json 装箱层 + json_*
-  builtins）。
+  §3.12-3.14。
+- **Json 装箱层——语料 15/15 封顶（HEAD c8411cd 后续，2026-11-14，
+  TODO #4 完成）**：$jbox 16B {tag,payload} 块（tag 表 0=null 1=int
+  2=float 3=bool 4=str 5=list 6=dict，与 interpreter.py 逐位对齐）+
+  json_tag/int/bool/str/list/dict/float/free builtins（json_free =
+  bump 分配的文档化 no-op）+ 类型标记 "J"（块指针引用语义）+ 返回
+  隐式装箱（按静态类型分发；嵌套 Json 调用直通不二次装箱）。
+  **jsonparse_json 8ms 逐字节一致（一发全中）——语料 15/15 全部
+  逐字节，L2 语料完整达成**（13 对拍 CPython + jsonparse ×2 对拍
+  silu interpret）。详见 STATUS.md §3.15。
 - **WASM 化（`wasm/`，计划见 `docs/wasm_plan.md`）**：M0-L2 全部完成 +
   **审查修复轮（2026-11-13/14，HEAD d9b0551 后续）**：
   - shim 层（host.mjs）：cStrtod 符号群修复（-inf/-nan/负 hex/p 指数

@@ -471,6 +471,10 @@ def ann_type(node: JValue) -> str:
             return "li"
         if node.arr[1].s == "dict":
             return "ds"
+        if node.arr[1].s == "Json":
+            # Json tagged-union block (16B {tag,payload}): the block
+            # pointer is the value - reference semantics, no copies
+            return "J"
         if node.arr[1].s == "str":
             return "s"
         if node.arr[1].s == "bool":
@@ -691,6 +695,16 @@ def expr_type(g: Gen, node: JValue) -> str:
             return "f"
         if name == "str":
             return "s"
+        if name == "json_list":
+            return "li"
+        if name == "json_dict":
+            return "ds"
+        if name == "json_str":
+            return "s"
+        if name == "json_tag" or name == "json_int" or name == "json_free" or name == "json_bool":
+            return "i"
+        if name == "json_float":
+            return "f"
         fi: int = fn_lookup(name)
         if fi >= 0:
             return FUNCS[fi].rtype
@@ -965,6 +979,14 @@ def emit_expr(g: Gen, node: JValue) -> str:
             if at2 == "ds" or at2 == "dsf" or at2 == "dss" or at2 == "dsi" or at2 == "dsif" or at2 == "dsis":
                 return "(call $ds_len " + emit_expr(g, elem(args, 0)) + ")"
             return "(call $li_len " + emit_expr(g, elem(args, 0)) + ")"
+        if name == "json_tag" or name == "json_int" or name == "json_str" or name == "json_list" or name == "json_dict" or name == "json_float" or name == "json_bool":
+            # Json sum-type unwrappers: the block pointer is the value
+            a0: str = emit_expr(g, elem(args, 0))
+            return "(call $" + name + " " + a0 + ")"
+        if name == "json_free":
+            # bump allocation frees nothing: documented no-op
+            a0: str = emit_expr(g, elem(args, 0))
+            return "(call $json_free " + a0 + ")"
         ci = class_lookup(name)
         if ci >= 0:
             # flat record constructor: alloc [tag][field slots]; args
@@ -1313,7 +1335,7 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         if t == "ann_assign":
             g.set_type(nm, ann_type(elem(stmt, 3)))
         vt: str = expr_type(g, elem(stmt, 2))
-        if vt == "f" or vt == "s" or vt == "li" or vt == "ds" or vt == "b":
+        if vt == "f" or vt == "s" or vt == "li" or vt == "ds" or vt == "b" or vt == "J":
             # empty container literals infer plain "ds"/"li" - never
             # downgrade a declared richer type back to them
             cur3: str = g.get_type(nm)
@@ -1552,6 +1574,9 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 i += 1
             g.emit("(call $print_nl)")
             return 0
+        if name == "json_free":
+            g.emit("(drop (call $json_free " + emit_expr(g, elem(args, 0)) + "))")
+            return 0
         fi = fn_lookup(name)
         if fi < 0:
             # unknown callee at statement level: loud trap
@@ -1578,6 +1603,24 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             g.emit("(local.set $rv " + to_f(g, elem(stmt, 1)) + ")")
         elif g.rtype == "s":
             g.emit("(local.set $rv " + to_s(g, elem(stmt, 1)) + ")")
+        elif g.rtype == "J":
+            # Json return: already-boxed passes through; containers and
+            # scalars box into a 16B {tag,payload} block per the fixed
+            # tag table (1=int 2=float 3=bool 4=str 5=list 6=dict)
+            et2: str = expr_type(g, elem(stmt, 1))
+            ev: str = emit_expr(g, elem(stmt, 1))
+            if et2 == "J":
+                g.emit("(local.set $rv " + ev + ")")
+            elif et2 == "li":
+                g.emit("(local.set $rv (call $jbox (i64.const 5) " + ev + "))")
+            elif et2 == "ds":
+                g.emit("(local.set $rv (call $jbox (i64.const 6) " + ev + "))")
+            elif et2 == "s":
+                g.emit("(local.set $rv (call $jbox (i64.const 4) " + ev + "))")
+            elif et2 == "f":
+                g.emit("(local.set $rv (call $jbox (i64.const 2) (i64.reinterpret_f64 " + to_f(g, elem(stmt, 1)) + ")))")
+            else:
+                g.emit("(local.set $rv (call $jbox (i64.const 1) " + ev + "))")
         else:
             g.emit("(local.set $rv " + emit_expr(g, elem(stmt, 1)) + ")")
         g.emit("(br $fn_exit)")
@@ -2525,6 +2568,31 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (i64.store (local.get $q) (local.get $n))
 (i64.store (i64.add (local.get $q) (i64.const 8)) (local.get $n))
 (i64.add (local.get $q) (i64.const 16)))
+;; Json tagged-union blocks (RFC S3): 16B {tag i64, payload i64};
+;; payload = raw value (int) / pointer (str, list, dict, block)
+(func $jbox (param $tag i64) (param $v i64) (result i64)
+(local $p i64)
+(local.set $p (call $alloc (i64.const 16)))
+(i64.store (local.get $p) (local.get $tag))
+(i64.store (i64.add (local.get $p) (i64.const 8)) (local.get $v))
+(local.get $p))
+(func $json_tag (param $b i64) (result i64)
+(i64.load (local.get $b)))
+(func $json_int (param $b i64) (result i64)
+(i64.load (i64.add (local.get $b) (i64.const 8))))
+(func $json_bool (param $b i64) (result i64)
+(i64.load (i64.add (local.get $b) (i64.const 8))))
+(func $json_str (param $b i64) (result i64)
+(i64.load (i64.add (local.get $b) (i64.const 8))))
+(func $json_list (param $b i64) (result i64)
+(i64.load (i64.add (local.get $b) (i64.const 8))))
+(func $json_dict (param $b i64) (result i64)
+(i64.load (i64.add (local.get $b) (i64.const 8))))
+(func $json_float (param $b i64) (result f64)
+(f64.reinterpret_i64 (i64.load (i64.add (local.get $b) (i64.const 8)))))
+;; json_free: bump allocation frees nothing - documented no-op
+(func $json_free (param $b i64) (result i64)
+(i64.const 0))
 (func $print_i64 (param $v i64)
 (local $p i64) (local $len i64)
 (if (i64.lt_s (local.get $v) (i64.const 0))

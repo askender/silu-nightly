@@ -20,13 +20,13 @@ const REPO = new URL("..", import.meta.url).pathname;
 const dec = new TextDecoder();
 
 const PASS_NAMES = ["arith", "dict", "fannkuch", "fib", "float", "jsonparse",
-  "knucleotide", "list", "mandelbrot", "nbody", "spectral", "string",
-  "trees", "wordcount"];
+  "jsonparse_json", "knucleotide", "list", "mandelbrot", "nbody", "spectral",
+  "string", "trees", "wordcount"];
 // jsonparse + jsonparse_json: the reference plane is the silu
-// interpreter (CPython has no auto-record-constructor semantics);
-// jsonparse_json additionally needs the Json builtins - still loud
-const INTERP_REF = new Set(["jsonparse"]);
-const LOUD_NAMES = ["jsonparse_json"];
+// interpreter (CPython has no auto-record-constructor / Json-sum-type
+// semantics)
+const INTERP_REF = new Set(["jsonparse", "jsonparse_json"]);
+const LOUD_NAMES = [];
 
 const argv = process.argv.slice(2);
 const names = argv.length ? argv : [...PASS_NAMES, ...LOUD_NAMES];

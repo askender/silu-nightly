@@ -490,6 +490,30 @@ examples/ 全目录，strbuf_sem 曾让 ir_interp 崩/挂 40 分钟；②探针
 会吞掉全部输出——wasm 宿主跑同源码可把栈溢出变可见 trap；⑤**先写
 CPython 期望再写测试**——本次又栽在参数序上（g(2,9) 的 i=9,n=2）。
 
+## 三点十五、Json 装箱层——语料 15/15 封顶（2026-11-14，TODO #4 完成）
+
+jsonparse_json 需要 RFC S3 的 tagged-union：每个 Json 值是 16B
+{tag i64, payload i64} 块（payload = 裸值/指针）。wasm 后端实现：
+
+- **$jbox(tag, payload)** 分配块；RT json_tag/int/bool/str/list/dict =
+  载荷读取（tag 表 0=null 1=int 2=float 3=bool 4=str 5=list 6=dict，
+  与 interpreter.py 的固定表逐位对齐）；**json_free = 文档化 no-op**
+  （bump 分配程序期回收，interpreter 的 json_free 本就返回 0）。
+- **类型标记 "J"**：ann_type 裸 `Json` 名 → "J"（块指针、引用语义、
+  绑定不拷贝）；fn.rtype = "J" → expr_type(call) = "J"。
+- **返回装箱**：rtype "J" 的 return 按静态类型分发——"J" 直通（嵌套
+  Json 调用不二次装箱）、li→5、ds→6、s→4、i→1、f→2（reinterpret）。
+- **json_* 分派**：emit_expr/emit_stmt 的 call 分派在 class/fn 查找
+  之前；json_free 语句级 drop；expr_type 补 json_list→li、json_str→s
+  等（`names.append(json_str(w))` 的 append 拷贝靠它）。
+- `list[Json]`/`dict[str,Json]` 无需新容器：槽位本就是 i64，装块
+  指针即可；`return items`/`return o` 的隐式装箱由 return 分发覆盖。
+
+**jsonparse_json 全尺寸 8ms 逐字节一致（参照 = silu interpret）**
+——第一发全中（记录类/动态串/脏拷贝消除等前置修复直接铺平）。
+**语料 15/15 全部逐字节一致——L2 语料完整达成**：13 个对拍 CPython +
+jsonparse ×2 对拍 silu interpret（参照解释器平面），全部全尺寸。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

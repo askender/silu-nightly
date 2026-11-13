@@ -11,11 +11,11 @@
   test_corpus **14/15 全尺寸逐字节**（jsonparse 解锁！）+ jsonparse_json
   响亮 · shim 252/252（对拍真 C 库 bit-exact）· 主链 ll 20/20 · ir 21/21 ·
   pytest 1361 通过/3 跳过**。
-- **语料 15/15 处置完毕**：14 个 benchmark 全尺寸逐字节对拍——
-  **jsonparse 解锁（9ms，记录类子集）**、knucleotide@200000 40ms 线性
-  （str ABI v2）、wordcount@300000 20ms；jsonparse_json 响亮（需 Json
-  装箱层，TODO #4 后半）。jsonparse 的参照平面 = silu interpret
-  （CPython 无自动记录构造器语义）。
+- **语料 15/15 全部逐字节一致（L2 语料完整达成）**：13 个对拍
+  CPython + jsonparse ×2 对拍 silu interpret（CPython 无自动记录构造
+  /Json 语义）——jsonparse 9ms、jsonparse_json 8ms（Json 装箱层
+  16B {tag,payload} 块 + json_* builtins + 返回隐式装箱）、
+  knucleotide@200000 40ms、wordcount@300000 20ms。
 - 本地 playground 完全可用：`python3 -m http.server -d wasm/web` 后浏览器
   打开即可 Compile→.ll / Run / Compile→.wasm 三条管线全闭环。
   **公网部署（silu.askender.xyz）尚未做**——见 TODO #1。
@@ -150,10 +150,13 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    表 + 构造器（[tag][字段槽]，str 字段记录持有）+ match 窄化（tag 链 +
    按类静态类型抽字段）+ 不透明 i64 槽透传动态容器 + `ls`/裸
    list/dict 类型臂 + to_s 动态串 + 脏形参拷贝消除（FDIRTY 闭包）+
-   read_line 去上限。jsonparse 9ms 逐字节。**剩余**：jsonparse_json
-   需 Json tagged-union 装箱层（json_tag/list/dict/int/str/free
-   builtins + list[Json]/dict[str,Json] 元素类型 + 返回值隐式装箱）；
-   方法调用/继承/守卫与位置模式 = 响亮 gap（按需解锁）。
+   read_line 去上限。jsonparse 9ms 逐字节。✅ **Json 装箱层完成**：
+   $jbox 16B {tag,payload} 块（tag 表与 interpreter.py 逐位对齐）+
+   json_tag/int/bool/str/list/dict/float/free builtins + "J" 类型标记 +
+   返回隐式装箱（按静态类型分发 tag；嵌套 Json 调用直通）+ json_free
+   文档化 no-op。jsonparse_json 8ms 逐字节。
+   **剩余（按需）**：方法调用/继承/守卫与位置模式 = 响亮 gap；
+   json_null/json_free 深释放 = 子集外。
 5. **直接二进制发射**：backend 直出 wasm 二进制（LEB128）摆脱 wabt.js
    0.66 MB 依赖；评估 `docs/wasm_plan.md` §L2 尾注。
 6. **closure 族 / strbuf 语料**（视覆盖面决定，wasm_plan §3.5）。
