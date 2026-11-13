@@ -71,11 +71,22 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
 homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
 
-## 当前状态锚点（2026-11-14 凌晨）
+## 当前状态锚点（2026-11-14 深夜）
 
 - **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
 - 门禁全绿：ll 20/20、ir 21/21、pytest **1361 通过/3 跳过**。
+- **L2 语料验收达成（HEAD 66fdfa7 后续，2026-11-14）**：wasm 后端跑通
+  **全部非动态层语料**——13/15 benchmark 逐字节对拍 CPython（arith/
+  dict/fannkuch/fib/float/list/mandelbrot/nbody/spectral/string/trees/
+  wordcount@300000/knucleotide@小 n），jsonparse ×2 = pyobj 类子集外
+  （响亮 unreachable）。**新增子集能力**：模块级全局变量（global.get/
+  set，CTX list 标记——bool flag 会被自己的作用域规则吃掉）、int 键
+  dict（dsi 族）、list[float]（lf 位打包）、非空字面量/list×int、
+  dict.get/input()/bool repr/负下标。**经典 bug**：find 满表剪断返回
+  陈旧 ei 被当命中（wordcount 误计 4 根因）——剪断必须显式归零。
+  **遗留**：knucleotide@200000 O(n²) str 构建（待 strbuf）；stdin
+  数据管道接入 diff_harness。
 - **WASM 化（`wasm/`，计划见 `docs/wasm_plan.md`）**：M0-L2 全部完成 +
   **审查修复轮（2026-11-13/14，HEAD d9b0551 后续）**：
   - shim 层（host.mjs）：cStrtod 符号群修复（-inf/-nan/负 hex/p 指数
@@ -91,7 +102,8 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   - **语言 bug 误报澄清**：嵌套同函数调用四平面（CPython/参考解释器/
     原生/wasm 后端）探针全部正确——代理报告的"错求值"实为 aug 下标
     目标缺口，已实现。
-  - 门禁示例扩到 10 个（bool_ops/float_ops/aug_sub/dicts_f 新增）。
+  - 门禁示例扩到 **13** 个（bool_ops/float_ops/aug_sub/dicts_f/
+    globals/edge 新增）。
 - **教训（11-13/14）**：①"门禁绿"的覆盖面极窄——示例集外的真实程序
   曾有整类静默缺分派（and/break/浮点比较），审查代理先实证再报告才可信；
   ②/tmp 下的 native 二进制（ir_interp_native 等）是 existsSync 缓存，

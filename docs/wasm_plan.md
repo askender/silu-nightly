@@ -118,6 +118,15 @@ web 目录，页内 fe.wasm + backend.wasm 编译 + wat2wasm + 执行全闭环
    dicts.si 归入子集 5
 5. 视覆盖面决定：record/pyobj、strbuf、closure 族
 
+**L2 语料验收状态（2026-11-14）**：子集在语料中所有可编译文件上
+三面一致——**13/15 benchmark 逐字节对拍 CPython**（含 nbody/spectral
+的 list[float] 全局变量、dict.si 的 int 键 dict、wordcount@300000、
+fannkuch 的 list×int），jsonparse ×2 = pyobj 类子集外（响亮
+unreachable，非静默）。**已知性能项**：knucleotide@200000 的
+`dna = dna + "A"` 循环 O(n²)（CPython 有 refcount 原地优化；wasm 侧
+待 strbuf 类 ABI，语义正确）。int 键 dict 哈希已实现（dsi 族 +
+per-key-type grow）。
+
 - 验收：当前子集在语料中所有可编译文件上输出三面一致。**验收口径
   修正（2026-11-12）**：不支持构造当前采用"求值 0（documented gap）"
   而非 bail——与铁律字面冲突已确认为接受的差异（gap 清单记录于
