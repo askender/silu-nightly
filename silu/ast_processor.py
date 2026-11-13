@@ -316,13 +316,29 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
         lib = ctypes.CDLL(None)
         typed = {
+            "shim_dec_bits": "py_shim_dec_bits",
             "sqrt": (ctypes.c_double, [ctypes.c_double]),
             "floor": (ctypes.c_double, [ctypes.c_double]),
             "pow": (ctypes.c_double,
                     [ctypes.c_double, ctypes.c_double]),
             "strlen": (ctypes.c_longlong, [ctypes.c_char_p]),
         }
+        def _py_shim_dec_bits(D, e, neg):
+            # exact decimal->binary64 for the WAT assembler: CPython's
+            # Decimal->float conversion is correctly rounded (nearest
+            # even), matching shim_libc's shim_dec_bits bit for bit
+            from decimal import Decimal
+            import struct as _struct
+            v = Decimal(D) * (Decimal(10) ** e)
+            if neg:
+                v = -v
+            f = float(v)
+            return _struct.unpack("<Q", _struct.pack("<d", f))[0]
+
         for cname, alias in names:
+            if cname in typed and typed[cname] == "py_shim_dec_bits":
+                self.env.set(alias, _py_shim_dec_bits)
+                continue
             if cname in typed:
                 restype, argtypes = typed[cname]
                 fn = getattr(lib, cname)

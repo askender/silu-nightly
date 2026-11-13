@@ -67,6 +67,18 @@ TOOLS = {
     "fe": "selfhost/silu_fe_main.si",
     "interp": "selfhost/ir_interp.si",
     "backend": "selfhost/wasm_backend.si",
+    "wat2wasm": "selfhost/wat2wasm.si",
+    "wat2wasmdbg": "/tmp/w2w_dbg.si",
+    "cimp": "/tmp/cimp.si",
+    "w2wdbg": "/tmp/w2w_dbg13.si",
+    "w2wA": "/tmp/w2w_A.si",
+    "w2wB": "/tmp/w2w_B.si",
+    "rs": "/tmp/rs.si",
+    "wA": "/tmp/w2w_A.si",
+    "wB": "/tmp/w2w_B.si",
+    "wC": "/tmp/w2w_C.si",
+    "wD": "/tmp/w2w_D.si",
+    "wE": "/tmp/w2w_E.si",
 }
 
 
@@ -75,7 +87,7 @@ def build_tool(name):
     import re
 
     os.makedirs(ART, exist_ok=True)
-    src = os.path.join(REPO, TOOLS[name])
+    src = TOOLS[name] if os.path.isabs(TOOLS[name]) else os.path.join(REPO, TOOLS[name])
     ll = os.path.join(ART, f"{name}.ll")
 
     if not os.path.exists(ll) or os.path.getmtime(ll) < max(
@@ -84,17 +96,18 @@ def build_tool(name):
         + [os.path.join(REPO, "selfhost", f) for f in os.listdir(os.path.join(REPO, "selfhost")) if f.endswith(".si")]
         + [os.path.join(REPO, "silu", f) for f in os.listdir(os.path.join(REPO, "silu")) if f.endswith(".py")]
     ):
-        print(f"emitting {name} .ll (self-host)...", file=sys.stderr)
+        print(f"emitting {name} .ll (self-host monolith)...", file=sys.stderr)
         sys.path.insert(0, REPO)
-        from tools.selfhost_build import compile_with, ensure_converter, ensure_frontend
+        from tools.selfhost_build import SILUC1_BIN
 
-        compile_with(
-            ensure_frontend(),
-            ensure_converter(),
-            src,
-            os.path.join(ART, f"_native_probe_{name}"),
-            save_ll=ll,
-        )
+        siluc1_bin = SILUC1_BIN
+        # the monolith reads the SOURCE directly - no fe|conv IR-JSON
+        # handoff (the split pipeline's typed conversion diverges from
+        # the monolith on some shapes)
+        with open(src, "rb") as fh:
+            ir = subprocess.run([siluc1_bin], stdin=fh, capture_output=True, check=True).stdout
+        with open(ll, "wb") as fh:
+            fh.write(ir)
 
     # wasm-ld turns --export=main into an (i32,i32) command-ABI wrapper;
     # rename the entry so the plain () -> i32 function is exportable
@@ -110,13 +123,18 @@ def build_tool(name):
     # them into i128 multiplies that lower to __multi3 (self-recursion)
     run([CLANG, "--target=wasm64-unknown-unknown", "-O2", "-ffreestanding",
          "-nostdlib", "-fno-builtin", "-c", shim_c, "-o", shim_o])
+    dec_c = os.path.join(WASM, "shim", "dec_bits.c")
+    dec_o = os.path.join(ART, "dec_bits.o")
+    run([CLANG, "--target=wasm64-unknown-unknown", "-O2", "-ffreestanding",
+         "-nostdlib", "-fno-builtin", "-c", dec_c, "-o", dec_o])
 
     out = os.path.join(ART, f"{name}.wasm")
     run([
         CLANG, "--target=wasm64-unknown-unknown", "-O2", "-nostdlib",
         "-Wl,--no-entry", f"-Wl,--export={name}_main", "-Wl,--export-memory",
         "-Wl,--import-undefined", "-Wl,-z,stack-size=16777216",
-        shim_o, link_ll, "-o", out,
+        "-Wl,--import-undefined", "-Wl,-z,stack-size=16777216",
+        shim_o, dec_o, link_ll, "-o", out,
     ])
     size = os.path.getsize(out)
     print(f"{name}.wasm: {size} bytes ({size / 1e6:.2f} MB)")

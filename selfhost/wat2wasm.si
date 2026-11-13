@@ -1,0 +1,1080 @@
+# wat2wasm: a WAT -> wasm64 binary assembler for the exact subset the
+# wasm backend emits (silu_host func imports, one memory, globals,
+# data segments, named funcs with params/results/locals, folded and
+# flat instruction forms, block/loop/if with labels). Input: WAT text
+# on stdin. Output: the .wasm binary HEX-ENCODED on stdout (a binary
+# stream cannot cross a Silu string - NUL bytes are unrepresentable -
+# so the caller decodes 2 hex chars per byte).
+#
+# f64.const operands are parsed here into a digit accumulator + decimal
+# exponent and converted to an IEEE bit pattern by the exact C helper
+# shim_dec_bits (`from c import`; linked into every shim-built tool;
+# the interpreter planes bind a pure-Python twin via ast_processor).
+# Differential oracle: wabt's wat2wasm (byte-identical on the corpus).
+#
+# Layout note: module-level globals are declared BEFORE the functions
+# that use them - the selfhost converter requires textual
+# declare-before-use for globals (the Python plane is looser).
+from c import shim_dec_bits
+
+# ---------------- tokenizer ----------------
+TK_LP = 0
+TK_RP = 1
+TK_ATOM = 2
+TK_STR = 3
+T_KIND: list[int] = []
+T_POS: list[int] = []
+T_LEN: list[int] = []
+SRC: list[str] = [""]
+NSRC: list[int] = [0]
+
+# ---------------- module model ----------------
+IMP_MOD: list[str] = []
+IMP_NM: list[str] = []
+IMP_SIG: list[str] = []
+FN_NAME: list[str] = []
+FN_SIG: list[str] = []
+FN_B0: list[int] = []
+FN_B1: list[int] = []
+FN_PN: list[str] = []
+FN_LT: list[str] = []
+GN_NAME: list[str] = []
+GN_MUT: list[int] = []
+GN_TY: list[str] = []
+GN_INITK: list[int] = []
+GN_INITV: list[int] = []
+GN_INITF: list[str] = []
+MEM_MIN: int = 1
+MEM_HAS: list[int] = [0]
+EXP_NM: list[str] = []
+EXP_KIND: list[int] = []
+EXP_IDX: list[int] = []
+DAT_OFF: list[int] = []
+DAT_SP: list[int] = []
+DAT_SL: list[int] = []
+TYPES: list[str] = []
+NAME_I: list[str] = []
+NAME_V: list[int] = []
+LSTK: list[str] = []
+NI: list[int] = [0]
+
+# ---------------- output buffer (hex text) ----------------
+OH: list[str] = [""]
+OS: list[str] = [""]
+HEX: list[str] = ["0123456789abcdef"]
+
+# ---------------- op table ----------------
+OPN: list[str] = []
+OPC: list[int] = []
+OPE: list[int] = []
+
+
+def is_space(c: str) -> int:
+    if c == " " or c == "\n" or c == "\t" or c == "\r":
+        return 1
+    return 0
+
+
+def tokenize(s: str) -> int:
+    SRC[0] = s
+    NSRC[0] = len(s)
+    i: int = 0
+    bs: str = chr(92)
+    qt: str = chr(34)
+    semi: str = chr(59)
+    nl: str = chr(10)
+    while i < NSRC[0]:
+        c: str = SRC[0][i]
+        if is_space(c):
+            i += 1
+            continue
+        if c == semi and i + 1 < NSRC[0] and SRC[0][i + 1] == semi:
+            while i < NSRC[0] and SRC[0][i] != nl:
+                i += 1
+            continue
+        if c == "(":
+            T_KIND.append(TK_LP)
+            T_POS.append(i)
+            T_LEN.append(1)
+            i += 1
+            continue
+        if c == ")":
+            T_KIND.append(TK_RP)
+            T_POS.append(i)
+            T_LEN.append(1)
+            i += 1
+            continue
+        if c == qt:
+            j: int = i + 1
+            while j < NSRC[0]:
+                cj: str = SRC[0][j]
+                if cj == bs:
+                    j += 2
+                    continue
+                if cj == qt:
+                    break
+                j += 1
+            T_KIND.append(TK_STR)
+            T_POS.append(i + 1)
+            T_LEN.append(j - i - 1)
+            i = j + 1
+            continue
+        j = i
+        while j < NSRC[0]:
+            cj: str = SRC[0][j]
+            if is_space(cj) or cj == "(" or cj == ")" or cj == qt:
+                break
+            j += 1
+        T_KIND.append(TK_ATOM)
+        T_POS.append(i)
+        T_LEN.append(j - i)
+        i = j
+    return 0
+
+
+def tkind(i: int) -> int:
+    return T_KIND[i]
+
+
+def ttext(i: int) -> str:
+    return SRC[0][T_POS[i]:T_POS[i] + T_LEN[i]]
+
+
+def match_close(i: int) -> int:
+    d2: int = 0
+    j: int = i
+    while True:
+        if tkind(j) == TK_LP:
+            d2 += 1
+        if tkind(j) == TK_RP:
+            d2 -= 1
+            if d2 == 0:
+                return j + 1
+        j += 1
+
+
+def atom_int(t: str) -> int:
+    if len(t) == 0:
+        return 0
+    if t[0:1] == "-":
+        return -atom_int(t[1:])
+    if t[0:1] == "+":
+        return atom_int(t[1:])
+    v: int = 0
+    i: int = 0
+    while i < len(t):
+        v = v * 10 + (ord(t[i]) - 48)
+        i += 1
+    return v
+
+
+def str_hex(s: str) -> str:
+    out: str = ""
+    k: int = 0
+    while k < len(s):
+        out = out + hex2(ord(s[k]))
+        k += 1
+    return out
+
+
+def hex2(v: int) -> str:
+    h: str = HEX[0]
+    c1: str = h[v // 16]
+    c2: str = h[v % 256 % 16]
+    return c1 + c2
+
+
+def uleb_hex(v: int) -> str:
+    # negative indices must never reach here (invalid wasm); emit one
+    # zero byte so the module fails VALIDATION loudly downstream
+    if v < 0:
+        return "00"
+    out: str = ""
+    h: str = HEX[0]
+    while True:
+        b: int = v % 128
+        v = v // 128
+        if v != 0:
+            b = b + 128
+        c1: str = h[b // 16]
+        c2: str = h[b % 256 % 16]
+        out = out + c1 + c2
+        if v == 0:
+            return out
+
+
+def sleb_hex(v: int) -> str:
+    out: str = ""
+    h: str = HEX[0]
+    while True:
+        b: int = v % 256
+        if b >= 128:
+            b = b - 256
+        v = v // 128
+        if b < 0:
+            b = b + 256
+        more: int = not ((v == 0 and b < 64) or (v == -1 and b >= 64))
+        byte: int = b % 128
+        if more:
+            byte = byte + 128
+        c1: str = h[byte // 16]
+        c2: str = h[byte % 256 % 16]
+        out = out + c1 + c2
+        if not more:
+            return out
+
+
+def f64_hex(text: str) -> str:
+    t: str = text
+    neg: int = 0
+    if len(t) > 0 and t[0:1] == "-":
+        neg = 1
+        t = t[1:]
+    elif len(t) > 0 and t[0:1] == "+":
+        t = t[1:]
+    ip: str = ""
+    fp: str = ""
+    ex: int = 0
+    i: int = 0
+    nd: int = len(t)
+    while i < nd:
+        c: str = t[i]
+        if c == ".":
+            j: int = i + 1
+            while j < nd and t[j] != "e":
+                fp = fp + t[j]
+                j += 1
+            i = j
+            continue
+        if c == "e":
+            ex = atom_int(t[i + 1:nd])
+            i = nd
+            continue
+        ip = ip + c
+        i += 1
+    if ip == "":
+        ip = "0"
+    D: int = atom_int(ip + fp)
+    etot: int = ex - len(fp)
+    bits: int = shim_dec_bits(D, etot, neg)
+    out: str = ""
+    h: str = HEX[0]
+    k: int = 0
+    while k < 8:
+        byte: int = bits % 256
+        c1: str = h[byte // 16]
+        c2: str = h[byte % 256 % 16]
+        out = out + c1 + c2
+        bits = bits // 256
+        k += 1
+    return out
+
+
+def name_lookup(nm: str) -> int:
+    i: int = 0
+    while i < len(NAME_I):
+        if NAME_I[i] == nm:
+            return NAME_V[i]
+        i += 1
+    return -1
+
+
+def name_add(nm: str, v: int) -> int:
+    NAME_I.append(nm)
+    NAME_V.append(v)
+    return 0
+
+
+def type_index(sig: str) -> int:
+    i: int = 0
+    while i < len(TYPES):
+        if TYPES[i] == sig:
+            return i
+        i += 1
+    TYPES.append(sig)
+    return len(TYPES) - 1
+
+
+def ty_byte(ty: str) -> int:
+    if ty == "i32":
+        return 127
+    if ty == "f64":
+        return 124
+    return 126
+
+
+def sig_add_p(sig: str, ty: str) -> str:
+    # sig format: "p(<t1,t2>)]r(<r>)" - insert before the ")]" close
+    i: int = sig.find(")]")
+    sep: str = ""
+    if i > 2:
+        sep = ","
+    return sig[:i] + sep + ty + sig[i:]
+
+
+# ---------------- pass A: structure ----------------
+def structure() -> int:
+    depth: int = 0
+    i: int = 0
+    ntok: int = len(T_KIND)
+    nfun: int = 0
+    while i < ntok:
+        k: int = tkind(i)
+        if k == TK_LP:
+            if depth == 0:
+                # the module form itself: step inside
+                depth += 1
+                i += 1
+                continue
+            if depth == 1:
+                head: str = ttext(i + 1)
+                j: int = match_close(i)
+                if head == "import":
+                    imod: str = ttext(i + 2)
+                    inm: str = ttext(i + 3)
+                    sig: str = "p()]r()"
+                    nm2: str = ""
+                    k2: int = i + 4
+                    while k2 < j:
+                        if tkind(k2) == TK_LP and ttext(k2 + 1) == "func":
+                            m2: int = k2 + 2
+                            if tkind(m2) == TK_ATOM and ttext(m2)[0:1] == "$":
+                                nm2 = ttext(m2)
+                                m2 += 1
+                            while m2 < j:
+                                h2: str = ttext(m2)
+                                if h2 == "param":
+                                    m2 += 2
+                                    while m2 < j and tkind(m2) == TK_ATOM:
+                                        w: str = ttext(m2)
+                                        if w == "i64" or w == "i32" or w == "f64":
+                                            sig = sig_add_p(sig, w)
+                                        m2 += 1
+                                    continue
+                                if h2 == "result":
+                                    m2 += 2
+                                    sig = sig[:sig.find(")]") + 2] + "r(" + ttext(m2) + ")"
+                                    m2 += 1
+                                    continue
+                                m2 += 1
+                            break
+                        k2 += 1
+                    IMP_MOD.append(imod)
+                    IMP_NM.append(inm)
+                    IMP_SIG.append(sig)
+                    name_add(nm2, len(IMP_MOD) - 1)
+                elif head == "memory":
+                    MEM_HAS[0] = 1
+                    MEM_MIN = atom_int(ttext(i + 3))
+                elif head == "global":
+                    gnm: str = ttext(i + 2)
+                    mut: int = 0
+                    ty: str = ttext(i + 4)
+                    if ty == "mut":
+                        mut = 1
+                        ty = ttext(i + 5)
+                    initk: int = 0
+                    initv: int = 0
+                    initf: str = ""
+                    h3: str = ttext(j - 3)
+                    if h3 == "f64.const":
+                        initk = 2
+                        initf = ttext(j - 2)
+                    else:
+                        initk = 1
+                        initv = atom_int(ttext(j - 2))
+                    GN_NAME.append(gnm)
+                    GN_MUT.append(mut)
+                    GN_TY.append(ty)
+                    GN_INITK.append(initk)
+                    GN_INITV.append(initv)
+                    GN_INITF.append(initf)
+                    name_add("$" + gnm, len(GN_NAME) - 1)
+                elif head == "export":
+                    enm: str = ttext(i + 2)
+                    kindt: str = ttext(i + 5)
+                    ek: int = 0
+                    idx: int = 0
+                    if kindt == "memory":
+                        ek = 1
+                        idx = atom_int(ttext(i + 7))
+                    EXP_NM.append(enm)
+                    EXP_KIND.append(ek)
+                    EXP_IDX.append(idx)
+                elif head == "data":
+                    off: int = atom_int(ttext(i + 4))
+                    DAT_OFF.append(off)
+                    DAT_SP.append(T_POS[i + 6])
+                    DAT_SL.append(T_LEN[i + 6])
+                elif head == "func":
+                    fnm: str = ""
+                    fe: str = ""
+                    sig: str = "p()]r()"
+                    pn: list[str] = []
+                    lt: list[str] = []
+                    k2: int = i + 2
+                    if tkind(k2) == TK_ATOM and ttext(k2)[0:1] == "$":
+                        fnm = ttext(k2)
+                        k2 += 1
+                    while tkind(k2) == TK_LP:
+                        h2: str = ttext(k2 + 1)
+                        if h2 == "export":
+                            fe = ttext(k2 + 2)
+                            k2 += 4
+                            continue
+                        if h2 == "param":
+                            m2: int = k2 + 2
+                            while m2 < j and tkind(m2) == TK_ATOM:
+                                w: str = ttext(m2)
+                                if w == "i64" or w == "i32" or w == "f64":
+                                    sig = sig_add_p(sig, w)
+                                    if m2 > k2 + 2 and tkind(m2 - 1) == TK_ATOM and ttext(m2 - 1)[0:1] == "$":
+                                        pn.append(ttext(m2 - 1))
+                                m2 += 1
+                            k2 = match_close(k2)
+                            continue
+                        if h2 == "result":
+                            m3: int = k2 + 2
+                            sig = sig[:sig.find(")]") + 2] + "r(" + ttext(m3) + ")"
+                            k2 += 4
+                            continue
+                        if h2 == "local":
+                            if tkind(k2 + 2) == TK_ATOM and ttext(k2 + 2)[0:1] == "$":
+                                lt.append(ttext(k2 + 3))
+                            k2 += 4
+                            continue
+                        break
+                    FN_NAME.append(fnm)
+                    FN_SIG.append(sig)
+                    FN_B0.append(k2)
+                    FN_B1.append(j)
+                    FN_PN.append(",".join(pn))
+                    FN_LT.append(",".join(lt))
+                    fidx: int = len(IMP_MOD) + nfun
+                    name_add("$" + fnm, fidx)
+                    if fe != "":
+                        EXP_NM.append(fe)
+                        EXP_KIND.append(0)
+                        EXP_IDX.append(fidx)
+                    nfun += 1
+            # top-level forms are skipped whole: their contents are
+            # never walked at depth 2 (the arms above may return early)
+            i = match_close(i)
+            continue
+        if k == TK_RP:
+            depth -= 1
+        i += 1
+    return 0
+
+
+# ---------------- op table ----------------
+OPN: list[str] = []
+OPC: list[int] = []
+OPE: list[int] = []
+
+
+def op_init() -> int:
+    OPN.append("i64.load")
+    OPC.append(41)
+    OPE.append(3)
+    OPN.append("i64.load8_u")
+    OPC.append(49)
+    OPE.append(0)
+    OPN.append("i64.store")
+    OPC.append(55)
+    OPE.append(3)
+    OPN.append("i64.store8")
+    OPC.append(63)
+    OPE.append(0)
+    OPN.append("i64.add")
+    OPC.append(124)
+    OPE.append(-1)
+    OPN.append("i64.sub")
+    OPC.append(125)
+    OPE.append(-1)
+    OPN.append("i64.mul")
+    OPC.append(126)
+    OPE.append(-1)
+    OPN.append("i64.div_s")
+    OPC.append(127)
+    OPE.append(-1)
+    OPN.append("i64.div_u")
+    OPC.append(128)
+    OPE.append(-1)
+    OPN.append("i64.rem_s")
+    OPC.append(129)
+    OPE.append(-1)
+    OPN.append("i64.rem_u")
+    OPC.append(130)
+    OPE.append(-1)
+    OPN.append("i64.and")
+    OPC.append(131)
+    OPE.append(-1)
+    OPN.append("i64.or")
+    OPC.append(132)
+    OPE.append(-1)
+    OPN.append("i64.xor")
+    OPC.append(133)
+    OPE.append(-1)
+    OPN.append("i64.shl")
+    OPC.append(134)
+    OPE.append(-1)
+    OPN.append("i64.shr_s")
+    OPC.append(135)
+    OPE.append(-1)
+    OPN.append("i64.shr_u")
+    OPC.append(136)
+    OPE.append(-1)
+    OPN.append("i64.eq")
+    OPC.append(81)
+    OPE.append(-1)
+    OPN.append("i64.ne")
+    OPC.append(82)
+    OPE.append(-1)
+    OPN.append("i64.lt_s")
+    OPC.append(83)
+    OPE.append(-1)
+    OPN.append("i64.lt_u")
+    OPC.append(84)
+    OPE.append(-1)
+    OPN.append("i64.gt_s")
+    OPC.append(85)
+    OPE.append(-1)
+    OPN.append("i64.gt_u")
+    OPC.append(86)
+    OPE.append(-1)
+    OPN.append("i64.le_s")
+    OPC.append(87)
+    OPE.append(-1)
+    OPN.append("i64.le_u")
+    OPC.append(88)
+    OPE.append(-1)
+    OPN.append("i64.ge_s")
+    OPC.append(89)
+    OPE.append(-1)
+    OPN.append("i64.ge_u")
+    OPC.append(90)
+    OPE.append(-1)
+    OPN.append("i64.eqz")
+    OPC.append(80)
+    OPE.append(-1)
+    OPN.append("i64.extend_i32_s")
+    OPC.append(172)
+    OPE.append(-1)
+    OPN.append("i64.extend_i32_u")
+    OPC.append(173)
+    OPE.append(-1)
+    OPN.append("i64.reinterpret_f64")
+    OPC.append(189)
+    OPE.append(-1)
+    OPN.append("i32.add")
+    OPC.append(106)
+    OPE.append(-1)
+    OPN.append("i32.and")
+    OPC.append(113)
+    OPE.append(-1)
+    OPN.append("i32.eqz")
+    OPC.append(69)
+    OPE.append(-1)
+    OPN.append("i32.wrap_i64")
+    OPC.append(167)
+    OPE.append(-1)
+    OPN.append("f64.add")
+    OPC.append(160)
+    OPE.append(-1)
+    OPN.append("f64.sub")
+    OPC.append(161)
+    OPE.append(-1)
+    OPN.append("f64.mul")
+    OPC.append(162)
+    OPE.append(-1)
+    OPN.append("f64.div")
+    OPC.append(163)
+    OPE.append(-1)
+    OPN.append("f64.neg")
+    OPC.append(154)
+    OPE.append(-1)
+    OPN.append("f64.floor")
+    OPC.append(156)
+    OPE.append(-1)
+    OPN.append("f64.ceil")
+    OPC.append(155)
+    OPE.append(-1)
+    OPN.append("f64.sqrt")
+    OPC.append(159)
+    OPE.append(-1)
+    OPN.append("f64.eq")
+    OPC.append(97)
+    OPE.append(-1)
+    OPN.append("f64.ne")
+    OPC.append(98)
+    OPE.append(-1)
+    OPN.append("f64.lt")
+    OPC.append(99)
+    OPE.append(-1)
+    OPN.append("f64.gt")
+    OPC.append(100)
+    OPE.append(-1)
+    OPN.append("f64.le")
+    OPC.append(101)
+    OPE.append(-1)
+    OPN.append("f64.ge")
+    OPC.append(102)
+    OPE.append(-1)
+    OPN.append("f64.convert_i64_s")
+    OPC.append(185)
+    OPE.append(-1)
+    OPN.append("f64.convert_i64_u")
+    OPC.append(186)
+    OPE.append(-1)
+    OPN.append("f64.reinterpret_i64")
+    OPC.append(191)
+    OPE.append(-1)
+    OPN.append("i64.trunc_f64_s")
+    OPC.append(176)
+    OPE.append(-1)
+    OPN.append("i64.trunc_f64_u")
+    OPC.append(177)
+    OPE.append(-1)
+    OPN.append("f64.abs")
+    OPC.append(153)
+    OPE.append(-1)
+    return 0
+
+
+def op_code(name: str) -> int:
+    i: int = 0
+    while i < len(OPN):
+        if OPN[i] == name:
+            return i
+        i += 1
+    return -1
+
+
+# ---------------- body emission (hex string, post-order) ----------------
+LSTK: list[str] = []
+NI: list[int] = [0]
+
+
+def local_scan_idx(csv: str, nm: str) -> int:
+    idx: int = -1
+    pos: int = 0
+    c: int = 0
+    start: int = 0
+    while c <= len(csv):
+        if c == len(csv) or csv[c] == ",":
+            if csv[start:c] == nm:
+                idx = pos
+            pos += 1
+            start = c + 1
+        c += 1
+    return idx
+
+
+def csv_count(csv: str) -> int:
+    if len(csv) == 0:
+        return 0
+    n: int = 1
+    c: int = 0
+    while c < len(csv):
+        if csv[c] == ",":
+            n += 1
+        c += 1
+    return n
+
+
+def emit_form(i: int, fi: int) -> str:
+    # folded WAT is POST-ORDER: operands push first, the opcode (with
+    # its immediates) last - block/loop/if are the only pre-order
+    # forms; the if's condition comes before the 0x04 header
+    op: str = ttext(i + 1)
+    if op == "block" or op == "loop":
+        j: int = i + 2
+        lbl: str = ""
+        if tkind(j) == TK_ATOM and ttext(j)[0:1] == "$":
+            lbl = ttext(j)
+            j += 1
+        s: str = ""
+        if op == "block":
+            s = s + "02"
+        else:
+            s = s + "03"
+        s = s + "40"
+        LSTK.append(lbl)
+        acc: str = ""
+        while tkind(j) != TK_RP:
+            acc = acc + emit_form(j, fi)
+            j = NI[0]
+        LSTK.pop()
+        NI[0] = j + 1
+        return s + acc + "0B"
+    if op == "if":
+        j: int = i + 2
+        lbl: str = ""
+        if tkind(j) == TK_ATOM and ttext(j)[0:1] == "$":
+            lbl = ttext(j)
+            j += 1
+        cond: str = ""
+        while not (tkind(j) == TK_LP and ttext(j + 1) == "then"):
+            cond = cond + emit_form(j, fi)
+            j = NI[0]
+        LSTK.append(lbl)
+        acc_then: str = ""
+        acc_else: str = ""
+        in_else: int = 0
+        while tkind(j) != TK_RP:
+            if tkind(j) == TK_LP and ttext(j + 1) == "else":
+                in_else = 1
+                j += 2
+                continue
+            seg: str = emit_form(j, fi)
+            j = NI[0]
+            if in_else:
+                acc_else = acc_else + seg
+            else:
+                acc_then = acc_then + seg
+        LSTK.pop()
+        NI[0] = j + 1
+        out: str = cond + "0440" + acc_then
+        if in_else:
+            out = out + "05" + acc_else
+        return out + "0B"
+    if op == "then" or op == "else":
+        j: int = i + 2
+        while tkind(j) != TK_RP:
+            emit_form(j, fi)
+            j = NI[0]
+        NI[0] = j + 1
+        return ""
+    if op == "call":
+        args: str = ""
+        j: int = i + 3
+        while tkind(j) != TK_RP:
+            args = args + emit_form(j, fi)
+            j = NI[0]
+        nm: str = ttext(i + 2)
+        cidx: int = 0
+        if nm[0:1] == "$":
+            cidx = name_lookup(nm)
+        else:
+            cidx = atom_int(nm)
+        NI[0] = j + 1
+        return args + "10" + uleb_hex(cidx)
+    if op == "br":
+        lbl: str = ttext(i + 2)
+        dep: int = 0
+        if lbl[0:1] == "$":
+            top: int = len(LSTK) - 1
+            d: int = top
+            while d >= 0:
+                if LSTK[d] == lbl:
+                    break
+                d -= 1
+            dep = top - d
+        else:
+            dep = atom_int(lbl)
+        NI[0] = match_close(i)
+        return "0C" + uleb_hex(dep)
+    if op == "br_if":
+        cond: str = ""
+        j: int = i + 3
+        while tkind(j) != TK_RP:
+            cond = cond + emit_form(j, fi)
+            j = NI[0]
+        lbl: str = ttext(i + 2)
+        dep: int = 0
+        if lbl[0:1] == "$":
+            top: int = len(LSTK) - 1
+            d: int = top
+            while d >= 0:
+                if LSTK[d] == lbl:
+                    break
+                d -= 1
+            dep = top - d
+        else:
+            dep = atom_int(lbl)
+        NI[0] = j + 1
+        return cond + "0D" + uleb_hex(dep)
+    if op == "i64.const":
+        NI[0] = match_close(i)
+        return "42" + sleb_hex(atom_int(ttext(i + 2)))
+    if op == "i32.const":
+        NI[0] = match_close(i)
+        return "41" + sleb_hex(atom_int(ttext(i + 2)))
+    if op == "f64.const":
+        NI[0] = match_close(i)
+        return "44" + f64_hex(ttext(i + 2))
+    if op == "local.get":
+        nm: str = ttext(i + 2)
+        idx: int = 0
+        if nm[0:1] == "$":
+            idx = local_scan_idx(FN_PN[fi], nm)
+            if idx == -1:
+                idx = csv_count(FN_PN[fi]) + local_scan_idx(FN_LT[fi], nm)
+        else:
+            idx = atom_int(nm)
+        NI[0] = match_close(i)
+        return "20" + uleb_hex(idx)
+    if op == "local.set" or op == "local.tee":
+        val: str = ""
+        j: int = i + 3
+        while tkind(j) != TK_RP:
+            val = val + emit_form(j, fi)
+            j = NI[0]
+        nm: str = ttext(i + 2)
+        idx: int = 0
+        if nm[0:1] == "$":
+            idx = local_scan_idx(FN_PN[fi], nm)
+            if idx == -1:
+                idx = csv_count(FN_PN[fi]) + local_scan_idx(FN_LT[fi], nm)
+        else:
+            idx = atom_int(nm)
+        NI[0] = j + 1
+        if op == "local.set":
+            return val + "21" + uleb_hex(idx)
+        return val + "22" + uleb_hex(idx)
+    if op == "global.get":
+        nm: str = ttext(i + 2)
+        gidx: int = 0
+        if nm[0:1] == "$":
+            gidx = name_lookup(nm)
+        else:
+            gidx = atom_int(nm)
+        NI[0] = match_close(i)
+        return "23" + uleb_hex(gidx)
+    if op == "global.set":
+        val: str = ""
+        j: int = i + 3
+        while tkind(j) != TK_RP:
+            val = val + emit_form(j, fi)
+            j = NI[0]
+        nm: str = ttext(i + 2)
+        gidx: int = 0
+        if nm[0:1] == "$":
+            gidx = name_lookup(nm)
+        else:
+            gidx = atom_int(nm)
+        NI[0] = j + 1
+        return val + "24" + uleb_hex(gidx)
+    if op == "memory.size":
+        NI[0] = match_close(i)
+        return "3F00"
+    if op == "memory.grow":
+        val: str = ""
+        j: int = i + 2
+        while tkind(j) != TK_RP:
+            val = val + emit_form(j, fi)
+            j = NI[0]
+        NI[0] = j + 1
+        return val + "4000"
+    if op == "memory.copy":
+        ops: str = ""
+        j: int = i + 2
+        while tkind(j) != TK_RP:
+            ops = ops + emit_form(j, fi)
+            j = NI[0]
+        NI[0] = j + 1
+        return ops + "FC0A0000"
+    oi: int = op_code(op)
+    if oi < 0:
+        NI[0] = match_close(i)
+        return "00"
+    ops: str = ""
+    j: int = i + 2
+    while tkind(j) != TK_RP:
+        ops = ops + emit_form(j, fi)
+        j = NI[0]
+    NI[0] = j + 1
+    im: str = ""
+    if OPE[oi] >= 0:
+        im = hex2(OPE[oi])
+    return ops + hex2(OPC[oi]) + im
+
+
+# ---------------- section emission ----------------
+def emit_section(secid: int) -> int:
+    OH[0] = OH[0] + hex2(secid) + uleb_hex(len(OS[0]) // 2) + OS[0]
+    OS[0] = ""
+    return 0
+
+
+def emit_all() -> int:
+    OH[0] = "0061736D01000000"
+    # types first-use order: imports, then functions
+    ii: int = 0
+    while ii < len(IMP_SIG):
+        type_index(IMP_SIG[ii])
+        ii += 1
+    fi: int = 0
+    while fi < len(FN_SIG):
+        type_index(FN_SIG[fi])
+        fi += 1
+    # type section (1)
+    OS[0] = ""
+    OS[0] = OS[0] + uleb_hex(len(TYPES))
+    ti: int = 0
+    while ti < len(TYPES):
+        OS[0] = OS[0] + "60"
+        sig: str = TYPES[ti]
+        pint: int = sig.find(")]r(")
+        plist: str = sig[2:pint]
+        rlist: str = sig[pint + 4:len(sig) - 1]
+        cnt: int = 0
+        c: int = 0
+        while c < len(plist):
+            if plist[c] == ",":
+                cnt += 1
+            c += 1
+        if len(plist) > 0:
+            cnt += 1
+        OS[0] = OS[0] + uleb_hex(cnt)
+        c = 0
+        while c < len(plist):
+            if plist[c] != ",":
+                OS[0] = OS[0] + hex2(ty_byte(plist[c:c + 3]))
+                c += 3
+            else:
+                c += 1
+        if len(rlist) > 0:
+            OS[0] = OS[0] + uleb_hex(1) + hex2(ty_byte(rlist))
+        else:
+            OS[0] = OS[0] + uleb_hex(0)
+        ti += 1
+    emit_section(1)
+    # import section (2)
+    if len(IMP_SIG) > 0:
+        OS[0] = ""
+        OS[0] = OS[0] + uleb_hex(len(IMP_SIG))
+        ii = 0
+        while ii < len(IMP_SIG):
+            OS[0] = OS[0] + uleb_hex(len(IMP_MOD[ii])) + str_hex(IMP_MOD[ii])
+            OS[0] = OS[0] + uleb_hex(len(IMP_NM[ii])) + str_hex(IMP_NM[ii])
+            OS[0] = OS[0] + "00" + uleb_hex(type_index(IMP_SIG[ii]))
+            ii += 1
+        emit_section(2)
+    # function section (3)
+    if len(FN_NAME) > 0:
+        OS[0] = ""
+        OS[0] = OS[0] + uleb_hex(len(FN_NAME))
+        fi = 0
+        while fi < len(FN_NAME):
+            OS[0] = OS[0] + uleb_hex(type_index(FN_SIG[fi]))
+            fi += 1
+        emit_section(3)
+    # memory section (5): only when the WAT declares a memory
+    if MEM_HAS[0] == 1:
+        OS[0] = "04" + uleb_hex(MEM_MIN)
+        emit_section(5)
+    # global section (6)
+    if len(GN_NAME) > 0:
+        OS[0] = ""
+        OS[0] = OS[0] + uleb_hex(len(GN_NAME))
+        gi: int = 0
+        while gi < len(GN_NAME):
+            OS[0] = OS[0] + hex2(ty_byte(GN_TY[gi])) + hex2(GN_MUT[gi])
+            if GN_INITK[gi] == 1:
+                OS[0] = OS[0] + "42" + sleb_hex(GN_INITV[gi])
+            else:
+                OS[0] = OS[0] + "44" + f64_hex(GN_INITF[gi])
+            OS[0] = OS[0] + "0B"
+            gi += 1
+        emit_section(6)
+    # export section (7)
+    if len(EXP_NM) > 0:
+        OS[0] = ""
+        OS[0] = OS[0] + uleb_hex(len(EXP_NM))
+        xi: int = 0
+        while xi < len(EXP_NM):
+            OS[0] = OS[0] + uleb_hex(len(EXP_NM[xi])) + str_hex(EXP_NM[xi])
+            OS[0] = OS[0] + hex2(EXP_KIND[xi]) + uleb_hex(EXP_IDX[xi])
+            xi += 1
+        emit_section(7)
+    # code section (10)
+    if len(FN_NAME) > 0:
+        OS[0] = ""
+        OS[0] = OS[0] + uleb_hex(len(FN_NAME))
+        fi = 0
+        while fi < len(FN_NAME):
+            emit_body(fi)
+            fi += 1
+        emit_section(10)
+    # data section (11)
+    if len(DAT_OFF) > 0:
+        OS[0] = ""
+        OS[0] = OS[0] + uleb_hex(len(DAT_OFF))
+        di: int = 0
+        while di < len(DAT_OFF):
+            OS[0] = OS[0] + "0042" + sleb_hex(DAT_OFF[di]) + "0B"
+            sp: int = DAT_SP[di]
+            sl: int = DAT_SL[di]
+            bs: str = chr(92)
+            k: int = 0
+            nb: int = 0
+            while k < sl:
+                if SRC[0][sp + k:sp + k + 1] == bs:
+                    nb += 1
+                    k += 4
+                else:
+                    nb += 1
+                    k += 1
+            OS[0] = OS[0] + uleb_hex(nb)
+            k = 0
+            while k < sl:
+                if SRC[0][sp + k:sp + k + 1] == bs:
+                    OS[0] = OS[0] + SRC[0][sp + k + 1:sp + k + 3]
+                    k += 4
+                else:
+                    ch: str = SRC[0][sp + k:sp + k + 1]
+                    OS[0] = OS[0] + hex2(ord(ch))
+                    k += 1
+            di += 1
+        emit_section(11)
+    return 0
+
+
+def emit_body(fi: int) -> int:
+    keep: str = OS[0]
+    OS[0] = ""
+    # locals: (local $nm ty)* head forms, coalesced into runs
+    runs: list[str] = []
+    cnt: list[int] = []
+    lts: str = FN_LT[fi]
+    if lts != "":
+        c: int = 0
+        start: int = 0
+        while c <= len(lts):
+            if c == len(lts) or lts[c] == ",":
+                ty: str = lts[start:c]
+                k: int = len(runs)
+                if k > 0 and runs[k - 1] == ty:
+                    cnt[k - 1] += 1
+                else:
+                    runs.append(ty)
+                    cnt.append(1)
+                start = c + 1
+            c += 1
+    OS[0] = OS[0] + uleb_hex(len(runs))
+    k = 0
+    while k < len(runs):
+        OS[0] = OS[0] + uleb_hex(cnt[k]) + hex2(ty_byte(runs[k]))
+        k += 1
+    acc: str = ""
+    j: int = FN_B0[fi]
+    while tkind(j) != TK_RP:
+        acc = acc + emit_form(j, fi)
+        j = NI[0]
+    acc = acc + "0B"
+    bodyhex: str = OS[0] + acc
+    OS[0] = keep
+    OS[0] = OS[0] + uleb_hex(len(bodyhex) // 2) + bodyhex
+    return 0
+
+
+def main() -> int:
+    src: str = read_stdin()
+    tokenize(src)
+    structure()
+    op_init()
+    emit_all()
+    print(OH[0])
+    return 0
