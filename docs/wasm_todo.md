@@ -162,6 +162,18 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
 6. **closure 族 / strbuf 语料**（视覆盖面决定，wasm_plan §3.5）。
 7. **工程化**：wasm 四门禁进 CI（Node 已钉 24.3；artifacts 缓存策略）；
    playground 示例列表扩充（新门禁示例自动同步进下拉）。
+8. **直接二进制发射（WIP，0092534）**：selfhost/wat2wasm.si（纯 Silu
+   WAT→wasm64 汇编器，~1100 行）+ wasm/shim/dec_bits.c（精确十进制→
+   binary64，13019 向量对拍 CPython 零误差）。手写 tiny WAT 已与 wabt
+   字节一致；**语料 WAT 仍有类型节差异**（structure 的函数 sig 收集 +
+   遍历推进在补丁中受损，文件需单次干净重写）。输出为 hex 文本流（宿主
+   解码；Silu 字符串无法承载 NUL 字节）。**教训**：①补丁迭代 >3 轮的
+   文件必须整体重写（本次重写后仍残留旧 splice 损伤，第二次重写才净）；
+   ②silu_conv 对同一源存在 split-IR-JSON 与直接读源两条路径，类型推断
+   有分歧（rawstr→i64 只在 IR 路径出现）——build.py wat2wasm 已改走
+   monolith siluc1 路径绕开；③调试自托管 Silu 程序的挂死：AST 解释器
+   平面 print 实时可见（wasm 宿主平面 stdout 缓冲到退出才可见），
+   faulthandler+SIGINT 可抓 Python 栈。
 
 ## 六、边界（不做什么，wasm_plan §6 重申）
 
