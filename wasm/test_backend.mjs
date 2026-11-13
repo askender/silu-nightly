@@ -45,7 +45,19 @@ for (const f of files) {
     const r = await done;
     if (r.exitCode !== 0) throw new Error("program exit " + r.exitCode + " " + dec.decode(r.stderr).slice(0, 100));
     const out = dec.decode(r.stdout);
-    const expected = execFileSync("python3", [REPO + f], { input: Buffer.from(stdinBytes), maxBuffer: 1 << 26, timeout: 120 }).toString();
+    // reference plane: bare CPython for the common subset; examples
+    // with a <name>.interp sidecar use the silu reference interpreter
+    // instead (record classes / match narrowing are silu semantics -
+    // CPython has no auto-constructor and test_match_class.py pins
+    // those constructs on the interpreter planes)
+    let expected;
+    if (existsSync(REPO + f.replace(/\.si$/, ".interp"))) {
+      const PY = process.env.PY312 || "python3";
+      expected = execFileSync(PY, ["-m", "silu", "interpret", REPO + f],
+        { input: Buffer.from(stdinBytes), maxBuffer: 1 << 26, timeout: 300000 }).toString();
+    } else {
+      expected = execFileSync("python3", [REPO + f], { input: Buffer.from(stdinBytes), maxBuffer: 1 << 26, timeout: 120 }).toString();
+    }
     if (out === expected) {
       pass++;
       console.log(`PASS ${f} (${JSON.stringify(out.slice(0, 40))})`);

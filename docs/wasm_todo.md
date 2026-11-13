@@ -5,16 +5,17 @@
 
 ## 一、现状快照
 
-- HEAD：`bacbca4` 后续（corpus 门禁轮，main，nightly 已推）。门禁全绿：
-  **wasm compile 20/20 · wasm run 3/3（三方对拍）· L2 backend 15/15（对拍
-  CPython，新增 strbuf_sem/stdin_demo）+ web 产物冒烟 · 语料门禁
-  test_corpus 13/13（全尺寸逐字节）+ jsonparse ×2 响亮 · shim 252/252
-  （对拍真 C 库 bit-exact）· 主链 ll 20/20 · ir 21/21 · pytest 1361
-  通过/3 跳过**。
-- **语料 15/15 处置完毕**：13 个 benchmark 全尺寸逐字节对拍 CPython——
-  **knucleotide@200000 从"O(n²) 超时 + 内存耗尽"降到 40ms 线性**（str
-  ABI v2，见 TODO #2 已关闭）；wordcount@300000 20ms；jsonparse ×2 =
-  pyobj 类子集外（构造点响亮 unreachable，门禁断言非零退出）。
+- HEAD：`dd90cad` 后续（记录类轮，main，nightly 已推）。门禁全绿：
+  **wasm compile 20/20 · wasm run 3/3（三方对拍）· L2 backend 17/17（对拍
+  CPython，新增 record_sem/and_or_nary）+ web 产物冒烟 · 语料门禁
+  test_corpus **14/15 全尺寸逐字节**（jsonparse 解锁！）+ jsonparse_json
+  响亮 · shim 252/252（对拍真 C 库 bit-exact）· 主链 ll 20/20 · ir 21/21 ·
+  pytest 1361 通过/3 跳过**。
+- **语料 15/15 处置完毕**：14 个 benchmark 全尺寸逐字节对拍——
+  **jsonparse 解锁（9ms，记录类子集）**、knucleotide@200000 40ms 线性
+  （str ABI v2）、wordcount@300000 20ms；jsonparse_json 响亮（需 Json
+  装箱层，TODO #4 后半）。jsonparse 的参照平面 = silu interpret
+  （CPython 无自动记录构造器语义）。
 - 本地 playground 完全可用：`python3 -m http.server -d wasm/web` 后浏览器
   打开即可 Compile→.ll / Run / Compile→.wasm 三条管线全闭环。
   **公网部署（silu.askender.xyz）尚未做**——见 TODO #1。
@@ -45,6 +46,7 @@ test_backend 支持 `<示例>.stdin` sidecar 双端喂养（input() 管道）。
 | L1 在线运行 | ✅ 704310f | fe+interp 执行；三方对拍 3/3 |
 | L2 真编译 | ✅ 2026-11-14 | IR→WAT 后端；14 例门禁 + 语料 13/15；浏览器 Compile→.wasm→执行闭环 |
 | L2+ str ABI v2 | ✅ 2026-11-14 | 长度前缀 + 窄窗原地扩展 + 值语义绑定；knucleotide 全尺寸线性 |
+| L2+ 记录类 | ✅ 2026-11-14 | class 构造器 + match 窄化 + 动态容器透传；jsonparse 解锁（9ms）|
 
 L2 子集能力清单（全部对拍 CPython）：int/float/bool（True/False repr）、
 list[int]/list[float]（位打包）、str（码点 len/索引/切片/upper/lower/拼接）、
@@ -79,6 +81,29 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
   值臂；backend 自己的全局标记被自己的作用域规则吃掉（改 CTX list）。
 - shim 层：cStrtod 符号群 4 处、hexFloat fraction 顶端对齐、cReprDouble
   调整指数、%e/%g 半偶舍入（expExact）、fmt_double 缺 NUL 终止。
+
+**记录类轮新发现（2026-11-14，全部修复）**：
+- **n 元 and/or 静默丢操作数（P0 级既有 bug）**：FE 发射扁平操作数
+  列表，旧二元发射把第三项静默丢掉（`a and b and c` 恒按 `a and b`
+  编译）——bool_ops 门禁全绿也没抓到（全二元链）。and_or_nary.si
+  门禁（短路副作用计数 + 全假 or——旧 or 初值恒 1）。**操作数从
+  arr[1] 起：把 arr[0] 的 tag 字符串喂 emit_expr 会同裸名一样段错误**。
+- `o: dict` 裸类型字段曾推断 "i"：`o["k"]` 把 dict 当 list（trace:
+  len=2=dict.count、idx=key 指针）。ann_type 补裸 list/dict 臂。
+- `str(动态)` 形状：无返回注解的调用携带动态字符串——构造器 str 字段
+  若走 str_from_int 会把**指针地址打成十进制数字**（"440119"）。
+  仅构造器对非 const 静态 "i" 参数按指针处理；`str()` 内建保持强转。
+- 脏形参拷贝消除：$s_copy 实参保护只需覆盖（传递闭包上）确实窄窗
+  扩展 str 形参的 callee——jsonparse 84KB 文档曾每次调用全拷
+  （750MB bump → trap、18s），现 9ms。
+- pass 顺序：全局类型推断必须在函数注册之后（顶层 `w = f()` 曾推断
+  "i" → print 打指针、len 走 li_len）。
+- read_line 旧 4K 上限**静默截断** 84KB 单行文档 → 可增长缓冲。
+- `case` 不能做变量名：自举 FE 视为关键字（Python FE 宽容）——两
+  前端又一处分歧。
+- 调试教训：探针 stdin 必须 Buffer.from（`new Uint8Array(str)` 产生
+  全零字节）；execFileSync timeout 单位毫秒；SIGSEGV 吞 stdout 缓冲
+  （调试打印要在 wasm 宿主里跑才可见）。
 
 **str ABI v2 轮新发现（2026-11-14，全部修复）**：
 - **`s += e` 静默指针算术**（P0）：纯名字 str 目标的 aug 落进 i64.add
@@ -121,9 +146,14 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    断言 + 计时）；test_backend 加 `<示例>.stdin` sidecar 管道（stdin_demo
    示例守护 input() 端到端）。**遗留真对拍**：jsonparse 全尺寸语义对拍
    等 pyobj（TODO #4）解锁——现在只能断言"响亮失败"。
-4. **pyobj/record 类**（L2 子集 5 剩余）：class 定义/构造/字段访问/
-   方法调用。jsonparse 语料依赖此解锁；评估 record 单态化 vs 动态
-   pyobj 路线。
+4. **pyobj/record 类**（前半完成）：✅ **记录单态化落地**——class_def
+   表 + 构造器（[tag][字段槽]，str 字段记录持有）+ match 窄化（tag 链 +
+   按类静态类型抽字段）+ 不透明 i64 槽透传动态容器 + `ls`/裸
+   list/dict 类型臂 + to_s 动态串 + 脏形参拷贝消除（FDIRTY 闭包）+
+   read_line 去上限。jsonparse 9ms 逐字节。**剩余**：jsonparse_json
+   需 Json tagged-union 装箱层（json_tag/list/dict/int/str/free
+   builtins + list[Json]/dict[str,Json] 元素类型 + 返回值隐式装箱）；
+   方法调用/继承/守卫与位置模式 = 响亮 gap（按需解锁）。
 5. **直接二进制发射**：backend 直出 wasm 二进制（LEB128）摆脱 wabt.js
    0.66 MB 依赖；评估 `docs/wasm_plan.md` §L2 尾注。
 6. **closure 族 / strbuf 语料**（视覆盖面决定，wasm_plan §3.5）。

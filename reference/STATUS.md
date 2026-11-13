@@ -432,6 +432,64 @@ ir_interp 两文件本轮零改动=非回归）。处置：strbuf_sem 入 INTERP
 - 门禁现状：compile 20/20 · run 3/3 · backend 15/15 + web 冒烟 ·
   corpus 13/13 + loud 2/2 · shim 252/252。
 
+## 三点十四、记录类子集 + jsonparse 解锁（2026-11-14，TODO #4 前半）
+
+**范围**：扁平记录类（class_def：注解字段、无方法/无继承）+ match 窄化
++ 记录流经动态容器。**记录单态化**路线——不需要通用 pyobj 装箱：构造
+器 = [tag=类序+1][字段槽]，字段按类静态类型存（str 字段构造时 s_copy，
+记录拥有其字符串）；match = tag 比较链 + 按类静态类型抽字段（str 绑定
+拷贝、容器绑定引用）；通配 `case _` = else；守卫/位置模式/未知类响亮。
+不透明 i64 槽承载记录指针流经裸 list/dict，match 处再静态化。
+
+**连带修复/实现（每条差分实证）**：
+- **ann_type 裸 `list`/`dict` 名字臂**：`o: dict` 字段曾推断 "i" →
+  `o["k"]` 把 dict 当 list（li_get(dict, key指针)——trace 显示
+  len=2（dict.count）、idx=1382（key 指针）才定位）。
+- **`ls`（list[str]）标记**：len(subscript)→str_clen、append/for 绑定
+  拷贝；`len(list)` 本体必须仍是 li_len（曾错改成 str_clen 读 cap）；
+  print(ls) 响亮。
+- **read_line 可增长**（倍增缓冲）：旧固定 4K scratch 会**静默截断**
+  jsonparse 的 84KB 单行文档。
+- **n 元 and/or（P0 级既有 bug）**：FE 发射**扁平操作数列表**，旧二元
+  发射把第三操作数**静默丢弃**——`pos < len and s[pos] >= "0" and
+  s[pos] <= "9"` 曾恒少一项；bool_ops 门禁全绿也没抓到（全是二元链）。
+  新 emit_bool_chain 递归嵌套 if；**操作数从 arr[1] 起（arr[0] 是
+  tag 字符串——把 tag 当节点喂 emit_expr 会同裸名一样段错误）**。
+  and_or_nary.si 门禁（含短路副作用计数与全假 or——旧 or 初值 1 的
+  形状）。
+- **to_s 动态串**：无返回注解的调用携带的是动态字符串——str_from_int
+  会把指针打成十进制数字（jsonparse 的 name 曾变成 "440119"）。仅
+  构造器 str 字段对非 const 的静态 "i" 参数按指针处理；`str()` 内建
+  保持 int 强转（print(42) 形状不变）。
+- **脏形参拷贝消除**：$s_copy 实参保护只在 callee（传递闭包）确实
+  窄窗扩展 str 形参时需要——walk_dirty 单趟扫 assign/aug 窗口 +
+  call 边，FDIRTY 不动点。jsonparse 84KB 文档曾每次调用全拷
+  （~9000 × 84KB ≈ 750MB bump → grow -1 trap、18s）；现 9ms。
+  walk_dirty 守卫：attribute 调用（无平名 callee）与空数组（call
+  节点尾随 []，tag 会越界）。
+- **pass 重排**：pass 0（全局类型推断）挪到 pass 1（函数注册）后——
+  顶层 `w = grab(...)` 曾推断 "i" → print 打指针、len 走 li_len
+  （"1407 25185"——25185 = "ab" 的字节小端读数）。
+- **`case` 不能做变量名**：自举 FE 的解析器把它当关键字（"expected
+  end of line"），Python FE 宽容——**两前端的又一处分歧**；walk_dirty
+  还需防裸 STR/空 ARR 进 tag()。
+
+**jsonparse 解锁（语料 14/15）**：全尺寸文档（gen_json_input，3000
+对象）**9ms 逐字节一致**（参照平面 = silu interpret——CPython 无自动
+记录构造器语义，test_match_class.py 既定做法）。jsonparse_json 仍响亮
+（需 Json tagged-union + json_* builtins + 隐式装箱，TODO #4 后半）。
+
+**门禁**：backend 15→**17**（record_sem.si：别名/字段所有权/通配/
+先匹配优先/经函数构造；and_or_nary.si）；run 门禁 INTERP_SKIP 扩
+record_sem/and_or_nary（ir_interp 对 str/类程序崩/挂，见 §3.12）。
+
+**教训**：①**给示例/语料新增文件要过每一门**——run 门禁自动吃
+examples/ 全目录，strbuf_sem 曾让 ir_interp 崩/挂 40 分钟；②探针
+喂 stdin 用 `new Uint8Array(str)` 产生 [0,0,0]——必须 Buffer.from；
+③execFileSync 的 timeout 是毫秒；④调试打印走 stdout 缓冲，SIGSEGV
+会吞掉全部输出——wasm 宿主跑同源码可把栈溢出变可见 trap；⑤**先写
+CPython 期望再写测试**——本次又栽在参数序上（g(2,9) 的 i=9,n=2）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

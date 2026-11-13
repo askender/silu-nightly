@@ -1,0 +1,67 @@
+# flat record classes (subset 5a): constructor, match narrowing with
+# field capture, wildcard case, records through dynamic containers.
+# The record owns its str fields (bind-copy rule); narrowing extracts
+# owned copies into the bound names.
+class JInt:
+    v: int
+
+class JStr:
+    v: str
+
+class Pair:
+    a: int
+    b: str
+
+p = JInt(42)
+match p:
+    case JInt(v=n):
+        print(n, n + 1)
+
+q = Pair(7, "hi")
+match q:
+    case Pair(a=a, b=b):
+        print(a, b, len(b))
+
+# records flow through dynamic containers as opaque pointers
+l = [JInt(1), JInt(2)]
+match l[1]:
+    case JInt(v=n):
+        print(n)
+
+d = {}
+d["x"] = JStr("abc")
+match d["x"]:
+    case JStr(v=w):
+        print(w, len(w))
+
+# non-matching case falls through to the wildcard
+match l[0]:
+    case JStr(v=w):
+        print(w)
+    case _:
+        print("no")
+
+# first match wins (JInt before wildcard)
+match q:
+    case Pair(a=a, b=b):
+        print("pair", a)
+    case _:
+        print("other")
+
+# str fields are owned by the record: extending a captured copy must
+# not touch the stored field
+match d["x"]:
+    case JStr(v=w):
+        w = w + "!"
+        print(w)
+
+match d["x"]:
+    case JStr(v=w):
+        print(w)
+
+# constructor through a function returning a record
+def mk(k: int):
+    return JInt(k * 2)
+match mk(21):
+    case JInt(v=n):
+        print(n)

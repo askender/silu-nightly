@@ -338,6 +338,44 @@ GTYPES: list[str] = []
 # see through name operands (u = s + s with s: str annotates "s")
 ANNTYPES: list[str] = []
 ANNTYPES_T: list[str] = []
+# flat record classes (L2 subset 5a): annotated fields, no methods or
+# inheritance; the constructor lays out [tag][field slots] and match
+# narrows by tag, extracting fields with the class's own static types
+# (record monomorphization - no universal pyobj boxing). Values held
+# in opaque i64 slots flow through untyped vars/containers until a
+# match re-types them.
+CNAMES: list[str] = []
+CNFIELDS: list[int] = []
+CALL_F: list[str] = []
+CALL_T: list[str] = []
+
+
+def class_lookup(name: str) -> int:
+    i: int = 0
+    while i < len(CNAMES):
+        if CNAMES[i] == name:
+            return i
+        i += 1
+    return -1
+
+
+def class_foff(ci: int) -> int:
+    off: int = 0
+    i: int = 0
+    while i < ci:
+        off = off + CNFIELDS[i]
+        i += 1
+    return off
+
+
+def class_field_index(ci: int, fname: str) -> int:
+    start: int = class_foff(ci)
+    i: int = 0
+    while i < CNFIELDS[ci]:
+        if CALL_F[start + i] == fname:
+            return i
+        i += 1
+    return -1
 # emitting context: CTX[0] == 1 while $silu_main's top-level statements
 # are emitted (a module-level bool flag would be shadowed by a local
 # inside main() - this program obeys its own global-write rules)
@@ -422,10 +460,17 @@ def is_str_window(g: Gen, stmt: JValue) -> int:
 
 def ann_type(node: JValue) -> str:
     # ["name", "float"] -> "f"; ["name", "str"] -> "s";
-    # ["subscript", list, X] -> "li"; anything else -> "i"
+    # bare ["name","list"] -> "li" and ["name","dict"] -> "ds" (record
+    # fields hold containers: without these arms the match binding
+    # types as "i" and o["k"] dereferences the dict as a list);
+    # ["subscript", list, X] -> li/ls/lf/ds*; anything else -> "i"
     if node.kind == JKind.ARR and len(node.arr) > 1:
         if node.arr[1].s == "float":
             return "f"
+        if node.arr[1].s == "list":
+            return "li"
+        if node.arr[1].s == "dict":
+            return "ds"
         if node.arr[1].s == "str":
             return "s"
         if node.arr[1].s == "bool":
@@ -437,6 +482,10 @@ def ann_type(node: JValue) -> str:
                 et: str = elem_str(elem(node, 2), 1)
                 if et == "float":
                     return "lf"
+                if et == "str":
+                    # list[str]: len(subscript) must count bytes of the
+                    # element, not dereference it as an int slot
+                    return "ls"
                 return "li"
             if elem_str(elem(node, 1), 1) == "dict":
                 # dict[K, V]: ["tuple", [[K],[V]]], each T a ["name","x"]
@@ -499,6 +548,25 @@ def collect_locals(stmts: JValue, names: list[str], types: list[str]) -> int:
                 names.append(vn)
                 types.append("i")
             collect_locals(elem(s, 3), names, types)
+        elif t == "match":
+            # case bodies + the capture names (types are fixed at emit
+            # time by bind_match_fields)
+            cases: JValue = elem(s, 2)
+            j3: int = 0
+            while j3 < len(cases.arr):
+                cs: JValue = elem(cases, j3)
+                pat: JValue = elem(cs, 1)
+                if tag(pat) == "match_class":
+                    binds: JValue = elem(pat, 4)
+                    j4: int = 0
+                    while j4 < len(binds.arr):
+                        bname: str = elem_str(elem(binds, j4), 2)
+                        if bname not in names:
+                            names.append(bname)
+                            types.append("")
+                        j4 += 1
+                collect_locals(elem(cs, 3), names, types)
+                j3 += 1
         i += 1
     return 0
 
@@ -584,7 +652,7 @@ def expr_type(g: Gen, node: JValue) -> str:
         return "ds"
     if t == "subscript":
         bt: str = expr_type(g, elem(node, 1))
-        if bt == "s" or bt == "dss" or bt == "dsis":
+        if bt == "s" or bt == "dss" or bt == "dsis" or bt == "ls":
             return "s"
         if bt == "dsf" or bt == "dsif" or bt == "lf":
             return "f"
@@ -672,6 +740,98 @@ def to_f(g: Gen, node: JValue) -> str:
     if expr_type(g, node) == "f":
         return emit_expr(g, node)
     return "(f64.convert_i64_s " + emit_expr(g, node) + ")"
+
+
+FDIRECT: list[int] = []
+FDIRTY: list[int] = []
+FEDGES_A: list[int] = []
+FEDGES_B: list[int] = []
+
+
+def walk_dirty(n: JValue, sp: list[str], fi: int) -> int:
+    # one pass over a function body: does it narrow-window-extend a
+    # str param (x = x + e / x += e with target a str param), and
+    # which known functions does it call (edges for the transitive
+    # closure - any callee with a str param could receive a
+    # param-derived string, so the edge is added conservatively)
+    ext: int = 0
+    if n.kind != JKind.ARR:
+        return 0
+    if len(n.arr) == 0:
+        # trailing empty lists (call args stubs etc) have no tag
+        return 0
+    t: str = tag(n)
+    if (t == "assign" or t == "ann_assign") and tag(elem(n, 2)) == "+":
+        tgt: str = elem_str(n, 1)
+        r: JValue = elem(n, 2)
+        if tag(elem(r, 1)) == "name" and elem(elem(r, 1), 1).s == tgt:
+            if tag(elem(r, 2)) != "name" or elem(elem(r, 2), 1).s != tgt:
+                j: int = 0
+                while j < len(sp):
+                    if sp[j] == tgt:
+                        ext = 1
+                    j += 1
+    if t == "aug_assign":
+        if tag(elem(n, 1)) == "name" and elem_str(n, 2) == "+=":
+            tgt2: str = elem(elem(n, 1), 1).s
+            j2: int = 0
+            while j2 < len(sp):
+                if sp[j2] == tgt2:
+                    ext = 1
+                j2 += 1
+    if t == "call":
+        # attribute calls (obj.method) have no plain callee name here
+        if tag(elem(n, 1)) != "name":
+            k9: int = 0
+            while k9 < len(n.arr):
+                if n.arr[k9].kind == JKind.ARR:
+                    if walk_dirty(n.arr[k9], sp, fi):
+                        ext = 1
+                k9 += 1
+            return ext
+        nm: str = elem(elem(n, 1), 1).s
+        fi2: int = fn_lookup(nm)
+        if fi2 >= 0:
+            has_s: int = 0
+            j5: int = 0
+            while j5 < len(FUNCS[fi2].params.arr):
+                if ann_type(elem(FUNCS[fi2].ptypes, j5)) == "s":
+                    has_s = 1
+                j5 += 1
+            if has_s:
+                FEDGES_A.append(fi)
+                FEDGES_B.append(fi2)
+    k: int = 0
+    while k < len(n.arr):
+        if n.arr[k].kind == JKind.ARR:
+            if walk_dirty(n.arr[k], sp, fi):
+                ext = 1
+        k += 1
+    return ext
+
+
+def emit_bool_chain(g: Gen, node: JValue, i: int, tv: str) -> int:
+    # nested-if chain over the flat operand list: and skips the rest
+    # on the first falsy operand, or stops on the first truthy one.
+    # Operands live at arr[1..nop] (arr[0] is the tag string - reading
+    # it as a node crashes the same way a bare-name JValue does).
+    is_and: int = 1
+    if tag(node) == "or":
+        is_and = 0
+    nop: int = len(node.arr) - 1
+    ae: str = emit_expr(g, elem(node, i))
+    if i == nop:
+        g.emit("(if (i32.wrap_i64 " + ae + ") (then (local.set " + tv + " (i64.const 1))))")
+        return 0
+    if is_and:
+        g.emit("(if (i32.wrap_i64 " + ae + ") (then")
+        emit_bool_chain(g, node, i + 1, tv)
+        g.emit("))")
+    else:
+        g.emit("(if (i32.wrap_i64 " + ae + ") (then (local.set " + tv + " (i64.const 1))) (else")
+        emit_bool_chain(g, node, i + 1, tv)
+        g.emit("))")
+    return 0
 
 
 def emit_expr(g: Gen, node: JValue) -> str:
@@ -805,9 +965,40 @@ def emit_expr(g: Gen, node: JValue) -> str:
             if at2 == "ds" or at2 == "dsf" or at2 == "dss" or at2 == "dsi" or at2 == "dsif" or at2 == "dsis":
                 return "(call $ds_len " + emit_expr(g, elem(args, 0)) + ")"
             return "(call $li_len " + emit_expr(g, elem(args, 0)) + ")"
+        ci = class_lookup(name)
+        if ci >= 0:
+            # flat record constructor: alloc [tag][field slots]; args
+            # are stored per the class's field types (str fields take
+            # owned copies - the record owns its strings)
+            foff: int = class_foff(ci)
+            nf: int = CNFIELDS[ci]
+            if len(args.arr) != nf:
+                return "(unreachable)"
+            lv: str = g.fresh()
+            g.emit("(local.set " + lv + " (call $alloc (i64.const " + str(8 * (nf + 1)) + ")))")
+            g.emit("(i64.store (local.get " + lv + ") (i64.const " + str(ci + 1) + "))")
+            j: int = 0
+            while j < nf:
+                ft: str = CALL_T[foff + j]
+                slot: str = "(i64.add (local.get " + lv + ") (i64.const " + str(8 * (j + 1)) + "))"
+                if ft == "f":
+                    g.emit("(i64.store " + slot + " (i64.reinterpret_f64 " + to_f(g, elem(args, j)) + "))")
+                elif ft == "s":
+                    # a NON-const arg with static type "i" carries a
+                    # dynamic string (record subset: unannotated
+                    # returns) - str_from_int would render its address
+                    # as digits
+                    if expr_type(g, elem(args, j)) == "i" and tag(elem(args, j)) != "const":
+                        g.emit("(i64.store " + slot + " (call $s_copy " + emit_expr(g, elem(args, j)) + "))")
+                    else:
+                        g.emit("(i64.store " + slot + " (call $s_copy " + to_s(g, elem(args, j)) + "))")
+                else:
+                    g.emit("(i64.store " + slot + " " + emit_expr(g, elem(args, j)) + ")")
+                j += 1
+            return "(local.get " + lv + ")"
         fi = fn_lookup(name)
         if fi < 0:
-            # unknown callee (class constructor, missing builtin): loud
+            # unknown callee (missing builtin): loud
             return "(unreachable)"
         folded: str = ""
         i = 0
@@ -817,9 +1008,13 @@ def emit_expr(g: Gen, node: JValue) -> str:
             if pt == "f":
                 folded = folded + " " + to_f(g, elem(args, i))
             elif pt == "s":
-                # str params take owned copies: the callee may append to
-                # them through the narrow-window extend path
-                folded = folded + " (call $s_copy " + to_s(g, elem(args, i)) + ")"
+                # str params take owned copies ONLY when the callee
+                # (transitively) extends a str param through the
+                # narrow-window path - plain aliases are sound otherwise
+                if FDIRTY[fi] == 1:
+                    folded = folded + " (call $s_copy " + to_s(g, elem(args, i)) + ")"
+                else:
+                    folded = folded + " " + to_s(g, elem(args, i))
             else:
                 folded = folded + " " + emit_expr(g, elem(args, i))
             i += 1
@@ -869,16 +1064,14 @@ def emit_expr(g: Gen, node: JValue) -> str:
     if t == "not":
         return "(i64.extend_i32_u (i32.eqz (i32.wrap_i64 " + emit_expr(g, elem(node, 1)) + ")))"
     if t == "and" or t == "or":
-        # truthiness semantics with short-circuit; value semantics for
-        # int operands (x and y returning an operand) is a subset gap
+        # n-ary short-circuit chain - the FE emits FLAT operand lists
+        # (a and b and c is one node with three operands; the old
+        # two-operand emission silently dropped the rest). Result is
+        # int 0/1; operand-value semantics (x and y returning an
+        # operand) is a subset gap.
         tv: str = g.fresh()
-        ae: str = emit_expr(g, elem(node, 1))
-        if t == "and":
-            g.emit("(local.set " + tv + " (i64.const 0))")
-            g.emit("(if (i32.wrap_i64 " + ae + ") (then (if (i32.wrap_i64 " + emit_expr(g, elem(node, 2)) + ") (then (local.set " + tv + " (i64.const 1))))))")
-        else:
-            g.emit("(local.set " + tv + " (i64.const 1))")
-            g.emit("(if (i32.wrap_i64 " + ae + ") (then) (else (if (i32.wrap_i64 " + emit_expr(g, elem(node, 2)) + ") (then (local.set " + tv + " (i64.const 1))))))")
+        g.emit("(local.set " + tv + " (i64.const 0))")
+        emit_bool_chain(g, node, 1, tv)
         return "(local.get " + tv + ")"
     if t == "<":
         if expr_type(g, elem(node, 1)) == "s" or expr_type(g, elem(node, 2)) == "s":
@@ -974,6 +1167,72 @@ def emit_ipow(g: Gen, a: JValue, b: JValue) -> str:
     return "(local.get " + r + ")"
 
 
+def bind_match_fields(g: Gen, sl: str, ci: int, pat: JValue) -> int:
+    # case C(f=x, ...): load the named fields with the class's own
+    # static types; str fields take owned copies (bind-copy rule)
+    kwn: JValue = elem(pat, 3)
+    binds: JValue = elem(pat, 4)
+    foff: int = class_foff(ci)
+    j: int = 0
+    while j < len(kwn.arr):
+        fname: str = elem_str(kwn, j)
+        bname: str = elem_str(elem(binds, j), 2)
+        fi: int = class_field_index(ci, fname)
+        if fi < 0:
+            g.emit("(unreachable)")
+            return 0
+        ft: str = CALL_T[foff + fi]
+        slot: str = "(i64.load (i64.add (local.get " + sl + ") (i64.const " + str(8 * (fi + 1)) + ")))"
+        vn: str = "$" + bname
+        g.set_type(vn, ft)
+        if ft == "s":
+            g.emit("(local.set " + vn + " (call $s_copy " + slot + "))")
+        elif ft == "f":
+            g.emit("(local.set " + vn + " (f64.reinterpret_i64 " + slot + "))")
+        else:
+            g.emit("(local.set " + vn + " " + slot + ")")
+        j += 1
+    return 0
+
+
+def emit_match_cases(g: Gen, sl: str, cases: JValue, idx: int) -> int:
+    # sequential case chain (first match wins, like CPython): each
+    # class pattern becomes a tag test, the wildcard becomes the final
+    # else. Guards / positional patterns / unknown classes: loud.
+    if idx >= len(cases.arr):
+        return 0
+    cs: JValue = elem(cases, idx)
+    pat: JValue = elem(cs, 1)
+    guard: JValue = elem(cs, 2)
+    body: JValue = elem(cs, 3)
+    if guard.kind != JKind.NIL:
+        g.emit("(unreachable)")
+        return 0
+    if tag(pat) == "match_class":
+        nm: str = elem_str(elem(pat, 1), 1)
+        ci: int = class_lookup(nm)
+        if ci < 0 or len(elem(pat, 2).arr) > 0:
+            g.emit("(unreachable)")
+            return 0
+        g.emit("(if (i64.eq (i64.load (local.get " + sl + ")) (i64.const " + str(ci + 1) + ")) (then")
+        bind_match_fields(g, sl, ci, pat)
+        emit_stmts(g, body)
+        if idx + 1 < len(cases.arr):
+            g.emit(") (else")
+            emit_match_cases(g, sl, cases, idx + 1)
+        g.emit("))")
+        return 0
+    if tag(pat) == "match_as":
+        # wildcard capture-all (the corpus only uses the unnamed `_`)
+        if elem(pat, 2).kind != JKind.NIL:
+            g.emit("(unreachable)")
+            return 0
+        emit_stmts(g, body)
+        return 0
+    g.emit("(unreachable)")
+    return 0
+
+
 def emit_stmts(g: Gen, stmts: JValue) -> int:
     i: int = 0
     while i < len(stmts.arr):
@@ -1021,6 +1280,10 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 g.emit("(call " + setter + " " + d + " (call $s_copy " + k + ") (call $s_copy " + to_s(g, elem(stmt, 3)) + "))")
             else:
                 g.emit("(call " + setter + " " + d + " " + k + " (call $s_copy " + to_s(g, elem(stmt, 3)) + "))")
+        elif bt == "ls":
+            # l[i] = s on a list[str]: element store needs ownership
+            # analysis - loud gap until needed
+            g.emit("(unreachable)")
         else:
             g.emit("(call $li_set " + d + " " + k + " " + emit_expr(g, elem(stmt, 3)) + ")")
         return 0
@@ -1086,6 +1349,11 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             op2: str = elem_str(stmt, 2)
             cur: str = "(call $li_get (local.get " + cl2 + ") (local.get " + il2 + "))"
             setter: str = "$li_set"
+            if bt == "ls":
+                # str element read-modify-write needs ownership
+                # analysis - loud gap
+                g.emit("(unreachable)")
+                return 0
             if bt == "dss" or bt == "dsif" or bt == "dsis":
                 # str dict values have no read-modify-write here
                 g.emit("(unreachable)")
@@ -1235,8 +1503,12 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             mname: str = elem_str(head, 2)
             if mname == "append":
                 av: str = emit_expr(g, elem(elem(stmt, 2), 0))
-                if expr_type(g, elem(head, 1)) == "lf":
+                ct3: str = expr_type(g, elem(head, 1))
+                if ct3 == "lf":
                     av = "(i64.reinterpret_f64 " + to_f(g, elem(elem(stmt, 2), 0)) + ")"
+                elif ct3 == "ls":
+                    # list[str] elements own their strings (bind-copy rule)
+                    av = "(call $s_copy " + av + ")"
                 g.emit("(call $li_append " + emit_expr(g, elem(head, 1)) + " " + av + ")")
                 return 0
         name: str = elem(elem(stmt, 1), 1).s
@@ -1263,6 +1535,9 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                     g.emit("(call $print_dss " + emit_expr(g, elem(args, i)) + ")")
                 elif at == "dsi":
                     g.emit("(call $print_dsi " + emit_expr(g, elem(args, i)) + ")")
+                elif at == "ls":
+                    # list[str] rendering (['a', 'b'] repr): loud gap
+                    g.emit("(unreachable)")
                 elif at == "dsif" or at == "dsis":
                     # int-keyed float/str dict rendering: loud gap
                     g.emit("(unreachable)")
@@ -1287,7 +1562,10 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         while i < len(args.arr):
             pt3: str = ann_type(elem(FUNCS[fi].ptypes, i))
             if pt3 == "s":
-                folded = folded + " (call $s_copy " + to_s(g, elem(args, i)) + ")"
+                if FDIRTY[fi] == 1:
+                    folded = folded + " (call $s_copy " + to_s(g, elem(args, i)) + ")"
+                else:
+                    folded = folded + " " + to_s(g, elem(args, i))
             else:
                 folded = folded + " " + emit_expr(g, elem(args, i))
             i += 1
@@ -1360,6 +1638,9 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         if bt == "lf":
             g.set_type(var, "f")
             g.emit("(local.set " + var + " (f64.reinterpret_i64 (call $li_get (local.get " + li + ") (local.get " + idx + "))))")
+        elif bt == "ls":
+            g.set_type(var, "s")
+            g.emit("(local.set " + var + " (call $s_copy (call $li_get (local.get " + li + ") (local.get " + idx + "))))")
         else:
             g.emit("(local.set " + var + " (call $li_get (local.get " + li + ") (local.get " + idx + ")))")
         emit_stmts(g, elem(stmt, 3))
@@ -1383,6 +1664,14 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         g.emit("(br " + wt + ")))")
         g.loop_exit = saved_we
         g.loop_top = saved_wt
+        return 0
+    if t == "match":
+        # record narrowing: evaluate the subject once, then the tag
+        # chain (non-record subjects are a documented loud trap - the
+        # tag load on a non-pointer would trap anyway)
+        sl: str = g.fresh()
+        g.emit("(local.set " + sl + " " + emit_expr(g, elem(stmt, 1)) + ")")
+        emit_match_cases(g, sl, elem(stmt, 2), 0)
         return 0
     if t == "break":
         if g.loop_exit == "":
@@ -2140,20 +2429,30 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 ;; allocation (scratch is reused between calls by design)
 (func $read_line (result i64)
 (local $i i64) (local $ch i64) (local $n i64) (local $asc i64) (local $j i64)
-(local.set $i (i64.const 0))
+(local $buf i64) (local $cap i64) (local $nbuf i64)
+;; growable line buffer: jsonparse documents are single lines of tens
+;; of KB (the old fixed 4K scratch silently truncated them)
+(local.set $cap (i64.const 256))
+(local.set $buf (call $alloc (i64.const 256)))
 (local.set $asc (i64.const 1))
+(local.set $i (i64.const 0))
 (block $done (loop $rd
 (local.set $ch (i64.extend_i32_s (call $getchar)))
 (br_if $done (i64.eq (local.get $ch) (i64.const -1)))
 (br_if $done (i64.eq (local.get $ch) (i64.const 10)))
+(if (i64.ge_u (local.get $i) (local.get $cap))
+  (then
+    (local.set $nbuf (call $alloc (i64.mul (local.get $cap) (i64.const 2))))
+    (memory.copy (local.get $nbuf) (local.get $buf) (local.get $cap))
+    (local.set $buf (local.get $nbuf))
+    (local.set $cap (i64.mul (local.get $cap) (i64.const 2)))))
 (if (i64.ge_u (local.get $ch) (i64.const 128))
   (then (local.set $asc (i64.const 0))))
-(i64.store8 (i64.add (i64.const 200) (local.get $i)) (local.get $ch))
+(i64.store8 (i64.add (local.get $buf) (local.get $i)) (local.get $ch))
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
-(br_if $done (i64.ge_u (local.get $i) (i64.const 4096)))
 (br $rd)))
 (local.set $n (call $alloc (i64.add (local.get $i) (i64.const 17))))
-(memory.copy (i64.add (local.get $n) (i64.const 16)) (i64.const 200) (local.get $i))
+(memory.copy (i64.add (local.get $n) (i64.const 16)) (local.get $buf) (local.get $i))
 (i64.store8 (i64.add (i64.add (local.get $n) (i64.const 16)) (local.get $i)) (i64.const 0))
 (i64.store (local.get $n) (local.get $i))
 (if (i64.eqz (local.get $asc))
@@ -2276,6 +2575,43 @@ def main() -> int:
     parser: Json = Json(src, 0)
     root: JValue = parser.value()
     stmts: JValue = elem(root, 1)
+    # pass 0b: flat record classes (constructor + match narrowing)
+    i = 0
+    while i < len(stmts.arr):
+        s = elem(stmts, i)
+        if tag(s) == "class_def":
+            cname: str = elem_str(s, 1)
+            if class_lookup(cname) < 0:
+                CNAMES.append(cname)
+                body0: JValue = elem(s, 3)
+                j5: int = 0
+                nf0: int = 0
+                while j5 < len(body0.arr):
+                    fs: JValue = elem(body0, j5)
+                    if tag(fs) == "ann_assign":
+                        CALL_F.append(elem_str(fs, 1))
+                        CALL_T.append(ann_type(elem(fs, 3)))
+                        nf0 += 1
+                    j5 += 1
+                CNFIELDS.append(nf0)
+        i += 1
+    # pass 1: register functions (hoisted to the top by the front end)
+    i: int = 0
+    while i < len(stmts.arr):
+        s = elem(stmts, i)
+        if tag(s) == "func_def":
+            fn: Fn = Fn("", None, None, None, "")
+            fn.name = elem_str(s, 1)
+            fn.params = elem(s, 2)
+            fn.ptypes = elem(s, 4)
+            fn.body = elem(s, 3)
+            rt = elem(s, 5)
+            if rt.kind == JKind.NIL:
+                fn.rtype = "i"
+            else:
+                fn.rtype = ann_type(rt)
+            FUNCS.append(fn)
+        i += 1
     # pass 0: module-level variables -> wasm globals
     # 0a: collect annotated names first so bare-assign inference can
     # see through name operands
@@ -2301,23 +2637,35 @@ def main() -> int:
                 else:
                     GTYPES.append(top_type(elem(s, 2)))
         i += 1
-    # pass 1: register functions (hoisted to the top by the front end)
-    i: int = 0
-    while i < len(stmts.arr):
-        s = elem(stmts, i)
-        if tag(s) == "func_def":
-            fn: Fn = Fn("", None, None, None, "")
-            fn.name = elem_str(s, 1)
-            fn.params = elem(s, 2)
-            fn.ptypes = elem(s, 4)
-            fn.body = elem(s, 3)
-            rt = elem(s, 5)
-            if rt.kind == JKind.NIL:
-                fn.rtype = "i"
-            else:
-                fn.rtype = ann_type(rt)
-            FUNCS.append(fn)
+    # pass 1b: which functions (transitively) narrow-window-extend a
+    # str param - only their callers need the $s_copy arg protection;
+    # everyone else binds str params as plain aliases (linear parsing:
+    # jsonparse's 84KB document would be copied at every call otherwise)
+    i = 0
+    while i < len(FUNCS):
+        sp2: list[str] = []
+        j6: int = 0
+        while j6 < len(FUNCS[i].params.arr):
+            if ann_type(elem(FUNCS[i].ptypes, j6)) == "s":
+                sp2.append(FUNCS[i].params.arr[j6].s)
+            j6 += 1
+        FDIRTY.append(0)
+        FDIRECT.append(walk_dirty(FUNCS[i].body, sp2, i))
         i += 1
+    gi2: int = 0
+    while gi2 < len(FUNCS):
+        if FDIRECT[gi2] == 1:
+            FDIRTY[gi2] = 1
+        gi2 += 1
+    changed: int = 1
+    while changed:
+        changed = 0
+        e: int = 0
+        while e < len(FEDGES_A):
+            if FDIRTY[FEDGES_B[e]] == 1 and FDIRTY[FEDGES_A[e]] == 0:
+                FDIRTY[FEDGES_A[e]] = 1
+                changed = 1
+            e += 1
     ar: Arena = Arena(1024, [])
     body: Gen = Gen("", 0, [], [], [], ar, "", "", "i", [])
     # pass 2: user functions, then the top-level statements as $silu_main

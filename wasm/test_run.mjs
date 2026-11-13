@@ -35,7 +35,7 @@ if (!existsSync(NATIVE_INTERP)) {
 // strbuf_sem skips the same way - and harder: ir_interp CRASHES or
 // HANGS (sigsegv/spin, not a loud gap) on str-heavy programs. Known
 // int-only boundary weakness, container plane belongs to the backend.
-const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si", "wasm/examples/float_ops.si", "wasm/examples/aug_sub.si", "wasm/examples/dicts_f.si", "wasm/examples/edge.si", "wasm/examples/dsbig.si", "wasm/examples/globals.si", "wasm/examples/strbuf_sem.si", "wasm/examples/stdin_demo.si"]);
+const INTERP_SKIP = new Set(["wasm/examples/floats.si", "wasm/examples/lists.si", "wasm/examples/strings.si", "wasm/examples/dicts.si", "wasm/examples/float_ops.si", "wasm/examples/aug_sub.si", "wasm/examples/dicts_f.si", "wasm/examples/edge.si", "wasm/examples/dsbig.si", "wasm/examples/globals.si", "wasm/examples/strbuf_sem.si", "wasm/examples/stdin_demo.si", "wasm/examples/record_sem.si", "wasm/examples/and_or_nary.si"]);
 
 const argv = process.argv.slice(2);
 const files = argv.length

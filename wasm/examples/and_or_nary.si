@@ -1,0 +1,43 @@
+# n-ary and/or chains (the FE emits FLAT operand lists) + short-circuit
+# side effects. The old two-operand emission silently dropped the third
+# operand - this example pins the fix. Int-valued and/or results are a
+# documented subset gap, so conditions are only used for truthiness.
+ok = 0
+i = 0
+while i < 6:
+    if i > 0 and i < 5 and i % 2 == 1:
+        ok += 1
+    i += 1
+print(ok)
+
+hit = 0
+j = 0
+while j < 6:
+    if j == 1 or j == 3 or j == 9:
+        hit += 1
+    j += 1
+print(hit)
+
+def side(v: int) -> int:
+    acc[0] += v
+    return v
+
+acc = [0]
+r = 0
+if side(0) and side(1) and side(2):
+    r = 1
+print(r, acc)
+
+if side(5) or side(6) or side(7):
+    r = 2
+print(r, acc)
+
+if side(0) or side(0):
+    r = 3
+print(r, acc)
+
+mixed = 0
+k = 4
+if k > 0 and k < 10 or k == 99:
+    mixed = 1
+print(mixed)

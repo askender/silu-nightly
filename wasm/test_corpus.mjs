@@ -19,9 +19,14 @@ import { runWasm } from "./shim/host.mjs";
 const REPO = new URL("..", import.meta.url).pathname;
 const dec = new TextDecoder();
 
-const PASS_NAMES = ["arith", "dict", "fannkuch", "fib", "float", "knucleotide",
-  "list", "mandelbrot", "nbody", "spectral", "string", "trees", "wordcount"];
-const LOUD_NAMES = ["jsonparse", "jsonparse_json"]; // pyobj classes
+const PASS_NAMES = ["arith", "dict", "fannkuch", "fib", "float", "jsonparse",
+  "knucleotide", "list", "mandelbrot", "nbody", "spectral", "string",
+  "trees", "wordcount"];
+// jsonparse + jsonparse_json: the reference plane is the silu
+// interpreter (CPython has no auto-record-constructor semantics);
+// jsonparse_json additionally needs the Json builtins - still loud
+const INTERP_REF = new Set(["jsonparse"]);
+const LOUD_NAMES = ["jsonparse_json"];
 
 const argv = process.argv.slice(2);
 const names = argv.length ? argv : [...PASS_NAMES, ...LOUD_NAMES];
@@ -55,7 +60,7 @@ for (const name of names) {
     // the shared JSON document for the jsonparse pair (deterministic
     // bytes from the checked-in generator)
     let stdinBytes = new Uint8Array();
-    if (isLoud) {
+    if (name === "jsonparse" || name === "jsonparse_json") {
       stdinBytes = new Uint8Array(execFileSync("python3", [REPO + "scripts/gen_json_input.py"], { maxBuffer: 1 << 24 }));
     }
     const wasmPath = toWasm(name);
@@ -68,7 +73,7 @@ for (const name of names) {
       // loud trap expected at the class-constructor call site
       if (r.exitCode !== 0) {
         loudOk++;
-        console.log(`LOUDOK ${name}: wasm trapped (exit ${r.exitCode}) as expected; cpython parses the same document fine`);
+        console.log(`LOUDOK ${name}: wasm trapped (exit ${r.exitCode}) as expected (Json builtins subset-external)`);
       } else {
         failures.push(name);
         console.log(`LOUDFAIL ${name}: exit 0 with ${JSON.stringify(out.slice(0, 40))} - expected a loud trap`);
@@ -80,8 +85,15 @@ for (const name of names) {
       console.log(`TRAP ${name}: exit ${r.exitCode} ${dec.decode(r.stderr).slice(0, 120)}`);
       continue;
     }
-    const expected = execFileSync("python3", [REPO + "benchmarks/" + name + ".si"],
-      { input: Buffer.from(stdinBytes), maxBuffer: 1 << 26, timeout: 600000 }).toString();
+    let expected;
+    if (INTERP_REF.has(name)) {
+      const PY = process.env.PY312 || "python3";
+      expected = execFileSync(PY, ["-m", "silu", "interpret", REPO + "benchmarks/" + name + ".si"],
+        { input: Buffer.from(stdinBytes), maxBuffer: 1 << 26, timeout: 600000 }).toString();
+    } else {
+      expected = execFileSync("python3", [REPO + "benchmarks/" + name + ".si"],
+        { input: Buffer.from(stdinBytes), maxBuffer: 1 << 26, timeout: 600000 }).toString();
+    }
     if (out === expected) {
       pass++;
       console.log(`PASS ${name}: byte-identical (wasm exec ${ms}ms)`);
