@@ -344,7 +344,7 @@ def structure() -> int:
                             while m2 < j:
                                 h2: str = ttext(m2)
                                 if h2 == "param":
-                                    m2 += 2
+                                    m2 += 1
                                     while m2 < j and tkind(m2) == TK_ATOM:
                                         w: str = ttext(m2)
                                         if w == "i64" or w == "i32" or w == "f64":
@@ -352,7 +352,7 @@ def structure() -> int:
                                         m2 += 1
                                     continue
                                 if h2 == "result":
-                                    m2 += 2
+                                    m2 += 1
                                     sig = sig[:sig.find(")]") + 2] + "r(" + ttext(m2) + ")"
                                     m2 += 1
                                     continue

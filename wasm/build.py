@@ -70,7 +70,7 @@ TOOLS = {
     "wat2wasm": "selfhost/wat2wasm.si",
     "wat2wasmdbg": "/tmp/w2w_dbg.si",
     "cimp": "/tmp/cimp.si",
-    "w2wdbg": "/tmp/w2w_dbg13.si",
+    "w2wdbg": "/tmp/w2w_ts.si",
     "w2wA": "/tmp/w2w_A.si",
     "w2wB": "/tmp/w2w_B.si",
     "rs": "/tmp/rs.si",
