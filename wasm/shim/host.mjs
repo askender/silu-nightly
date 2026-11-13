@@ -365,9 +365,6 @@ function makeHost(files, stdinBytes) {
         throw new SiluExit(70);
       },
       write(fd, ptr, len) {
-        if (process.env.W2W_DEBUG === "1" && Number(fd) === 1) {
-          process.stderr.write("DBG[" + new TextDecoder().decode(new Uint8Array(memory.buffer, Number(ptr), Number(len))) + "]\n");
-        }
         out(Number(fd), ptr, len);
       },
       fmt_double(buf, cap, v, spec, prec) {
@@ -387,9 +384,6 @@ function makeHost(files, stdinBytes) {
         return value;
       },
       getchar() {
-        if (process.env.W2W_DEBUG === "1") {
-          if (stdinPos % 16 === 0) process.stderr.write("[R" + stdinPos + "]");
-        }
         return stdinPos < stdinBytes.length ? stdinBytes[stdinPos++] : -1;
       },
       pow(a, b) {

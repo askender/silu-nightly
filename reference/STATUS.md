@@ -514,6 +514,35 @@ jsonparse_json 需要 RFC S3 的 tagged-union：每个 Json 值是 16B
 **语料 15/15 全部逐字节一致——L2 语料完整达成**：13 个对拍 CPython +
 jsonparse ×2 对拍 silu interpret（参照解释器平面），全部全尺寸。
 
+## 三点十六、wat2wasm.si 语料 32/32——TODO #5 关闭（2026-11-14 深夜）
+
+纯 Silu 的 WAT→wasm64 汇编器对拍 wabt（差分 oracle）全量逐字节一致：
+wasm/examples + benchmarks 全部 32 文件，经 fe→backend→WAT→
+wat2wasm.wasm 产出二进制 ↔ wabt CLI 组装同一 WAT，逐字节相等。
+**门禁入仓 `wasm/test_wat2wasm.mjs`**（自动枚举两目录；prereq：仓库根
+./silu_fe、/tmp/wasm_backend_native、wat2wasm CLI、
+wasm/artifacts/wat2wasm.wasm）。
+
+- **playground 摘除 wabt.js（−0.66MB）**：index.html 的 "Compile →
+  .wasm" 改走 modules.wat2wasm——后端吐 WAT 文本直接喂 wat2wasm.wasm，
+  hex 文本流宿主解码（2 hex 字符/字节；Silu 字符串无 NUL）。build.py
+  TOOLS 清掉 9 个 /tmp 调试条目（fresh checkout 的 build.py web 本会
+  立即崩）。wabt.js/WABT_LICENSE 移出 git。
+- **本轮九类 bug 全部差分实证后修复**（详见 docs/wasm_todo.md §五.8）：
+  then 体吞没 / 包裹 RP 截断（pd 计数）/ 裸原子 unreachable / 双 $
+  名字键 / op 表缺 return+drop 且 store8 错 0x3F / result 块类型 /
+  空 else 省略 / sleb 终止符 / global 臂三处下标。
+- **输出形态**：hex 文本流一行（宿主 Buffer.from(hex,'hex')）；模块
+  magic + wasm64 version `01 00 00 00`。
+- **已知性能项**：~2s/KB（46KB WAT ≈100s compiled）——逐形字符串
+  累积二次方；改 list[str]+join 是后续小项，playground 手输无感。
+- **结构（~1200 行）**：tokenize（kind/pos/len 三列表）→ structure
+  （imports/globals/memory/export/data/funcs 五收集，top-level 形整体
+  跳过）→ emit_form（后序折叠 WAT；block/loop/if 前序头 + 条件；
+  OPN/OPC/OPE 算符表，OPE≥0 = 默认 memarg）→ emit_section/emit_all
+  （types 按首用序 = imports 先于 funcs；memory 节带多内存计数字节
+  `01`；export kind func=0 memory=2）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

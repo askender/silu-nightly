@@ -68,17 +68,6 @@ TOOLS = {
     "interp": "selfhost/ir_interp.si",
     "backend": "selfhost/wasm_backend.si",
     "wat2wasm": "selfhost/wat2wasm.si",
-    "wat2wasmdbg": "/tmp/w2w_dbg.si",
-    "cimp": "/tmp/cimp.si",
-    "w2wdbg": "/tmp/w2w_ts.si",
-    "w2wA": "/tmp/w2w_A.si",
-    "w2wB": "/tmp/w2w_B.si",
-    "rs": "/tmp/rs.si",
-    "wA": "/tmp/w2w_A.si",
-    "wB": "/tmp/w2w_B.si",
-    "wC": "/tmp/w2w_C.si",
-    "wD": "/tmp/w2w_D.si",
-    "wE": "/tmp/w2w_E.si",
 }
 
 
@@ -96,18 +85,36 @@ def build_tool(name):
         + [os.path.join(REPO, "selfhost", f) for f in os.listdir(os.path.join(REPO, "selfhost")) if f.endswith(".si")]
         + [os.path.join(REPO, "silu", f) for f in os.listdir(os.path.join(REPO, "silu")) if f.endswith(".py")]
     ):
-        print(f"emitting {name} .ll (self-host monolith)...", file=sys.stderr)
-        sys.path.insert(0, REPO)
-        from tools.selfhost_build import SILUC1_BIN
+        # siluc.si / silu_fe_main.si call helpers defined in other files
+        # (conv_convert / fe_compile) - the monolith rejects them, so
+        # they emit through the split fe|conv fixed-point pipeline;
+        # interp/backend/wat2wasm are single-file monolith sources (the
+        # split pipeline's typed conversion diverges on some shapes,
+        # e.g. rawstr -> i64 only on the IR path)
+        if name in ("siluc1", "fe"):
+            print(f"emitting {name} .ll (self-host fixed point)...", file=sys.stderr)
+            sys.path.insert(0, REPO)
+            from tools.selfhost_build import compile_with, ensure_converter, ensure_frontend
 
-        siluc1_bin = SILUC1_BIN
-        # the monolith reads the SOURCE directly - no fe|conv IR-JSON
-        # handoff (the split pipeline's typed conversion diverges from
-        # the monolith on some shapes)
-        with open(src, "rb") as fh:
-            ir = subprocess.run([siluc1_bin], stdin=fh, capture_output=True, check=True).stdout
-        with open(ll, "wb") as fh:
-            fh.write(ir)
+            compile_with(
+                ensure_frontend(),
+                ensure_converter(),
+                src,
+                os.path.join(ART, "_native_probe"),
+                save_ll=ll,
+            )
+        else:
+            print(f"emitting {name} .ll (self-host monolith)...", file=sys.stderr)
+            sys.path.insert(0, REPO)
+            from tools.selfhost_build import SILUC1_BIN
+
+            siluc1_bin = SILUC1_BIN
+            # the monolith reads the SOURCE directly - no fe|conv IR-JSON
+            # handoff
+            with open(src, "rb") as fh:
+                ir = subprocess.run([siluc1_bin], stdin=fh, capture_output=True, check=True).stdout
+            with open(ll, "wb") as fh:
+                fh.write(ir)
 
     # wasm-ld turns --export=main into an (i32,i32) command-ABI wrapper;
     # rename the entry so the plain () -> i32 function is exportable

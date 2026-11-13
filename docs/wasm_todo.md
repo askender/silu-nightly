@@ -162,18 +162,37 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
 6. **closure 族 / strbuf 语料**（视覆盖面决定，wasm_plan §3.5）。
 7. **工程化**：wasm 四门禁进 CI（Node 已钉 24.3；artifacts 缓存策略）；
    playground 示例列表扩充（新门禁示例自动同步进下拉）。
-8. **直接二进制发射（WIP，0092534）**：selfhost/wat2wasm.si（纯 Silu
-   WAT→wasm64 汇编器，~1100 行）+ wasm/shim/dec_bits.c（精确十进制→
-   binary64，13019 向量对拍 CPython 零误差）。手写 tiny WAT 已与 wabt
-   字节一致；**语料 WAT 仍有类型节差异**（structure 的函数 sig 收集 +
-   遍历推进在补丁中受损，文件需单次干净重写）。输出为 hex 文本流（宿主
-   解码；Silu 字符串无法承载 NUL 字节）。**教训**：①补丁迭代 >3 轮的
-   文件必须整体重写（本次重写后仍残留旧 splice 损伤，第二次重写才净）；
-   ②silu_conv 对同一源存在 split-IR-JSON 与直接读源两条路径，类型推断
-   有分歧（rawstr→i64 只在 IR 路径出现）——build.py wat2wasm 已改走
-   monolith siluc1 路径绕开；③调试自托管 Silu 程序的挂死：AST 解释器
-   平面 print 实时可见（wasm 宿主平面 stdout 缓冲到退出才可见），
-   faulthandler+SIGINT 可抓 Python 栈。
+8. ✅ ~~直接二进制发射~~（2026-11-14 关闭）：**selfhost/wat2wasm.si**
+   （纯 Silu WAT→wasm64 汇编器）+ wasm/shim/dec_bits.c（精确十进制→
+   binary64，13019 向量对拍 CPython 零误差）。**语料 32/32 逐字节一致
+   对拍 wabt**（wasm/examples + benchmarks 全量，wasm/test_wat2wasm.mjs
+   入仓门禁：fe→backend→wat→wat2wasm.wasm↔wabt CLI）。playground 已换
+   掉 wabt.js（-0.66MB）：index.html 的 .wasm 按钮改走 modules.wat2wasm
+   （hex 文本流→宿主解码 2 字符/字节；Silu 字符串无法承载 NUL）；
+   build.py 清掉 /tmp 调试 TOOLS。**本轮修的九类 bug**：① if 臂
+   `(then…)` 把 then 体整个吞掉（emit_form 对 then 头返回 ""）；
+   ② then/else 包裹 RP 与 if 自身 RP 混淆 → if 之后语句全丢（pd 深度
+   计数修复）；③ 裸原子指令（`(then unreachable)` 256 处）不落任何臂
+   → emit_form 加 TK_ATOM 臂；④ 函数/全局名注册 `"$"+fnm` 双 $ 键 →
+   call/global 全部 miss 落 "00"（uleb_hex(-1) 静默 0）；⑤ op 表缺
+   return/drop、i64.store8 写成 0x3F（memory.size！）；⑥ `(if (result
+   i64)…)` 块类型硬编码 0x40 → 解析 result 形取 valtype 字节；
+   ⑦ **空 `(else)` 必须省略**（wabt 规范化掉 05..0b 对）；
+   ⑧ **sleb_hex 终止条件读未重符号化的字节** → 改 `v % 128` 直接取
+   payload 的规范写法（floor-mod = payload、floor-div = 算术移位）；
+   ⑨ **global 臂三处下标**：init 形 `(const VALUE)` 的 opcode=j-4、
+   value=j-3（const 形自己的 RP 也要让位），非 mut 全局类型在 i+3 而
+   mut 形在 i+5，i32 init 用 0x41。
+   **教训**：①token 相对下标（j-N、i+N）必须拿 DBG 探针实证，不靠
+   心算——本次 j-3/j-2/j-4 连猜三次；②match_close 返回 RP+1（哨兵
+   语义），所有 j-N 下标都要让位；③补丁迭代 >3 轮的文件必须整体重写；
+   ④silu_conv split-IR-JSON 与直读源两条路径类型推断有分歧（rawstr→
+   i64 只在 IR 路径）——build.py wat2wasm 走 monolith siluc1 绕开；
+   ⑤调自托管程序挂死：AST 解释器平面 print 实时可见。
+   **性能已知项**：~2s/KB（46KB WAT ≈100s，compiled 模块）——
+   emit_body/emit_form 逐形 `acc = acc + seg` 字符串累积（compiled
+   str 拼接窄窗扩展守卫失效退全拷，二次方），**后续改 list[str]+join
+   累积**（语言已有 join），playground 手输程序（KB 级）无感。
 
 ## 六、边界（不做什么，wasm_plan §6 重申）
 

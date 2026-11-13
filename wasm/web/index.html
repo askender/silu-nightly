@@ -56,7 +56,6 @@
   prints, and the Run pipeline interprets the same IR the native tools
   see. No server. Docs: <a href="https://silu.askender.xyz/">silu.askender.xyz</a></p>
 </header>
-<script src="wabt.js"></script>
 <main>
   <div class="pane">
     <div id="bar">
@@ -178,8 +177,9 @@ async function boot() {
   await Promise.all([loadOne("fe"), loadOne("interp"), loadOne("backend")]);
   stats.textContent = `fe+interp+backend loaded; loading full compiler…`;
   await loadOne("siluc1");
-  const total = (modules.fe.length + modules.interp.length + modules.backend.length + modules.siluc1.length) / 1e6;
-  stats.textContent = `4 modules loaded (${total.toFixed(2)} MB)`;
+  await loadOne("wat2wasm");
+  const total = (modules.fe.length + modules.interp.length + modules.backend.length + modules.siluc1.length + modules.wat2wasm.length) / 1e6;
+  stats.textContent = `5 modules loaded (${total.toFixed(2)} MB)`;
 }
 
 readyPromise = boot().catch((e) => {
@@ -230,11 +230,14 @@ async function compileWasm() {
   let be = await core.runWasm({ wasmBytes: modules.backend, stdin: fe.stdout });
   be = await be.done;
   if (be.exitCode !== 0) throw new Error("backend exited " + be.exitCode);
-  const wat = new TextDecoder().decode(be.stdout);
-  const wabt = await window.WabtModule();
-  wabt._wabt_set_memory64_enabled(1);
-  const mod = wabt.parseWat("program.wat", wat, {});
-  const { buffer } = mod.toBinary({ log: false });
+  // wat2wasm: the self-hosted assembler emits the binary as a hex text
+  // stream (Silu strings cannot hold NUL bytes) - decode 2 chars/byte
+  let wa = await core.runWasm({ wasmBytes: modules.wat2wasm, stdin: be.stdout });
+  wa = await wa.done;
+  if (wa.exitCode !== 0) throw new Error("wat2wasm exited " + wa.exitCode + "\n" + new TextDecoder().decode(wa.stderr));
+  const hex = new TextDecoder().decode(wa.stdout).replace(/[^0-9a-fA-F]/g, "");
+  const buffer = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < buffer.length; i++) buffer[i] = parseInt(hex.substr(2 * i, 2), 16);
   wasmBytes2 = buffer;
   dl.href = URL.createObjectURL(new Blob([buffer], { type: "application/wasm" }));
   dl.style.display = "inline";

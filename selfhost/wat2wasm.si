@@ -38,6 +38,7 @@ FN_B0: list[int] = []
 FN_B1: list[int] = []
 FN_PN: list[str] = []
 FN_LT: list[str] = []
+FN_LN: list[str] = []
 GN_NAME: list[str] = []
 GN_MUT: list[int] = []
 GN_TY: list[str] = []
@@ -204,17 +205,16 @@ def uleb_hex(v: int) -> str:
 
 
 def sleb_hex(v: int) -> str:
+    # canonical signed LEB128: Python floor-mod gives the 7-bit payload
+    # directly and floor-div is the arithmetic shift; terminal when the
+    # remainder is the sign extension of the emitted payload
     out: str = ""
     h: str = HEX[0]
     while True:
-        b: int = v % 256
-        if b >= 128:
-            b = b - 256
+        b: int = v % 128
         v = v // 128
-        if b < 0:
-            b = b + 256
         more: int = not ((v == 0 and b < 64) or (v == -1 and b >= 64))
-        byte: int = b % 128
+        byte: int = b
         if more:
             byte = byte + 128
         c1: str = h[byte // 16]
@@ -369,35 +369,43 @@ def structure() -> int:
                 elif head == "global":
                     gnm: str = ttext(i + 2)
                     mut: int = 0
-                    ty: str = ttext(i + 4)
-                    if ty == "mut":
+                    # (global $n TYPE ...) or (global $n (mut TYPE) ...)
+                    ty: str = ""
+                    if ttext(i + 4) == "mut":
                         mut = 1
                         ty = ttext(i + 5)
+                    else:
+                        ty = ttext(i + 3)
                     initk: int = 0
                     initv: int = 0
                     initf: str = ""
-                    h3: str = ttext(j - 3)
+                    # init is the last inner form: opcode j-4, value j-3
+                    # (j is one past the global form's RP; the const form
+                    # has its own closing RP between VALUE and the end)
+                    h3: str = ttext(j - 4)
                     if h3 == "f64.const":
                         initk = 2
-                        initf = ttext(j - 2)
+                        initf = ttext(j - 3)
                     else:
                         initk = 1
-                        initv = atom_int(ttext(j - 2))
+                        initv = atom_int(ttext(j - 3))
                     GN_NAME.append(gnm)
                     GN_MUT.append(mut)
                     GN_TY.append(ty)
                     GN_INITK.append(initk)
                     GN_INITV.append(initv)
                     GN_INITF.append(initf)
-                    name_add("$" + gnm, len(GN_NAME) - 1)
+                    name_add(gnm, len(GN_NAME) - 1)
                 elif head == "export":
                     enm: str = ttext(i + 2)
-                    kindt: str = ttext(i + 5)
+                    kindt: str = ttext(i + 4)
                     ek: int = 0
                     idx: int = 0
                     if kindt == "memory":
-                        ek = 1
-                        idx = atom_int(ttext(i + 7))
+                        ek = 2
+                    elif kindt == "func":
+                        ek = 0
+                    idx = atom_int(ttext(i + 5))
                     EXP_NM.append(enm)
                     EXP_KIND.append(ek)
                     EXP_IDX.append(idx)
@@ -411,6 +419,7 @@ def structure() -> int:
                     fe: str = ""
                     sig: str = "p()]r()"
                     pn: list[str] = []
+                    ln: list[str] = []
                     lt: list[str] = []
                     k2: int = i + 2
                     if tkind(k2) == TK_ATOM and ttext(k2)[0:1] == "$":
@@ -420,7 +429,7 @@ def structure() -> int:
                         h2: str = ttext(k2 + 1)
                         if h2 == "export":
                             fe = ttext(k2 + 2)
-                            k2 += 4
+                            k2 = match_close(k2)
                             continue
                         if h2 == "param":
                             m2: int = k2 + 2
@@ -441,7 +450,8 @@ def structure() -> int:
                         if h2 == "local":
                             if tkind(k2 + 2) == TK_ATOM and ttext(k2 + 2)[0:1] == "$":
                                 lt.append(ttext(k2 + 3))
-                            k2 += 4
+                                ln.append(ttext(k2 + 2))
+                            k2 = match_close(k2)
                             continue
                         break
                     FN_NAME.append(fnm)
@@ -450,8 +460,9 @@ def structure() -> int:
                     FN_B1.append(j)
                     FN_PN.append(",".join(pn))
                     FN_LT.append(",".join(lt))
+                    FN_LN.append(",".join(ln))
                     fidx: int = len(IMP_MOD) + nfun
-                    name_add("$" + fnm, fidx)
+                    name_add(fnm, fidx)
                     if fe != "":
                         EXP_NM.append(fe)
                         EXP_KIND.append(0)
@@ -484,8 +495,14 @@ def op_init() -> int:
     OPC.append(55)
     OPE.append(3)
     OPN.append("i64.store8")
-    OPC.append(63)
+    OPC.append(60)
     OPE.append(0)
+    OPN.append("return")
+    OPC.append(15)
+    OPE.append(-1)
+    OPN.append("drop")
+    OPC.append(26)
+    OPE.append(-1)
     OPN.append("i64.add")
     OPC.append(124)
     OPE.append(-1)
@@ -687,6 +704,18 @@ def emit_form(i: int, fi: int) -> str:
     # folded WAT is POST-ORDER: operands push first, the opcode (with
     # its immediates) last - block/loop/if are the only pre-order
     # forms; the if's condition comes before the 0x04 header
+    if tkind(i) == TK_ATOM:
+        # bare atom instruction (zero-operand opcode written unfolded,
+        # e.g. `unreachable` directly inside a folded then): emit just
+        # its opcode; operand-bearing opcodes get the default immediate
+        a: str = ttext(i)
+        oi2: int = op_code(a)
+        NI[0] = i + 1
+        if oi2 < 0:
+            return "00"
+        if OPE[oi2] >= 0:
+            return hex2(OPC[oi2]) + "00"
+        return hex2(OPC[oi2])
     op: str = ttext(i + 1)
     if op == "block" or op == "loop":
         j: int = i + 2
@@ -699,7 +728,12 @@ def emit_form(i: int, fi: int) -> str:
             s = s + "02"
         else:
             s = s + "03"
-        s = s + "40"
+        # optional (result T) form sets the blocktype byte
+        bt: str = "40"
+        if tkind(j) == TK_LP and ttext(j + 1) == "result":
+            bt = hex2(ty_byte(ttext(j + 2)))
+            j = match_close(j)
+        s = s + bt
         LSTK.append(lbl)
         acc: str = ""
         while tkind(j) != TK_RP:
@@ -715,6 +749,11 @@ def emit_form(i: int, fi: int) -> str:
             lbl = ttext(j)
             j += 1
         cond: str = ""
+        # optional (result T) form sets the if blocktype byte
+        bt: str = "40"
+        if tkind(j) == TK_LP and ttext(j + 1) == "result":
+            bt = hex2(ty_byte(ttext(j + 2)))
+            j = match_close(j)
         while not (tkind(j) == TK_LP and ttext(j + 1) == "then"):
             cond = cond + emit_form(j, fi)
             j = NI[0]
@@ -722,21 +761,43 @@ def emit_form(i: int, fi: int) -> str:
         acc_then: str = ""
         acc_else: str = ""
         in_else: int = 0
-        while tkind(j) != TK_RP:
-            if tkind(j) == TK_LP and ttext(j + 1) == "else":
+        # pd counts wrapper markers we skipped manually ((then)/(else)):
+        # their closing RP must not be mistaken for the if's own RP -
+        # folded forms are consumed whole by emit_form and never touch pd
+        pd: int = 0
+        while True:
+            if tkind(j) == TK_RP:
+                if pd == 0:
+                    break
+                pd -= 1
+                j += 1
+                continue
+            if pd == 0 and tkind(j) == TK_LP and ttext(j + 1) == "then":
+                pd += 1
+                j += 2
+                continue
+            if pd == 0 and tkind(j) == TK_LP and ttext(j + 1) == "else":
+                pd += 1
                 in_else = 1
                 j += 2
                 continue
-            seg: str = emit_form(j, fi)
-            j = NI[0]
+            if tkind(j) == TK_LP:
+                seg: str = emit_form(j, fi)
+                j = NI[0]
+            else:
+                # bare atom instruction (e.g. `unreachable`): emit it too
+                seg = emit_form(j, fi)
+                j = NI[0]
             if in_else:
                 acc_else = acc_else + seg
             else:
                 acc_then = acc_then + seg
+            continue
         LSTK.pop()
         NI[0] = j + 1
-        out: str = cond + "0440" + acc_then
-        if in_else:
+        out: str = cond + "04" + bt + acc_then
+        # an EMPTY else normalizes away: wabt emits no 05..end pair
+        if in_else and acc_else != "":
             out = out + "05" + acc_else
         return out + "0B"
     if op == "then" or op == "else":
@@ -810,7 +871,7 @@ def emit_form(i: int, fi: int) -> str:
         if nm[0:1] == "$":
             idx = local_scan_idx(FN_PN[fi], nm)
             if idx == -1:
-                idx = csv_count(FN_PN[fi]) + local_scan_idx(FN_LT[fi], nm)
+                idx = csv_count(FN_PN[fi]) + local_scan_idx(FN_LN[fi], nm)
         else:
             idx = atom_int(nm)
         NI[0] = match_close(i)
@@ -826,7 +887,7 @@ def emit_form(i: int, fi: int) -> str:
         if nm[0:1] == "$":
             idx = local_scan_idx(FN_PN[fi], nm)
             if idx == -1:
-                idx = csv_count(FN_PN[fi]) + local_scan_idx(FN_LT[fi], nm)
+                idx = csv_count(FN_PN[fi]) + local_scan_idx(FN_LN[fi], nm)
         else:
             idx = atom_int(nm)
         NI[0] = j + 1
@@ -887,7 +948,7 @@ def emit_form(i: int, fi: int) -> str:
     NI[0] = j + 1
     im: str = ""
     if OPE[oi] >= 0:
-        im = hex2(OPE[oi])
+        im = hex2(OPE[oi]) + "00"
     return ops + hex2(OPC[oi]) + im
 
 
@@ -962,8 +1023,9 @@ def emit_all() -> int:
             fi += 1
         emit_section(3)
     # memory section (5): only when the WAT declares a memory
+    # payload = mem-count (1) + limits (flags 0x04 = i64 index, min)
     if MEM_HAS[0] == 1:
-        OS[0] = "04" + uleb_hex(MEM_MIN)
+        OS[0] = "01" + "04" + uleb_hex(MEM_MIN)
         emit_section(5)
     # global section (6)
     if len(GN_NAME) > 0:
@@ -973,7 +1035,11 @@ def emit_all() -> int:
         while gi < len(GN_NAME):
             OS[0] = OS[0] + hex2(ty_byte(GN_TY[gi])) + hex2(GN_MUT[gi])
             if GN_INITK[gi] == 1:
-                OS[0] = OS[0] + "42" + sleb_hex(GN_INITV[gi])
+                # integer init: opcode follows the declared type
+                if GN_TY[gi] == "i32":
+                    OS[0] = OS[0] + "41" + sleb_hex(GN_INITV[gi])
+                else:
+                    OS[0] = OS[0] + "42" + sleb_hex(GN_INITV[gi])
             else:
                 OS[0] = OS[0] + "44" + f64_hex(GN_INITF[gi])
             OS[0] = OS[0] + "0B"
@@ -1012,8 +1078,9 @@ def emit_all() -> int:
             nb: int = 0
             while k < sl:
                 if SRC[0][sp + k:sp + k + 1] == bs:
+                    # escape = backslash + 2 hex chars = 3 source chars
                     nb += 1
-                    k += 4
+                    k += 3
                 else:
                     nb += 1
                     k += 1
@@ -1022,7 +1089,7 @@ def emit_all() -> int:
             while k < sl:
                 if SRC[0][sp + k:sp + k + 1] == bs:
                     OS[0] = OS[0] + SRC[0][sp + k + 1:sp + k + 3]
-                    k += 4
+                    k += 3
                 else:
                     ch: str = SRC[0][sp + k:sp + k + 1]
                     OS[0] = OS[0] + hex2(ord(ch))

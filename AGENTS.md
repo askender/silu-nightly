@@ -76,6 +76,15 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 - **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
 - 门禁全绿：ll 20/20、ir 21/21、pytest **1361 通过/3 跳过**。
+- **wat2wasm 32/32——TODO #5 关闭（2026-11-14 深夜，详见 STATUS.md
+  §3.16）**：纯 Silu WAT→wasm64 汇编器对拍 wabt 全语料逐字节一致
+  （examples+benchmarks 32 文件，门禁 `wasm/test_wat2wasm.mjs`）；
+  playground 摘除 wabt.js（−0.66MB，.wasm 按钮走 wat2wasm.wasm hex
+  流）。九类 bug（then 吞体/包裹 RP 截断/裸原子/双 $ 键/op 表缺
+  return+store8 错码/result 块类型/空 else/sleb 终止/global 三下标）
+  全部差分实证。**教训：token 相对下标（j-N）必须 DBG 探针实证不心算；
+  match_close 返回 RP+1 哨兵**。已知性能项 ~2s/KB（逐形字符串累积
+  二次方，后续 list+join）。
 - **L2 语料验收达成（HEAD 66fdfa7 后续，2026-11-14）**：wasm 后端跑通
   **全部非动态层语料**——13/15 benchmark 逐字节对拍 CPython（arith/
   dict/fannkuch/fib/float/list/mandelbrot/nbody/spectral/string/trees/
