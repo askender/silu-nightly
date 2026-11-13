@@ -1,0 +1,55 @@
+# str ABI semantics: value-semantics bindings (every str bind owns its
+# buffer) + the narrow-window in-place extend (x = x + e, x += e).
+# Aliases must never observe an extend; concat results are fresh.
+s: str = "abc"
+t: str = s
+s = s + "d"
+print(t, s)
+s += "e"
+print(s, len(s))
+u = s + s
+print(u)
+# dict values are owned copies: extending the source leaves them alone
+d: dict[str, str] = {}
+v: str = "hello"
+d["k"] = v
+v = v + "!"
+print(v, d["k"])
+x = d["k"] + "?"
+print(d["k"], x)
+# dict keys are owned copies too
+d2: dict[str, int] = {}
+w: str = "aa"
+d2[w] = 1
+w += "b"
+print(d2["aa"], w)
+# append loop: the window stays at the heap top, amortized O(1)
+big: str = ""
+i: int = 0
+while i < 200:
+    big = big + "xy"
+    i += 1
+print(len(big), big[397:400], big[-1], big[0])
+# non-ASCII window: clen must stay correct through extends
+c: str = "中"
+c = c + "文"
+c += "字"
+print(c, len(c), c[1], c[-1])
+# global str aug (top-level += is the window on a wasm global)
+gs: str = "G"
+gs += "H"
+print(gs)
+# param extend: args are owned copies, caller's value unaffected
+def poke(sv: str) -> str:
+    sv += "-p"
+    return sv
+q: str = "qq"
+print(poke(q), q)
+# for-dict key binding copies: body extends must not touch the dict
+for kk in d2:
+    kk += "z"
+    print(kk)
+print(d2["aa"], "aa" in d2)
+# str(int) / str(float) concat: real objects with prefixes now
+msg = "n=" + str(42) + " f=" + str(2.5)
+print(msg, len(msg))

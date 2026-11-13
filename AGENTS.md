@@ -85,8 +85,16 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   dict（dsi 族）、list[float]（lf 位打包）、非空字面量/list×int、
   dict.get/input()/bool repr/负下标。**经典 bug**：find 满表剪断返回
   陈旧 ei 被当命中（wordcount 误计 4 根因）——剪断必须显式归零。
-  **遗留**：knucleotide@200000 O(n²) str 构建（待 strbuf）；stdin
-  数据管道接入 diff_harness。
+- **str ABI v2（HEAD 92a7eb1 后续，2026-11-14，TODO #2 关闭）**：
+  16 字节前缀 [blen][clen]（指针指向字节区，O(1) len）+ 值语义绑定
+  （$s_copy：assign/global/实参/dict 键值/for 变量）+ 窄窗 `x = x + e`/
+  `x += e` 原地扩展（$str_extend：堆顶+堆基双守卫）+ ASCII 快路。
+  **knucleotide@200000 从 O(n²) 超时+内存耗尽降到 45ms**，语料 15/15
+  （13 逐字节一致 + 2 pyobj SKIP）；backend 门禁 13→**14**（新
+  strbuf_sem.si）。连带修复：**`s += e` 曾是静默指针算术**（铁律违反）、
+  slice4 按源串长度分配（二次方堆耗的真根因）、top_type name 臂、
+  `in` 类型标记、print_dsf scratch。详见 STATUS.md §3.12。
+  **遗留**：stdin 数据管道接入 diff_harness。
 - **WASM 化（`wasm/`，计划见 `docs/wasm_plan.md`）**：M0-L2 全部完成 +
   **审查修复轮（2026-11-13/14，HEAD d9b0551 后续）**：
   - shim 层（host.mjs）：cStrtod 符号群修复（-inf/-nan/负 hex/p 指数

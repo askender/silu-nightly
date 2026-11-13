@@ -352,6 +352,68 @@ find）。定位链：wordcount 误计 4（与规模无关）→ get_or miss 插
 教训：**剪断分支的返回值必须显式归零，"探测到一半"的 ei 不是 miss
 信号**；抽查 print 的键选择要覆盖出错路径。
 
+## 三点十二、str ABI v2：knucleotide 全尺寸线性（2026-11-14，TODO #2 关闭）
+
+**动机**：knucleotide@200000 的 `dna = dna + "A"` 循环——旧 ABI（裸
+NUL 结尾字节串）每次拼接 O(n) 扫描 + O(n) 全拷 = O(n²)，200000 迭代
+超时 + bump 分配器 40GB 消耗 → `$alloc` memory.grow -1 trap。
+
+**新 ABI（CPython refcount 优化的无 refcount 等价物）**：
+- **16 字节小端前缀 [blen][clen]** 置于 NUL 结尾字节之前，指针仍指向
+  字节区——str_eq/djb2/write 等字节级消费者零改动，blen/clen 变 O(1)
+  load。字面量在 data 段内嵌前缀（i64_le_wat 转义），intern 返回
+  off+16。
+- **值语义绑定（$s_copy）**：assign/ann_assign、global.set、调用实参
+  （表达式级+语句级）、dict 键与 str 值存储、for-dict 键变量——每个
+  str 绑定独占缓冲，这是扩展合法性的前提。
+- **窄窗原地扩展（$str_extend）**：`x = x + e` / `x += e`（局部与全局
+  两路，is_str_window 编译期判定）→ 堆顶（缓冲尾==bump 顶）+堆基
+  （前缀≥$heap_base，字面量绝不原地改）双守卫命中即 O(len(e)) 原地
+  写；否则回退 $str_concat 全拷（concat 本身从不 mutate——dict 值读出
+  的指针即使堆顶也不会被 `$d[k] + "?"` 改写）。
+- **ASCII 快路**：blen==clen 时 slice4/get 的码点→字节偏移直取（省
+  逐码点走链）；concat 的 clen 免扫描（两操作数均纯 ASCII 则和即
+  clen）；非 ASCII 走 $cp_scan 兜底。upper/lower 保持源 clen。
+- **新 RT 函数**：$str_extend/$s_copy/$cp_scan/$str_from_f64（to_s 的
+  float 分支从"共享 scratch 指针"改为真对象——旧形态在新 ABI 下无前缀
+  可读，且两操作数共享 scratch 的文档化缺陷一并消除）。
+
+**本轮连环抓出的 bug（全部差分暴露）**：
+1. `s += e` 纯名字 str 目标此前落 i64.add fallthrough = **静默指针
+   算术**（垃圾字节无报错，铁律违反）——顺带修复。
+2. **slice4 按源串长度分配**：每刀 bump O(源串) 字节，n 刀 = 二次方
+   堆耗（40GB → grow -1）。缩放二分（5000→46ms/10000→911ms/20000→
+   15s）+ 只切片/只 dict 隔离定位。修 = 选中码点数 ×4B 最坏界。
+3. `top_type` 无 name 臂：`u = s + s` 裸全局推断 "i" → print 打指针；
+   修 = pass 0a 先收集注解名（ANNTYPES/ann_lookup）。
+4. `in` 表达式类型标 "i" → print 渲染 1 非 True；`$ds_has` 本返 0/1，
+   改标 "b"。
+5. print_dsf 对 fmt_double scratch 调 $str_blen（垃圾前缀）→ 改用
+   返回长度。
+6. concat 首版把字节拷进前缀区、from_int 的 blen 含 NUL 地址（差 1）
+   ——**ABI 换代后每个构造函数"返回指针/前缀/字节"三段关系逐个对表**
+   是必须的验收动作。
+
+**验收**：backend 门禁 13→**14**（新增 wasm/examples/strbuf_sem.si：
+别名/字典键值所有权/扩展循环/中文窗口/全局 +=/实参拷贝/for 键拷贝/
+`x = x + x` 回退/str(int)·str(float) 拼接）；语料 **15/15**（13 个
+逐字节一致，knucleotide@200000 **45ms**、wordcount@300000 23ms；
+jsonparse ×2 SKIP=pyobj 子集外 + stdin 待 #3）；compile 20/20 + web
+冒烟（WAT 字节一致）。语料探针脚本 /tmp/corpus_probe.py 重写（计时 +
+LOUD/SKIP 分支），**探针自身的 bytes-vs-str decode bug 曾制造全红假象**
+——先验地看一眼 diff 内容再下结论。
+
+**run 门禁 40 分钟悬死的真凶（2026-11-14）**：strbuf_sem.si 不在
+INTERP_SKIP → test_run 把它喂给 ir_interp（int-only）→ **崩/挂**
+（head-30 截断 SIGSEGV、全程序 spin，native/wasm 两形态都复现；逐行
+二分 + 单构造最小化确认是**状态依赖的 ir_interp 自身缺口**，fe/
+ir_interp 两文件本轮零改动=非回归）。处置：strbuf_sem 入 INTERP_SKIP
+（容器平面归 backend 门禁，既定纪律），**ir_interp 对不支持构造的
+"崩/挂"而非响亮 gap 记为已知问题**（int-only 边界无声响化；与 backend
+的 unreachable 纪律不同——ir_interp 是参考实现风格，响亮化列为后续
+小项）。教训：**给示例集新增文件要过一遍四门禁的每一门**——test_run
+自动吃 examples/ 全目录，新示例会静默进入不兼容的解释器平面。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

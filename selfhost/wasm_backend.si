@@ -5,12 +5,20 @@
 # goes through the write import, floats through fmt_double repr).
 # Differential targets: wasm/examples/*.si vs CPython.
 # Semantics mirrored from CPython:
-# - ints are i64 locals, floats f64, strs i64 pointers to NUL-terminated
-#   UTF-8 in linear memory, list[int] a (ptr,len,cap) struct
+# - ints are i64 locals, floats f64, list[int] a (ptr,len,cap) struct
+# - strs: every str value is a 16-byte little-endian prefix [blen]
+#   [clen] followed by NUL-terminated UTF-8; pointers aim at the bytes
+#   (byte-level consumers never change). blen/clen loads are O(1);
+#   len() counts code points. Every str BINDING takes an owned copy
+#   ($s_copy: assign/global.set/call args/dict keys+values/for-var),
+#   which licenses the narrow-window x = x + e (and x += e) in-place
+#   extend ($str_extend): amortized O(1) when the buffer is the newest
+#   heap allocation (heap-top + heap-base guards, never a literal),
+#   plain concat otherwise. x = x + x falls back to concat (overlap).
+#   This is what makes dna = dna + "A" loops linear (knucleotide).
 # - // and % are FLOOR semantics (sign-correction over the truncating
 #   i64 ops); ** squaring skips the dead final square; / always float
-# - str len() counts CODE POINTS (byte scan skipping continuations);
-#   comparisons are byte order (== codepoint order for UTF-8)
+# - comparisons are byte order (== codepoint order for UTF-8)
 # Unsupported nodes evaluate to 0 (documented gap model, like
 # ir_interp). Supported: const (int/float/bool/str), name, assign/
 # ann_assign/aug_assign (+= -= *= //= %= **=), binops, compare,
@@ -33,9 +41,8 @@
 # input() builtin (one line via getchar, 4096-byte line cap). Unknown
 # callees (class constructors etc.) are loud unreachable traps.
 # LOUD traps (unreachable), not silent zeros: /= on ints, non-empty
-# list literals, str(float)/str(list)/str(dict), float(str), str*int,
-# step=0 slices. str(float) uses one shared scratch buffer - at most
-# one str(float) operand per expression.
+# list literals, str(list)/str(dict), float(str), str*int, step=0
+# slices, str aug ops other than +=.
 
 from __future__ import annotations
 
@@ -281,18 +288,35 @@ def str_utf8_escape(s: str) -> str:
     return out
 
 
+def i64_le_wat(v: int) -> str:
+    # 8 little-endian bytes of v, WAT-escaped (literal lens are small:
+    # the high bytes always come out zero)
+    out: str = ""
+    h: str = "0123456789abcdef"
+    k: int = 0
+    while k < 8:
+        b: int = v % 256
+        v = v // 256
+        out = out + "\\" + h[b // 16] + h[b % 16]
+        k += 1
+    return out
+
+
 class Arena:
     off: int
     segs: list[str]
 
     def intern(self, s: str) -> int:
-        # place s (UTF-8 + NUL) in the data arena; return its offset
+        # str ABI: every str object carries a 16-byte little-endian
+        # prefix [blen][clen] before its NUL-terminated bytes; the
+        # interned pointer aims AT THE BYTES so all byte-level
+        # consumers (str_eq / hash / write) stay unchanged
         off: int = self.off
         esc: str = str_utf8_escape(s)
         blen: int = utf8_blen(s)
-        self.segs.append("(data (i64.const " + str(off) + ") \"" + esc + "\\00\")")
-        self.off = off + blen + 1
-        return off
+        self.segs.append("(data (i64.const " + str(off) + ") \"" + i64_le_wat(blen) + i64_le_wat(len(s)) + esc + "\\00\")")
+        self.off = off + blen + 17
+        return off + 16
 
 
 class Fn:
@@ -310,10 +334,23 @@ FUNCS: list[Fn] = []
 # fixed by the top-level annotation, or inferred for bare assigns.
 GNAMES: list[str] = []
 GTYPES: list[str] = []
+# annotated module names, collected before inference so top_type can
+# see through name operands (u = s + s with s: str annotates "s")
+ANNTYPES: list[str] = []
+ANNTYPES_T: list[str] = []
 # emitting context: CTX[0] == 1 while $silu_main's top-level statements
 # are emitted (a module-level bool flag would be shadowed by a local
 # inside main() - this program obeys its own global-write rules)
 CTX: list[int] = [0]
+
+
+def ann_lookup(name: str) -> str:
+    i: int = 0
+    while i < len(ANNTYPES):
+        if ANNTYPES[i] == name:
+            return ANNTYPES_T[i]
+        i += 1
+    return "i"
 
 
 def top_type(node: JValue) -> str:
@@ -325,6 +362,8 @@ def top_type(node: JValue) -> str:
     if node.kind == JKind.BOOL:
         return "b"
     t: str = tag(node)
+    if t == "name":
+        return ann_lookup(elem(node, 1).s)
     if t == "const":
         if elem(node, 1).kind == JKind.FLOAT:
             return "f"
@@ -363,6 +402,22 @@ def fn_lookup(name: str) -> int:
             return i
         i += 1
     return -1
+
+
+def is_str_window(g: Gen, stmt: JValue) -> int:
+    # x = x + e: the narrow window - the target re-binds its own buffer
+    # through $str_extend (amortized O(1) when the buffer is the newest
+    # heap allocation). Excluded when the right operand is the target
+    # itself: x = x + x would memory.copy overlapping ranges.
+    nm: str = elem_str(stmt, 1)
+    r: JValue = elem(stmt, 2)
+    if tag(r) != "+" or expr_type(g, r) != "s":
+        return 0
+    if tag(elem(r, 1)) != "name" or elem(elem(r, 1), 1).s != nm:
+        return 0
+    if tag(elem(r, 2)) == "name" and elem(elem(r, 2), 1).s == nm:
+        return 0
+    return 1
 
 
 def ann_type(node: JValue) -> str:
@@ -535,7 +590,9 @@ def expr_type(g: Gen, node: JValue) -> str:
             return "f"
         return "i"
     if t == "in":
-        return "i"
+        # ds_has/li_has return 0/1: bool-tagged so print renders
+        # True/False like CPython
+        return "b"
     if t == "len":
         return "i"
     if t == "const":
@@ -561,7 +618,7 @@ def expr_type(g: Gen, node: JValue) -> str:
                 return "s"
         name: str = elem(elem(node, 1), 1).s
         if name == "input":
-            return "(call $read_line)"
+            return "s"
         if name == "float":
             return "f"
         if name == "str":
@@ -604,10 +661,9 @@ def to_s(g: Gen, node: JValue) -> str:
     if et == "i":
         return "(call $str_from_int " + emit_expr(g, node) + ")"
     if et == "f":
-        # single-use scratch (64..463): two str(float) operands in one
-        # expression would share the buffer - documented limitation
-        g.emit("(drop (call $fmt_double (i64.const 64) (i64.const 400) " + to_f(g, node) + " (i32.const 114) (i32.const 17)))")
-        return "(i64.const 64)"
+        # a real str object (the old single-use scratch pointer had no
+        # length prefix - and two operands in one expression shared it)
+        return "(call $str_from_f64 " + to_f(g, node) + ")"
     # li/ds have no string form in this subset: loud trap, not silent 0
     return "(unreachable)"
 
@@ -760,6 +816,10 @@ def emit_expr(g: Gen, node: JValue) -> str:
             pt = ann_type(elem(FUNCS[fi].ptypes, i))
             if pt == "f":
                 folded = folded + " " + to_f(g, elem(args, i))
+            elif pt == "s":
+                # str params take owned copies: the callee may append to
+                # them through the narrow-window extend path
+                folded = folded + " (call $s_copy " + to_s(g, elem(args, i)) + ")"
             else:
                 folded = folded + " " + emit_expr(g, elem(args, i))
             i += 1
@@ -930,25 +990,37 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         bt: str = expr_type(g, elem(stmt, 1))
         d: str = emit_expr(g, elem(stmt, 1))
         k: str = emit_expr(g, elem(stmt, 2))
-        # value emitted exactly once per branch (side-effect safety)
+        # value emitted exactly once per branch (side-effect safety);
+        # str keys/values are stored as owned copies - a stored pointer
+        # that aliases the source variable would be corrupted by the
+        # narrow-window in-place extend
         if bt == "ds" or bt == "dsi":
             v: str = emit_expr(g, elem(stmt, 3))
             setter: str = "$ds_set"
             if bt == "dsi":
                 setter = "$dsi_set"
-            g.emit("(call " + setter + " " + d + " " + k + " " + v + ")")
+            if bt == "ds":
+                g.emit("(call " + setter + " " + d + " (call $s_copy " + k + ") " + v + ")")
+            else:
+                g.emit("(call " + setter + " " + d + " " + k + " " + v + ")")
         elif bt == "dsf" or bt == "dsif":
             setter = "$ds_set"
             if bt == "dsif":
                 setter = "$dsi_set"
-            g.emit("(call " + setter + " " + d + " " + k + " (i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + "))")
+            if bt == "dsf":
+                g.emit("(call " + setter + " " + d + " (call $s_copy " + k + ") (i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + "))")
+            else:
+                g.emit("(call " + setter + " " + d + " " + k + " (i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + "))")
         elif bt == "lf":
             g.emit("(call $li_set " + d + " " + k + " (i64.reinterpret_f64 " + to_f(g, elem(stmt, 3)) + "))")
         elif bt == "dss" or bt == "dsis":
             setter = "$ds_set"
             if bt == "dsis":
                 setter = "$dsi_set"
-            g.emit("(call " + setter + " " + d + " " + k + " " + to_s(g, elem(stmt, 3)) + ")")
+            if bt == "dss":
+                g.emit("(call " + setter + " " + d + " (call $s_copy " + k + ") (call $s_copy " + to_s(g, elem(stmt, 3)) + "))")
+            else:
+                g.emit("(call " + setter + " " + d + " " + k + " (call $s_copy " + to_s(g, elem(stmt, 3)) + "))")
         else:
             g.emit("(call $li_set " + d + " " + k + " " + emit_expr(g, elem(stmt, 3)) + ")")
         return 0
@@ -965,6 +1037,13 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 gi += 1
             if gt2 == "f":
                 g.emit("(global.set " + gt + " " + to_f(g, elem(stmt, 2)) + ")")
+            elif gt2 == "s":
+                # narrow window extends the global's own buffer; any
+                # other str bind takes an owned copy
+                if is_str_window(g, stmt):
+                    g.emit("(global.set " + gt + " (call $str_extend (global.get " + gt + ") " + to_s(g, elem(elem(stmt, 2), 2)) + "))")
+                else:
+                    g.emit("(global.set " + gt + " (call $s_copy " + to_s(g, elem(stmt, 2)) + "))")
             else:
                 g.emit("(global.set " + gt + " " + emit_expr(g, elem(stmt, 2)) + ")")
             return 0
@@ -985,7 +1064,13 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         if g.get_type(nm) == "f":
             g.emit("(local.set " + nm + " " + to_f(g, elem(stmt, 2)) + ")")
         elif g.get_type(nm) == "s":
-            g.emit("(local.set " + nm + " " + to_s(g, elem(stmt, 2)) + ")")
+            # narrow window (x = x + e) extends the target's own buffer
+            # in place; every other str bind takes an owned copy so no
+            # two names ever share a mutable buffer
+            if is_str_window(g, stmt):
+                g.emit("(local.set " + nm + " (call $str_extend (local.get " + nm + ") " + to_s(g, elem(elem(stmt, 2), 2)) + "))")
+            else:
+                g.emit("(local.set " + nm + " (call $s_copy " + to_s(g, elem(stmt, 2)) + "))")
         else:
             g.emit("(local.set " + nm + " " + emit_expr(g, elem(stmt, 2)) + ")")
         return 0
@@ -1071,6 +1156,17 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                     g.emit("(local.set " + qf + " (f64.floor (f64.div (global.get " + tgt + ") " + rhs_g + ")))")
                     g.emit("(global.set " + tgt + " (f64.sub (global.get " + tgt + ") (f64.mul (local.get " + qf + ") " + rhs_g + ")))")
                 return 0
+            if gt3 == "s":
+                # str aug: += is the narrow window (loud for everything
+                # else - /= etc have no str meaning in CPython either)
+                if op == "+=":
+                    if tag(elem(stmt, 3)) == "name" and elem(elem(stmt, 3), 1).s == elem_str(elem(stmt, 1), 1):
+                        g.emit("(global.set " + tgt + " (call $str_concat (global.get " + tgt + ") " + to_s(g, elem(stmt, 3)) + "))")
+                    else:
+                        g.emit("(global.set " + tgt + " (call $str_extend (global.get " + tgt + ") " + to_s(g, elem(stmt, 3)) + "))")
+                else:
+                    g.emit("(unreachable)")
+                return 0
             rhs_g = emit_expr(g, elem(stmt, 3))
             if op == "+=":
                 g.emit("(global.set " + tgt + " (i64.add (global.get " + tgt + ") " + rhs_g + "))")
@@ -1086,6 +1182,18 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 g.emit("(global.set " + tgt + " " + emit_ipow(g, elem(stmt, 1), elem(stmt, 3)) + ")")
             return 0
         ftarget: str = g.get_type(tgt)
+        if ftarget == "s":
+            # plain-name str aug: += concatenates in place through the
+            # narrow-window extend (was a silent pointer add before);
+            # any other op on a str target is a loud gap
+            if op == "+=":
+                if tag(elem(stmt, 3)) == "name" and elem(elem(stmt, 3), 1).s == elem_str(elem(stmt, 1), 1):
+                    g.emit("(local.set " + tgt + " (call $str_concat (local.get " + tgt + ") " + to_s(g, elem(stmt, 3)) + "))")
+                else:
+                    g.emit("(local.set " + tgt + " (call $str_extend (local.get " + tgt + ") " + to_s(g, elem(stmt, 3)) + "))")
+            else:
+                g.emit("(unreachable)")
+            return 0
         if ftarget == "f":
             rhs_f: str = to_f(g, elem(stmt, 3))
             if op == "+=":
@@ -1169,14 +1277,19 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
                 i += 1
             g.emit("(call $print_nl)")
             return 0
-        if fn_lookup(name) < 0:
+        fi = fn_lookup(name)
+        if fi < 0:
             # unknown callee at statement level: loud trap
             g.emit("(unreachable)")
             return 0
         folded: str = ""
         i = 0
         while i < len(args.arr):
-            folded = folded + " " + emit_expr(g, elem(args, i))
+            pt3: str = ann_type(elem(FUNCS[fi].ptypes, i))
+            if pt3 == "s":
+                folded = folded + " (call $s_copy " + to_s(g, elem(args, i)) + ")"
+            else:
+                folded = folded + " " + emit_expr(g, elem(args, i))
             i += 1
         g.emit("(drop (call $" + name + folded + "))")
         return 0
@@ -1220,7 +1333,11 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             g.emit("(br_if " + de + " (i64.ge_u (local.get " + dii + ") (call $ds_len (local.get " + di + "))))")
             if bt == "ds" or bt == "dsf" or bt == "dss":
                 g.set_type(var, "s")
-            g.emit("(local.set " + var + " (call $ds_key (local.get " + di + ") (local.get " + dii + ")))")
+                # owned copy: extending the loop var in the body must
+                # never touch the dict's stored key
+                g.emit("(local.set " + var + " (call $s_copy (call $ds_key (local.get " + di + ") (local.get " + dii + "))))")
+            else:
+                g.emit("(local.set " + var + " (call $ds_key (local.get " + di + ") (local.get " + dii + ")))")
             emit_stmts(g, elem(stmt, 3))
             g.emit("(local.set " + dii + " (i64.add (local.get " + dii + ") (i64.const 1)))")
             g.emit("(br " + dt + ")))")
@@ -1410,33 +1527,82 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (i64.store (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 8))) (local.get $v)))
 (func $li_len (param $l i64) (result i64)
 (i64.load (local.get $l)))
+;; str ABI: [blen i64][clen i64] prefix before the NUL-terminated
+;; bytes; pointers aim at the bytes, so both lens are O(1) loads and
+;; byte-level consumers never change
 (func $str_blen (param $p i64) (result i64)
-(local $n i64)
-(block $done (loop $again
-(br_if $done (i64.eqz (i64.load8_u (local.get $p))))
-(local.set $n (i64.add (local.get $n) (i64.const 1)))
-(local.set $p (i64.add (local.get $p) (i64.const 1)))
-(br $again)))
-(local.get $n))
+(i64.load (i64.sub (local.get $p) (i64.const 16))))
 (func $str_clen (param $p i64) (result i64)
-(local $n i64) (local $b i64)
+(i64.load (i64.sub (local.get $p) (i64.const 8))))
+;; count codepoints over n bytes at p (non-ASCII constructor fallback)
+(func $cp_scan (param $p i64) (param $n i64) (result i64)
+(local $i i64) (local $b i64) (local $n2 i64)
+(local.set $n2 (i64.const 0))
+(local.set $i (i64.const 0))
 (block $done (loop $again
-(local.set $b (i64.load8_u (local.get $p)))
-(br_if $done (i64.eqz (local.get $b)))
+(br_if $done (i64.ge_u (local.get $i) (local.get $n)))
+(local.set $b (i64.load8_u (i64.add (local.get $p) (local.get $i))))
 (if (i64.ne (i64.and (local.get $b) (i64.const 192)) (i64.const 128))
-  (then (local.set $n (i64.add (local.get $n) (i64.const 1)))))
-(local.set $p (i64.add (local.get $p) (i64.const 1)))
+  (then (local.set $n2 (i64.add (local.get $n2) (i64.const 1)))))
+(local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br $again)))
-(local.get $n))
+(local.get $n2))
 (func $str_concat (param $a i64) (param $b i64) (result i64)
-(local $la i64) (local $lb i64) (local $p i64)
+(local $la i64) (local $lb i64) (local $p i64) (local $cl i64)
 (local.set $la (call $str_blen (local.get $a)))
 (local.set $lb (call $str_blen (local.get $b)))
-(local.set $p (call $alloc (i64.add (i64.add (local.get $la) (local.get $lb)) (i64.const 1))))
-(memory.copy (local.get $p) (local.get $a) (local.get $la))
-(memory.copy (i64.add (local.get $p) (local.get $la)) (local.get $b) (local.get $lb))
-(i64.store8 (i64.add (local.get $p) (i64.add (local.get $la) (local.get $lb))) (i64.const 0))
-(local.get $p))
+(local.set $p (call $alloc (i64.add (i64.add (local.get $la) (local.get $lb)) (i64.const 17))))
+(memory.copy (i64.add (local.get $p) (i64.const 16)) (local.get $a) (local.get $la))
+(memory.copy (i64.add (i64.add (local.get $p) (i64.const 16)) (local.get $la)) (local.get $b) (local.get $lb))
+(i64.store8 (i64.add (i64.add (i64.add (local.get $p) (i64.const 16)) (local.get $la)) (local.get $lb)) (i64.const 0))
+;; pure ASCII on both sides keeps clen free; otherwise scan the result
+(local.set $cl (i64.add (local.get $la) (local.get $lb)))
+(if (i32.eqz (i32.and (i64.eq (call $str_clen (local.get $a)) (local.get $la))
+                      (i64.eq (call $str_clen (local.get $b)) (local.get $lb))))
+  (then (local.set $cl (call $cp_scan (i64.add (local.get $p) (i64.const 16)) (i64.add (local.get $la) (local.get $lb))))))
+(i64.store (local.get $p) (i64.add (local.get $la) (local.get $lb)))
+(i64.store (i64.add (local.get $p) (i64.const 8)) (local.get $cl))
+(i64.add (local.get $p) (i64.const 16)))
+;; narrow-window append (x = x + e / x += e): the target exclusively
+;; owns its buffer (every str binding copies), so when that buffer is
+;; the newest heap allocation it grows in place - amortized O(1).
+;; Anything else falls back to a plain concat, which never mutates.
+(func $str_extend (param $a i64) (param $b i64) (result i64)
+(local $la i64) (local $lb i64) (local $want i64) (local $cur i64) (local $pages i64)
+(local.set $la (call $str_blen (local.get $a)))
+(local.set $lb (call $str_blen (local.get $b)))
+(if (i32.and
+      (i64.ge_u (i64.sub (local.get $a) (i64.const 16)) (global.get $heap_base))
+      (i64.eq (i64.add (i64.add (local.get $a) (local.get $la)) (i64.const 1)) (global.get $heap)))
+  (then
+    (local.set $want (i64.add (global.get $heap) (local.get $lb)))
+    (local.set $cur (i64.mul (memory.size) (i64.const 65536)))
+    (if (i64.gt_u (local.get $want) (local.get $cur))
+      (then
+        (local.set $pages (i64.div_u (i64.sub (i64.add (local.get $want) (i64.const 65535)) (local.get $cur)) (i64.const 65536)))
+        (if (i64.eq (memory.grow (local.get $pages)) (i64.const -1))
+          (then unreachable))))
+    (memory.copy (i64.add (local.get $a) (local.get $la)) (local.get $b) (local.get $lb))
+    (i64.store8 (i64.add (i64.add (local.get $a) (local.get $la)) (local.get $lb)) (i64.const 0))
+    (i64.store (i64.sub (local.get $a) (i64.const 16)) (i64.add (local.get $la) (local.get $lb)))
+    (if (i32.eqz (i32.and (i64.eq (call $str_clen (local.get $a)) (local.get $la))
+                          (i64.eq (call $str_clen (local.get $b)) (local.get $lb))))
+      (then (i64.store (i64.sub (local.get $a) (i64.const 8)) (call $cp_scan (local.get $a) (i64.add (local.get $la) (local.get $lb)))))
+      (else (i64.store (i64.sub (local.get $a) (i64.const 8)) (i64.add (local.get $la) (local.get $lb)))))
+    (global.set $heap (local.get $want))
+    (return (local.get $a))))
+(call $str_concat (local.get $a) (local.get $b)))
+;; value-semantics copy for str bindings: every bind owns its buffer,
+;; which is what licenses the narrow-window in-place extend
+(func $s_copy (param $p i64) (result i64)
+(local $n i64) (local $q i64)
+(local.set $n (call $str_blen (local.get $p)))
+(local.set $q (call $alloc (i64.add (local.get $n) (i64.const 17))))
+(memory.copy (i64.add (local.get $q) (i64.const 16)) (local.get $p) (local.get $n))
+(i64.store8 (i64.add (i64.add (local.get $q) (i64.const 16)) (local.get $n)) (i64.const 0))
+(i64.store (local.get $q) (local.get $n))
+(i64.store (i64.add (local.get $q) (i64.const 8)) (call $str_clen (local.get $p)))
+(i64.add (local.get $q) (i64.const 16)))
 (func $str_eq (param $a i64) (param $b i64) (result i64)
 (local $ca i64) (local $cb i64) (local $r i64)
 (local.set $r (i64.const 1))
@@ -1467,9 +1633,11 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (br $again)))
 (local.get $r))
 (func $str_from_int (param $v i64) (result i64)
-(local $p i64) (local $q i64) (local $neg i64)
-(local.set $p (call $alloc (i64.const 22)))
-(local.set $q (i64.add (local.get $p) (i64.const 20)))
+(local $p i64) (local $q i64) (local $neg i64) (local $n i64)
+;; 16B prefix + scratch for sign + 19 digits + NUL; digits grow down
+;; from the end, so the prefix is written at q-16 only afterwards
+(local.set $p (call $alloc (i64.const 38)))
+(local.set $q (i64.add (local.get $p) (i64.const 36)))
 (if (i64.lt_s (local.get $v) (i64.const 0))
   (then (local.set $neg (i64.const 1)) (local.set $v (i64.sub (i64.const 0) (local.get $v)))))
 (block $done (loop $again
@@ -1481,7 +1649,11 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
   (then
     (local.set $q (i64.sub (local.get $q) (i64.const 1)))
     (i64.store8 (local.get $q) (i64.const 45))))
-(i64.store8 (i64.add (local.get $p) (i64.const 21)) (i64.const 0))
+(i64.store8 (i64.add (local.get $p) (i64.const 37)) (i64.const 0))
+;; digits end exclusive at p+36 (q points at the first digit)
+(local.set $n (i64.sub (i64.add (local.get $p) (i64.const 36)) (local.get $q)))
+(i64.store (i64.sub (local.get $q) (i64.const 16)) (local.get $n))
+(i64.store (i64.sub (local.get $q) (i64.const 8)) (local.get $n))
 (local.get $q))
 (func $cp_len_at (param $p i64) (result i64)
 (local $b i64)
@@ -1500,20 +1672,26 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
   (then (local.set $i (i64.add (local.get $i) (local.get $clen)))))
 (if (i64.ge_u (local.get $i) (local.get $clen))
   (then unreachable))
-(local.set $off (i64.const 0))
-(local.set $k (i64.const 0))
-(block $skipdone (loop $skip
-(br_if $skipdone (i64.ge_u (local.get $k) (local.get $i)))
-(local.set $off (i64.add (local.get $off) (call $cp_len_at (i64.add (local.get $s) (local.get $off)))))
-(local.set $k (i64.add (local.get $k) (i64.const 1)))
-(br $skip)))
+;; pure ASCII: codepoint index == byte offset, skip the walk
+(if (i64.eq (call $str_blen (local.get $s)) (local.get $clen))
+  (then (local.set $off (local.get $i)))
+  (else
+    (local.set $off (i64.const 0))
+    (local.set $k (i64.const 0))
+    (block $skipdone (loop $skip
+    (br_if $skipdone (i64.ge_u (local.get $k) (local.get $i)))
+    (local.set $off (i64.add (local.get $off) (call $cp_len_at (i64.add (local.get $s) (local.get $off)))))
+    (local.set $k (i64.add (local.get $k) (i64.const 1)))
+    (br $skip)))))
 (local.set $n (call $cp_len_at (i64.add (local.get $s) (local.get $off))))
-(local.set $p (call $alloc (i64.add (local.get $n) (i64.const 1))))
-(memory.copy (local.get $p) (i64.add (local.get $s) (local.get $off)) (local.get $n))
-(i64.store8 (i64.add (local.get $p) (local.get $n)) (i64.const 0))
-(local.get $p))
+(local.set $p (call $alloc (i64.add (local.get $n) (i64.const 17))))
+(memory.copy (i64.add (local.get $p) (i64.const 16)) (i64.add (local.get $s) (local.get $off)) (local.get $n))
+(i64.store8 (i64.add (i64.add (local.get $p) (i64.const 16)) (local.get $n)) (i64.const 0))
+(i64.store (local.get $p) (local.get $n))
+(i64.store (i64.add (local.get $p) (i64.const 8)) (i64.const 1))
+(i64.add (local.get $p) (i64.const 16)))
 (func $str_slice4 (param $s i64) (param $a i64) (param $b i64) (param $step i64) (param $ha i64) (param $hb i64) (result i64)
-(local $clen i64) (local $off i64) (local $k i64) (local $n i64) (local $p i64) (local $w i64) (local $idx i64) (local $nxt i64)
+(local $clen i64) (local $off i64) (local $k i64) (local $n i64) (local $p i64) (local $w i64) (local $idx i64) (local $nxt i64) (local $cc i64) (local $cnt i64)
 (local.set $clen (call $str_clen (local.get $s)))
 ;; a: defaults skip the negative-adjust (they are already in-range)
 (if (i64.eqz (local.get $ha))
@@ -1542,17 +1720,32 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
   (else (if (i64.gt_u (local.get $b) (local.get $clen))
     (then (local.set $b (local.get $clen))))))
 (if (i64.eqz (local.get $step)) (then unreachable))
-;; byte offset of a
+;; byte offset of a (pure ASCII: index == byte offset)
 (local.set $off (i64.const 0))
-(local.set $k (i64.const 0))
-(block $skipdone (loop $skip
-(br_if $skipdone (i64.ge_u (local.get $k) (local.get $a)))
-(local.set $off (i64.add (local.get $off) (call $cp_len_at (i64.add (local.get $s) (local.get $off)))))
-(local.set $k (i64.add (local.get $k) (i64.const 1)))
-(br $skip)))
-;; copy selected codepoints
-(local.set $p (call $alloc (i64.add (local.get $clen) (i64.const 1))))
+(if (i64.eq (call $str_blen (local.get $s)) (local.get $clen))
+  (then (local.set $off (local.get $a)))
+  (else
+    (local.set $k (i64.const 0))
+    (block $skipdone (loop $skip
+    (br_if $skipdone (i64.ge_u (local.get $k) (local.get $a)))
+    (local.set $off (i64.add (local.get $off) (call $cp_len_at (i64.add (local.get $s) (local.get $off)))))
+    (local.set $k (i64.add (local.get $k) (i64.const 1)))
+    (br $skip)))))
+;; copy selected codepoints; the buffer is sized by the SELECTED
+;; codepoint count (4 bytes worst case each) - allocating the source
+;; length made every small slice of a big string bump O(source) bytes
+;; (knucleotide: n slices x n bytes = quadratic heap consumption)
+(if (i64.gt_s (local.get $step) (i64.const 0))
+  (then
+    (local.set $cnt (i64.div_u (i64.add (i64.sub (local.get $b) (local.get $a)) (i64.sub (local.get $step) (i64.const 1))) (local.get $step))))
+  (else
+    (if (i64.gt_s (local.get $a) (local.get $b))
+      (then
+        (local.set $cnt (i64.div_u (i64.add (i64.sub (local.get $a) (local.get $b)) (i64.sub (i64.sub (i64.const 0) (local.get $step)) (i64.const 1))) (i64.sub (i64.const 0) (local.get $step)))))
+      (else (local.set $cnt (i64.const 0))))))
+(local.set $p (call $alloc (i64.add (i64.mul (local.get $cnt) (i64.const 4)) (i64.const 17))))
 (local.set $w (i64.const 0))
+(local.set $cc (i64.const 0))
 (local.set $idx (local.get $a))
 (block $done (loop $again
 (if (i64.gt_s (local.get $step) (i64.const 0))
@@ -1560,8 +1753,9 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (if (i64.lt_s (local.get $step) (i64.const 0))
   (then (br_if $done (i64.le_s (local.get $idx) (local.get $b)))))
 (local.set $n (call $cp_len_at (i64.add (local.get $s) (local.get $off))))
-(memory.copy (i64.add (local.get $p) (local.get $w)) (i64.add (local.get $s) (local.get $off)) (local.get $n))
+(memory.copy (i64.add (i64.add (local.get $p) (i64.const 16)) (local.get $w)) (i64.add (local.get $s) (local.get $off)) (local.get $n))
 (local.set $w (i64.add (local.get $w) (local.get $n)))
+(local.set $cc (i64.add (local.get $cc) (i64.const 1)))
 (local.set $nxt (i64.add (local.get $idx) (local.get $step)))
 (local.set $idx (i64.add (local.get $idx) (local.get $step)))
 (if (i64.gt_s (local.get $step) (i64.const 0))
@@ -1579,8 +1773,10 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (local.set $off (i64.sub (local.get $off) (i64.const 1)))
 (br $bw)))))))
 (br $again)))
-(i64.store8 (i64.add (local.get $p) (local.get $w)) (i64.const 0))
-(local.get $p))
+(i64.store8 (i64.add (i64.add (local.get $p) (i64.const 16)) (local.get $w)) (i64.const 0))
+(i64.store (local.get $p) (local.get $w))
+(i64.store (i64.add (local.get $p) (i64.const 8)) (local.get $cc))
+(i64.add (local.get $p) (i64.const 16)))
 (func $li_has (param $l i64) (param $v i64) (result i64)
 (local $n i64) (local $i i64) (local $d i64)
 (local.set $n (i64.load (local.get $l)))
@@ -1754,8 +1950,8 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (i64.store8 (i64.const 96) (i64.const 58))
 (i64.store8 (i64.const 97) (i64.const 32))
 (call $write (i32.const 1) (i64.const 96) (i64.const 2))
-(drop (call $fmt_double (i64.const 64) (i64.const 400) (f64.reinterpret_i64 (i64.load (i64.add (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16))) (i64.const 8)))) (i32.const 114) (i32.const 17)))
-(call $write (i32.const 1) (i64.const 64) (call $str_blen (i64.const 64)))
+(local.set $ev (call $fmt_double (i64.const 64) (i64.const 400) (f64.reinterpret_i64 (i64.load (i64.add (i64.add (local.get $data) (i64.mul (local.get $i) (i64.const 16))) (i64.const 8)))) (i32.const 114) (i32.const 17)))
+(call $write (i32.const 1) (i64.const 64) (local.get $ev))
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br $again)))
 (i64.store8 (i64.const 96) (i64.const 125))
@@ -1943,20 +2139,27 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 ;; input(): one line via getchar into scratch 200..4159, then an exact
 ;; allocation (scratch is reused between calls by design)
 (func $read_line (result i64)
-(local $i i64) (local $ch i64) (local $n i64)
+(local $i i64) (local $ch i64) (local $n i64) (local $asc i64) (local $j i64)
 (local.set $i (i64.const 0))
+(local.set $asc (i64.const 1))
 (block $done (loop $rd
 (local.set $ch (i64.extend_i32_s (call $getchar)))
 (br_if $done (i64.eq (local.get $ch) (i64.const -1)))
 (br_if $done (i64.eq (local.get $ch) (i64.const 10)))
+(if (i64.ge_u (local.get $ch) (i64.const 128))
+  (then (local.set $asc (i64.const 0))))
 (i64.store8 (i64.add (i64.const 200) (local.get $i)) (local.get $ch))
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br_if $done (i64.ge_u (local.get $i) (i64.const 4096)))
 (br $rd)))
-(local.set $n (call $alloc (i64.add (local.get $i) (i64.const 1))))
-(memory.copy (local.get $n) (i64.const 200) (local.get $i))
-(i64.store8 (i64.add (local.get $n) (local.get $i)) (i64.const 0))
-(local.get $n))
+(local.set $n (call $alloc (i64.add (local.get $i) (i64.const 17))))
+(memory.copy (i64.add (local.get $n) (i64.const 16)) (i64.const 200) (local.get $i))
+(i64.store8 (i64.add (i64.add (local.get $n) (i64.const 16)) (local.get $i)) (i64.const 0))
+(i64.store (local.get $n) (local.get $i))
+(if (i64.eqz (local.get $asc))
+  (then (i64.store (i64.add (local.get $n) (i64.const 8)) (call $cp_scan (i64.add (local.get $n) (i64.const 16)) (local.get $i))))
+  (else (i64.store (i64.add (local.get $n) (i64.const 8)) (local.get $i))))
+(i64.add (local.get $n) (i64.const 16)))
 (func $print_lf (param $l i64)
 (local $i i64) (local $n i64)
 (i64.store8 (i64.const 96) (i64.const 91))
@@ -1979,33 +2182,50 @@ RT_FUNCS = '''(func $alloc (param $n i64) (result i64)
 (func $str_upper (param $p i64) (result i64)
 (local $n i64) (local $p2 i64) (local $i i64) (local $b i64)
 (local.set $n (call $str_blen (local.get $p)))
-(local.set $p2 (call $alloc (i64.add (local.get $n) (i64.const 1))))
+(local.set $p2 (call $alloc (i64.add (local.get $n) (i64.const 17))))
 (local.set $i (i64.const 0))
 (block $done (loop $again
 (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
 (local.set $b (i64.load8_u (i64.add (local.get $p) (local.get $i))))
 (if (i32.and (i64.ge_u (local.get $b) (i64.const 97)) (i64.le_u (local.get $b) (i64.const 122)))
   (then (local.set $b (i64.sub (local.get $b) (i64.const 32)))))
-(i64.store8 (i64.add (local.get $p2) (local.get $i)) (local.get $b))
+(i64.store8 (i64.add (i64.add (local.get $p2) (i64.const 16)) (local.get $i)) (local.get $b))
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br $again)))
-(i64.store8 (i64.add (local.get $p2) (local.get $n)) (i64.const 0))
-(local.get $p2))
+(i64.store8 (i64.add (i64.add (local.get $p2) (i64.const 16)) (local.get $n)) (i64.const 0))
+(i64.store (local.get $p2) (local.get $n))
+;; the transform rewrites ASCII letters only: codepoint count preserved
+(i64.store (i64.add (local.get $p2) (i64.const 8)) (call $str_clen (local.get $p)))
+(i64.add (local.get $p2) (i64.const 16)))
 (func $str_lower (param $p i64) (result i64)
 (local $n i64) (local $p2 i64) (local $i i64) (local $b i64)
 (local.set $n (call $str_blen (local.get $p)))
-(local.set $p2 (call $alloc (i64.add (local.get $n) (i64.const 1))))
+(local.set $p2 (call $alloc (i64.add (local.get $n) (i64.const 17))))
 (local.set $i (i64.const 0))
 (block $done (loop $again
 (br_if $done (i64.ge_u (local.get $i) (local.get $n)))
 (local.set $b (i64.load8_u (i64.add (local.get $p) (local.get $i))))
 (if (i32.and (i64.ge_u (local.get $b) (i64.const 65)) (i64.le_u (local.get $b) (i64.const 90)))
   (then (local.set $b (i64.add (local.get $b) (i64.const 32)))))
-(i64.store8 (i64.add (local.get $p2) (local.get $i)) (local.get $b))
+(i64.store8 (i64.add (i64.add (local.get $p2) (i64.const 16)) (local.get $i)) (local.get $b))
 (local.set $i (i64.add (local.get $i) (i64.const 1)))
 (br $again)))
-(i64.store8 (i64.add (local.get $p2) (local.get $n)) (i64.const 0))
-(local.get $p2))
+(i64.store8 (i64.add (i64.add (local.get $p2) (i64.const 16)) (local.get $n)) (i64.const 0))
+(i64.store (local.get $p2) (local.get $n))
+(i64.store (i64.add (local.get $p2) (i64.const 8)) (call $str_clen (local.get $p)))
+(i64.add (local.get $p2) (i64.const 16)))
+;; str(float): fmt_double renders into the shared scratch, then the
+;; digits (pure ASCII) move into a real str object - every str value
+;; in flight owns its length prefix
+(func $str_from_f64 (param $v f64) (result i64)
+(local $n i64) (local $q i64)
+(local.set $n (call $fmt_double (i64.const 64) (i64.const 400) (local.get $v) (i32.const 114) (i32.const 17)))
+(local.set $q (call $alloc (i64.add (local.get $n) (i64.const 17))))
+(memory.copy (i64.add (local.get $q) (i64.const 16)) (i64.const 64) (local.get $n))
+(i64.store8 (i64.add (i64.add (local.get $q) (i64.const 16)) (local.get $n)) (i64.const 0))
+(i64.store (local.get $q) (local.get $n))
+(i64.store (i64.add (local.get $q) (i64.const 8)) (local.get $n))
+(i64.add (local.get $q) (i64.const 16)))
 (func $print_i64 (param $v i64)
 (local $p i64) (local $len i64)
 (if (i64.lt_s (local.get $v) (i64.const 0))
@@ -2057,6 +2277,17 @@ def main() -> int:
     root: JValue = parser.value()
     stmts: JValue = elem(root, 1)
     # pass 0: module-level variables -> wasm globals
+    # 0a: collect annotated names first so bare-assign inference can
+    # see through name operands
+    i = 0
+    while i < len(stmts.arr):
+        s = elem(stmts, i)
+        if tag(s) == "ann_assign":
+            vname: str = elem_str(s, 1)
+            if vname not in ANNTYPES:
+                ANNTYPES.append(vname)
+                ANNTYPES_T.append(ann_type(elem(s, 3)))
+        i += 1
     i = 0
     while i < len(stmts.arr):
         s = elem(stmts, i)
@@ -2128,6 +2359,9 @@ def main() -> int:
     out: str = RT_HEAD
     si: int = 0
     out = out + "(global $heap (mut i64) (i64.const " + str(ar.off) + "))\n"
+    # immutable copy of the data-segment end: $str_extend's region
+    # guard rejects literal buffers (they live below this line)
+    out = out + "(global $heap_base i64 (i64.const " + str(ar.off) + "))\n"
     gi = 0
     while gi < len(GNAMES):
         gty: str = "i64"
