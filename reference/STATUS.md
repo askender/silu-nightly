@@ -577,6 +577,33 @@ corpus 15/15、run 3+14。
 半径未查）。另：test_run 的 native interp 构建从 existsSync 缓存改为
 mtime-newer 重建（教训②的门禁侧防线）。
 
+## 三点十八、wat2wasm 性能：73.7s → 19ms（2026-11-14 深夜）
+
+消融二分定位（微基准 + 变体矩阵，全部 wasm 模块计时）：
+
+1. **shim memcpy 逐字节循环**：llvm.memcpy intrinsic 在 wasm64 后端
+   默认展开成内联字节循环（~60MB/s）。修复 = 链接加 `-mbulk-memory`
+   （后端才有权把 intrinsic 降为 memory.copy 指令）+
+   wasm/shim/bulk_mem.ll（llvm.wasm.memory.copy/fill 直写的符号版，
+   clang 直编 IR 文本，无需 llc）。**教训：给 .ll 内建换实现，flag
+   加在链接步骤；单独链一个实现没人引用**。
+2. **泄漏临时值 × 页粒度 grow**：单表达式 `SRC[0][n]` 的 `SRC[0]`
+   中间拷贝（list[str] 值语义读必拷）无人释放 → 逐字符 tokenize 泄漏
+   O(n²) 字节（46KB 输入 = 2.1GB）→ 29K 次 64KB 页 memory.grow（VM 侧
+   每次 ~1ms）= 27s。shim malloc 改 256MB 块提交（**2× 翻倍 overshoot
+   会撞 V8 memory64 提交上限 → OOB trap**，实测）。
+3. **wat2wasm.si 逐行化**：`split("\n")` 一次 + token 文本直存 T_TXT
+   （ttext 不再切片 SRC；data 解码走 T_TXT）→ 泄漏 O(n×行长) ≈ 50MB。
+   fib 19ms（3800×），语料 32/32 逐字节不变。
+
+**遗留正道项**：codegen 层单表达式临时值不释放是所有 .ll 编译程序的
+共有泄漏（fe/interp/siluc1 同样受累，只是输入小不触发）——修要动
+Python + selfhost 孪生 + Rust oracle 三平面（.ll 字节变化 → 重钉），
+列为独立里程碑；shim 块提交使其从"二次方挂死"降为"线性泄漏"。
+
+六门禁全绿：wat2wasm 32/32（19ms/fib）、shim 252/252、run 3+14、
+backend 17/17、corpus 15/15、compile 20/20、playground smoke ✓。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

@@ -130,18 +130,35 @@ def build_tool(name):
     # them into i128 multiplies that lower to __multi3 (self-recursion)
     run([CLANG, "--target=wasm64-unknown-unknown", "-O2", "-ffreestanding",
          "-nostdlib", "-fno-builtin", "-c", shim_c, "-o", shim_o])
+    # bulk_mem.ll: memcpy/memmove/memset as wasm memory.copy/fill block
+    # ops (the C byte loops capped every runtime str copy at ~60MB/s;
+    # see wasm/shim/bulk_mem.ll) - compiled from IR text, linked first
+    bulk_ll = os.path.join(WASM, "shim", "bulk_mem.ll")
+    bulk_o = os.path.join(ART, "bulk_mem.o")
+    run([CLANG, "--target=wasm64-unknown-unknown", "-O2", "-c", bulk_ll, "-o", bulk_o])
     dec_c = os.path.join(WASM, "shim", "dec_bits.c")
     dec_o = os.path.join(ART, "dec_bits.o")
     run([CLANG, "--target=wasm64-unknown-unknown", "-O2", "-ffreestanding",
          "-nostdlib", "-fno-builtin", "-c", dec_c, "-o", dec_o])
 
     out = os.path.join(ART, f"{name}.wasm")
+    # -mbulk-memory is load-bearing: without it the backend lowers the
+    # runtime's llvm.memcpy intrinsics into inline byte loops (~600x
+    # slower than memory.copy; a 1.9GB tokenize copy took 30s). bulk_mem.o
+    # provides the symbol forms for any call-lowered leftovers.
     run([
         CLANG, "--target=wasm64-unknown-unknown", "-O2", "-nostdlib",
+        "-mbulk-memory",
         "-Wl,--no-entry", f"-Wl,--export={name}_main", "-Wl,--export-memory",
         "-Wl,--import-undefined", "-Wl,-z,stack-size=16777216",
+        # max-memory lets the VM reserve the whole address space upfront:
+        # without a declared max each 64KB-page grow detaches and
+        # reallocates the JS backing store (~1ms), and leaked temporaries
+        # (rawlist_str_get's fresh copy in a one-expression subscript)
+        # push the heap through tens of thousands of grows
+        "-Wl,--max-memory=4294967296",
         "-Wl,--import-undefined", "-Wl,-z,stack-size=16777216",
-        shim_o, dec_o, link_ll, "-o", out,
+        bulk_o, shim_o, dec_o, link_ll, "-o", out,
     ])
     size = os.path.getsize(out)
     print(f"{name}.wasm: {size} bytes ({size / 1e6:.2f} MB)")

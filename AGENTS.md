@@ -93,6 +93,15 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   一致）。test_run 门禁 INTERP_SKIP → INTERP_LOUD（两平面 bail 消息
   逐字节互拍）；3 三方一致 + 14 loud，五门禁全绿。已知边界：AST
   interpret 平面不映射 main 返回值为退出码（独立小项）。
+- **wat2wasm 性能 73.7s→19ms（3800×，2026-11-14 深夜，详见 STATUS.md
+  §3.18）**：三连根因——①wasm64 后端默认把 llvm.memcpy intrinsic 展开
+  成字节循环（修复：链接 `-mbulk-memory` + shim/bulk_mem.ll）；
+  ②单表达式临时值（`SRC[0][n]` 的中间整串拷贝）无人释放 → 泄漏 O(n²)
+  字节 → 29K 次 64KB 页 memory.grow（每次 ~1ms）= 二次方（修复：shim
+  malloc 256MB 块提交；**2× 翻倍会撞 V8 memory64 提交上限 OOB**）；
+  ③wat2wasm.si 逐行化 + T_TXT 直存 token 文本。**遗留正道项：codegen
+  层临时值不释放是所有 .ll 工具共有泄漏，修要三平面同步+重钉（独立
+  里程碑）**。六门禁全绿。
 - **L2 语料验收达成（HEAD 66fdfa7 后续，2026-11-14）**：wasm 后端跑通
   **全部非动态层语料**——13/15 benchmark 逐字节对拍 CPython（arith/
   dict/fannkuch/fib/float/list/mandelbrot/nbody/spectral/string/trees/

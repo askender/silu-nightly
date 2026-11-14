@@ -106,7 +106,14 @@ void *malloc(u64 n) {
     u64 want_bytes = (u64)heap_top + need;
     if (want_bytes > cur_bytes) {
         u64 want_pages = (want_bytes + PAGE - 1) / PAGE;
-        if (__builtin_wasm_memory_grow(0, (long)(want_pages - cur_bytes / PAGE)) < 0)
+        /* chunked growth: page-granular commits make leaked temporaries
+         * cost one VM grow per 64KB (~1ms each - a 1.9GB leak took 29k
+         * grows = 27s); committing in 256MB chunks caps a 2GB heap at
+         * ~8 grows. (Full 2x doubling overshot into V8's memory64
+         * commit limit and trapped OOB.) */
+        u64 cur_pages = cur_bytes / PAGE;
+        u64 target = want_pages + 4096;
+        if (__builtin_wasm_memory_grow(0, (long)(target - cur_pages)) < 0)
             shim_die("shim: OOM");
     }
     hdr_t *nh = (hdr_t *)heap_top;
@@ -168,29 +175,10 @@ void *memchr(const void *s, int c, u64 n) {
     return 0;
 }
 
-void *memcpy(void *d, const void *s, u64 n) {
-    unsigned char *dd = d;
-    const unsigned char *ss = s;
-    for (u64 i = 0; i < n; i++) dd[i] = ss[i];
-    return d;
-}
-
-void *memmove(void *d, const void *s, u64 n) {
-    unsigned char *dd = d;
-    const unsigned char *ss = s;
-    if ((u64)dd - (u64)ss >= n) {
-        for (u64 i = 0; i < n; i++) dd[i] = ss[i];
-    } else {
-        for (u64 i = n; i-- > 0;) dd[i] = ss[i];
-    }
-    return d;
-}
-
-void *memset(void *d, int c, u64 n) {
-    unsigned char *dd = d;
-    for (u64 i = 0; i < n; i++) dd[i] = (unsigned char)c;
-    return d;
-}
+/* memcpy/memmove/memset live in wasm/shim/bulk_mem.ll as wasm
+ * memory.copy/memory.fill block ops - the byte-loop versions here cost
+ * every runtime string copy ~600x vs native libc (1.9GB tokenize copy
+ * = 30s in wasm64); these must stay out of this file. */
 
 /* ---- formatted output ----
  * Supported: %d %i %u %x %X %p %c %s %f %g %e %E %G with -/0 flags,

@@ -23,10 +23,7 @@ TK_RP = 1
 TK_ATOM = 2
 TK_STR = 3
 T_KIND: list[int] = []
-T_POS: list[int] = []
-T_LEN: list[int] = []
-SRC: list[str] = [""]
-NSRC: list[int] = [0]
+T_TXT: list[str] = []
 
 # ---------------- module model ----------------
 IMP_MOD: list[str] = []
@@ -70,6 +67,11 @@ OPC: list[int] = []
 OPE: list[int] = []
 
 
+SEMI: str = chr(59)
+QT: str = chr(34)
+BS: str = chr(92)
+
+
 def is_space(c: str) -> int:
     if c == " " or c == "\n" or c == "\t" or c == "\r":
         return 1
@@ -77,59 +79,59 @@ def is_space(c: str) -> int:
 
 
 def tokenize(s: str) -> int:
-    SRC[0] = s
-    NSRC[0] = len(s)
-    i: int = 0
-    bs: str = chr(92)
-    qt: str = chr(34)
-    semi: str = chr(59)
+    # line-based: reading a list[str] element copies the WHOLE string
+    # (str value semantics), so per-char reads of the full source leak
+    # O(n^2) bytes across a tokenize; splitting once and walking each
+    # LINE (small) bounds the leak at O(n * line_len)
+    lines: list[str] = s.split("\n")
     nl: str = chr(10)
-    while i < NSRC[0]:
-        c: str = SRC[0][i]
-        if is_space(c):
-            i += 1
-            continue
-        if c == semi and i + 1 < NSRC[0] and SRC[0][i + 1] == semi:
-            while i < NSRC[0] and SRC[0][i] != nl:
+    li: int = 0
+    while li < len(lines):
+        ln: str = lines[li]
+        n: int = len(ln)
+        i: int = 0
+        while i < n:
+            c: str = ln[i]
+            if is_space(c):
                 i += 1
-            continue
-        if c == "(":
-            T_KIND.append(TK_LP)
-            T_POS.append(i)
-            T_LEN.append(1)
-            i += 1
-            continue
-        if c == ")":
-            T_KIND.append(TK_RP)
-            T_POS.append(i)
-            T_LEN.append(1)
-            i += 1
-            continue
-        if c == qt:
-            j: int = i + 1
-            while j < NSRC[0]:
-                cj: str = SRC[0][j]
-                if cj == bs:
-                    j += 2
-                    continue
-                if cj == qt:
+                continue
+            if c == SEMI and i + 1 < n and ln[i + 1] == SEMI:
+                i = n
+                continue
+            if c == "(":
+                T_KIND.append(TK_LP)
+                T_TXT.append("(")
+                i += 1
+                continue
+            if c == ")":
+                T_KIND.append(TK_RP)
+                T_TXT.append(")")
+                i += 1
+                continue
+            if c == QT:
+                j: int = i + 1
+                while j < n:
+                    cj: str = ln[j]
+                    if cj == BS:
+                        j += 2
+                        continue
+                    if cj == QT:
+                        break
+                    j += 1
+                T_KIND.append(TK_STR)
+                T_TXT.append(ln[i + 1:j])
+                i = j + 1
+                continue
+            j = i
+            while j < n:
+                cj = ln[j]
+                if is_space(cj) or cj == "(" or cj == ")" or cj == QT:
                     break
                 j += 1
-            T_KIND.append(TK_STR)
-            T_POS.append(i + 1)
-            T_LEN.append(j - i - 1)
-            i = j + 1
-            continue
-        j = i
-        while j < NSRC[0]:
-            cj: str = SRC[0][j]
-            if is_space(cj) or cj == "(" or cj == ")" or cj == qt:
-                break
-            j += 1
-        T_KIND.append(TK_ATOM)
-        T_POS.append(i)
-        T_LEN.append(j - i)
-        i = j
+            T_KIND.append(TK_ATOM)
+            T_TXT.append(ln[i:j])
+            i = j
+        li += 1
     return 0
 
 
@@ -138,7 +140,7 @@ def tkind(i: int) -> int:
 
 
 def ttext(i: int) -> str:
-    return SRC[0][T_POS[i]:T_POS[i] + T_LEN[i]]
+    return T_TXT[i]
 
 
 def match_close(i: int) -> int:
@@ -412,8 +414,8 @@ def structure() -> int:
                 elif head == "data":
                     off: int = atom_int(ttext(i + 4))
                     DAT_OFF.append(off)
-                    DAT_SP.append(T_POS[i + 6])
-                    DAT_SL.append(T_LEN[i + 6])
+                    DAT_SP.append(i + 6)
+                    DAT_SL.append(len(T_TXT[i + 6]))
                 elif head == "func":
                     fnm: str = ""
                     fe: str = ""
@@ -735,31 +737,31 @@ def emit_form(i: int, fi: int) -> str:
             j = match_close(j)
         s = s + bt
         LSTK.append(lbl)
-        acc: str = ""
+        parts: list[str] = []
         while tkind(j) != TK_RP:
-            acc = acc + emit_form(j, fi)
+            parts.append(emit_form(j, fi))
             j = NI[0]
         LSTK.pop()
         NI[0] = j + 1
-        return s + acc + "0B"
+        return s + "".join(parts) + "0B"
     if op == "if":
         j: int = i + 2
         lbl: str = ""
         if tkind(j) == TK_ATOM and ttext(j)[0:1] == "$":
             lbl = ttext(j)
             j += 1
-        cond: str = ""
+        cond_parts: list[str] = []
         # optional (result T) form sets the if blocktype byte
         bt: str = "40"
         if tkind(j) == TK_LP and ttext(j + 1) == "result":
             bt = hex2(ty_byte(ttext(j + 2)))
             j = match_close(j)
         while not (tkind(j) == TK_LP and ttext(j + 1) == "then"):
-            cond = cond + emit_form(j, fi)
+            cond_parts.append(emit_form(j, fi))
             j = NI[0]
         LSTK.append(lbl)
-        acc_then: str = ""
-        acc_else: str = ""
+        then_parts: list[str] = []
+        else_parts: list[str] = []
         in_else: int = 0
         # pd counts wrapper markers we skipped manually ((then)/(else)):
         # their closing RP must not be mistaken for the if's own RP -
@@ -789,16 +791,16 @@ def emit_form(i: int, fi: int) -> str:
                 seg = emit_form(j, fi)
                 j = NI[0]
             if in_else:
-                acc_else = acc_else + seg
+                else_parts.append(seg)
             else:
-                acc_then = acc_then + seg
+                then_parts.append(seg)
             continue
         LSTK.pop()
         NI[0] = j + 1
-        out: str = cond + "04" + bt + acc_then
+        out: str = "".join(cond_parts) + "04" + bt + "".join(then_parts)
         # an EMPTY else normalizes away: wabt emits no 05..end pair
-        if in_else and acc_else != "":
-            out = out + "05" + acc_else
+        if in_else and len(else_parts) > 0:
+            out = out + "05" + "".join(else_parts)
         return out + "0B"
     if op == "then" or op == "else":
         j: int = i + 2
@@ -808,10 +810,10 @@ def emit_form(i: int, fi: int) -> str:
         NI[0] = j + 1
         return ""
     if op == "call":
-        args: str = ""
+        arg_parts: list[str] = []
         j: int = i + 3
         while tkind(j) != TK_RP:
-            args = args + emit_form(j, fi)
+            arg_parts.append(emit_form(j, fi))
             j = NI[0]
         nm: str = ttext(i + 2)
         cidx: int = 0
@@ -820,7 +822,7 @@ def emit_form(i: int, fi: int) -> str:
         else:
             cidx = atom_int(nm)
         NI[0] = j + 1
-        return args + "10" + uleb_hex(cidx)
+        return "".join(arg_parts) + "10" + uleb_hex(cidx)
     if op == "br":
         lbl: str = ttext(i + 2)
         dep: int = 0
@@ -837,10 +839,10 @@ def emit_form(i: int, fi: int) -> str:
         NI[0] = match_close(i)
         return "0C" + uleb_hex(dep)
     if op == "br_if":
-        cond: str = ""
+        cond_parts: list[str] = []
         j: int = i + 3
         while tkind(j) != TK_RP:
-            cond = cond + emit_form(j, fi)
+            cond_parts.append(emit_form(j, fi))
             j = NI[0]
         lbl: str = ttext(i + 2)
         dep: int = 0
@@ -855,7 +857,7 @@ def emit_form(i: int, fi: int) -> str:
         else:
             dep = atom_int(lbl)
         NI[0] = j + 1
-        return cond + "0D" + uleb_hex(dep)
+        return "".join(cond_parts) + "0D" + uleb_hex(dep)
     if op == "i64.const":
         NI[0] = match_close(i)
         return "42" + sleb_hex(atom_int(ttext(i + 2)))
@@ -877,10 +879,10 @@ def emit_form(i: int, fi: int) -> str:
         NI[0] = match_close(i)
         return "20" + uleb_hex(idx)
     if op == "local.set" or op == "local.tee":
-        val: str = ""
+        val_parts: list[str] = []
         j: int = i + 3
         while tkind(j) != TK_RP:
-            val = val + emit_form(j, fi)
+            val_parts.append(emit_form(j, fi))
             j = NI[0]
         nm: str = ttext(i + 2)
         idx: int = 0
@@ -891,9 +893,10 @@ def emit_form(i: int, fi: int) -> str:
         else:
             idx = atom_int(nm)
         NI[0] = j + 1
+        joined: str = "".join(val_parts)
         if op == "local.set":
-            return val + "21" + uleb_hex(idx)
-        return val + "22" + uleb_hex(idx)
+            return joined + "21" + uleb_hex(idx)
+        return joined + "22" + uleb_hex(idx)
     if op == "global.get":
         nm: str = ttext(i + 2)
         gidx: int = 0
@@ -904,10 +907,10 @@ def emit_form(i: int, fi: int) -> str:
         NI[0] = match_close(i)
         return "23" + uleb_hex(gidx)
     if op == "global.set":
-        val: str = ""
+        val_parts: list[str] = []
         j: int = i + 3
         while tkind(j) != TK_RP:
-            val = val + emit_form(j, fi)
+            val_parts.append(emit_form(j, fi))
             j = NI[0]
         nm: str = ttext(i + 2)
         gidx: int = 0
@@ -916,40 +919,40 @@ def emit_form(i: int, fi: int) -> str:
         else:
             gidx = atom_int(nm)
         NI[0] = j + 1
-        return val + "24" + uleb_hex(gidx)
+        return "".join(val_parts) + "24" + uleb_hex(gidx)
     if op == "memory.size":
         NI[0] = match_close(i)
         return "3F00"
     if op == "memory.grow":
-        val: str = ""
+        val_parts: list[str] = []
         j: int = i + 2
         while tkind(j) != TK_RP:
-            val = val + emit_form(j, fi)
+            val_parts.append(emit_form(j, fi))
             j = NI[0]
         NI[0] = j + 1
-        return val + "4000"
+        return "".join(val_parts) + "4000"
     if op == "memory.copy":
-        ops: str = ""
+        ops_parts: list[str] = []
         j: int = i + 2
         while tkind(j) != TK_RP:
-            ops = ops + emit_form(j, fi)
+            ops_parts.append(emit_form(j, fi))
             j = NI[0]
         NI[0] = j + 1
-        return ops + "FC0A0000"
+        return "".join(ops_parts) + "FC0A0000"
     oi: int = op_code(op)
     if oi < 0:
         NI[0] = match_close(i)
         return "00"
-    ops: str = ""
+    ops_parts: list[str] = []
     j: int = i + 2
     while tkind(j) != TK_RP:
-        ops = ops + emit_form(j, fi)
+        ops_parts.append(emit_form(j, fi))
         j = NI[0]
     NI[0] = j + 1
     im: str = ""
     if OPE[oi] >= 0:
         im = hex2(OPE[oi]) + "00"
-    return ops + hex2(OPC[oi]) + im
+    return "".join(ops_parts) + hex2(OPC[oi]) + im
 
 
 # ---------------- section emission ----------------
@@ -1071,13 +1074,14 @@ def emit_all() -> int:
         di: int = 0
         while di < len(DAT_OFF):
             OS[0] = OS[0] + "0042" + sleb_hex(DAT_OFF[di]) + "0B"
-            sp: int = DAT_SP[di]
+            # the data token text is stored verbatim in T_TXT: walks hit
+            # the (small) token, not the whole source
+            dat: str = T_TXT[DAT_SP[di]]
             sl: int = DAT_SL[di]
-            bs: str = chr(92)
             k: int = 0
             nb: int = 0
             while k < sl:
-                if SRC[0][sp + k:sp + k + 1] == bs:
+                if dat[k:k + 1] == BS:
                     # escape = backslash + 2 hex chars = 3 source chars
                     nb += 1
                     k += 3
@@ -1087,11 +1091,11 @@ def emit_all() -> int:
             OS[0] = OS[0] + uleb_hex(nb)
             k = 0
             while k < sl:
-                if SRC[0][sp + k:sp + k + 1] == bs:
-                    OS[0] = OS[0] + SRC[0][sp + k + 1:sp + k + 3]
+                if dat[k:k + 1] == BS:
+                    OS[0] = OS[0] + dat[k + 1:k + 3]
                     k += 3
                 else:
-                    ch: str = SRC[0][sp + k:sp + k + 1]
+                    ch: str = dat[k:k + 1]
                     OS[0] = OS[0] + hex2(ord(ch))
                     k += 1
             di += 1
@@ -1125,13 +1129,13 @@ def emit_body(fi: int) -> int:
     while k < len(runs):
         OS[0] = OS[0] + uleb_hex(cnt[k]) + hex2(ty_byte(runs[k]))
         k += 1
-    acc: str = ""
+    acc_parts: list[str] = []
     j: int = FN_B0[fi]
     while tkind(j) != TK_RP:
-        acc = acc + emit_form(j, fi)
+        acc_parts.append(emit_form(j, fi))
         j = NI[0]
-    acc = acc + "0B"
-    bodyhex: str = OS[0] + acc
+    acc_parts.append("0B")
+    bodyhex: str = OS[0] + "".join(acc_parts)
     OS[0] = keep
     OS[0] = OS[0] + uleb_hex(len(bodyhex) // 2) + bodyhex
     return 0

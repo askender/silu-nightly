@@ -189,10 +189,24 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    ④silu_conv split-IR-JSON 与直读源两条路径类型推断有分歧（rawstr→
    i64 只在 IR 路径）——build.py wat2wasm 走 monolith siluc1 绕开；
    ⑤调自托管程序挂死：AST 解释器平面 print 实时可见。
-   **性能已知项**：~2s/KB（46KB WAT ≈100s，compiled 模块）——
-   emit_body/emit_form 逐形 `acc = acc + seg` 字符串累积（compiled
-   str 拼接窄窗扩展守卫失效退全拷，二次方），**后续改 list[str]+join
-   累积**（语言已有 join），playground 手输程序（KB 级）无感。
+   **性能已知项 → 已解决（2026-11-14 第二轮，见第 10 条）**。
+10. ✅ ~~wat2wasm 性能~~（2026-11-14 深夜关闭）：**73.7s → 19ms（fib，
+    3800×），32/32 逐字节不变**。消融定位链（微基准 + 变体二分，教训：
+    理论猜三次不如实测一次）：①emit 累积改 list[str]+join（正确但非主因）；
+    ②**shim memcpy/memmove/memset 逐字节循环** → wasm/shim/bulk_mem.ll
+    用 llvm.wasm.memory.copy/fill 内建（clang 直编 IR 文本）+ 链接加
+    `-mbulk-memory`（无它后端把 runtime 的 llvm.memcpy intrinsic 展开成
+    内联字节循环——bulk_mem.o 没人引用，flag 才是关键）；③**泄漏临时值
+    × 页粒度 memory.grow**：单表达式 `SRC[0][n]` 的 `SRC[0]` 中间拷贝
+    （值语义，rawlist_str_get 必拷）无人释放 → 每字符泄漏整串 → 46KB 输入
+    泄漏 2.1GB → 29K 次 64KB 页 grow（每次 VM 侧 ~1ms）= 27s。shim malloc
+    改 256MB 块提交（2× 翻倍会 overshoot 撞 V8 memory64 提交上限 OOB）；
+    ④**wat2wasm.si 逐行化**：`split("\n")` 一次 + 逐 token 存 T_TXT
+    （token 文本直存，ttext 不再切片 SRC）→ 泄漏从 O(n²) 降到 O(n×行长)
+    ≈ 50MB。**遗留正道项**：codegen 层单表达式临时值不释放（`SRC[0][n]`
+    的中间拷贝）是所有 .ll 编译程序的共有泄漏——修要动 Python +
+    selfhost 孪生 + Rust oracle 三平面（.ll 字节变化 → 重钉），列为
+    独立里程碑；shim 块提交使其从"二次方挂死"降为"线性泄漏"。
 9. ✅ ~~ir_interp 响亮化~~（2026-11-14 关闭）：selfhost/ir_interp.si
    （int-only 树解释器）过去对子集外程序**静默求 0 甚至挂死**——float
    const（`["const", 0.0]` 裸 JSON 浮点）让 Json 解析器在 '.' 上无限
