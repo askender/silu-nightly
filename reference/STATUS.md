@@ -604,6 +604,23 @@ Python + selfhost 孪生 + Rust oracle 三平面（.ll 字节变化 → 重钉�
 六门禁全绿：wat2wasm 32/32（19ms/fib）、shim 252/252、run 3+14、
 backend 17/17、corpus 15/15、compile 20/20、playground smoke ✓。
 
+## 三点十九、closure 族裁定 + nested_fn 语料（2026-11-14 深夜）
+
+**设计裁定**：真闭包（嵌套函数捕获外层局部）= 设计外——FE hoist pass
+响亮拒绝（"nested function 'X' captures 'n'; pass it as a parameter"，
+Rust nested-item 语义），三平面一致，非 gap。**支持面 = 无捕获嵌套
+函数**（hoist 成模块级 `outer__inner`），端到端已通。
+
+- 新门禁示例 `wasm/examples/nested_fn.si`：嵌套调模块函数 + 读模块
+  全局、双层嵌套（def in def in def）、模块级前向引用、嵌套内递归、
+  三面输出互拍。三门禁自动吃（run/backend/wat2wasm）。
+- **连带真 bug（新示例首轮即抓到）**：ir_interp 的 call_user 换新 env
+  后读不到模块级全局——hoisted `outer__inner` 读 BASE 静默求 0，
+  outer(4) 出 10 而非 410（CPython/native/wasm 后端三面全对）。
+  修复 = **env→genv 回退**：genv 与模块 env 初始为同一 dict，
+  call_user 只换 env；get_int 先 env 后 genv。run 门禁 4 三方一致
+  + 14 loud，backend 18/18，wat2wasm 33/33。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

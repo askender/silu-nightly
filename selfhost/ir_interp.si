@@ -362,6 +362,7 @@ def fn_body_get(i: int) -> JValue:
 
 class Interp:
     env: dict[str, int]
+    genv: dict[str, int]
     out: str
     funcs: dict[str, int]
     ret: int
@@ -369,8 +370,14 @@ class Interp:
     err: str
 
     def get_int(self, name: str) -> int:
+        # function scope falls back to module scope: call_user swaps in
+        # a fresh env per call, and hoisted nested defs (outer__inner)
+        # read module globals like BASE - without the fallback they
+        # silently evaluate to 0 (nested_fn.si caught this)
         if name in self.env:
             return self.env[name]
+        if name in self.genv:
+            return self.genv[name]
         return 0
 
     def call_user(self, name: str, args: JValue) -> int:
@@ -645,7 +652,10 @@ def main() -> int:
     if len(ERRS) > 0:
         print("ir_interp bail: " + ERRS[0])
         return 3
-    interp: Interp = Interp({}, "", {}, 0, False, "")
+    # module scope doubles as the global fallback: env and genv start
+    # as the SAME dict, and call_user swaps env to a fresh dict per call
+    menv: dict[str, int] = {}
+    interp: Interp = Interp(menv, menv, "", {}, 0, False, "")
     interp.exec_stmts(body)
     if interp.err != "":
         # nothing of the program output is printed - loud failure only

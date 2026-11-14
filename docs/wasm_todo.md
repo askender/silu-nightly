@@ -159,7 +159,18 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    json_null/json_free 深释放 = 子集外。
 5. ✅ ~~直接二进制发射~~（2026-11-14 关闭，见第 8 条）：backend 直出
    wasm 二进制（LEB128）摆脱 wabt.js 0.66 MB 依赖。
-6. **closure 族 / strbuf 语料**（视覆盖面决定，wasm_plan §3.5）。
+6. ✅ ~~closure 族语料~~（2026-11-14 关闭）：**设计裁定 + 语料钉板**。
+   真闭包（捕获外层局部）= **设计外**：FE hoist pass 对捕获响亮拒绝
+   （"nested function 'X' captures 'n'; pass it as a parameter"，Rust
+   nested-item 语义）——不是 gap 是裁定。无捕获嵌套函数端到端已支持：
+   新门禁示例 `wasm/examples/nested_fn.si`（嵌套调模块函数+模块全局、
+   双层嵌套、模块级前向引用、嵌套内递归、三面输出互拍）。
+   **连带真 bug**：ir_interp 的 call_user 换新 env 后读不到模块级全局
+   （hoisted `outer__inner` 里的 BASE 静默变 0 → outer(4) 出 10 而非
+   410；CPython/native/wasm 三面全对，ir_interp 独错）——修 = env→genv
+   回退（genv 与模块 env 初始同 dict，call_user 只换 env）。run 门禁
+   4 三方一致 + 14 loud；backend 18/18、wat2wasm 33/33（新示例自动入
+   三门禁）。
 7. **工程化**：wasm 四门禁进 CI（Node 已钉 24.3；artifacts 缓存策略）；
    playground 示例列表扩充（新门禁示例自动同步进下拉）。
 8. ✅ ~~直接二进制发射~~（2026-11-14 关闭）：**selfhost/wat2wasm.si**

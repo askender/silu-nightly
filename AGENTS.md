@@ -102,6 +102,11 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   ③wat2wasm.si 逐行化 + T_TXT 直存 token 文本。**遗留正道项：codegen
   层临时值不释放是所有 .ll 工具共有泄漏，修要三平面同步+重钉（独立
   里程碑）**。六门禁全绿。
+- **closure 族裁定（2026-11-14 深夜，STATUS.md §3.19）**：真闭包 =
+  设计外（FE hoist 响亮拒绝，Rust nested-item 语义）；无捕获嵌套函数
+  端到端已支持，新门禁示例 nested_fn.si。**连带修 ir_interp 全局回退
+  bug**（call_user 换 env 后读不到模块全局，hoisted 嵌套函数静默求 0
+  ——env→genv 回退修复）。run 4+14、backend 18/18、wat2wasm 33/33。
 - **L2 语料验收达成（HEAD 66fdfa7 后续，2026-11-14）**：wasm 后端跑通
   **全部非动态层语料**——13/15 benchmark 逐字节对拍 CPython（arith/
   dict/fannkuch/fib/float/list/mandelbrot/nbody/spectral/string/trees/

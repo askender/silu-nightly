@@ -1,0 +1,61 @@
+# Capture-free nested functions (hoisted to module scope as
+# outer__name). True closures are out of scope by design - the FE hoist
+# pass rejects captures loudly ("pass it as a parameter"). This pins the
+# supported shape end to end: nested defs calling module functions and
+# module globals, double nesting, forward references at module level,
+# recursion inside a nested def.
+BASE: int = 100
+
+
+def mod_helper(v: int) -> int:
+    return v + 1
+
+
+def outer(n: int) -> int:
+    def inner(x: int) -> int:
+        return mod_helper(x) + BASE
+    total: int = 0
+    k: int = 0
+    while k < n:
+        total += inner(k)
+        k += 1
+    return total
+
+
+def deep(n: int) -> int:
+    def mid(a: int) -> int:
+        def leaf(b: int) -> int:
+            return b * b
+        return leaf(a) + leaf(a + 1)
+    return mid(n)
+
+
+def later(n: int) -> int:
+    return fwd(n) + n
+
+
+def fwd(v: int) -> int:
+    return v * 10
+
+
+def fibm(n: int) -> int:
+    def helper(a: int, b: int, steps: int) -> int:
+        if steps == 0:
+            return a
+        return helper(b, a + b, steps - 1)
+    return helper(0, 1, n)
+
+
+def pick_outer(flag: bool) -> int:
+    def pick_pos(v: int) -> int:
+        if v < 0:
+            return 0 - v
+        return v
+    if flag:
+        return pick_pos(0 - 7)
+    return pick_pos(9)
+
+
+print(outer(4))
+print(fibm(10))
+print(deep(3), later(4), pick_outer(True), pick_outer(False))
