@@ -103,8 +103,8 @@ jobs:
           tar xzf wasi-sdk-34.0-x86_64-linux.tar.gz -C "$HOME/wasi-sdk" --strip-components=1
       - name: Install wabt 1.0.42 (the wat2wasm differential oracle)
         run: |
-          wget -q https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-ubuntu-x64.tar.gz
-          tar xzf wabt-1.0.42-ubuntu-x64.tar.gz
+          wget -q https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-linux-x64.tar.gz
+          tar xzf wabt-1.0.42-linux-x64.tar.gz
           echo "$PWD/wabt-1.0.42/bin" >> "$GITHUB_PATH"
       - name: Build the native helper chain (fe + siluc1 + backend)
         run: |
