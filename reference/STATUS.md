@@ -634,7 +634,31 @@ raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）�
 
 ## 四、其余 TODO（优先级序）
 
-1. ✅ **v1.18.1 已公开发布（2026-11-10）**：
+1. **str 临时值生命周期（下会话开题，设计已备）**：单表达式
+   `SRC[0][n]` 的内层 rawlist_str_get 拷贝无人释放——所有 .ll 编译
+   程序的共有泄漏（native 因 40GB/s memcpy 不可见，wasm 平面曾致
+   二次方，shim 256MB 块提交后降为线性泄漏）。**设计要点**（本会话
+   实证得出）：
+   - 所有权规则：rawlist_str_get / rawstr_char1 / rawstr_slice /
+     rawstr_concat 的结果 = OWNED（新鲜未共享缓冲）；name 绑定、字段
+     读、函数返回、全局 = BORROWED（函数可能返回全局指针，free 即
+     腐蚀）。
+   - 不可"立即 free"：`s[i]` 在 Python 平面是零分配借出视图
+     （_emit_char_view，RAWCHAR_VIEW），父缓冲的最后一次使用在
+     coercion（rawstr_char1）或 eq_cstr 等多个块，phi/分支结构下
+     立即 free 不健全。
+   - 可行方案 A（收窄版）：视图元组携带 owned-parent 指针，每个视图
+     消费点（char1 / eq_cstr / slice）在最后一次使用后 free 父缓冲。
+     覆盖 `SRC[0][n]` / `SRC[0][a:b]` 两个热模式（wat2wasm 已结构化
+     绕开，此方案覆盖其余工具）。
+   - 可行方案 B（完备版）：语句级 free 列表——表达式发射产生的
+     OWNED 值入表，被 binding/ret 认领时出表，语句尾 free 剩余；
+     分支结构下 free 必须落在值死亡的块（and/or 短路、while 内
+     break），块归属分析不可省。
+   - **三平面同 commit**（Python typed_codegen.py + selfhost 孪生
+     typed_codegen_flat.si + Rust silu-conv.rs，.ll 字节变化 → ll
+     20/20 重钉）+ ir 21/21 + pytest + corpus 15/15 全量复跑。
+2. ✅ **v1.18.1 已公开发布（2026-11-10）**：
    https://github.com/askender/silu-lang/releases/tag/v1.18.1
    （gates + 4 平台全绿，promote 校验通过）。**根因备忘**：GitHub 退役
    `macos-14-arm64-us-default` 池，release.yml 是唯一用 macos-14 的
