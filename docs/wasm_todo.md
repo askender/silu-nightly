@@ -131,9 +131,17 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
 
 ## 五、TODO（优先级序）
 
-1. **公网部署**（运维，非代码）：wasm/web/ 发布到 silu.askender.xyz。
-   走 silu-lang 公开仓 checkout，遵守"源码不进公开仓"拓扑；产物带
-   BUILD_INFO 戳。本地体验不受影响。
+1. ✅ ~~公网部署~~（2026-11-14 深夜关闭）：**https://silu.askender.xyz/playground/
+   已上线并浏览器实测全通**。部署 = wasm/web/ 产物（index + host_core.mjs
+   + 5 个 .wasm + BUILD_INFO 戳，3.9MB，无源码）推 silu-lang 公开仓
+   docs/playground/（Pages = main /docs 已有配置）；EN/ZH 落地页导航加
+   playground/在线试用链接。真浏览器验证：5 模块加载（3.92MB over
+   HTTPS）+ nested_fn.si → Compile → .wasm（6,302B/272ms，自托管
+   wat2wasm）→ 金色按钮变形 → 执行（real wasm compilation，1ms,
+   exit 0，输出 410/55/25 44 7 9）。**浏览器缓存注意**：Pages 重建后
+   同 tab 重载可能命中修正前缓存——cache-busting 参数（?v=Date.now()）
+   强制新取。运维节奏：nightly 侧 `wasm/build.py web` + 复制 8 个文件
+   到 silu-lang docs/playground/ + push（Pages 自动构建 ~1min）。
 2. ✅ ~~knucleotide O(n²) str 构建~~（2026-11-14 关闭）：**str ABI v2**
    落地——16 字节小端前缀 [blen][clen]（指针指向字节区，字节级消费者
    不变）+ O(1) len + 每绑定必拷贝的值语义（$s_copy：assign/global/

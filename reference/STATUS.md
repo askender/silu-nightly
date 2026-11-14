@@ -665,7 +665,14 @@ raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）�
      '0'），删 `~/.cache/silu-runtime/driver` 重建是第一步排查；
      **构造器路径依赖急拷贝**（`_emit_construct` 直接 store，无拷贝
      则字段别名源缓冲 → 编译器自腐蚀）——两条均本轮实证。
-2. ✅ **v1.18.1 已公开发布（2026-11-10）**：
+2. ✅ **公网部署上线（2026-11-14 深夜，docs/wasm_todo.md TODO #1 关闭）**：
+   https://silu.askender.xyz/playground/ —— wasm/web/ 产物推 silu-lang
+   公开仓 docs/playground/（Pages main/docs），EN/ZH 落地页加导航。
+   真浏览器全流程验证（编译 .ll/.wasm + 执行）。**GitHub Actions
+   Billing 需用户处理**（jobs 0 步骤拒启："recent account payments
+   have failed"），wasm job 的下载 URL/tar 结构已本地预验证
+   （wabt 资产名 404 已修：-linux-x64 非 -ubuntu-x64）。
+   ✅ **v1.18.1 已公开发布（2026-11-10）**：
    https://github.com/askender/silu-lang/releases/tag/v1.18.1
    （gates + 4 平台全绿，promote 校验通过）。**根因备忘**：GitHub 退役
    `macos-14-arm64-us-default` 池，release.yml 是唯一用 macos-14 的
