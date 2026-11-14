@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="silu",
-    version="0.1.0",
+    version="1.19.0",
     packages=find_packages(),
     entry_points={
         "console_scripts": [
@@ -17,7 +17,7 @@ setup(
     description="A simple AI programming language",
     long_description=open("README.md", "r", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/askender/silu",  # Replace with your repo URL
+    url="https://github.com/askender/silu-lang",
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
