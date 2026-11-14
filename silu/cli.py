@@ -69,6 +69,13 @@ def run_interpreter(source_code: str, **kwargs) -> None:
         tree = parse_with_imports(source_code)
         interpreter = SiluInterpreter(**kwargs)
         interpreter.visit(tree)
+        # main's return value maps to the process exit code, matching
+        # the compiled planes (native driver: exit(main())).  int guard:
+        # the AST plane is dynamically typed, and mocked interpreters in
+        # tests auto-attribute MagicMock here
+        rv = getattr(interpreter, "main_return", 0)
+        if isinstance(rv, int) and rv != 0:
+            sys.exit(rv)
     except SyntaxError as e:
         print(f"Syntax Error: {e}", file=sys.stderr)
         sys.exit(1)

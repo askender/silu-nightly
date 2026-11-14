@@ -18,6 +18,10 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     that subclasses must implement to customize processing behavior.
     """
 
+    # main()'s return value, captured by visit_Module (the interpret
+    # driver maps a nonzero value to the process exit code)
+    main_return: int = 0
+
     # Consolidated operators mapping
     OPERATORS = {
         # Binary operators
@@ -155,13 +159,15 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
     def visit_Module(self, node: ast.Module) -> Any:
         """Visit a module node, then call main() if defined (the IR
         interpreter and compiled binaries do the same - a program with
-        a main() runs it as its entry point)."""
+        a main() runs it as its entry point).  main's return value is
+        stashed on main_return so the driver can map it to the process
+        exit code (compiled planes: exit(main()))."""
         statements = [self.visit(stmt) for stmt in node.body]
         main_fn = getattr(self, "env", None)
         if main_fn is not None:
             candidate = main_fn.vars.get("main")
             if callable(candidate) and not isinstance(candidate, type):
-                candidate()
+                self.main_return = candidate()
         return self.process_container("module", statements)
 
     def visit_Expr(self, node: ast.Expr) -> Any:

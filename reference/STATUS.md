@@ -621,6 +621,17 @@ Rust nested-item 语义），三平面一致，非 gap。**支持面 = 无捕获
   call_user 只换 env；get_int 先 env 后 genv。run 门禁 4 三方一致
   + 14 loud，backend 18/18，wat2wasm 33/33。
 
+## 三点二十、interpret 平面退出码映射（2026-11-14 深夜）
+
+`silu interpret`（AST 解释器）过去丢弃 main() 返回值——visit_Module
+调 candidate() 不接返回值，进程退出码恒 0；而 native 驱动和 wasm 平面
+（§3.17 修的 host.mjs）都是 exit(main())。修复：visit_Module 把
+main() 返回值存到 `self.main_return`（BaseASTProcessor 类属性，所有
+子类共享），cli.run_interpreter 访问后 `sys.exit(rv)`（仅非 0 时）。
+三条路径实测：main 返回 3 → rc=3；返回 0 → rc=0；**ir_interp 经
+interpret 平面跑 → bail 消息 + rc=3**（§3.17 的已知边界就此关闭）。
+raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

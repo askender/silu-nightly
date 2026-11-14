@@ -76,6 +76,12 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 - **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
 - 门禁全绿：ll 20/20、ir 21/21、pytest **1361 通过/3 跳过**。
+- **interpret 平面退出码映射（2026-11-14 深夜，STATUS.md §3.20）**：
+  `silu interpret` 过去丢弃 main() 返回值（退出码恒 0）——visit_Module
+  把返回值存 `self.main_return`，cli.run_interpreter 对非零 int
+  `sys.exit(rv)`（int 守卫防 mocked 解释器的 MagicMock）。**§3.17 的
+  已知边界关闭**：ir_interp 经 interpret 平面跑现在 bail + rc=3。
+  raise SystemExit(n) 语义不变；全量 pytest 复跑全绿。
 - **wat2wasm 32/32——TODO #5 关闭（2026-11-14 深夜，详见 STATUS.md
   §3.16）**：纯 Silu WAT→wasm64 汇编器对拍 wabt 全语料逐字节一致
   （examples+benchmarks 32 文件，门禁 `wasm/test_wat2wasm.mjs`）；
