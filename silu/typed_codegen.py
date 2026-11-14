@@ -5794,10 +5794,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             # later use of the view can need the parent buffer (an I64
             # coercion only reads the view's own SSA fields - it must
             # NOT free, the same view may still coerce to RAWSTR after)
-            _owned_parent = self._owned_view_pop(
-                self._owned_view_parent, value.name
-            )
+            # pop ONLY on the RAWSTR path: an I64 coercion reads the
+            # view's own SSA fields and may be followed by a RAWSTR
+            # coercion of the same view - popping here would strand the
+            # parent (leaked, no longer freeable)
             if target == RAWSTR:
+                _owned_parent = self._owned_view_pop(
+                    self._owned_view_parent, value.name
+                )
                 data = self.current_builder.extract_value(value, 0)
                 seq = self.current_builder.extract_value(value, 1)
                 # one-byte code points come from the shared pool

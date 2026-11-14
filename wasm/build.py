@@ -36,32 +36,6 @@ def run(cmd, **kw):
     return r
 
 
-def compiler_ll(out_ll):
-    """The compiler compiling itself, via the Python planes."""
-    if os.path.exists(out_ll):
-        newest_dep = 0
-        for root in ("selfhost", "silu"):
-            for d, _, fs in os.walk(os.path.join(REPO, root)):
-                for f in fs:
-                    if f.endswith((".si", ".py")):
-                        newest_dep = max(
-                            newest_dep, os.path.getmtime(os.path.join(d, f))
-                        )
-        if os.path.getmtime(out_ll) >= newest_dep:
-            return
-    print("emitting compiler .ll (self-host fixed point)...", file=sys.stderr)
-    sys.path.insert(0, REPO)
-    from tools.selfhost_build import compile_with, ensure_converter, ensure_frontend
-
-    compile_with(
-        ensure_frontend(),
-        ensure_converter(),
-        os.path.join(REPO, "selfhost", "siluc.si"),
-        os.path.join(ART, "_native_probe"),
-        save_ll=out_ll,
-    )
-
-
 TOOLS = {
     "siluc1": "selfhost/siluc.si",
     "fe": "selfhost/silu_fe_main.si",
@@ -163,7 +137,6 @@ def build_tool(name):
         # (rawlist_str_get's fresh copy in a one-expression subscript)
         # push the heap through tens of thousands of grows
         "-Wl,--max-memory=4294967296",
-        "-Wl,--import-undefined", "-Wl,-z,stack-size=16777216",
         bulk_o, shim_o, dec_o, link_ll, "-o", out,
     ])
     size = os.path.getsize(out)
