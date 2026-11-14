@@ -28,7 +28,7 @@
 | Cython (cdef long) | 28 ms | ~25 ms | 9× |
 | CPython 3.12 | 67 ms | ~60 ms | 22× |
 | monty (Rust Python 沙箱) | 116 ms | ~88 ms | 39× |
-| **silu 字节码 VM 孪生 (Silu→native)** | **110 ms** | ~105 ms | **30×** |
+| **silu 字节码 VM 孪生 (Silu→native)** | **87 ms** | ~82 ms | **~22×** |
 | silu IR 解释器 native -O2 | 1,760 ms | ~1,700 ms | 578× |
 | silu IR 解释器 wasm (node) | 1,168 ms* | — | — |
 | silu AST 解释器 | 15,256 ms | — | 5,085× |
@@ -56,11 +56,14 @@ wasm 65ms；siluc1 wasm 151ms；Python 平面 conv 185ms；driver 全链
    - **每帧 `vec![0i64; nslots]` 堆分配**——63 万次调用 = 63 万次
      malloc/free。改成共享 flat 槽区（append 零槽 + 帧记 sbase，与
      Silu 孪生的 SLOTAREA 同构）后消掉。
-4. **Silu 孪生（Silu 写的 VM 再编译）比 Rust 手写 VM 慢 ~2×**：每条
-   字节码仍是 Silu 函数调用链（vstack_push/eq01...），边界检查与
-   调用开销是自举的代价。但**"被编译语言写的解释器"跑赢了 monty**
-   （手写 Rust Python 沙箱）——说明 VM 的模型（扁平字节码+flat 槽区）
-   比宿主语言的手写优化更关键。
+4. **Silu 孪生（Silu 写的 VM 再编译）比 Rust 手写 VM 慢 ~1.6×**
+   （内联热臂栈操作 + 按频次重排 elif 链后，115→84ms；此前 ~2×）。
+   剩余差距是结构性的：循环顶 4 张平行 list 的 `[len-1]` 读取
+   （Rust 是结构体字段直读）、elif 链逐个比较（Rust match 编译成
+   跳转表）——Python 子集没有 switch/goto，计算跳转不可表达。
+   但**"被编译语言写的解释器"跑赢了 monty**（手写 Rust Python
+   沙箱）——VM 的模型（扁平字节码+flat 槽区）比宿主语言的手写
+   优化更关键；孪生的角色是跨平面互证，不是绝对速度。
 5. **native 二进制与 C/Rust 同级**：LLVM 后端的代码质量对纯算术
    递归已达机器码水平（1.3× 于 gcc -O2）。
 
@@ -90,10 +93,15 @@ KB 级用户部分）；VM 链的编译段 = silu_fe 前端（.si→IR JSON）�
 
 | workload | native 默认链 | native siluc 链 | rust VM | silu VM 孪生 | ir_interp 解释 | CPython | 裁决 |
 |---|---|---|---|---|---|---:|---|
-| fib(28) | 652（648+4） | 175（171+4） | 59（fe 3+vm 56） | 118（fe 3+vm 115） | 1753（fe 3+interp 1750） | 60 | **编译快**（siluc 10×；VM 30×） |
-| 循环密集 1M | 581（578+3） | 173（169+4） | 77（fe 2+vm 75） | 153（fe 2+vm 151） | 2307（fe 2+interp 2305） | 148 | **编译快**（siluc 13×；VM 30×） |
-| 短脚本 3 print | 533（530+3） | 168（165+3） | 6（fe 3+vm 3） | 5（fe 3+vm 2） | 5（fe 3+interp 2） | 26 | native：解释快；VM/解释打平 |
-| fib(12) | 528（525+3） | 172（169+3） | 6（fe 3+vm 3） | 6（fe 3+vm 3） | 6（fe 3+interp 3） | 27 | 同上 |
+| fib(28) | 580（576+4） | 176（172+4） | 59（fe 3+vm 56） | 87（fe 3+vm 84） | 1777（fe 3+interp 1774） | 63 | **编译快**（siluc 10×；VM 30×） |
+| 循环密集 1M | 581（577+4） | 181（177+4） | 79（fe 3+vm 76） | 163（fe 3+vm 160） | 2363（fe 3+interp 2360） | 149 | **编译快**（siluc 13×；VM 30×） |
+| 短脚本 3 print | 593（590+3） | 169（166+3） | 6（fe 3+vm 3） | 6（fe 3+vm 3） | 6（fe 3+interp 3） | 27 | native：解释快；VM/解释打平 |
+| fib(12) | 553（551+2） | 178（175+3） | 6（fe 3+vm 3） | 6（fe 3+vm 3） | 7（fe 3+interp 4） | 28 | 同上 |
+
+**参照：rustc -O 编译同语义 Rust 版**：编译固定 **100ms**（四 workload
+相同，与程序大小基本无关），运行 <1-3ms，编译+运行 ~100ms——与
+siluc 链（~175ms）同量级，silu 的差距主要在三次进程派生 + 链接
+350KB runtime .o 的固定成本。
 
 **两条 native 编译链的差别（产物相同，.ll 逐字节一致）**：
 都是真编译（源码→本机二进制），差在**每次编译多少东西**——
@@ -116,7 +124,7 @@ KB 级用户部分）；VM 链的编译段 = silu_fe 前端（.si→IR JSON）�
 ## 六、monty 的启示（差距是如何关闭的）
 
 monty（Rust Python 沙箱）fib(28) 纯执行 ~88ms。silu 字节码 VM 首版
-~700ms（8 倍慢），两处修复后 Rust 平面 ~45ms、Silu 孪生 ~105ms——
+~700ms（8 倍慢），两处修复后 Rust 平面 ~52ms、Silu 孪生 ~84ms——
 **双双反超 monty**。差距的真正来源不是"手写 Rust vs 生成代码"，
 而是两个工程 bug：
 

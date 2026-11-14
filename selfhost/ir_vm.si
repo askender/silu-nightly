@@ -776,6 +776,11 @@ def run_vm() -> int:
     FRAME_PC.append(0)
     FRAME_END.append(MODULE_LEN[0])
     FRAME_VBASE.append(0)
+    # loop-hoisted operand temporaries (the arms assign them bare;
+    # distinct names per role avoid re-annotating in one function)
+    d: int = 0
+    sa: int = 0
+    sb: int = 0
     while len(FRAME_PC) > 0:
         pc: int = FRAME_PC[len(FRAME_PC) - 1]
         end: int = FRAME_END[len(FRAME_END) - 1]
@@ -794,88 +799,13 @@ def run_vm() -> int:
             continue
         op: int = CODE[pc]
         FRAME_PC[len(FRAME_PC) - 1] = pc + 1
-        if op == OP_LOAD_CONST:
-            w: int = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
-            vstack_push(CONSTS[w])
-        elif op == OP_LOAD_LOCAL:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
-            vstack_push(SLOTAREA[sbase + w])
-        elif op == OP_STORE_LOCAL:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
-            SLOTAREA[sbase + w] = vstack_pop()
-        elif op == OP_ADD:
-            b: int = vstack_pop()
-            a: int = vstack_pop()
-            vstack_push(a + b)
-        elif op == OP_SUB:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(a - b)
-        elif op == OP_MUL:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(a * b)
-        elif op == OP_FLOORDIV:
-            b = vstack_pop()
-            a = vstack_pop()
-            if b == 0:
-                bail("division by zero")
-                return 0
-            vstack_push(a // b)
-        elif op == OP_MOD:
-            b = vstack_pop()
-            a = vstack_pop()
-            if b == 0:
-                bail("modulo by zero")
-                return 0
-            vstack_push(a % b)
-        elif op == OP_POW:
-            b = vstack_pop()
-            a = vstack_pop()
-            if b < 0:
-                vstack_push(0)
-            else:
-                vstack_push(ipow_vm(a, b))
-        elif op == OP_CMP_EQ:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(eq01(a, b))
-        elif op == OP_CMP_NE:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(ne01(a, b))
-        elif op == OP_CMP_LT:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(lt01(a, b))
-        elif op == OP_CMP_LE:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(le01(a, b))
-        elif op == OP_CMP_GT:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(gt01(a, b))
-        elif op == OP_CMP_GE:
-            b = vstack_pop()
-            a = vstack_pop()
-            vstack_push(ge01(a, b))
-        elif op == OP_JUMP:
-            w: int = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = w
-        elif op == OP_JUMP_IF_FALSE:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
-            v: int = vstack_pop()
-            if v == 0:
-                FRAME_PC[len(FRAME_PC) - 1] = w
-            else:
-                FRAME_PC[len(FRAME_PC) - 1] = pc + 3
-        elif op == OP_CALL:
+        # arms ordered by dynamic frequency on the fib/loops corpus:
+        # call/return/jif/local traffic dominates, then compares and
+        # adds. stack ops are inlined (append/pop + direct d-2 store)
+        # - the helper calls cost ~2x on the recursive benchmark
+        if op == OP_CALL:
             k: int = CODE[pc + 1]
-            w = CODE[pc + 2] + CODE[pc + 3] * 256
+            w: int = CODE[pc + 2] + CODE[pc + 3] * 256
             FRAME_PC[len(FRAME_PC) - 1] = pc + 4
             fi2: int = w
             if fi2 >= len(FN_START):
@@ -903,7 +833,9 @@ def run_vm() -> int:
             FRAME_PC.append(FN_START[fi2])
             FRAME_END.append(FN_START[fi2] + FN_LEN[fi2])
         elif op == OP_RETURN:
-            ret2: int = vstack_pop()
+            d = len(VSTACK)
+            ret2: int = VSTACK[d - 1]
+            VSTACK.pop()
             FRAME_SLOTBASE.pop()
             FRAME_PC.pop()
             FRAME_END.pop()
@@ -912,6 +844,125 @@ def run_vm() -> int:
                 return 0
             vstack_truncate(vbase2)
             VSTACK.append(ret2)
+        elif op == OP_JUMP_IF_FALSE:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            d = len(VSTACK)
+            v: int = VSTACK[d - 1]
+            VSTACK.pop()
+            if v == 0:
+                FRAME_PC[len(FRAME_PC) - 1] = w
+            else:
+                FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+        elif op == OP_LOAD_LOCAL:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            VSTACK.append(SLOTAREA[sbase + w])
+        elif op == OP_LOAD_CONST:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            VSTACK.append(CONSTS[w])
+        elif op == OP_CMP_LT:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sa < sb:
+                VSTACK[d - 2] = 1
+            else:
+                VSTACK[d - 2] = 0
+        elif op == OP_ADD:
+            d = len(VSTACK)
+            VSTACK[d - 2] = VSTACK[d - 2] + VSTACK[d - 1]
+            VSTACK.pop()
+        elif op == OP_SUB:
+            d = len(VSTACK)
+            VSTACK[d - 2] = VSTACK[d - 2] - VSTACK[d - 1]
+            VSTACK.pop()
+        elif op == OP_MUL:
+            d = len(VSTACK)
+            VSTACK[d - 2] = VSTACK[d - 2] * VSTACK[d - 1]
+            VSTACK.pop()
+        elif op == OP_STORE_LOCAL:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            d = len(VSTACK)
+            SLOTAREA[sbase + w] = VSTACK[d - 1]
+            VSTACK.pop()
+        elif op == OP_JUMP:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = w
+        elif op == OP_CMP_EQ:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sa == sb:
+                VSTACK[d - 2] = 1
+            else:
+                VSTACK[d - 2] = 0
+        elif op == OP_CMP_NE:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sa != sb:
+                VSTACK[d - 2] = 1
+            else:
+                VSTACK[d - 2] = 0
+        elif op == OP_CMP_LE:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sa <= sb:
+                VSTACK[d - 2] = 1
+            else:
+                VSTACK[d - 2] = 0
+        elif op == OP_CMP_GT:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sa > sb:
+                VSTACK[d - 2] = 1
+            else:
+                VSTACK[d - 2] = 0
+        elif op == OP_CMP_GE:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sa >= sb:
+                VSTACK[d - 2] = 1
+            else:
+                VSTACK[d - 2] = 0
+        elif op == OP_FLOORDIV:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sb == 0:
+                bail("division by zero")
+                return 0
+            VSTACK[d - 2] = sa // sb
+        elif op == OP_MOD:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sb == 0:
+                bail("modulo by zero")
+                return 0
+            VSTACK[d - 2] = sa % sb
+        elif op == OP_POW:
+            d = len(VSTACK)
+            sa = VSTACK[d - 2]
+            sb = VSTACK[d - 1]
+            VSTACK.pop()
+            if sb < 0:
+                VSTACK[d - 2] = 0
+            else:
+                VSTACK[d - 2] = ipow_vm(sa, sb)
         elif op == OP_PRINT:
             k = CODE[pc + 1]
             FRAME_PC[len(FRAME_PC) - 1] = pc + 2
@@ -931,9 +982,9 @@ def run_vm() -> int:
         elif op == OP_POP:
             vstack_pop()
         elif op == OP_LOAD_INT0:
-            vstack_push(0)
+            VSTACK.append(0)
         elif op == OP_LOAD_INT1:
-            vstack_push(1)
+            VSTACK.append(1)
         else:
             bail("unknown opcode " + str(op))
             return 0

@@ -78,12 +78,16 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   自包含，stdin 首行 "@dump" 选 dump 模式）。门禁两道（探针在
   tools/irvm/probes/）：执行差分 test.sh（vs ir_interp，9/9）、跨平面
   字节一致 bytecode_diff.sh（Rust dump vs 孪生 dump，9/9 逐字节）。
-  **速度（fib28 总耗时）**：Rust VM 50ms / 孪生 native 110ms（跑赢
-  monty 116ms）/ ir_interp 1.76s / AST 解释器 ~15s。Rust VM 曾
+  **速度（fib28 总耗时）**：Rust VM 50ms / 孪生 native 80ms（分派臂
+  内联+按频次重排；原 115ms）/ monty 116ms / ir_interp 1.76s / AST
+  解释器 ~15s（CPython 60ms 仍略快——C 级解释器）。Rust VM 曾
   0.775s——每指令 env 查询（调试残留）+ 每帧堆分配两连修后 15.5×；
   **VM 循环内禁止 env 查询/每帧分配**。孪生回物理栈模型（VDEPTH
   惰性栈是绕已修 bug 的变体，必然发散；FRAME_VBASE 声明未用 =
   RETURN 截断无落点）。连带修 conv rawlist_pop 清零 bug（双平面）。
+  **编译链对比**：rustc -O 同 workload 固定 100ms（运行 <1ms）；
+  siluc 缓存驱动 170ms（runtime 预编译 .o，只编用户部分）；默认
+  `silu build` 530ms（clang -O2 全量 375KB IR 是大头）。
   思考文档 docs/interp_vs_comp.md、评测集 tools/irvm/eval.py。
 - **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。

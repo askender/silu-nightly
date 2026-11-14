@@ -658,10 +658,12 @@ raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）�
   ②CALL 每帧 `vec![0i64; nslots]` 堆分配——改共享 flat slotarea
   （帧记 sbase，与孪生 SLOTAREA 同构）。
 - **速度榜（fib28 总耗时）**：Rust VM 50ms / **Silu 孪生 native
-  110ms（跑赢 monty ~116ms）** / monty 116ms / ir_interp 1,760ms /
-  AST 解释器 ~15s。孪生比 Rust VM 慢 ~2×（辅助函数调用链 + 边界
-  检查——自举代价）；**VM 模型（扁平字节码+flat 槽区）比宿主语言
-  手写优化更关键**。
+  80ms（分派臂内联+按频次重排后，原 110ms）** / monty 116ms /
+  ir_interp 1,760ms / AST 解释器 ~15s（CPython 60ms 仍略快于孪生
+  ——CPython 的 fib 是 C 级字节码解释器）。孪生与 Rust 的剩余差距
+  ~1.6×：循环顶 4 张平行 list 的 [len-1] 读取 vs Rust 结构体字段、
+  elif 链 vs Rust match 跳转表——后者是 Python 子集无 switch/goto
+  的表达能力边界，孪生的角色是跨平面互证而非绝对速度。
 - **连带修复（编译平面真 bug，双平面同 commit）**：conv 的
   rawlist_pop 把长度 store zero64 清零整个列表（Python
   typed_codegen.py + Rust const_prefix.ll 镜像）→ ll 门禁曾 19/20，
