@@ -543,6 +543,40 @@ wasm/artifacts/wat2wasm.wasm）。
   （types 按首用序 = imports 先于 funcs；memory 节带多内存计数字节
   `01`；export kind func=0 memory=2）。
 
+## 三点十七、ir_interp 响亮化 + host 退出码语义修复（2026-11-14 深夜）
+
+int-only 树解释器 selfhost/ir_interp.si 对子集外程序过去静默求 0
+甚至挂死——**挂死根因**：float const 在 IR JSON 里是裸浮点
+（`["const", 0.0]`），Json 解析器 number() 消费整数位后停在 '.'，
+value() 再派发 number() 又不消费——无限循环（strbuf_sem 40 分钟悬死）。
+修复三层：
+
+- **解析器加固**：非 int 数字（. e E）/未知字符/转义串/越界 → err 标记，
+  各容器循环短路。
+- **两阶段预检**（check_block mode 0/1）：pass A 收集 func_def 名，
+  pass B 全树校验 int-only 白名单（aug_assign 仅 name 目标、call 仅
+  print+用户函数、const 仅 int）——首个违规入 ERRS，main 打
+  `ir_interp bail: <原因>` 返回 **exit 3**（对齐 Rust oracle bail 惯例），
+  先于任何程序输出。
+- **err 标记展开**：exec_stmts 每步检查点、while 体检查点、eval/fallthrough
+  全部落 err——运行期永不静默 0。
+
+**连带发现并修复 host.mjs 语义缺口**：`ex[entry]()` 一直丢弃入口返回
+值 → wasm 平面 exitCode 恒 0（native 驱动是把 main 返回值当进程退出码
+的）。现 main 返回值 → exitCode（BigInt→Number）。die()/trap 路径不变。
+
+**test_run 门禁改版**：INTERP_SKIP（14 项静默跳过）→ INTERP_LOUD 断言
+——两平面各自响亮（exit≠0）、bail 消息**逐字节互拍**、退出码互拍；
+3/17 三方一致 + 14 loud。五门禁全绿：compile 20/20（含 split 管线重建
+的 siluc1.wasm 与 native 逐字节互拍）、shim 252/252、backend 17/17、
+corpus 15/15、run 3+14。
+
+**已知边界**：`silu interpret` 平面（AST 解释器）不把 main 返回值映射
+为退出码（cli.py run_interpreter 丢弃返回值）——ir_interp 经该平面跑
+时 bail 消息仍打印但 rc=0。改 cli.py 是独立小项（pytest 期望值爆炸
+半径未查）。另：test_run 的 native interp 构建从 existsSync 缓存改为
+mtime-newer 重建（教训②的门禁侧防线）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **v1.18.1 已公开发布（2026-11-10）**：

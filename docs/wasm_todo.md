@@ -157,8 +157,8 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    文档化 no-op。jsonparse_json 8ms 逐字节。
    **剩余（按需）**：方法调用/继承/守卫与位置模式 = 响亮 gap；
    json_null/json_free 深释放 = 子集外。
-5. **直接二进制发射**：backend 直出 wasm 二进制（LEB128）摆脱 wabt.js
-   0.66 MB 依赖；评估 `docs/wasm_plan.md` §L2 尾注。
+5. ✅ ~~直接二进制发射~~（2026-11-14 关闭，见第 8 条）：backend 直出
+   wasm 二进制（LEB128）摆脱 wabt.js 0.66 MB 依赖。
 6. **closure 族 / strbuf 语料**（视覆盖面决定，wasm_plan §3.5）。
 7. **工程化**：wasm 四门禁进 CI（Node 已钉 24.3；artifacts 缓存策略）；
    playground 示例列表扩充（新门禁示例自动同步进下拉）。
@@ -193,6 +193,28 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    emit_body/emit_form 逐形 `acc = acc + seg` 字符串累积（compiled
    str 拼接窄窗扩展守卫失效退全拷，二次方），**后续改 list[str]+join
    累积**（语言已有 join），playground 手输程序（KB 级）无感。
+9. ✅ ~~ir_interp 响亮化~~（2026-11-14 关闭）：selfhost/ir_interp.si
+   （int-only 树解释器）过去对子集外程序**静默求 0 甚至挂死**——float
+   const（`["const", 0.0]` 裸 JSON 浮点）让 Json 解析器在 '.' 上无限
+   循环（strbuf_sem 40 分钟悬死根因），其余未知 IR tag 一律 `return 0`。
+   现在：①解析器加固（非 int 数字/未知字符/转义串/越界 → err）；②
+   **两阶段预检**——pass A 收集 func_def 名，pass B 全树校验白名单
+   （stmt：line/assign/ann_assign/aug_assign(仅 name 目标)/print/call/
+   func_def/return/break/continue/if/while；expr：const(仅 int)/name/
+   call(仅 print+用户函数)/算术/比较/and/or/not）——首个违规记入 ERRS；
+   ③err 标记展开（exec_stmts 每步检查点）。命中即打
+   `ir_interp bail: <原因>` + **exit 3**（对齐 Rust oracle bail 惯例）
+   且**先于任何程序输出**。连带修 **host.mjs 语义缺口**：入口返回值
+   一直被丢弃（`ex[entry]()`）→ wasm 平面 exitCode 恒 0；现 main 返回
+   值 = 进程退出码（BigInt→Number），与 native 驱动一致。
+   **test_run 门禁改版**：INTERP_SKIP 14 项 → INTERP_LOUD 断言（两平面
+   各自响亮 + **bail 消息逐字节互拍** + 退出码互拍）；3 三方一致 + 14
+   loud。五门禁全绿（compile 20/20、shim 252/252、backend 17/17、corpus
+   15/15、run 3+14）。**已知边界**：`silu interpret` 平面（AST 解释器）
+   不把 main 返回值映射为退出码（run_interpreter 丢弃返回值）——ir_interp
+   经 interpret 平面跑时消息仍打印但 rc=0；改 cli.py 语义是独立小项
+   （需查 pytest 期望值爆炸半径）。test_run 的 native interp 构建加了
+   mtime-newer 重建（existsSync 缓存教训的门禁侧防线）。
 
 ## 六、边界（不做什么，wasm_plan §6 重申）
 

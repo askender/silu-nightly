@@ -3,12 +3,16 @@ from __future__ import annotations
 # interpreter for a Silu IR subset, written in Silu itself.
 # Pipeline: read JSON IR from stdin -> parse to JValue trees -> execute.
 # Supported IR subset: module, line, const (int), name,
-# assign/ann_assign, aug_assign, binops (+ - * // %), compare, if,
-# while (with break/continue), and/or/not (short-circuit truthiness
-# in conditions, 0/1 in int contexts), print(int-expr), call of
-# user-defined int functions (with per-call env, recursion), func_def,
-# return. Anything else silently evaluates to 0 (NOT an error signal;
-# known gap - containers/floats/strs live in the wasm backend gate).
+# assign/ann_assign, aug_assign (name targets only), binops
+# (+ - * // % **), compare (< <= > >= == !=), if, while (with
+# break/continue), and/or/not (short-circuit truthiness in conditions,
+# 0/1 in int contexts), print(int-expr), call of user-defined int
+# functions (with per-call env, recursion), func_def, return.
+# Anything OUTSIDE the subset fails LOUDLY: a two-pass pre-check walks
+# the whole tree (pass A collects func_def names, pass B validates)
+# and the program prints "ir_interp bail: <reason>" and exits 3 before
+# producing any output - never a silent 0, never a hang.  Containers/
+# floats/strs/classes live in the wasm backend gate.
 # Usage: python -m silu ir prog.py --output prog.ir.json
 #        silu build ir_interp.si && ./ir_interp < prog.ir.json
 
@@ -55,6 +59,7 @@ def jnull() -> JValue:
 class Json:
     src: str
     pos: int
+    err: str
 
     def ws(self) -> int:
         while self.pos < len(self.src):
@@ -67,6 +72,9 @@ class Json:
 
     def value(self) -> JValue:
         self.ws()
+        if self.pos >= len(self.src):
+            self.err = "unexpected end of json"
+            return jnull()
         ch = self.src[self.pos]
         if ch == "{":
             return self.object()
@@ -83,15 +91,33 @@ class Json:
         if ch == "n":
             self.pos += 4
             return jnull()
-        return self.number()
+        if ch == "-" or (ch >= "0" and ch <= "9"):
+            return self.number()
+        self.err = "unexpected json char '" + ch + "'"
+        return jnull()
 
     def string(self) -> str:
         self.pos += 1
         start: int = self.pos
-        while self.src[self.pos] != '"':
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == '"':
+                out: str = self.src[start:self.pos]
+                self.pos += 1
+                return out
+            if ch == chr(92):
+                break
             self.pos += 1
-        out: str = self.src[start:self.pos]
-        self.pos += 1
+        # escaped form: consume pairs so the scan stays in bounds (the
+        # content is not decoded - str consts bail in the checker)
+        out = self.src[start:self.pos]
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == '"':
+                self.pos += 1
+                return out
+            self.pos += 2
+        self.err = "unterminated json string"
         return out
 
     def number(self) -> JValue:
@@ -101,28 +127,44 @@ class Json:
             neg = True
             self.pos += 1
         n: int = 0
-        while True:
+        nd: int = 0
+        while self.pos < len(self.src):
             ch = self.src[self.pos]
             if ch >= "0" and ch <= "9":
                 d: int = ord(ch) - 48
                 n = n * 10 + d
+                nd += 1
                 self.pos += 1
             else:
-                if neg:
-                    return jnum(0 - n)
-                return jnum(n)
+                break
+        if nd == 0:
+            self.err = "bad json number"
+            return jnull()
+        if self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == "." or ch == "e" or ch == "E":
+                self.err = "non-int json number (float const)"
+                return jnull()
+        if neg:
+            return jnum(0 - n)
+        return jnum(n)
 
     def array(self) -> JValue:
         items: list[JValue] = []
         self.pos += 1
         while True:
             self.ws()
+            if self.pos >= len(self.src):
+                self.err = "unterminated json array"
+                return jarr(items)
             if self.src[self.pos] == "]":
                 self.pos += 1
                 return jarr(items)
             items.append(self.value())
+            if self.err != "":
+                return jarr(items)
             self.ws()
-            if self.src[self.pos] == ",":
+            if self.pos < len(self.src) and self.src[self.pos] == ",":
                 self.pos += 1
 
     def object(self) -> JValue:
@@ -130,15 +172,22 @@ class Json:
         self.pos += 1
         while True:
             self.ws()
+            if self.pos >= len(self.src):
+                self.err = "unterminated json object"
+                return head
             if self.src[self.pos] == "}":
                 self.pos += 1
                 if head.kind == JKind.NIL:
                     return jnull()
                 return head
             k: str = self.string()
+            if self.err != "":
+                return head
             self.ws()
             self.pos += 1  # colon
             v: JValue = self.value()
+            if self.err != "":
+                return head
             pair: JValue = JValue(JKind.OBJ, False, 0, "", None, k, v)
             if head.kind == JKind.NIL:
                 head = pair
@@ -173,6 +222,129 @@ def elem_int(node: JValue, i: int) -> int:
 FNP: list[JValue] = []
 FNB: list[JValue] = []
 
+# subset checker state: user func names (pass A) + first violation
+FNAMES: list[str] = []
+ERRS: list[str] = []
+
+
+def fn_known(nm: str) -> int:
+    i: int = 0
+    while i < len(FNAMES):
+        if FNAMES[i] == nm:
+            return 1
+        i += 1
+    return 0
+
+
+# pass A (mode 0) collects func_def names everywhere in the tree; pass B
+# (mode 1) validates every node against the int-only subset whitelist
+# and records the FIRST violation in ERRS.  A program that fails the
+# check never executes, so no wrong output can be produced.
+def check_expr(node: JValue, mode: int) -> int:
+    if node.kind != JKind.ARR:
+        if mode == 1 and len(ERRS) == 0:
+            ERRS.append("non-node expression value")
+        return 0
+    t: str = tag(node)
+    if t == "const":
+        if mode == 1:
+            v: JValue = elem(node, 1)
+            if v.kind != JKind.NUM and v.kind != JKind.BOOL:
+                ERRS.append("non-int const value")
+        return 0
+    if t == "name" or t == "line":
+        return 0
+    if t == "call":
+        callee: JValue = elem(node, 1)
+        if mode == 1:
+            if callee.kind != JKind.ARR or tag(callee) != "name":
+                ERRS.append("call with non-name callee")
+            else:
+                nm: str = elem(callee, 1).s
+                if nm != "print" and fn_known(nm) == 0:
+                    ERRS.append("call to unsupported builtin '" + nm + "'")
+        args: JValue = elem(node, 2)
+        i: int = 0
+        while i < len(args.arr):
+            check_expr(elem(args, i), mode)
+            i += 1
+        return 0
+    if t == "+" or t == "-" or t == "*" or t == "//" or t == "%" or t == "**":
+        check_expr(elem(node, 1), mode)
+        if len(node.arr) > 2:
+            check_expr(elem(node, 2), mode)
+        return 0
+    if t == "<" or t == "<=" or t == ">" or t == ">=" or t == "==" or t == "!=":
+        check_expr(elem(node, 1), mode)
+        check_expr(elem(node, 2), mode)
+        return 0
+    if t == "and" or t == "or" or t == "not":
+        check_expr(elem(node, 1), mode)
+        if t != "not":
+            check_expr(elem(node, 2), mode)
+        return 0
+    if mode == 1 and len(ERRS) == 0:
+        ERRS.append("unsupported expression '" + t + "'")
+    return 0
+
+
+def check_block(stmts: JValue, mode: int) -> int:
+    if stmts is None or stmts.kind != JKind.ARR:
+        return 0
+    i: int = 0
+    while i < len(stmts.arr):
+        check_stmt(elem(stmts, i), mode)
+        i += 1
+    return 0
+
+
+def check_stmt(stmt: JValue, mode: int) -> int:
+    if stmt is None or stmt.kind != JKind.ARR:
+        if mode == 1 and len(ERRS) == 0:
+            ERRS.append("non-node statement value")
+        return 0
+    t: str = tag(stmt)
+    if t == "line":
+        return 0
+    if t == "assign" or t == "ann_assign":
+        check_expr(elem(stmt, 2), mode)
+        return 0
+    if t == "aug_assign":
+        if mode == 1:
+            tgt: JValue = elem(stmt, 1)
+            if tgt.kind != JKind.ARR or tag(tgt) != "name":
+                ERRS.append("aug_assign on non-name target")
+        check_expr(elem(stmt, 3), mode)
+        return 0
+    if t == "print":
+        check_expr(elem(stmt, 1), mode)
+        return 0
+    if t == "call":
+        check_expr(stmt, mode)
+        return 0
+    if t == "func_def":
+        if mode == 0:
+            FNAMES.append(elem_str(stmt, 1))
+        check_block(elem(stmt, 3), mode)
+        return 0
+    if t == "return":
+        check_expr(elem(stmt, 1), mode)
+        return 0
+    if t == "break" or t == "continue":
+        return 0
+    if t == "if":
+        check_expr(elem(stmt, 1), mode)
+        check_block(elem(stmt, 2), mode)
+        check_block(elem(stmt, 3), mode)
+        return 0
+    if t == "while":
+        check_expr(elem(stmt, 1), mode)
+        check_block(elem(stmt, 2), mode)
+        return 0
+    if mode == 1 and len(ERRS) == 0:
+        ERRS.append("unsupported statement '" + t + "'")
+    return 0
+
 
 def fn_register(params: JValue, body: JValue) -> int:
     FNP.append(params)
@@ -194,6 +366,7 @@ class Interp:
     funcs: dict[str, int]
     ret: int
     has_ret: bool
+    err: str
 
     def get_int(self, name: str) -> int:
         if name in self.env:
@@ -203,6 +376,9 @@ class Interp:
     def call_user(self, name: str, args: JValue) -> int:
         # evaluate args in the CALLER's env first, then swap in a fresh
         # env and bind (arg exprs may reference caller locals like `n`)
+        if name not in self.funcs:
+            self.err = "call to unknown function '" + name + "'"
+            return 0
         idx: int = self.funcs[name]
         vals: list[int] = []
         i: int = 0
@@ -225,7 +401,12 @@ class Interp:
     def eval_int(self, node: JValue) -> int:
         t: str = tag(node)
         if t == "const":
-            return elem(node, 1).n
+            v: JValue = elem(node, 1)
+            if v.kind == JKind.BOOL:
+                if v.b:
+                    return 1
+                return 0
+            return v.n
         if t == "name":
             return self.get_int(elem(node, 1).s)
         if t == "line":
@@ -234,6 +415,7 @@ class Interp:
             cname: str = elem(elem(node, 1), 1).s
             if cname in self.funcs:
                 return self.call_user(cname, elem(node, 2))
+            self.err = "call to unsupported builtin '" + cname + "'"
             return 0
         if t == "+":
             return self.eval_int(elem(node, 1)) + self.eval_int(elem(node, 2))
@@ -250,6 +432,30 @@ class Interp:
             return self.eval_int(elem(node, 1)) % self.eval_int(elem(node, 2))
         if t == "**":
             return self.ipow(self.eval_int(elem(node, 1)), self.eval_int(elem(node, 2)))
+        if t == "<":
+            if self.eval_int(elem(node, 1)) < self.eval_int(elem(node, 2)):
+                return 1
+            return 0
+        if t == "<=":
+            if self.eval_int(elem(node, 1)) <= self.eval_int(elem(node, 2)):
+                return 1
+            return 0
+        if t == ">":
+            if self.eval_int(elem(node, 1)) > self.eval_int(elem(node, 2)):
+                return 1
+            return 0
+        if t == ">=":
+            if self.eval_int(elem(node, 1)) >= self.eval_int(elem(node, 2)):
+                return 1
+            return 0
+        if t == "==":
+            if self.eval_int(elem(node, 1)) == self.eval_int(elem(node, 2)):
+                return 1
+            return 0
+        if t == "!=":
+            if self.eval_int(elem(node, 1)) != self.eval_int(elem(node, 2)):
+                return 1
+            return 0
         if t == "and":
             if self.eval_int(elem(node, 1)) == 0:
                 return 0
@@ -266,6 +472,7 @@ class Interp:
             if self.eval_int(elem(node, 1)) == 0:
                 return 1
             return 0
+        self.err = "unsupported expression '" + t + "'"
         return 0
 
     def ipow(self, base: int, e: int) -> int:
@@ -287,7 +494,10 @@ class Interp:
     def truthy(self, node: JValue) -> bool:
         t: str = tag(node)
         if t == "const":
-            return elem(node, 1).b
+            v: JValue = elem(node, 1)
+            if v.kind == JKind.BOOL:
+                return v.b
+            return self.eval_int(node) != 0
         if t == "and":
             if not self.truthy(elem(node, 1)):
                 return False
@@ -310,7 +520,9 @@ class Interp:
             return self.eval_int(elem(node, 1)) == self.eval_int(elem(node, 2))
         if t == "!=":
             return self.eval_int(elem(node, 1)) != self.eval_int(elem(node, 2))
-        return False
+        # whitelisted int exprs: CPython truthiness of the int value
+        # (unknown tags raise err inside eval_int)
+        return self.eval_int(node) != 0
 
     def show_int(self, v: int) -> str:
         if v < 0:
@@ -328,7 +540,11 @@ class Interp:
         i: int = 0
         n: int = len(stmts.arr)
         while i < n:
+            if self.err != "":
+                return 0
             r: int = self.exec_stmt(elem(stmts, i))
+            if self.err != "":
+                return 0
             if r != 0:
                 return r
             i += 1
@@ -342,7 +558,11 @@ class Interp:
             self.env[elem_str(stmt, 1)] = self.eval_int(elem(stmt, 2))
             return 0
         if t == "aug_assign":
-            tgt: str = elem(elem(stmt, 1), 1).s
+            tgtn: JValue = elem(stmt, 1)
+            if tgtn.kind != JKind.ARR or tag(tgtn) != "name":
+                self.err = "aug_assign on non-name target"
+                return 0
+            tgt: str = elem(tgtn, 1).s
             cur: int = self.get_int(tgt)
             op: str = elem_str(stmt, 2)
             rhs: int = self.eval_int(elem(stmt, 3))
@@ -389,6 +609,8 @@ class Interp:
             elif name in self.funcs:
                 # statement-level user call; the value is discarded
                 junk: int = self.call_user(name, elem(stmt, 2))
+            else:
+                self.err = "call to unsupported builtin '" + name + "'"
             return 0
         if t == "if":
             if self.truthy(elem(stmt, 1)):
@@ -401,16 +623,33 @@ class Interp:
                     return 0
                 if r2 != 0 and r2 != 3:
                     return r2
+                if self.err != "":
+                    return 0
             return 0
+        self.err = "unsupported statement '" + t + "'"
         return 0
 
 
 
 def main() -> int:
     src: str = read_stdin()
-    parser: Json = Json(src, 0)
+    parser: Json = Json(src, 0, "")
     root: JValue = parser.value()
-    interp: Interp = Interp({}, "", {}, 0, False)
-    interp.exec_stmts(elem(root, 1))
+    if parser.err != "":
+        print("ir_interp bail: bad IR json: " + parser.err)
+        return 3
+    body: JValue = elem(root, 1)
+    # pass A: collect user func names, pass B: validate the subset
+    check_block(body, 0)
+    check_block(body, 1)
+    if len(ERRS) > 0:
+        print("ir_interp bail: " + ERRS[0])
+        return 3
+    interp: Interp = Interp({}, "", {}, 0, False, "")
+    interp.exec_stmts(body)
+    if interp.err != "":
+        # nothing of the program output is printed - loud failure only
+        print("ir_interp bail: " + interp.err)
+        return 3
     print(interp.out, end="")
     return 0

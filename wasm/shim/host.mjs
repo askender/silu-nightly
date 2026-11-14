@@ -442,8 +442,12 @@ function makeHost(files, stdinBytes) {
         const entry =
           Object.keys(ex).find((k) => k === "silu_main") ||
           Object.keys(ex).find((k) => typeof ex[k] === "function");
-        ex[entry]();
-        if (exitCode === null) exitCode = 0;
+        const rv = ex[entry]();
+        if (exitCode === null) {
+          // main's return value is the process exit code, matching the
+          // native driver (wasm64 returns BigInt)
+          exitCode = typeof rv === "bigint" ? Number(rv) : (typeof rv === "number" ? rv : 0);
+        }
       } catch (e) {
         if (!(e instanceof SiluExit)) {
           stderr.push(new TextEncoder().encode(`host: trap: ${e.message}\n${e.stack || ""}\n`));

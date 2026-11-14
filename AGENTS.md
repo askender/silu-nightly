@@ -85,6 +85,14 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   全部差分实证。**教训：token 相对下标（j-N）必须 DBG 探针实证不心算；
   match_close 返回 RP+1 哨兵**。已知性能项 ~2s/KB（逐形字符串累积
   二次方，后续 list+join）。
+- **ir_interp 响亮化 + host 退出码（2026-11-14 深夜，详见 STATUS.md
+  §3.17）**：int-only 树解释器对子集外程序从"静默求 0/挂死"改为
+  两阶段预检 → `ir_interp bail: <原因>` + exit 3（挂死根因 = IR JSON
+  裸浮点 const 让解析器在 '.' 上死循环）。连带修 host.mjs 入口返回值
+  丢弃缺口——wasm 平面 exitCode 从恒 0 改为 main 返回值（与 native
+  一致）。test_run 门禁 INTERP_SKIP → INTERP_LOUD（两平面 bail 消息
+  逐字节互拍）；3 三方一致 + 14 loud，五门禁全绿。已知边界：AST
+  interpret 平面不映射 main 返回值为退出码（独立小项）。
 - **L2 语料验收达成（HEAD 66fdfa7 后续，2026-11-14）**：wasm 后端跑通
   **全部非动态层语料**——13/15 benchmark 逐字节对拍 CPython（arith/
   dict/fannkuch/fib/float/list/mandelbrot/nbody/spectral/string/trees/
