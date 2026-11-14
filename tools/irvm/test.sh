@@ -7,7 +7,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 IRVM="$REPO/tools/irvm/target/release/silu-irvm"
 INTERP="${IR_INTERP:-/tmp/ir_interp_O2}"
 FE="$REPO/silu_fe"
-PROBES="${*:-/tmp/irvm_p/c_and_or.si /tmp/irvm_p/fib.si /tmp/irvm_p/loops.si /tmp/irvm_p/unary.si /tmp/irvm_p/pow.si /tmp/irvm_p/boolint.si}"
+PROBES="${*:-$REPO/tools/irvm/probes/c_and_or.si $REPO/tools/irvm/probes/fib.si $REPO/tools/irvm/probes/loops.si $REPO/tools/irvm/probes/unary.si $REPO/tools/irvm/probes/pow.si $REPO/tools/irvm/probes/boolint.si $REPO/tools/irvm/probes/fibseq.si $REPO/tools/irvm/probes/fib10.si $REPO/tools/irvm/probes/dbl.si}"
 pass=0; fail=0
 for f in $PROBES; do
   "$FE" < "$f" > /tmp/irvm_probe.json

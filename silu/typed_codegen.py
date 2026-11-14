@@ -551,7 +551,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         items_i64 = builder.bitcast(items, ir.PointerType(i64))
         slot = builder.gep(items_i64, [last_index])
         value = builder.load(slot)
-        builder.store(zero64, _struct_gep(builder, struct_ptr, 0))
+        # pop removes ONE element: the length decrements by 1 (the
+        # old store of zero64 wiped the WHOLE list - l.pop() emptied
+        # it instead of removing the last element)
+        builder.store(
+            builder.sub(length, one64), _struct_gep(builder, struct_ptr, 0)
+        )
         builder.ret(value)
 
         # PyObject* rawlist_to_pylist(i8* list, i64 length)

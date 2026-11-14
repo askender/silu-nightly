@@ -1,0 +1,980 @@
+# ir_vm: the Silu twin of tools/irvm (Rust) - SAME bytecode layout.
+# Reads the silu_fe IR JSON on stdin, compiles it to a flat bytecode
+# stream, executes on a stack VM (monty-style: u8 opcode discriminants
+# with W/K operand suffixes, const pool, named locals as frame slots,
+# jump-based control flow). Mode via the first stdin line: "@dump"
+# compiles and prints the bytecode as HEX (the cross-plane check vs
+# the Rust plane's IRVM_DUMP=1 - tools/irvm/bytecode_diff.sh diffs
+# them byte-identically); anything else compiles AND executes, printing
+# the program output. Loud bail (exit 3) outside the int-only subset,
+# matching selfhost/ir_interp.si's whitelist.
+#
+# Self-contained: no imports (the selfhost FE's import inlining and the
+# interpret plane's module resolution have different shapes; this file
+# runs unmodified on the AST interpret plane, the native driver and
+# wasm). Mutated module globals are list cells (the globals.si gate
+# shape); the module body travels as a PARAMETER. The value stack is
+# an append-only arena + explicit depth cell (no pop/del: the compiled
+# planes' list pop and del broke this VM).
+
+HEX: str = "0123456789abcdef"
+OP_LOAD_CONST: int = 1
+OP_LOAD_LOCAL: int = 2
+OP_STORE_LOCAL: int = 3
+OP_ADD: int = 4
+OP_SUB: int = 5
+OP_MUL: int = 6
+OP_FLOORDIV: int = 7
+OP_MOD: int = 8
+OP_POW: int = 9
+OP_CMP_EQ: int = 10
+OP_CMP_NE: int = 11
+OP_CMP_LT: int = 12
+OP_CMP_LE: int = 13
+OP_CMP_GT: int = 14
+OP_CMP_GE: int = 15
+OP_JUMP: int = 16
+OP_JUMP_IF_FALSE: int = 17
+OP_CALL: int = 18
+OP_RETURN: int = 19
+OP_PRINT: int = 20
+OP_POP: int = 21
+OP_LOAD_INT0: int = 22
+OP_LOAD_INT1: int = 23
+
+# program state (list-cell / parallel-list patterns; mutations go
+# through append / pop / subscript-assign - all gate-proven shapes)
+CODE: list[int] = []
+CONSTS: list[int] = []
+CONST_KEYS: list[str] = []
+CONST_MAP: dict[str, int] = {}
+FN_NAME: list[str] = []
+FN_PARAMS: list[int] = []
+FN_NSLOTS: list[int] = []
+FN_START: list[int] = []
+FN_LEN: list[int] = []
+FUNC_IDX_KEYS: list[str] = []
+FUNC_IDX_VALS: list[int] = []
+LABEL_KEYS: list[str] = []
+LABEL_VALS: list[int] = []
+PATCH_POS: list[int] = []
+PATCH_LBL: list[int] = []
+LOCAL_KEYS: list[str] = []
+LOCAL_VALS: list[int] = []
+LOOP_TOP: list[int] = []
+LOOP_END: list[int] = []
+SEARCH: list[JV] = []
+ERR: list[str] = []
+VSTACK: list[int] = []
+FRAME_SLOTBASE: list[int] = []
+FRAME_VBASE: list[int] = []
+FRAME_PC: list[int] = []
+FRAME_END: list[int] = []
+SLOTAREA: list[int] = []
+OUT: list[str] = []
+NEXT_LABEL: list[int] = [0]
+MODULE_SLOTS: list[int] = [1]
+MODULE_LEN: list[int] = [0]
+
+
+class JV:
+    kind: int
+    b: bool
+    n: int
+    s: str
+    arr: list[JV]
+
+
+def jnull() -> JV:
+    return JV(0, False, 0, "", None)
+
+
+def jbool(v: bool) -> JV:
+    return JV(1, v, 0, "", None)
+
+
+def jnum(v: int) -> JV:
+    return JV(2, False, v, "", None)
+
+
+def jstr(v: str) -> JV:
+    return JV(3, False, 0, v, None)
+
+
+def jarr(items: list[JV]) -> JV:
+    return JV(4, False, 0, "", items)
+
+
+def jtag(node: JV) -> str:
+    return node.arr[0].s
+
+
+class JR:
+    src: str
+    pos: int
+    err: str
+
+    def ws(self) -> int:
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == " " or ch == "\n" or ch == "\t" or ch == "\r":
+                self.pos += 1
+            else:
+                return 0
+        return 0
+
+    def value(self) -> JV:
+        self.ws()
+        if self.pos >= len(self.src):
+            self.err = "unexpected end of json"
+            return jnull()
+        ch = self.src[self.pos]
+        if ch == "[":
+            return self.array()
+        if ch == '"':
+            return jstr(self.string())
+        if ch == "t":
+            self.pos += 4
+            return jbool(True)
+        if ch == "f":
+            self.pos += 5
+            return jbool(False)
+        if ch == "n":
+            self.pos += 4
+            return jnull()
+        if ch == "-" or (ch >= "0" and ch <= "9"):
+            return self.number()
+        self.err = "unexpected json char '" + ch + "'"
+        return jnull()
+
+    def array(self) -> JV:
+        self.pos += 1
+        items: list[JV] = []
+        while True:
+            self.ws()
+            if self.pos >= len(self.src):
+                self.err = "unterminated json array"
+                return jarr(items)
+            if self.src[self.pos] == "]":
+                self.pos += 1
+                return jarr(items)
+            items.append(self.value())
+            if self.err != "":
+                return jarr(items)
+            self.ws()
+            if self.pos < len(self.src) and self.src[self.pos] == ",":
+                self.pos += 1
+
+    def string(self) -> str:
+        self.pos += 1
+        start: int = self.pos
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == '"':
+                out: str = self.src[start:self.pos]
+                self.pos += 1
+                return out
+            self.pos += 1
+        self.err = "unterminated json string"
+        return ""
+
+    def number(self) -> JV:
+        start: int = self.pos
+        if self.src[self.pos] == "-":
+            self.pos += 1
+        nd: int = 0
+        while self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch >= "0" and ch <= "9":
+                self.pos += 1
+                nd += 1
+            else:
+                break
+        if nd == 0:
+            self.err = "bad json number"
+            return jnum(0)
+        if self.pos < len(self.src):
+            ch = self.src[self.pos]
+            if ch == "." or ch == "e" or ch == "E":
+                self.err = "non-int json number (float const)"
+                return jnum(0)
+        text: str = self.src[start:self.pos]
+        return jnum(int(text))
+
+
+def hex2(v: int) -> str:
+    return HEX[v // 16] + HEX[v % 256 % 16]
+
+
+def is_err() -> int:
+    if len(ERR) > 0:
+        return 1
+    return 0
+
+
+def bail(msg: str) -> int:
+    ERR.append(msg)
+    return 0
+
+
+def emit(op: int) -> int:
+    CODE.append(op)
+    return 0
+
+
+def emit_w(op: int, w: int) -> int:
+    CODE.append(op)
+    CODE.append(w % 256)
+    CODE.append(w // 256)
+    return 0
+
+
+def emit_kw(op: int, k: int, w: int) -> int:
+    CODE.append(op)
+    CODE.append(k)
+    CODE.append(w % 256)
+    CODE.append(w // 256)
+    return 0
+
+
+def emit_k(op: int, k: int) -> int:
+    CODE.append(op)
+    CODE.append(k)
+    return 0
+
+
+def jump_to(op: int, lid: int) -> int:
+    CODE.append(op)
+    PATCH_POS.append(len(CODE))
+    PATCH_LBL.append(lid)
+    CODE.append(0)
+    CODE.append(0)
+    return 0
+
+
+def patch_at(pos: int, off: int) -> int:
+    CODE[pos] = off % 256
+    CODE[pos + 1] = off // 256
+    return 0
+
+
+def patch_all() -> int:
+    # called at each body end: every label referenced in the body is
+    # placed by then, so every pending entry resolves
+    i: int = 0
+    while i < len(PATCH_POS):
+        key: str = str(PATCH_LBL[i])
+        ki: int = 0
+        off: int = -1
+        while ki < len(LABEL_KEYS):
+            if LABEL_KEYS[ki] == key:
+                off = LABEL_VALS[ki]
+            ki += 1
+        if off >= 0:
+            patch_at(PATCH_POS[i], off)
+        else:
+            bail("patch: label " + key + " not placed")
+            return 0
+        i += 1
+    while len(PATCH_POS) > 0:
+        PATCH_POS.pop()
+        PATCH_LBL.pop()
+    return 0
+
+
+def set_search(ir_src: str) -> int:
+    # parse the IR JSON here: the mains hand over the raw source text
+    # (from-import binds these helpers into the caller's namespace, so
+    # no cross-module attribute access exists on any plane)
+    parser: JR = JR(ir_src, 0, "")
+    root: JV = parser.value()
+    if parser.err != "":
+        bail("bad IR json: " + parser.err)
+        return 0
+    if jtag(root) != "module":
+        bail("not an IR module")
+        return 0
+    SEARCH.append(root.arr[1])
+    return 0
+
+
+def search_body() -> JV:
+    return SEARCH[0]
+
+
+def const_idx(v: int) -> int:
+    key: str = str(v)
+    if key in CONST_MAP:
+        return CONST_MAP[key]
+    idx: int = len(CONSTS)
+    CONSTS.append(v)
+    CONST_KEYS.append(key)
+    CONST_MAP[key] = idx
+    return idx
+
+
+def func_idx_of(name: str) -> int:
+    i: int = 0
+    while i < len(FUNC_IDX_KEYS):
+        if FUNC_IDX_KEYS[i] == name:
+            return FUNC_IDX_VALS[i]
+        i += 1
+    return -1
+
+
+def func_register(name: str, params: int) -> int:
+    FUNC_IDX_KEYS.append(name)
+    FUNC_IDX_VALS.append(len(FN_NAME))
+    FN_NAME.append(name)
+    FN_PARAMS.append(params)
+    FN_NSLOTS.append(0)
+    FN_START.append(0)
+    FN_LEN.append(0)
+    return 0
+
+
+def slot_of(name: str) -> int:
+    i: int = 0
+    while i < len(LOCAL_KEYS):
+        if LOCAL_KEYS[i] == name:
+            return LOCAL_VALS[i]
+        i += 1
+    idx: int = len(LOCAL_KEYS)
+    LOCAL_KEYS.append(name)
+    LOCAL_VALS.append(idx)
+    return idx
+
+
+def locals_clear() -> int:
+    while len(LOCAL_KEYS) > 0:
+        LOCAL_KEYS.pop()
+    while len(LOCAL_VALS) > 0:
+        LOCAL_VALS.pop()
+    return 0
+
+
+def label_next() -> int:
+    NEXT_LABEL[0] = NEXT_LABEL[0] + 1
+    return NEXT_LABEL[0]
+
+
+def label_place(lid: int) -> int:
+    # record the offset only: pending jumps are resolved at the body
+    # end by patch_all (mid-body resolution would drop the forward
+    # entries whose labels are not placed yet)
+    LABEL_KEYS.append(str(lid))
+    LABEL_VALS.append(len(CODE))
+    return 0
+
+
+def label_offset(lid: int) -> int:
+    key: str = str(lid)
+    i: int = 0
+    while i < len(LABEL_KEYS):
+        if LABEL_KEYS[i] == key:
+            return LABEL_VALS[i]
+        i += 1
+    return -1
+
+
+# ---------------- compiler ----------------
+# pass A: collect func_def names (forward calls), program order
+
+
+def collect_funcs(stmts: JV) -> int:
+    i: int = 0
+    while i < len(stmts.arr):
+        st: JV = stmts.arr[i]
+        t: str = jtag(st)
+        if t == "func_def":
+            name: str = st.arr[1].s
+            if func_idx_of(name) < 0:
+                func_register(name, len(st.arr[2].arr))
+            collect_funcs(st.arr[3])
+        elif t == "if":
+            collect_funcs(st.arr[2])
+            collect_funcs(st.arr[3])
+        elif t == "while":
+            collect_funcs(st.arr[2])
+        i += 1
+    return 0
+
+
+# expressions: push exactly one value
+
+
+def emit_expr(node: JV) -> int:
+    t: str = jtag(node)
+    if t == "const":
+        v: int = node.arr[1].n
+        if v == 0:
+            emit(OP_LOAD_INT0)
+        elif v == 1:
+            emit(OP_LOAD_INT1)
+        else:
+            emit_w(OP_LOAD_CONST, const_idx(v))
+        return 0
+    if t == "name":
+        name: str = node.arr[1].s
+        if name in LOCAL_KEYS:
+            emit_w(OP_LOAD_LOCAL, slot_of(name))
+            return 0
+        bail("unknown variable '" + name + "'")
+        return 0
+    if t == "-" and len(node.arr) == 2:
+        # unary minus: the FE emits ["-", x] for -x; emit 0 - x
+        emit(OP_LOAD_INT0)
+        emit_expr(node.arr[1])
+        emit(OP_SUB)
+        return 0
+    if t == "+" or t == "-" or t == "*" or t == "//" or t == "%" or t == "**" or t == "<" or t == "<=" or t == ">" or t == ">=" or t == "==" or t == "!=":
+        emit_expr(node.arr[1])
+        emit_expr(node.arr[2])
+        if t == "+":
+            emit(OP_ADD)
+        elif t == "-":
+            emit(OP_SUB)
+        elif t == "*":
+            emit(OP_MUL)
+        elif t == "//":
+            emit(OP_FLOORDIV)
+        elif t == "%":
+            emit(OP_MOD)
+        elif t == "**":
+            emit(OP_POW)
+        elif t == "<":
+            emit(OP_CMP_LT)
+        elif t == "<=":
+            emit(OP_CMP_LE)
+        elif t == ">":
+            emit(OP_CMP_GT)
+        elif t == ">=":
+            emit(OP_CMP_GE)
+        elif t == "==":
+            emit(OP_CMP_EQ)
+        else:
+            emit(OP_CMP_NE)
+        return 0
+    if t == "and" or t == "or":
+        # flat operand lists, short-circuit chains; result 0/1
+        # (matching ir_interp's documented and/or semantics)
+        end: int = label_next()
+        n: int = len(node.arr)
+        oi: int = 1
+        while oi < n:
+            emit_expr(node.arr[oi])
+            if oi < n - 1:
+                skip: int = label_next()
+                if t == "and":
+                    jump_to(OP_JUMP_IF_FALSE, end)
+                    emit(OP_POP)
+                else:
+                    jump_to(OP_JUMP_IF_FALSE, skip)
+                    emit(OP_POP)
+                    emit(OP_LOAD_INT1)
+                    jump_to(OP_JUMP, end)
+                    label_place(skip)
+                    emit(OP_POP)
+            else:
+                zero: int = label_next()
+                jump_to(OP_JUMP_IF_FALSE, zero)
+                emit(OP_LOAD_INT1)
+                jump_to(OP_JUMP, end)
+                label_place(zero)
+                emit(OP_POP)
+                emit(OP_LOAD_INT0)
+            oi += 1
+        label_place(end)
+        return 0
+    if t == "not":
+        emit_expr(node.arr[1])
+        zero: int = label_next()
+        end: int = label_next()
+        jump_to(OP_JUMP_IF_FALSE, zero)
+        emit(OP_LOAD_INT0)
+        jump_to(OP_JUMP, end)
+        label_place(zero)
+        emit(OP_POP)
+        emit(OP_LOAD_INT1)
+        label_place(end)
+        return 0
+    if t == "call":
+        callee: JV = node.arr[1]
+        if jtag(callee) != "name":
+            bail("call with non-name callee")
+            return 0
+        name: str = callee.arr[1].s
+        # print is a builtin call in the IR; checked BEFORE the user
+        # function lookup - print is not in func_idx
+        if name == "print":
+            args: JV = node.arr[2]
+            if len(args.arr) > 255:
+                bail("print with more than 255 args")
+                return 0
+            ai: int = 0
+            while ai < len(args.arr):
+                emit_expr(args.arr[ai])
+                ai += 1
+            emit_k(OP_PRINT, len(args.arr))
+            return 0
+        fi: int = func_idx_of(name)
+        if fi < 0:
+            bail("call to unsupported builtin '" + name + "'")
+            return 0
+        args = node.arr[2]
+        if len(args.arr) > 255:
+            bail("call with more than 255 args")
+            return 0
+        ai = 0
+        while ai < len(args.arr):
+            emit_expr(args.arr[ai])
+            ai += 1
+        emit_kw(OP_CALL, len(args.arr), fi)
+        return 0
+    bail("unsupported expression '" + t + "'")
+    return 0
+
+
+def emit_block(stmts: JV) -> int:
+    i: int = 0
+    while i < len(stmts.arr):
+        emit_stmt(stmts.arr[i])
+        i += 1
+    return 0
+
+
+def emit_stmt(stmt: JV) -> int:
+    t: str = jtag(stmt)
+    if t == "line":
+        return 0
+    if t == "assign" or t == "ann_assign":
+        emit_expr(stmt.arr[2])
+        emit_w(OP_STORE_LOCAL, slot_of(stmt.arr[1].s))
+        return 0
+    if t == "aug_assign":
+        name: str = stmt.arr[1].arr[1].s
+        op_str: str = stmt.arr[2].s
+        if name not in LOCAL_KEYS:
+            bail("aug_assign on unknown variable '" + name + "'")
+            return 0
+        emit_w(OP_LOAD_LOCAL, slot_of(name))
+        emit_expr(stmt.arr[3])
+        if op_str == "+=":
+            emit(OP_ADD)
+        elif op_str == "-=":
+            emit(OP_SUB)
+        elif op_str == "*=":
+            emit(OP_MUL)
+        elif op_str == "//=":
+            emit(OP_FLOORDIV)
+        elif op_str == "%=":
+            emit(OP_MOD)
+        elif op_str == "**=":
+            emit(OP_POW)
+        else:
+            bail("unsupported aug op '" + op_str + "'")
+            return 0
+        emit_w(OP_STORE_LOCAL, slot_of(name))
+        return 0
+    if t == "print":
+        emit_expr(stmt.arr[1])
+        emit_k(OP_PRINT, 1)
+        return 0
+    if t == "call":
+        emit_expr(stmt)
+        emit(OP_POP)
+        return 0
+    if t == "func_def":
+        return 0
+    if t == "return":
+        emit_expr(stmt.arr[1])
+        emit(OP_RETURN)
+        return 0
+    if t == "break":
+        if len(LOOP_END) == 0:
+            bail("break outside a loop")
+            return 0
+        jump_to(OP_JUMP, LOOP_END[len(LOOP_END) - 1])
+        return 0
+    if t == "continue":
+        if len(LOOP_TOP) == 0:
+            bail("continue outside a loop")
+            return 0
+        jump_to(OP_JUMP, LOOP_TOP[len(LOOP_TOP) - 1])
+        return 0
+    if t == "if":
+        emit_expr(stmt.arr[1])
+        else_l: int = label_next()
+        end_l: int = label_next()
+        jump_to(OP_JUMP_IF_FALSE, else_l)
+        emit_block(stmt.arr[2])
+        jump_to(OP_JUMP, end_l)
+        label_place(else_l)
+        emit_block(stmt.arr[3])
+        label_place(end_l)
+        return 0
+    if t == "while":
+        top: int = label_next()
+        end: int = label_next()
+        label_place(top)
+        emit_expr(stmt.arr[1])
+        jump_to(OP_JUMP_IF_FALSE, end)
+        LOOP_TOP.append(top)
+        LOOP_END.append(end)
+        emit_block(stmt.arr[2])
+        LOOP_TOP.pop()
+        LOOP_END.pop()
+        jump_to(OP_JUMP, top)
+        label_place(end)
+        return 0
+    bail("unsupported statement '" + t + "'")
+    return 0
+
+
+def compile_body(name: str, def_stmt: JV) -> int:
+    locals_clear()
+    fi: int = func_idx_of(name)
+    pi: int = 0
+    while pi < len(def_stmt.arr[2].arr):
+        slot_of(def_stmt.arr[2].arr[pi].s)
+        pi += 1
+    FN_START[fi] = len(CODE)
+    emit_block(def_stmt.arr[3])
+    patch_all()
+    FN_LEN[fi] = len(CODE) - FN_START[fi]
+    FN_NSLOTS[fi] = len(LOCAL_KEYS)
+    if FN_NSLOTS[fi] < FN_PARAMS[fi]:
+        FN_NSLOTS[fi] = FN_PARAMS[fi]
+    return 0
+
+
+def find_func_def(module_body: JV, name: str) -> JV:
+    i: int = 0
+    while i < len(module_body.arr):
+        st: JV = module_body.arr[i]
+        if jtag(st) == "func_def" and st.arr[1].s == name:
+            return st
+        i += 1
+    return jnull()
+
+
+def assemble(module_body: JV) -> int:
+    collect_funcs(module_body)
+    emit_block(module_body)
+    if is_err() == 1:
+        return 0
+    patch_all()
+    MODULE_LEN[0] = len(CODE)
+    MODULE_SLOTS[0] = len(LOCAL_KEYS)
+    if MODULE_SLOTS[0] < 1:
+        MODULE_SLOTS[0] = 1
+    fi: int = 0
+    while fi < len(FN_NAME):
+        name: str = FN_NAME[fi]
+        def_stmt: JV = find_func_def(module_body, name)
+        if def_stmt.kind == 0:
+            bail("missing body for '" + name + "'")
+            return 0
+        compile_body(name, def_stmt)
+        fi += 1
+    return 0
+
+
+def compile_hex() -> str:
+    out: str = ""
+    i: int = 0
+    while i < len(CODE):
+        out = out + hex2(CODE[i])
+        i += 1
+    return out
+
+
+# ---------------- VM ----------------
+# physical value stack, mirroring the Rust twin: push = append,
+# pop = take + drop; CALL copies the args into the frame slots,
+# truncates them off the stack and records the new depth as the
+# frame's vbase; RETURN truncates to that vbase before pushing the
+# result (the returning frame's OWN base - using the caller's base
+# wipes pending values like fib(n-1)'s and every fib(n) silently
+# becomes fib(n-2))
+
+
+def vstack_push(v: int) -> int:
+    VSTACK.append(v)
+    return 0
+
+
+def vstack_pop() -> int:
+    if len(VSTACK) == 0:
+        bail("value stack underflow")
+        return 0
+    v: int = VSTACK[len(VSTACK) - 1]
+    VSTACK.pop()
+    return v
+
+
+def vstack_truncate(n: int) -> int:
+    while len(VSTACK) > n:
+        VSTACK.pop()
+    return 0
+
+
+def eq01(a: int, b: int) -> int:
+    if a == b:
+        return 1
+    return 0
+
+
+def ne01(a: int, b: int) -> int:
+    if a != b:
+        return 1
+    return 0
+
+
+def lt01(a: int, b: int) -> int:
+    if a < b:
+        return 1
+    return 0
+
+
+def le01(a: int, b: int) -> int:
+    if a <= b:
+        return 1
+    return 0
+
+
+def gt01(a: int, b: int) -> int:
+    if a > b:
+        return 1
+    return 0
+
+
+def ge01(a: int, b: int) -> int:
+    if a >= b:
+        return 1
+    return 0
+
+
+def ipow_vm(a: int, e: int) -> int:
+    r: int = 1
+    while e > 0:
+        if e % 2 == 1:
+            r = r * a
+        e = e // 2
+        if e > 0:
+            a = a * a
+    return r
+
+
+def run_vm() -> int:
+    sb0: int = len(SLOTAREA)
+    zi: int = 0
+    while zi < MODULE_SLOTS[0]:
+        SLOTAREA.append(0)
+        zi += 1
+    FRAME_SLOTBASE.append(sb0)
+    FRAME_PC.append(0)
+    FRAME_END.append(MODULE_LEN[0])
+    FRAME_VBASE.append(0)
+    while len(FRAME_PC) > 0:
+        pc: int = FRAME_PC[len(FRAME_PC) - 1]
+        end: int = FRAME_END[len(FRAME_END) - 1]
+        sbase: int = FRAME_SLOTBASE[len(FRAME_SLOTBASE) - 1]
+        if pc >= end:
+            # fell off the region end: implicit return 0
+            ret0: int = 0
+            FRAME_SLOTBASE.pop()
+            FRAME_PC.pop()
+            FRAME_END.pop()
+            vbase0: int = FRAME_VBASE.pop()
+            if len(FRAME_PC) == 0:
+                return 0
+            vstack_truncate(vbase0)
+            VSTACK.append(ret0)
+            continue
+        op: int = CODE[pc]
+        FRAME_PC[len(FRAME_PC) - 1] = pc + 1
+        if op == OP_LOAD_CONST:
+            w: int = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            vstack_push(CONSTS[w])
+        elif op == OP_LOAD_LOCAL:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            vstack_push(SLOTAREA[sbase + w])
+        elif op == OP_STORE_LOCAL:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            SLOTAREA[sbase + w] = vstack_pop()
+        elif op == OP_ADD:
+            b: int = vstack_pop()
+            a: int = vstack_pop()
+            vstack_push(a + b)
+        elif op == OP_SUB:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(a - b)
+        elif op == OP_MUL:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(a * b)
+        elif op == OP_FLOORDIV:
+            b = vstack_pop()
+            a = vstack_pop()
+            if b == 0:
+                bail("division by zero")
+                return 0
+            vstack_push(a // b)
+        elif op == OP_MOD:
+            b = vstack_pop()
+            a = vstack_pop()
+            if b == 0:
+                bail("modulo by zero")
+                return 0
+            vstack_push(a % b)
+        elif op == OP_POW:
+            b = vstack_pop()
+            a = vstack_pop()
+            if b < 0:
+                vstack_push(0)
+            else:
+                vstack_push(ipow_vm(a, b))
+        elif op == OP_CMP_EQ:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(eq01(a, b))
+        elif op == OP_CMP_NE:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(ne01(a, b))
+        elif op == OP_CMP_LT:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(lt01(a, b))
+        elif op == OP_CMP_LE:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(le01(a, b))
+        elif op == OP_CMP_GT:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(gt01(a, b))
+        elif op == OP_CMP_GE:
+            b = vstack_pop()
+            a = vstack_pop()
+            vstack_push(ge01(a, b))
+        elif op == OP_JUMP:
+            w: int = CODE[pc + 1] + CODE[pc + 2] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = w
+        elif op == OP_JUMP_IF_FALSE:
+            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            v: int = vstack_pop()
+            if v == 0:
+                FRAME_PC[len(FRAME_PC) - 1] = w
+            else:
+                FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+        elif op == OP_CALL:
+            k: int = CODE[pc + 1]
+            w = CODE[pc + 2] + CODE[pc + 3] * 256
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 4
+            fi2: int = w
+            if fi2 >= len(FN_START):
+                fi2 = 0
+            argc: int = k
+            if len(VSTACK) < argc:
+                bail("stack underflow at call")
+                return 0
+            arg_start: int = len(VSTACK) - argc
+            nslots: int = FN_NSLOTS[fi2]
+            if nslots < argc:
+                nslots = argc
+            sb2: int = len(SLOTAREA)
+            zi2: int = 0
+            while zi2 < nslots:
+                SLOTAREA.append(0)
+                zi2 += 1
+            ai2: int = 0
+            while ai2 < argc:
+                SLOTAREA[sb2 + ai2] = VSTACK[arg_start + ai2]
+                ai2 += 1
+            vstack_truncate(arg_start)
+            FRAME_VBASE.append(arg_start)
+            FRAME_SLOTBASE.append(sb2)
+            FRAME_PC.append(FN_START[fi2])
+            FRAME_END.append(FN_START[fi2] + FN_LEN[fi2])
+        elif op == OP_RETURN:
+            ret2: int = vstack_pop()
+            FRAME_SLOTBASE.pop()
+            FRAME_PC.pop()
+            FRAME_END.pop()
+            vbase2: int = FRAME_VBASE.pop()
+            if len(FRAME_PC) == 0:
+                return 0
+            vstack_truncate(vbase2)
+            VSTACK.append(ret2)
+        elif op == OP_PRINT:
+            k = CODE[pc + 1]
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 2
+            if len(VSTACK) < k:
+                bail("stack underflow at print")
+                return 0
+            first: int = 1
+            vi: int = len(VSTACK) - k
+            while vi < len(VSTACK):
+                if first == 0:
+                    OUT.append(" ")
+                OUT.append(str(VSTACK[vi]))
+                first = 0
+                vi += 1
+            OUT.append("\n")
+            vstack_truncate(vi)
+        elif op == OP_POP:
+            vstack_pop()
+        elif op == OP_LOAD_INT0:
+            vstack_push(0)
+        elif op == OP_LOAD_INT1:
+            vstack_push(1)
+        else:
+            bail("unknown opcode " + str(op))
+            return 0
+        if is_err() == 1:
+            return 0
+    return 0
+
+
+def out_text() -> str:
+    out: str = ""
+    i: int = 0
+    while i < len(OUT):
+        out = out + OUT[i]
+        i += 1
+    return out
+
+
+# ---------------- main ----------------
+# mode via the first stdin line: "@dump" compiles and prints the
+# bytecode as hex (the cross-plane check vs the Rust plane's
+# IRVM_DUMP=1); anything else is the IR JSON - compile, execute,
+# print the program output
+
+
+def main() -> int:
+    src: str = read_stdin()
+    mode: str = "exec"
+    if src[0:6] == "@dump\n":
+        mode = "dump"
+        src = src[6:]
+    set_search(src)
+    assemble(SEARCH[0])
+    if is_err() == 1:
+        print("ir_vm bail: " + ERR[0])
+        return 3
+    if mode == "dump":
+        print(compile_hex())
+        return 0
+    run_vm()
+    if is_err() == 1:
+        print("ir_vm bail: " + ERR[0])
+        return 3
+    print(out_text(), end="")
+    return 0

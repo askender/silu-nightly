@@ -663,27 +663,38 @@ impl Compiler {
 
 // ---------------- VM --------------------------------------------------
 struct Frame {
-    slots: Vec<i64>,
     pc: usize,
     end: usize,
-    base: usize, // value-stack depth at entry
+    base: usize,  // value-stack depth at entry
+    sbase: usize, // this frame's base in the shared slot area
 }
 
 struct Vm<'p> {
     prog: &'p Program,
     stack: Vec<i64>,
+    // flat slot area shared by all frames (the Silu twin's SLOTAREA):
+    // a call appends its zeroed slots instead of heap-allocating a
+    // per-frame Vec - fib(28) went from 630k allocations to amortized
+    // appends, ~6x on the recursive benchmark
+    slotarea: Vec<i64>,
     frames: Vec<Frame>,
     out: String,
 }
 
 impl<'p> Vm<'p> {
     fn run(&mut self) -> Result<(), String> {
+        let mslots = self.prog.module_slots.max(1);
+        self.slotarea.resize(mslots, 0);
         self.frames.push(Frame {
-            slots: vec![0; self.prog.module_slots.max(1)],
             pc: 0,
             end: self.prog.module_len,
             base: 0,
+            sbase: 0,
         });
+        // env lookups are expensive; hoist the trace flag out of the
+        // dispatch loop (checking per instruction cost ~as much as the
+        // VM itself)
+        let trace = std::env::var("IRVM_TRACE").is_ok();
         loop {
             if self.frames.is_empty() {
                 return Ok(());
@@ -702,26 +713,30 @@ impl<'p> Vm<'p> {
                 continue;
             }
             let code = &self.prog.code;
-            let (fpc, fbase, fend, fslots, fdepth, op, stack_dbg) =
-                if std::env::var("IRVM_TRACE").is_ok() {
-                    let f = self.frames.last().unwrap();
-                    (
-                        f.pc,
-                        f.base,
-                        f.end,
-                        Some(f.slots.clone()),
-                        self.frames.len(),
-                        code[f.pc],
-                        Some(self.stack.clone()),
-                    )
-                } else {
-                    let f = self.frames.last().unwrap();
-                    (f.pc, f.base, f.end, None, self.frames.len(), code[f.pc], None)
-                };
+            let (fpc, fbase, fend, fsb, fdepth, op, stack_dbg) = if trace {
+                let f = self.frames.last().unwrap();
+                (
+                    f.pc,
+                    f.base,
+                    f.end,
+                    f.sbase,
+                    self.frames.len(),
+                    code[f.pc],
+                    Some(self.stack.clone()),
+                )
+            } else {
+                let f = self.frames.last().unwrap();
+                (f.pc, f.base, f.end, f.sbase, self.frames.len(), code[f.pc], None)
+            };
             if let Some(st) = stack_dbg {
                 eprintln!(
                     "pc={} base={} end={} stack={:?} slots={:?} frames={}",
-                    fpc, fbase, fend, st, fslots, fdepth
+                    fpc,
+                    fbase,
+                    fend,
+                    st,
+                    &self.slotarea[fsb..],
+                    fdepth
                 );
             }
             let frame = self.frames.last_mut().unwrap();
@@ -734,14 +749,15 @@ impl<'p> Vm<'p> {
                 }
                 OP_LOAD_LOCAL => {
                     let slot = read_w(code, &mut frame.pc) as usize;
-                    let v = *frame.slots.get(slot).unwrap_or(&0);
+                    let v = *self.slotarea.get(frame.sbase + slot).unwrap_or(&0);
                     self.stack.push(v);
                 }
                 OP_STORE_LOCAL => {
                     let slot = read_w(code, &mut frame.pc) as usize;
                     let v = self.stack.pop().unwrap_or(0);
-                    if slot < frame.slots.len() {
-                        frame.slots[slot] = v;
+                    let si = frame.sbase + slot;
+                    if si < self.slotarea.len() {
+                        self.slotarea[si] = v;
                     }
                 }
                 OP_ADD | OP_SUB | OP_MUL | OP_FLOORDIV | OP_MOD | OP_POW => {
@@ -812,16 +828,18 @@ impl<'p> Vm<'p> {
                         return Err("stack underflow at call".into());
                     }
                     let arg_start = self.stack.len() - argc;
-                    let mut slots = vec![0i64; meta.2.max(argc)];
+                    let sb = self.slotarea.len();
+                    let nslots = meta.2.max(argc);
+                    self.slotarea.resize(sb + nslots, 0);
                     for (i, a) in self.stack[arg_start..].iter().enumerate() {
-                        slots[i] = *a;
+                        self.slotarea[sb + i] = *a;
                     }
                     self.stack.truncate(arg_start);
                     self.frames.push(Frame {
-                        slots,
                         pc: meta.0,
                         end: meta.1,
                         base: self.stack.len(),
+                        sbase: sb,
                     });
                 }
                 OP_RETURN => {
@@ -1003,6 +1021,7 @@ fn main() {
     let mut vm = Vm {
         prog: &prog,
         stack: Vec::new(),
+        slotarea: Vec::new(),
         frames: Vec::new(),
         out: String::new(),
     };

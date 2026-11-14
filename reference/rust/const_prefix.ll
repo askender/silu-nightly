@@ -5554,8 +5554,9 @@ pop_ok:
   %".14" = bitcast i8* %".12" to i64*
   %".15" = getelementptr i64, i64* %".14", i64 %".13"
   %".16" = load i64, i64* %".15"
-  %".17" = getelementptr {i64, i64, i8*}, {i64, i64, i8*}* %".3", i32 0, i32 0
-  store i64 0, i64* %".17"
+  %".17" = sub i64 %".5", 1
+  %".18" = getelementptr {i64, i64, i8*}, {i64, i64, i8*}* %".3", i32 0, i32 0
+  store i64 %".17", i64* %".18"
   ret i64 %".16"
 }
 

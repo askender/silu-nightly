@@ -73,6 +73,18 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 
 ## 当前状态锚点（2026-11-14 深夜）
 
+- **irvm 字节码平面落地（2026-11-14 深夜，STATUS.md §3.21）**：
+  Rust 平面 tools/irvm（f0e1de8）+ Silu 孪生 selfhost/ir_vm.si（单文件
+  自包含，stdin 首行 "@dump" 选 dump 模式）。门禁两道（探针在
+  tools/irvm/probes/）：执行差分 test.sh（vs ir_interp，9/9）、跨平面
+  字节一致 bytecode_diff.sh（Rust dump vs 孪生 dump，9/9 逐字节）。
+  **速度（fib28 总耗时）**：Rust VM 50ms / 孪生 native 110ms（跑赢
+  monty 116ms）/ ir_interp 1.76s / AST 解释器 ~15s。Rust VM 曾
+  0.775s——每指令 env 查询（调试残留）+ 每帧堆分配两连修后 15.5×；
+  **VM 循环内禁止 env 查询/每帧分配**。孪生回物理栈模型（VDEPTH
+  惰性栈是绕已修 bug 的变体，必然发散；FRAME_VBASE 声明未用 =
+  RETURN 截断无落点）。连带修 conv rawlist_pop 清零 bug（双平面）。
+  思考文档 docs/interp_vs_comp.md、评测集 tools/irvm/eval.py。
 - **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
 - 门禁全绿：ll **20/20（2026-11-14 深夜修复，见下）**、ir 21/21、

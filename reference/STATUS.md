@@ -632,6 +632,49 @@ main() 返回值存到 `self.main_return`（BaseASTProcessor 类属性，所有
 interpret 平面跑 → bail 消息 + rc=3**（§3.17 的已知边界就此关闭）。
 raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）。
 
+## 三点二十一、irvm 字节码平面：孪生落地 + 双侧性能修复（2026-11-14 深夜）
+
+用户要求的两个新执行平面（保留 ir_interp 不动）：**1) Rust IR→字节码
+编译器 + 紧凑 VM**（tools/irvm，已提交 f0e1de8）；**2) Silu 孪生**
+（selfhost/ir_vm.si，本轮完成）。字节码规范采纳 monty 风格（u8 操作码
++ W(u16 LE)/K(u8) 后缀、常量池、帧槽、标签回填；逐字节一致对 monty
+原理上不可达——源语言不同，达成的是规范一致 + 跨平面字节一致）。
+
+- **门禁（均 9 探针，探针落仓 tools/irvm/probes/）**：执行差分
+  `tools/irvm/test.sh`（irvm vs ir_interp，9/9）；跨平面字节一致
+  `tools/irvm/bytecode_diff.sh`（Rust IRVM_DUMP vs 孪生 @dump，
+  9/9 逐字节）。
+- **孪生发散根因（fibseq2 "2 2 2 2"）**：VDEPTH 惰性值栈是当时
+  rawlist_pop bug 的绕行产物，且 FRAME_VBASE 声明后从未 append/pop
+  （死变量）——RETURN 无帧基址可截断，fib(n-1) 清零类 bug 在孪生
+  复活；CALL arg_start 又混用 len(VSTACK)（物理）与 VDEPTH（逻辑）
+  两套深度。**修复 = 整体回物理栈模型**（push=append / pop=take+drop /
+  truncate 循环），与 Rust 侧逐臂同构；模块帧补 FRAME_VBASE.append(0)；
+  CALL/RETURN/隐式返回三处补基址记账；VM 循环尾补 is_err() 检查
+  （镜像 Rust return Err）；PRINT/CALL 补栈下溢 bail。
+- **Rust VM 性能两连修（fib28 0.775s → 0.05s，15.5×）**：
+  ①`std::env::var("IRVM_TRACE")` 每指令一查（调试残留，environ 线性
+  扫描 ×63 万次分派）——提出循环为一次性 trace flag；
+  ②CALL 每帧 `vec![0i64; nslots]` 堆分配——改共享 flat slotarea
+  （帧记 sbase，与孪生 SLOTAREA 同构）。
+- **速度榜（fib28 总耗时）**：Rust VM 50ms / **Silu 孪生 native
+  110ms（跑赢 monty ~116ms）** / monty 116ms / ir_interp 1,760ms /
+  AST 解释器 ~15s。孪生比 Rust VM 慢 ~2×（辅助函数调用链 + 边界
+  检查——自举代价）；**VM 模型（扁平字节码+flat 槽区）比宿主语言
+  手写优化更关键**。
+- **连带修复（编译平面真 bug，双平面同 commit）**：conv 的
+  rawlist_pop 把长度 store zero64 清零整个列表（Python
+  typed_codegen.py + Rust const_prefix.ll 镜像）→ ll 门禁曾 19/20，
+  修复后 20/20；ir 21/21；pytest 1361/3 全绿复跑。
+- **文档与评测**：docs/interp_vs_comp.md（执行平面全景 + fib28 速度
+  榜 + 编译 vs 解释评测结论 + monty 差距关闭分析）；
+  tools/irvm/eval.py（编译+运行 vs 解释的评测集，含逐 workload 裁决列）。
+- **教训**：①孪生必须与参照**同构**（同为物理栈），不要为绕已修复
+  的 bug 保留惰性变体——变体的深度模型必然发散；②"声明未用"的帧
+  基址列表 = 截断语义没有落点，grep 一下声明处的 append/pop 配对
+  就能抓住；③VM 循环内禁止 env 查询等系统调用形状的开销，哪怕
+  "只是读个开关"；④每帧堆分配在递归 workload 上是数量级杀手。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
