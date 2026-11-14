@@ -103,12 +103,11 @@ def run_workload(name, src):
     twin = ensure_twin()
     rust_vm = os.path.join(REPO, "tools/irvm/target/release/silu-irvm")
 
-    rust_vm_ms = best(f"./silu_fe < /tmp/eval_src.si | {rust_vm} > /dev/null",
-                      shell=True)
-    twin_ms = best(f"./silu_fe < /tmp/eval_src.si | {twin} > /dev/null",
-                   shell=True)
-    interp_ms = best(f"./silu_fe < /tmp/eval_src.si | {interp} > /dev/null",
-                     shell=True)
+    # 前端（编译）单独计时；VM/解释行 = 前端 + 各自执行，两段分别测
+    fe_ms = best(["./silu_fe"], stdin=open("/tmp/eval_src.si", "rb").read())
+    rust_vm_ms = best([rust_vm], stdin=open(ir, "rb").read())
+    twin_ms = best([twin], stdin=open(ir, "rb").read())
+    interp_ms = best([interp], stdin=open(ir, "rb").read())
 
     rows = []
     rows.append(("编译+运行 native(默认 -O2 全量)", build_ms + run_ms,
@@ -119,24 +118,28 @@ def run_workload(name, src):
         siluc_run = best([f"/tmp/eval_{name}_sc"])
         rows.append(("编译+运行 native(siluc 缓存驱动)", siluc_ms + siluc_run,
                      f"(build {siluc_ms} + run {siluc_run})"))
-    rows.append(("编译+运行 rust VM", rust_vm_ms, ""))
-    rows.append(("编译+运行 silu VM(孪生)", twin_ms, ""))
-    rows.append(("解释 ir_interp", interp_ms, ""))
+    rows.append(("编译+运行 rust VM", fe_ms + rust_vm_ms,
+                 f"(fe {fe_ms} + vm {rust_vm_ms})"))
+    rows.append(("编译+运行 silu VM(孪生)", fe_ms + twin_ms,
+                 f"(fe {fe_ms} + vm {twin_ms})"))
+    rows.append(("解释 ir_interp", fe_ms + interp_ms,
+                 f"(fe {fe_ms} + interp {interp_ms})"))
     cpy = best([sys.executable, "/tmp/eval_src.si"])
     rows.append(("解释 CPython", cpy, ""))
     rows.append(("解释 AST(silu interpret)", best([PY, "-m", "silu", "interpret",
                  "/tmp/eval_src.si"]), ""))
 
-    comp_vm = min(rust_vm_ms, twin_ms)
-    verdict = "编译快" if rows[0][1] < interp_ms else "解释快"
-    verdict_vm = "VM快" if comp_vm < interp_ms else "解释快"
+    comp_vm = min(fe_ms + rust_vm_ms, fe_ms + twin_ms)
+    interp_total = fe_ms + interp_ms
+    verdict = "编译快" if rows[0][1] < interp_total else "解释快"
+    verdict_vm = "VM快" if comp_vm < interp_total else "解释快"
 
     print(f"\n=== {name} ===")
     print(f"{'平面':<28}{'ms':>7}  备注")
     for nm, ms, note in rows:
         print(f"{nm:<28}{ms:>7}  {note}")
     print(f"裁决: native 编译+运行 {verdict} | 字节码 VM 编译+运行 {verdict_vm}"
-          f" (vs ir_interp {interp_ms}ms)")
+          f" (vs ir_interp {interp_total}ms)")
     return 0
 
 

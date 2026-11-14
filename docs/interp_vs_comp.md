@@ -81,30 +81,34 @@ monty 编译 Python 源码到它自己的字节码（CPython 风格操作码
 
 ## 五、评测集：编译+运行 vs 解释，谁快
 
-评测集 `tools/irvm/eval.py`（2026-11-14 实测，3 次运行取最优，
-均含进程启动与前端/编译时间）。native 行区分两条编译链：
-默认 `python3 -m silu build`（clang -O2 全量 375KB IR）与
-`siluc` 缓存驱动（runtime 预编译 .o，clang 只编 KB 级用户部分）：
+评测集 `tools/irvm/eval.py`（2026-11-14 实测，每段 3 次取最优，
+均含进程启动）。各行 = **编译段 + 运行段**（括号内拆分）。native
+区分两条编译链：默认 `python3 -m silu build`（clang -O2 全量
+375KB IR）与 `siluc` 缓存驱动（runtime 预编译缓存 .o，clang 只编
+KB 级用户部分）；VM 链的编译段 = silu_fe 前端（.si→IR JSON），
+运行段 = 字节码 VM 执行：
 
-| workload | native 默认链 | native siluc 链 | 字节码 VM 链 | ir_interp 解释 | CPython | 裁决 |
-|---|---:|---:|---:|---:|---:|---|
-| fib(28) | 642ms | **178ms** | 61ms / 123ms(孪生) | 1,803ms | 62ms | **编译快**（siluc 10×；VM 30×） |
-| 循环密集 1M 次迭代 | 534ms | **171ms** | 79ms / 156ms | 2,309ms | 147ms | **编译快**（siluc 13×；VM 29×） |
-| 短脚本（3 行 print） | 530ms | 167ms | **6ms** | 7ms | 27ms | native：解释快；**VM 与解释打平** |
-| fib(12)（毫秒级算完） | 538ms | 173ms | **7ms** | 8ms | 27ms | native：解释快；VM 打平 |
+| workload | native 默认链 | native siluc 链 | rust VM | silu VM 孪生 | ir_interp 解释 | CPython | 裁决 |
+|---|---|---|---|---|---|---:|---|
+| fib(28) | 652（648+4） | 175（171+4） | 59（fe 3+vm 56） | 118（fe 3+vm 115） | 1753（fe 3+interp 1750） | 60 | **编译快**（siluc 10×；VM 30×） |
+| 循环密集 1M | 581（578+3） | 173（169+4） | 77（fe 2+vm 75） | 153（fe 2+vm 151） | 2307（fe 2+interp 2305） | 148 | **编译快**（siluc 13×；VM 30×） |
+| 短脚本 3 print | 533（530+3） | 168（165+3） | 6（fe 3+vm 3） | 5（fe 3+vm 2） | 5（fe 3+interp 2） | 26 | native：解释快；VM/解释打平 |
+| fib(12) | 528（525+3） | 172（169+3） | 6（fe 3+vm 3） | 6（fe 3+vm 3） | 6（fe 3+interp 3） | 27 | 同上 |
 
-**编译链拆解（fib12，为什么默认链 530ms）**：CPython 启动+cli 导入
-~40ms；Python 前端本体 2ms；Python conv（llvmlite）95ms；**clang -O2
-全量优化 375KB IR ~390ms ← 大头**。编译器本体（前端+后端）native
-平面是毫秒~50ms 级（silu_fe <5ms、siluc1 前端+conv 50ms）；两平面
-.ll 产物逐字节一致。siluc 缓存驱动把固定开销压到 ~170ms。
+**两条 native 编译链的差别（产物相同，.ll 逐字节一致）**：
+都是真编译（源码→本机二进制），差在**每次编译多少东西**——
+默认链驱动是 CPython+llvmlite（cli 导入 40ms + Python conv 95ms），
+且 clang -O2 每次把用户代码 + 375KB runtime **全量**优化编译
+（~390ms）；siluc 驱动是纯 C 二进制（zero-Python），runtime 一次性
+预编译成内容校验的缓存 LTO .o，每次 clang 只编 KB 级用户部分 +
+纯链接（~170ms 固定开销）。
 
 **规律**：
-- **native 默认链的固定开销 ~530ms** 只有程序实际计算 >10ms 量级
-  才摊得回；siluc 缓存链 ~170ms；毫秒级脚本永远"解释快"。
-- **字节码 VM 链的"编译"只是 silu_fe 前端（~7ms）**——它没有
-  clang 环节，6ms 就能编译+跑完短脚本，与树遍历解释器打平；
-  计算一重（fib28/loops），VM 链立即以 ~30× 甩开解释器。
+- **native 默认链的固定开销 ~530ms**（siluc 链 ~170ms）只有程序
+  实际计算 >10ms 量级才摊得回；毫秒级脚本永远"解释快"。
+- **VM 链的编译段只有 fe 前端 ~3ms**——它没有 clang 环节，
+  短脚本编译+运行与树遍历解释器打平；计算一重（fib28/loops），
+  运行段立即以 ~30× 甩开（vm 56-75ms vs interp 1750-2305ms）。
 - 解释器的不可替代场景：单次极短脚本、REPL、无工具链环境、
   自举启动器、**可执行的语义规约**（差分门禁的 ground truth——
   编译器 bug 修复的判据"解释器输出对"不可替代）。
