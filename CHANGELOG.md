@@ -4,6 +4,37 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.19.0
+The self-hosted compiler ships to the browser (the WASM workflow).
+
+- **wasm_backend.si**: IR JSON -> WAT. The corpus (15/15) runs
+  byte-identical to CPython through the browser pipeline: int/float/
+  bool arithmetic, lists, str-keyed and int-keyed dicts, list[float],
+  str ABI v2 (16-byte [blen][clen] prefix, O(1) len, value semantics,
+  in-place narrow-window extend), flat record classes with match
+  narrowing, and the Json tagged-union layer ($jbox).
+- **wat2wasm.si**: a pure-Silu WAT -> wasm64 binary assembler -
+  tokenizer, structure pass, canonical LEB128, type dedup, folded-WAT
+  post-order emission, exact decimal->binary64 (dec_bits, 13k-vector
+  differential vs CPython). 33/33 corpus files byte-identical to the
+  wabt CLI; 19ms per fib. The playground drops the 0.66MB wabt.js.
+- **str temp lifetime**: one-expression subscripts no longer leak the
+  whole-source element copy - rawlist_str_get/slice results register
+  as owned (keyed by the SSA value's NAME string) and the char view's
+  RAWSTR coercion frees the parent; function boundaries clear the
+  tracking (llvmlite names restart per function). Both codegen planes
+  aligned: one field-store copy, after the base load.
+- **ir_interp loud-fail**: a two-pass pre-check bails with
+  "ir_interp bail: <reason>" + exit 3 outside the int-only subset
+  (the float-const parse hang root cause fixed); the interpret plane
+  maps main()'s return to the process exit code.
+- **playground live** at https://silu.askender.xyz/playground/ - 18
+  inline examples, real .wasm compilation through the self-hosted
+  wat2wasm (no wabt dependency), morphing WASM run button; deployment
+  is one command (tools/deploy_playground.py).
+- **CI**: a wasm gate job (shim/run/backend/corpus/wat2wasm/compile)
+  with pinned wasi-sdk 34.0 + wabt 1.0.42.
+
 ### v1.18.1
 Runtime: code point offsets get a side cache; the dynamic layer goes
 code-point correct.
