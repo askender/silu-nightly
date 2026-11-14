@@ -140,8 +140,13 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    wat2wasm）→ 金色按钮变形 → 执行（real wasm compilation，1ms,
    exit 0，输出 410/55/25 44 7 9）。**浏览器缓存注意**：Pages 重建后
    同 tab 重载可能命中修正前缓存——cache-busting 参数（?v=Date.now()）
-   强制新取。运维节奏：nightly 侧 `wasm/build.py web` + 复制 8 个文件
-   到 silu-lang docs/playground/ + push（Pages 自动构建 ~1min）。
+   强制新取。运维节奏已脚本化：`python3 tools/deploy_playground.py`
+   （build web → 同步示例 → 复制 8 文件到 silu-lang checkout →
+   commit+push；checkout 默认 /tmp/silu-lang 可传参/$SILU_LANG_DIR；
+   幂等——无变化不推）。**CI 计费注意**：nightly 仓 PRIVATE，Actions
+   分钟走账户配额——Billing 未修复前所有 job 0 步骤拒启（"recent
+   account payments have failed or your spending limit needs to be
+   increased"）；转公开可免配额（拓扑决策归用户）。
 2. ✅ ~~knucleotide O(n²) str 构建~~（2026-11-14 关闭）：**str ABI v2**
    落地——16 字节小端前缀 [blen][clen]（指针指向字节区，字节级消费者
    不变）+ O(1) len + 每绑定必拷贝的值语义（$s_copy：assign/global/
