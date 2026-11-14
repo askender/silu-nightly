@@ -76,3 +76,51 @@ jobs:
           tests/test_selfhost_m2.py
           tests/test_selfhost_m3.py
           tests/test_selfhost_m4.py -q --cov=silu --cov-report=term
+
+  wasm:
+    # The WASM layer: shim + run + backend + corpus + wat2wasm gates.
+    # Heavy prereqs (wasi-sdk, wabt, native toolchain builds) - same
+    # on-demand triggers as the self-hosting gates layer.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.gates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+      - name: Install wasi-sdk 34.0 (wasm64 needs LLVM 19+; pinned to the dev version)
+        run: |
+          wget -q https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz
+          mkdir -p "$HOME/wasi-sdk"
+          tar xzf wasi-sdk-34.0-x86_64-linux.tar.gz -C "$HOME/wasi-sdk" --strip-components=1
+      - name: Install wabt 1.0.42 (the wat2wasm differential oracle)
+        run: |
+          wget -q https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42-ubuntu-x64.tar.gz
+          tar xzf wabt-1.0.42-ubuntu-x64.tar.gz
+          echo "$PWD/wabt-1.0.42/bin" >> "$GITHUB_PATH"
+      - name: Build the native helper chain (fe + siluc1 + backend)
+        run: |
+          python3 -c "import sys; sys.path.insert(0, '.'); from tools.selfhost_build import ensure_frontend, ensure_siluc; ensure_frontend(); ensure_siluc()"
+          python3 -m silu build selfhost/wasm_backend.si -o /tmp/wasm_backend_native
+      - name: Build the wasm64 artifacts
+        run: python3 wasm/build.py web
+      - name: Shim gate (252 vectors vs the C library)
+        run: node wasm/test_shim.mjs
+      - name: Run gate (three-way wasm/native/CPython + loud bails)
+        run: node wasm/test_run.mjs
+      - name: Backend gate (L2 vs CPython)
+        run: node wasm/test_backend.mjs
+      - name: Corpus gate (15/15 byte-identical)
+        run: node wasm/test_corpus.mjs
+      - name: wat2wasm gate (33/33 byte-identical vs wabt)
+        run: node wasm/test_wat2wasm.mjs
+      - name: Compile gate (wasm siluc1 vs native siluc1)
+        run: node wasm/test_compile.mjs

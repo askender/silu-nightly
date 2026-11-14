@@ -180,6 +180,13 @@ def build_web():
                 os.path.join(web, "host_core.mjs"))
     for tool in TOOLS:
         shutil.copy(os.path.join(ART, f"{tool}.wasm"), web)
+    # the example dropdown tracks the gate corpus automatically (new
+    # gate examples join all three wasm gates and appear in the
+    # playground with zero manual steps)
+    sys.path.insert(0, REPO)
+    from tools.sync_playground_examples import sync
+
+    sync(os.path.join(web, "index.html"))
     stamp = os.path.join(web, "BUILD_INFO.txt")
     with open(stamp, "w") as h:
         for t in TOOLS:

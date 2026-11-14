@@ -171,8 +171,20 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    回退（genv 与模块 env 初始同 dict，call_user 只换 env）。run 门禁
    4 三方一致 + 14 loud；backend 18/18、wat2wasm 33/33（新示例自动入
    三门禁）。
-7. **工程化**：wasm 四门禁进 CI（Node 已钉 24.3；artifacts 缓存策略）；
-   playground 示例列表扩充（新门禁示例自动同步进下拉）。
+7. **工程化（2026-11-14 深夜落地）**：✅ **wasm 六门禁进 CI**——
+   .github/workflows/ci.yml 新增 `wasm` job（同 selfhost gates 的
+   按需触发：schedule 周一 03:00 UTC + workflow_dispatch）：wasi-sdk
+   34.0 钉版下载（wasm64 需 LLVM 19+）+ wabt 1.0.42（差分 oracle）+
+   Node 24 + 原生辅助链构建（ensure_frontend/ensure_siluc +
+   wasm_backend_native）→ `wasm/build.py web` 一次建全部 artifacts →
+   shim/run/backend/corpus/wat2wasm/compile 六门禁逐条断言。
+   ✅ **playground 示例全自动同步**——tools/sync_playground_examples.py
+   读 wasm/examples/ 全部门禁示例，内联重写 index.html 的
+   EXAMPLES/EXAMPLE_TEXT 块（部署目录自包含、无 repo-root fetch 依赖；
+   模板字面量危险字符 `/${/\ 反拒不产出坏 JS），接入 `wasm/build.py
+   web`——**新门禁示例入 examples/ 即自动出现在 playground 下拉**。
+   现挂 18 live 示例 + containers.si（compile-only）；下拉既有的
+   strings.si/floats.si compile-only 条目指向不存在的文件（404）已顺手清除。
 8. ✅ ~~直接二进制发射~~（2026-11-14 关闭）：**selfhost/wat2wasm.si**
    （纯 Silu WAT→wasm64 汇编器）+ wasm/shim/dec_bits.c（精确十进制→
    binary64，13019 向量对拍 CPython 零误差）。**语料 32/32 逐字节一致
