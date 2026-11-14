@@ -8164,7 +8164,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 raise TypeError(
                     f"{class_name}() missing required argument: '{field_name}'"
                 )
-            value_tv = self._convert_field_value(kind, value_node)
+            value_tv = self._convert_field_value(kind, value_node, False)
             self.current_builder.store(
                 value_tv[1], self._field_slot(inst_ptr, index, kind)
             )
@@ -8255,11 +8255,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         return self._coerce(value, kind)
 
     def _convert_field_value(
-        self, kind: str, value_node: Any
+        self, kind: str, value_node: Any, defer_str_copy: bool
     ) -> Tuple[str, Any]:
         """Convert a field value node to the field kind. Container
         literals ([1, 2] / {"a": 1}) build raw storage directly - the
-        dynamic unbox boundary only covers scalars and str."""
+        dynamic unbox boundary only covers scalars and str.
+        defer_str_copy: the assign path passes True - the RAWSTR->RAWSTR
+        eager copy must land AFTER the base-object load (in
+        _emit_field_write) to match the Rust plane's byte order. The
+        constructor path stores the value directly and keeps the eager
+        copy HERE: without it the field would alias the source buffer."""
         if (
             kind in RAWLIST_KINDS
             and isinstance(value_node, list)
@@ -8309,7 +8314,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             or kind in RAWDICT_KINDS
         ):
             return (kind, ir.const_(LLVM_KIND_TYPES[kind], None))
-        return self._coerce(self._convert_node(value_node), kind)
+        raw = self._convert_node(value_node)
+        if kind == RAWSTR and raw[0] == RAWSTR and defer_str_copy:
+            return raw
+        return self._coerce(raw, kind)
 
     def _emit_method_call(
         self, obj_node: Any, method_name: str, args_node: list
@@ -10004,7 +10012,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self._emit_field_write(
                 target[1],
                 target[2],
-                self._convert_field_value(field_kind, value_node),
+                self._convert_field_value(field_kind, value_node, True),
             )
             return (OBJ, null_obj)
         if isinstance(target, str):

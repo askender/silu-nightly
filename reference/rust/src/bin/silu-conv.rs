@@ -1483,6 +1483,14 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
             let Typed::Pyo(r) = v else { bail("pyobj condition") };
             emit_pyo_truthy(b, &r)
         }
+        "attribute" => {
+            // if obj.bool_field: the field read is Typed::Bool - use the
+            // i1 directly as the branch value (selfhost/ir_interp.si's
+            // if v.b: evidence; the Python plane supports this shape)
+            let v = eval_mod(b, e, &fs);
+            let Typed::Bool(r) = v else { bail("attribute condition not bool") };
+            r
+        }
         _ => bail(&format!("i1 expr: {:?}", e)),
     }
 }
@@ -2261,9 +2269,11 @@ fn conv_assign(b: &mut FnB, st: &Val) {
         let fs = F_SLOTS.with(|f| f.borrow().clone());
         let v = eval_mod(b, &st.get(2), &fs);
         if fty == "str" {
+            // one copy, after the base load: the field owns its buffer
+            // (RAWSTR->RAWSTR assignment eagerly copies - the Python
+            // plane's _coerce). The old shape copied twice (copy 1
+            // leaked; selfhost/ir_interp.si's err stores exposed it).
             let r = to_raw(b, v);
-            let cp = b.nx();
-            b.line(format!("  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
             let bv = eval_mod(b, &target.get(1), &fs);
             let base = match bv {
                 Typed::Inst(r) | Typed::Str(r) => r,
@@ -2271,7 +2281,7 @@ fn conv_assign(b: &mut FnB, st: &Val) {
             };
             let cp2 = b.nx();
             b.line(format!(
-                "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp2, cp));
+                "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp2, r));
             let gp = b.nx();
             b.line(format!(
                 "  %\"{}\" = getelementptr i8, i8* {}, i64 {}", gp, base, off));

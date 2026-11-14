@@ -634,30 +634,34 @@ raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）�
 
 ## 四、其余 TODO（优先级序）
 
-1. **str 临时值生命周期（下会话开题，设计已备）**：单表达式
-   `SRC[0][n]` 的内层 rawlist_str_get 拷贝无人释放——所有 .ll 编译
-   程序的共有泄漏（native 因 40GB/s memcpy 不可见，wasm 平面曾致
-   二次方，shim 256MB 块提交后降为线性泄漏）。**设计要点**（本会话
-   实证得出）：
-   - 所有权规则：rawlist_str_get / rawstr_char1 / rawstr_slice /
-     rawstr_concat 的结果 = OWNED（新鲜未共享缓冲）；name 绑定、字段
-     读、函数返回、全局 = BORROWED（函数可能返回全局指针，free 即
-     腐蚀）。
-   - 不可"立即 free"：`s[i]` 在 Python 平面是零分配借出视图
-     （_emit_char_view，RAWCHAR_VIEW），父缓冲的最后一次使用在
-     coercion（rawstr_char1）或 eq_cstr 等多个块，phi/分支结构下
-     立即 free 不健全。
-   - 可行方案 A（收窄版）：视图元组携带 owned-parent 指针，每个视图
-     消费点（char1 / eq_cstr / slice）在最后一次使用后 free 父缓冲。
-     覆盖 `SRC[0][n]` / `SRC[0][a:b]` 两个热模式（wat2wasm 已结构化
-     绕开，此方案覆盖其余工具）。
-   - 可行方案 B（完备版）：语句级 free 列表——表达式发射产生的
-     OWNED 值入表，被 binding/ret 认领时出表，语句尾 free 剩余；
-     分支结构下 free 必须落在值死亡的块（and/or 短路、while 内
-     break），块归属分析不可省。
-   - **三平面同 commit**（Python typed_codegen.py + selfhost 孪生
-     typed_codegen_flat.si + Rust silu-conv.rs，.ll 字节变化 → ll
-     20/20 重钉）+ ir 21/21 + pytest + corpus 15/15 全量复跑。
+1. **str 临时值生命周期（部分落地 2026-11-14 深夜，余项见下）**：
+   ✅ **已落地**：①str 字段赋值单拷贝对齐——Python `_convert_field_value`
+   对 RAWSTR 延迟 coerce（门控参数 defer_str_copy，构造器路径保持急拷
+   贝——构造器直接 store、依赖急拷贝避免别名），`_emit_field_write` 的
+   拷贝落在 base load 之后；Rust `conv_assign` 去掉双拷贝（第二份泄漏）
+   ——两平面字节序一致，ll 门禁回到 20/20（**edae9f1 以来实际是
+   19/20 + 1 ERROR，本会话首次跑 ll 门禁才发现**——教训：改
+   ir_interp.si 这类被 ll 门禁钉住的文件后必须跑 ll 门禁，不能只跑
+   wasm 侧）。②Rust oracle 补 bool 属性条件臂（`if v.b:`——Typed::Bool
+   直接作分支值）——oracle 追平 Python 平面已支持形状，ir_interp.si
+   的 ERROR 消除。❌ **余项（追踪字典在孪生编译版发散，已回退为
+   patch /tmp/wip_str_lifetime.patch + 下方教训）**：单表达式
+   `SRC[0][n]` 的内层 rawlist_str_get 拷贝泄漏（shim 256MB 块提交后
+   线性化，不再挂死）。**本轮实证的关键约束**：
+   - **selfhost 孪生不可表达**：属性字典的下标赋值（`self.d[k] = v`）、
+     set 的 .add（被 mangle 成 `.add(x, '', '')`）——变异必须经辅助
+     方法（字典作 LOCAL 参数，`d[k] = v` 本地名形状已证）；flatten
+     工具拒绝默认参数值（Silu 不支持，正确拒绝而非静默丢默认）。
+   - **编译版 twin 与解释版 twin 行为发散**：SSA 对象作 dict 键在
+     AST 解释平面（真 Python 对象）工作，编译平面（llvmlite.si 的
+     运行时对象）发散——"cannot coerce i64 to rawstr" vs 解释平面
+     rc=0。需孪生级逐函数调试。
+   - **构造器路径依赖急拷贝**：`_emit_construct` 直接 store，无拷贝
+     则字段别名源缓冲（编译出的编译器自腐蚀 → M4 乱码）。
+   - **driver 运行时缓存陈旧会伪装成编译器损坏**（M4 乱码/未知函数
+     '0'），删 `~/.cache/silu-runtime/driver` 重建是第一步排查。
+   - 已修的既有 bug（修复撤回前实证过 native 语义）：view+view concat
+     落算术 promote（typed_expr 分派缺 RAWCHAR_VIEW 臂）→ i64 相加。
 2. ✅ **v1.18.1 已公开发布（2026-11-10）**：
    https://github.com/askender/silu-lang/releases/tag/v1.18.1
    （gates + 4 平台全绿，promote 校验通过）。**根因备忘**：GitHub 退役

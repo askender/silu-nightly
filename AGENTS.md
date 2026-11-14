@@ -75,7 +75,20 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 
 - **v1.18.1 已公开发布**；发布链根因（GitHub 退役 macos-14 池）已修复
   入档。**tag push 用 tag 所在 commit 的 workflow 文件**，改 CI 后 tag 必须前移。
-- 门禁全绿：ll 20/20、ir 21/21、pytest **1361 通过/3 跳过**。
+- 门禁全绿：ll **20/20（2026-11-14 深夜修复，见下）**、ir 21/21、
+  pytest **1361 通过/3 跳过**。
+- **ll 门禁失真修复（2026-11-14 深夜，STATUS.md TODO #1）**：str 字段
+  赋值两平面双拷贝且字节序相反（Python copy 在 base load 前、Rust 后
+  且多一份）——edae9f1（ir_interp 响亮化）以来 ll 实际 19/20 + 1
+  ERROR，本会话首次跑 ll 门禁才暴露。修复：Python `_convert_field_value`
+  门控 defer（赋值路径拷贝延到 base load 后，**构造器路径保持急拷贝
+  ——构造器直接 store，丢拷贝 = 字段别名源缓冲 = 编译器自腐蚀**）；
+  Rust `conv_assign` 单拷贝 + bool 属性条件臂（`if v.b:`）。**教训：
+  改被 ll 门禁钉住的文件（ir_interp.si）必须跑 ll 门禁；flatten 工具
+  拒绝默认参数值（正确行为）；孪生变异经辅助方法（属性字典下标赋值
+  不可表达）；driver 缓存陈旧伪装成编译器损坏（先删
+  ~/.cache/silu-runtime/driver）**。str 临时值追踪字典在孪生编译版
+  发散——回退为 patch，余项见 STATUS.md TODO #1。
 - **interpret 平面退出码映射（2026-11-14 深夜，STATUS.md §3.20）**：
   `silu interpret` 过去丢弃 main() 返回值（退出码恒 0）——visit_Module
   把返回值存 `self.main_return`，cli.run_interpreter 对非零 int
