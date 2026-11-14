@@ -672,6 +672,10 @@ const run = document.getElementById("run");
 const wasmc = document.getElementById("wasmc");
 const dl = document.getElementById("dl");
 const stats = document.getElementById("stats");
+src.addEventListener("input", () => {
+  wasmBytes2 = null;
+  run.textContent = "Run ▶";
+});
 const sel = document.getElementById("examples");
 src.value = EXAMPLE_TEXT["recursion.si"];
 for (const k of Object.keys(EXAMPLES)) {
@@ -719,6 +723,8 @@ async function ensureReady() {
 
 async function compileLL() {
   await ensureReady();
+  wasmBytes2 = null;
+  run.textContent = "Run ▶";
   const t0 = performance.now();
   const stdin = new TextEncoder().encode(src.value);
   const { done } = await core.runWasm({ wasmBytes: modules.siluc1, stdin });
@@ -733,6 +739,8 @@ async function compileLL() {
 
 async function runProgram() {
   await ensureReady();
+  wasmBytes2 = null;
+  run.textContent = "Run ▶";
   const t0 = performance.now();
   const stdin = new TextEncoder().encode(src.value);
   let fe = await core.runWasm({ wasmBytes: modules.fe, stdin });
@@ -768,6 +776,7 @@ async function compileWasm() {
   wasmBytes2 = buffer;
   dl.href = URL.createObjectURL(new Blob([buffer], { type: "application/wasm" }));
   dl.style.display = "inline";
+  run.textContent = "WASM ▶";
   const ms = (performance.now() - t0).toFixed(0);
   return `${buffer.length.toLocaleString()} byte .wasm compiled in ${ms} ms - click ⬇ to download, or press WASM ▶ again to run it`;
 }
@@ -800,7 +809,7 @@ async function guarded(fn) {
 }
 
 go.addEventListener("click", () => guarded(compileLL));
-run.addEventListener("click", () => guarded(runProgram));
+run.addEventListener("click", () => guarded(wasmBytes2 ? runWasmProgram : runProgram));
 
 wasmc.addEventListener("click", async () => {
   wasmc.disabled = true;

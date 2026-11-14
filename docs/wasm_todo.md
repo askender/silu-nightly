@@ -185,6 +185,13 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
    web`——**新门禁示例入 examples/ 即自动出现在 playground 下拉**。
    现挂 18 live 示例 + containers.si（compile-only）；下拉既有的
    strings.si/floats.si compile-only 条目指向不存在的文件（404）已顺手清除。
+   **真浏览器验证（2026-11-14 深夜）**：IAB 实测四条 UI 路径全通——下拉
+   19 条（含 nested_fn.si）、Compile → .ll（395KB/477ms）、Run ▶（IR
+   解释器）、**Compile → .wasm（6,302B/256ms，自托管 wat2wasm）→ WASM
+   ▶（1ms, exit 0）**。**连带修既有 UI 断线**：`runWasmProgram`（执行
+   编译产物）从未接线——compileWasm 的提示说 "press WASM ▶" 但按钮不
+   存在，Run ▶ 永远走 IR 解释器；现 Run 按钮按最后编译产物分派
+   （.wasm → WASM ▶ 金色标签；.ll/源码编辑 → Run ▶ 复位并作废产物）。
 8. ✅ ~~直接二进制发射~~（2026-11-14 关闭）：**selfhost/wat2wasm.si**
    （纯 Silu WAT→wasm64 汇编器）+ wasm/shim/dec_bits.c（精确十进制→
    binary64，13019 向量对拍 CPython 零误差）。**语料 32/32 逐字节一致
