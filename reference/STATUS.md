@@ -634,34 +634,37 @@ raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）�
 
 ## 四、其余 TODO（优先级序）
 
-1. **str 临时值生命周期（部分落地 2026-11-14 深夜，余项见下）**：
-   ✅ **已落地**：①str 字段赋值单拷贝对齐——Python `_convert_field_value`
-   对 RAWSTR 延迟 coerce（门控参数 defer_str_copy，构造器路径保持急拷
-   贝——构造器直接 store、依赖急拷贝避免别名），`_emit_field_write` 的
-   拷贝落在 base load 之后；Rust `conv_assign` 去掉双拷贝（第二份泄漏）
-   ——两平面字节序一致，ll 门禁回到 20/20（**edae9f1 以来实际是
-   19/20 + 1 ERROR，本会话首次跑 ll 门禁才发现**——教训：改
-   ir_interp.si 这类被 ll 门禁钉住的文件后必须跑 ll 门禁，不能只跑
-   wasm 侧）。②Rust oracle 补 bool 属性条件臂（`if v.b:`——Typed::Bool
-   直接作分支值）——oracle 追平 Python 平面已支持形状，ir_interp.si
-   的 ERROR 消除。❌ **余项（追踪字典在孪生编译版发散，已回退为
-   patch /tmp/wip_str_lifetime.patch + 下方教训）**：单表达式
-   `SRC[0][n]` 的内层 rawlist_str_get 拷贝泄漏（shim 256MB 块提交后
-   线性化，不再挂死）。**本轮实证的关键约束**：
-   - **selfhost 孪生不可表达**：属性字典的下标赋值（`self.d[k] = v`）、
-     set 的 .add（被 mangle 成 `.add(x, '', '')`）——变异必须经辅助
-     方法（字典作 LOCAL 参数，`d[k] = v` 本地名形状已证）；flatten
-     工具拒绝默认参数值（Silu 不支持，正确拒绝而非静默丢默认）。
-   - **编译版 twin 与解释版 twin 行为发散**：SSA 对象作 dict 键在
-     AST 解释平面（真 Python 对象）工作，编译平面（llvmlite.si 的
-     运行时对象）发散——"cannot coerce i64 to rawstr" vs 解释平面
-     rc=0。需孪生级逐函数调试。
-   - **构造器路径依赖急拷贝**：`_emit_construct` 直接 store，无拷贝
-     则字段别名源缓冲（编译出的编译器自腐蚀 → M4 乱码）。
+1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
+   单表达式 `SRC[0][n]` / `SRC[0][a:b]` 的内层 rawlist_str_get 拷贝
+   过去无人释放（泄漏；wasm 平面曾致二次方）。现在：
+   - **追踪**：rawlist_str_get / rawstr_slice 结果按 SSA 值的 NAME
+     字符串注册为 owned（`_owned_str_fresh`）；视图创建时父缓冲为
+     owned 则登记 `_owned_view_parent[view.name] = parent`；视图消费
+     （char1 coercion）后 free 父缓冲；slice 消费 owned 父缓冲后 free
+     并注册 slice 结果。**键 = name 字符串**（llvmlite NameScope
+     per-function 去重）——str 键两平面（真 llvmlite / llvmlite.si）都
+     是已证形状；**I64 coercion 不 free**（只读视图 SSA 字段，同一
+     视图可能再 RAWSTR coerce）。
+   - **函数边界清空**：llvmlite 名字每函数重启——字典模块级持久会
+     跨函数键名冲突（wat2wasm float 文件的 shim double-free 实证），
+     函数入口 clear。
+   - **变异经辅助方法**（字典作 LOCAL 参数）：selfhost 孪生不可表达
+     属性字典下标赋值（`self.d[k] = v`）与 set.add（mangle 成
+     `.add(x, '', '')`）；flatten 拒绝默认参数值（正确行为）。
+   - **配套修复**：view+view concat 落算术 promote（typed_expr 的 +
+     分派缺 RAWCHAR_VIEW 臂 → seq 长度当 int 相加）；Rust conv 双拷贝
+     + bool 属性条件臂（见上条）。
+   - **Rust conv 未移植追踪**：钉住语料无组合下标形状 → ll 20/20 不
+     变；未来语料出现该形状时 ll 门禁会响亮拦截，届时按 name 键方案
+     移植（Rust 侧文本发射器的值同样有名字）。
+   - 语义验证：m0/m1/m2/m3/own_probe 五探针（组合下标/切片/concat/
+     len/ord/循环内下标）native 输出逐字节对拍 CPython；九门禁全绿
+     （ll 20/20、ir 21/21、pytest、backend 18/18、corpus 15/15、
+     run 4+14、wat2wasm 33/33、shim 252/252、compile 20/20）。
    - **driver 运行时缓存陈旧会伪装成编译器损坏**（M4 乱码/未知函数
-     '0'），删 `~/.cache/silu-runtime/driver` 重建是第一步排查。
-   - 已修的既有 bug（修复撤回前实证过 native 语义）：view+view concat
-     落算术 promote（typed_expr 分派缺 RAWCHAR_VIEW 臂）→ i64 相加。
+     '0'），删 `~/.cache/silu-runtime/driver` 重建是第一步排查；
+     **构造器路径依赖急拷贝**（`_emit_construct` 直接 store，无拷贝
+     则字段别名源缓冲 → 编译器自腐蚀）——两条均本轮实证。
 2. ✅ **v1.18.1 已公开发布（2026-11-10）**：
    https://github.com/askender/silu-lang/releases/tag/v1.18.1
    （gates + 4 平台全绿，promote 校验通过）。**根因备忘**：GitHub 退役

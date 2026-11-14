@@ -134,6 +134,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         # statement materializes the copy first. Failure mode is the
         # plain boxed path.
         self._char_aliases: Dict[str, Any] = {}
+        # str temp lifetime (owned-parent tracking), keyed by the SSA
+        # value's NAME string: the Silu twin's dynamic dict cannot key
+        # by object identity, while name strings are per-function unique
+        # (llvmlite NameScope dedup) and work on both planes
+        self._owned_str_fresh: Dict[str, bool] = {}
+        self._owned_view_parent: Dict[str, Any] = {}
 
         # class layouts (dataclass semantics): class name ->
         # {"fields": [(fname, kind, default_node, field_class)], "methods": ...};
@@ -5782,18 +5788,28 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return tv
         if kind == RAWCHAR_VIEW:
             # a borrowed window coerces to an owned string (copy) or to
-            # its i64 sequence length; anything else is a type error
+            # its i64 sequence length; anything else is a type error.
+            # An OWNED parent (one-expression subscript SRC[0][n]) dies
+            # at the RAWSTR coercion: char1 copies the bytes out, so no
+            # later use of the view can need the parent buffer (an I64
+            # coercion only reads the view's own SSA fields - it must
+            # NOT free, the same view may still coerce to RAWSTR after)
+            _owned_parent = self._owned_view_pop(
+                self._owned_view_parent, value.name
+            )
             if target == RAWSTR:
                 data = self.current_builder.extract_value(value, 0)
                 seq = self.current_builder.extract_value(value, 1)
                 # one-byte code points come from the shared pool
                 # (see rawstr_char1); longer ones copy
-                return (
-                    RAWSTR,
-                    self.current_builder.call(
-                        self.rawstr_char1, [data, seq]
-                    ),
+                _fresh = self.current_builder.call(
+                    self.rawstr_char1, [data, seq]
                 )
+                if _owned_parent is not None:
+                    self.current_builder.call(
+                        self.rawstr_free, [_owned_parent]
+                    )
+                return (RAWSTR, _fresh)
             if target == I64:
                 return (I64, self.current_builder.extract_value(value, 1))
             raise ValueError(f"cannot coerce {kind} to {target}")
@@ -5895,6 +5911,21 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             )
         )
         return data, length, temp
+
+    def _owned_fresh_add(self, d: Any, k: str) -> int:
+        d[k] = True
+        return 0
+
+    def _owned_fresh_del(self, d: Any, k: str) -> int:
+        del d[k]
+        return 0
+
+    def _owned_view_set(self, d: Any, k: str, v: Any) -> int:
+        d[k] = v
+        return 0
+
+    def _owned_view_pop(self, d: Any, k: str) -> Any:
+        return d.pop(k, None)
 
     def _rawstr_operand(self, tv: Tuple[str, Any]) -> Tuple[Any, Any]:
         """(ptr, temp) for one-shot rawstr consumers (binop, compare,
@@ -8923,6 +8954,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self.current_builder = ir.builder_(entry_block)
         self.current_ret_kind = ret_kind
         self._funcref_var = {}
+        # llvmlite names restart per function: stale tracking entries
+        # from a previous function would alias same-named SSA values in
+        # this one and free live buffers (wat2wasm's float files hit
+        # exactly that as shim double-free)
+        self._owned_str_fresh.clear()
+        self._owned_view_parent.clear()
         old_cursor_kinds = self.cursor_kinds
         old_cursor_slots = self._cursor_slots
         param_annotations = func_def[4] if len(func_def) > 4 else ()
@@ -9096,6 +9133,8 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self.current_builder = ir.builder_(entry_block)
         self.current_ret_kind = None
         self._funcref_var = {}
+        self._owned_str_fresh.clear()
+        self._owned_view_parent.clear()
         old_cursor_kinds = self.cursor_kinds
         old_cursor_slots = self._cursor_slots
         self.cursor_kinds = self._infer_cursors(
@@ -10742,12 +10781,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 # element read hands the caller its own copy (slots
                 # are shared; the reading slot owns the copy)
                 index = self._coerce(key_tv, I64)[1]
-                return (
-                    RAWSTR,
-                    self.current_builder.call(
-                        self.rawlist_str_get, [obj_tv[1], index]
-                    ),
+                fresh = self.current_builder.call(
+                    self.rawlist_str_get, [obj_tv[1], index]
                 )
+                self._owned_fresh_add(self._owned_str_fresh, fresh.name)
+                return (RAWSTR, fresh)
             if obj_tv[0] in RAWLIST_KINDS:
                 elem_kind = RAWLIST_KINDS[obj_tv[0]]
                 index = self._coerce(key_tv, I64)[1]
@@ -10897,14 +10935,33 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                             self._convert_node(upper_node), I64
                         )[1]
                     )
-                    return (
-                        RAWSTR,
-                        self.current_builder.call(
-                            self.rawstr_slice, [obj_tv[1], lo, hi]
-                        ),
+                    _sl = self.current_builder.call(
+                        self.rawstr_slice, [obj_tv[1], lo, hi]
                     )
+                    if obj_tv[1].name in self._owned_str_fresh:
+                        # the owned parent (an inner SRC[0] copy) dies
+                        # here: the slice result is its own fresh buffer
+                        self._owned_fresh_del(
+                            self._owned_str_fresh, obj_tv[1].name
+                        )
+                        self.current_builder.call(
+                            self.rawstr_free, [obj_tv[1]]
+                        )
+                    self._owned_fresh_add(self._owned_str_fresh, _sl.name)
+                    return (RAWSTR, _sl)
                 index = self._coerce(key_tv, I64)[1]
-                return self._emit_char_view(obj_tv[1], index)
+                view = self._emit_char_view(obj_tv[1], index)
+                if obj_tv[1].name in self._owned_str_fresh:
+                    # the parent is an owned fresh copy consumed only by
+                    # this view: ownership moves to the view's consumers,
+                    # which free it after their last use
+                    self._owned_fresh_del(
+                        self._owned_str_fresh, obj_tv[1].name
+                    )
+                    self._owned_view_set(
+                        self._owned_view_parent, view[1].name, obj_tv[1]
+                    )
+                return view
             obj = self._box(obj_tv)
             key = self._box(key_tv)
             return (

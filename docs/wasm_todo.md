@@ -230,6 +230,10 @@ dict[str|int, int|float|str]（哈希索引、插入序、get/default）、非�
     的中间拷贝）是所有 .ll 编译程序的共有泄漏——修要动 Python +
     selfhost 孪生 + Rust oracle 三平面（.ll 字节变化 → 重钉），列为
     独立里程碑；shim 块提交使其从"二次方挂死"降为"线性泄漏"。
+10. ✅ ~~wat2wasm 性能~~（2026-11-14 第二轮收尾）：73.7s → 19ms 之外，
+    **单表达式下标的内层拷贝泄漏已在 codegen 层修掉**（owned 父缓冲
+    追踪 + 视图消费后 free，详见 STATUS.md TODO #1）——wat2wasm.si 的
+    逐行化仍是热路径主修，codegen 追踪覆盖其余工具（fe/interp/siluc1）。
 9. ✅ ~~ir_interp 响亮化~~（2026-11-14 关闭）：selfhost/ir_interp.si
    （int-only 树解释器）过去对子集外程序**静默求 0 甚至挂死**——float
    const（`["const", 0.0]` 裸 JSON 浮点）让 Json 解析器在 '.' 上无限

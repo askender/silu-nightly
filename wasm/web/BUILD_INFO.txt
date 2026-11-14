@@ -1,4 +1,4 @@
-siluc1.wasm 2783908 bytes
+siluc1.wasm 2788442 bytes
 fe.wasm 411223 bytes
 interp.wasm 85734 bytes
 backend.wasm 418948 bytes

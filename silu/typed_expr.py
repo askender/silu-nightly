@@ -27,7 +27,14 @@ class TypedExprMixin:
         return self._coerce(left, target), self._coerce(right, target)
 
     def _typed_binop(self, op: str, left: Tuple[str, Any], right: Tuple[str, Any]) -> Tuple:
-        if op == "+" and (left[0] == RAWSTR or right[0] == RAWSTR):
+        # RAWCHAR_VIEW operands join the concat dispatch: a char view
+        # coerces to its one-char RAWSTR via _rawstr_operand - falling
+        # through to the arithmetic promote instead yielded the views'
+        # sequence LENGTHS added as ints (the assign then died on
+        # "cannot coerce i64 to rawstr")
+        if op == "+" and (left[0] == RAWSTR or right[0] == RAWSTR
+                          or left[0] == RAWCHAR_VIEW
+                          or right[0] == RAWCHAR_VIEW):
             # string concatenation on raw slots: fresh buffer, inputs
             # untouched (t = s + "x" must not disturb s). Raw operands
             # are only read, so they skip the eager-copy coercion;

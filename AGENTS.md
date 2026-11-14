@@ -87,8 +87,13 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   改被 ll 门禁钉住的文件（ir_interp.si）必须跑 ll 门禁；flatten 工具
   拒绝默认参数值（正确行为）；孪生变异经辅助方法（属性字典下标赋值
   不可表达）；driver 缓存陈旧伪装成编译器损坏（先删
-  ~/.cache/silu-runtime/driver）**。str 临时值追踪字典在孪生编译版
-  发散——回退为 patch，余项见 STATUS.md TODO #1。
+  ~/.cache/silu-runtime/driver）**。str 临时值追踪**已落地（2026-11-14
+  深夜，STATUS.md TODO #1）**：rawlist_str_get/slice 结果按 SSA name
+  字符串注册 owned，视图消费后 free 父缓冲；键 = name 字符串（对象
+  键在孪生编译版发散）；**函数边界必须 clear**（llvmlite 名字每函数
+  重启，残留条目跨函数别名 → double free 实证）；变异经辅助方法
+  （字典作本地参数）。配套修 view+view concat 分派缺臂。Rust conv
+  未移植追踪（语料无该形状，ll 20/20；出现时门禁响亮拦截）**。
 - **interpret 平面退出码映射（2026-11-14 深夜，STATUS.md §3.20）**：
   `silu interpret` 过去丢弃 main() 返回值（退出码恒 0）——visit_Module
   把返回值存 `self.main_return`，cli.run_interpreter 对非零 int
