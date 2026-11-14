@@ -111,8 +111,14 @@ def run_workload(name, src):
                      shell=True)
 
     rows = []
-    rows.append(("编译+运行 native", build_ms + run_ms,
+    rows.append(("编译+运行 native(默认 -O2 全量)", build_ms + run_ms,
                  f"(build {build_ms} + run {run_ms})"))
+    siluc = os.path.join(REPO, "siluc")
+    if os.path.exists(siluc):
+        siluc_ms = best([siluc, "/tmp/eval_src.si", "-o", f"/tmp/eval_{name}_sc"])
+        siluc_run = best([f"/tmp/eval_{name}_sc"])
+        rows.append(("编译+运行 native(siluc 缓存驱动)", siluc_ms + siluc_run,
+                     f"(build {siluc_ms} + run {siluc_run})"))
     rows.append(("编译+运行 rust VM", rust_vm_ms, ""))
     rows.append(("编译+运行 silu VM(孪生)", twin_ms, ""))
     rows.append(("解释 ir_interp", interp_ms, ""))

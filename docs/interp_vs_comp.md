@@ -81,22 +81,30 @@ monty 编译 Python 源码到它自己的字节码（CPython 风格操作码
 
 ## 五、评测集：编译+运行 vs 解释，谁快
 
-评测集 `tools/irvm/eval.py`（2026-11-14 实测，四次运行取最优，
-均含进程启动与前端/编译时间）：
+评测集 `tools/irvm/eval.py`（2026-11-14 实测，3 次运行取最优，
+均含进程启动与前端/编译时间）。native 行区分两条编译链：
+默认 `python3 -m silu build`（clang -O2 全量 375KB IR）与
+`siluc` 缓存驱动（runtime 预编译 .o，clang 只编 KB 级用户部分）：
 
-| workload | native 编译+运行 | 字节码 VM 编译+运行 | ir_interp 解释 | CPython | 裁决 |
-|---|---:|---:|---:|---:|---|
-| fib(28) | 506ms（build 502 + run 4） | 59ms（rust）/ 122ms（孪生） | 1,767ms | 59ms | **编译快**（VM 路径 30×；native 路径 3.5×） |
-| 循环密集 1M 次迭代 | 497ms（build 494 + run 3） | 81ms / 160ms | 2,364ms | 149ms | **编译快**（VM 路径 29×） |
-| 短脚本（3 行 print） | 516ms | 6ms | 6ms | 26ms | **解释快**（native 被 build 拖垮；VM 与解释打平） |
-| fib(12)（毫秒级算完） | 529ms | 6ms | 7ms | 26ms | native：解释快；VM：打平 |
+| workload | native 默认链 | native siluc 链 | 字节码 VM 链 | ir_interp 解释 | CPython | 裁决 |
+|---|---:|---:|---:|---:|---:|---|
+| fib(28) | 642ms | **178ms** | 61ms / 123ms(孪生) | 1,803ms | 62ms | **编译快**（siluc 10×；VM 30×） |
+| 循环密集 1M 次迭代 | 534ms | **171ms** | 79ms / 156ms | 2,309ms | 147ms | **编译快**（siluc 13×；VM 29×） |
+| 短脚本（3 行 print） | 530ms | 167ms | **6ms** | 7ms | 27ms | native：解释快；**VM 与解释打平** |
+| fib(12)（毫秒级算完） | 538ms | 173ms | **7ms** | 8ms | 27ms | native：解释快；VM 打平 |
+
+**编译链拆解（fib12，为什么默认链 530ms）**：CPython 启动+cli 导入
+~40ms；Python 前端本体 2ms；Python conv（llvmlite）95ms；**clang -O2
+全量优化 375KB IR ~390ms ← 大头**。编译器本体（前端+后端）native
+平面是毫秒~50ms 级（silu_fe <5ms、siluc1 前端+conv 50ms）；两平面
+.ll 产物逐字节一致。siluc 缓存驱动把固定开销压到 ~170ms。
 
 **规律**：
-- **native 编译的固定开销 ~500ms**（siluc driver 全链含 clang 链接）
-  只有程序实际计算 >10ms 量级才能摊销；毫秒级脚本永远"解释快"。
-- **字节码 VM 路径的"编译"只是 silu_fe 前端（~7ms）**——它没有
+- **native 默认链的固定开销 ~530ms** 只有程序实际计算 >10ms 量级
+  才摊得回；siluc 缓存链 ~170ms；毫秒级脚本永远"解释快"。
+- **字节码 VM 链的"编译"只是 silu_fe 前端（~7ms）**——它没有
   clang 环节，6ms 就能编译+跑完短脚本，与树遍历解释器打平；
-  计算一重（fib28/loops），VM 路径立即以 ~30× 甩开解释器。
+  计算一重（fib28/loops），VM 链立即以 ~30× 甩开解释器。
 - 解释器的不可替代场景：单次极短脚本、REPL、无工具链环境、
   自举启动器、**可执行的语义规约**（差分门禁的 ground truth——
   编译器 bug 修复的判据"解释器输出对"不可替代）。
