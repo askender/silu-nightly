@@ -6,13 +6,20 @@
 // Every value is compared BIT-EXACT (hex of the f64) and every rendered
 // string byte-exact against the platform C library.
 
-import { readFileSync, existsSync, openSync } from "node:fs";
+import { readFileSync, existsSync, statSync, openSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { cFormatDouble, cStrtod } from "./shim/host.mjs";
 
 const REPO = new URL("..", import.meta.url).pathname;
 const REF = "/tmp/shim_ref.txt";
-if (!existsSync(REF)) {
+// regenerate when the reference C source is newer than the data file:
+// an existsSync-only check kept a STALE reference alive after
+// test_shim_ref.c gained cases, so the new cases silently never ran
+// (the same existsSync-cache lesson test_run.mjs already fixed)
+if (
+  !existsSync(REF) ||
+  statSync(REPO + "wasm/test_shim_ref.c").mtimeMs > statSync(REF).mtimeMs
+) {
   // ground truth from the REAL C library (test_shim_ref.c)
   execFileSync("clang", [REPO + "wasm/test_shim_ref.c", "-o", "/tmp/shim_ref"], { stdio: "inherit" });
   execFileSync("/tmp/shim_ref", { stdio: ["ignore", openSync(REF, "w"), "inherit"] });

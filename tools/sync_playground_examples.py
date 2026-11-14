@@ -14,16 +14,24 @@ is plain ASCII Silu, so this has never fired).
 import os
 import re
 
-ORDER = [
-    "recursion.si", "loops.si", "and_or_nary.si", "aug_sub.si",
-    "bool_ops.si", "dicts.si", "dicts_f.si", "dsbig.si", "edge.si",
-    "float_ops.si", "floats.si", "globals.si", "lists.si",
-    "nested_fn.si", "record_sem.si", "stdin_demo.si",
-    "strbuf_sem.si", "strings.si",
-]
-COMPILE_ONLY = ["containers.si"]
+# the curated two open the list, then every gate example follows in
+# alphabetical order - a new example dropped into wasm/examples/ joins
+# the playground with no edits here (the directory IS the source of
+# truth, matching how the gates enumerate it)
+HEAD = ["recursion.si", "loops.si"]
 BASE = "wasm/examples"
 CO_BASE = "wasm/examples_compile_only"
+
+
+def _order() -> list:
+    names = sorted(
+        f for f in os.listdir(BASE)
+        if f.endswith(".si") and f not in HEAD
+    )
+    return HEAD + names
+
+
+COMPILE_ONLY = ["containers.si"]
 
 
 def _read_checked(path: str) -> str:
@@ -38,7 +46,7 @@ def _read_checked(path: str) -> str:
 
 
 def sync(index_path: str) -> int:
-    entries = [(f, _read_checked(os.path.join(BASE, f))) for f in ORDER]
+    entries = [(f, _read_checked(os.path.join(BASE, f))) for f in _order()]
     for f in COMPILE_ONLY:
         entries.append((f + " (compile-only)",
                         _read_checked(os.path.join(CO_BASE, f))))

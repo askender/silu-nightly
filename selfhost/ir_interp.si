@@ -279,9 +279,10 @@ def check_expr(node: JValue, mode: int) -> int:
         check_expr(elem(node, 2), mode)
         return 0
     if t == "and" or t == "or" or t == "not":
-        check_expr(elem(node, 1), mode)
-        if t != "not":
-            check_expr(elem(node, 2), mode)
+        oi2: int = 1
+        while oi2 < len(node.arr):
+            check_expr(elem(node, oi2), mode)
+            oi2 += 1
         return 0
     if mode == 1 and len(ERRS) == 0:
         ERRS.append("unsupported expression '" + t + "'")
@@ -464,16 +465,21 @@ class Interp:
                 return 1
             return 0
         if t == "and":
-            if self.eval_int(elem(node, 1)) == 0:
-                return 0
-            if self.eval_int(elem(node, 2)) == 0:
-                return 0
+            # the FE emits FLAT operand lists: every operand after the
+            # first two must short-circuit too (a 3-operand chain
+            # silently dropped the third before)
+            oi: int = 1
+            while oi < len(node.arr):
+                if self.eval_int(elem(node, oi)) == 0:
+                    return 0
+                oi += 1
             return 1
         if t == "or":
-            if self.eval_int(elem(node, 1)) != 0:
-                return 1
-            if self.eval_int(elem(node, 2)) != 0:
-                return 1
+            oi = 1
+            while oi < len(node.arr):
+                if self.eval_int(elem(node, oi)) != 0:
+                    return 1
+                oi += 1
             return 0
         if t == "not":
             if self.eval_int(elem(node, 1)) == 0:

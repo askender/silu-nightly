@@ -106,8 +106,14 @@ def build_tool(name):
         else:
             print(f"emitting {name} .ll (self-host monolith)...", file=sys.stderr)
             sys.path.insert(0, REPO)
-            from tools.selfhost_build import SILUC1_BIN
+            from tools.selfhost_build import ensure_siluc, SILUC1_BIN
 
+            # rebuild siluc1 when its sources are newer: without this a
+            # stale binary compiles monolith tools from an outdated
+            # compiler (the interpreter/backend/wat2wasm artifacts would
+            # silently miss the latest conv fixes). ensure_siluc returns
+            # the DRIVER path - the one-shot compiler is SILUC1_BIN.
+            ensure_siluc()
             siluc1_bin = SILUC1_BIN
             # the monolith reads the SOURCE directly - no fe|conv IR-JSON
             # handoff

@@ -42,7 +42,11 @@ GN_TY: list[str] = []
 GN_INITK: list[int] = []
 GN_INITV: list[int] = []
 GN_INITF: list[str] = []
-MEM_MIN: int = 1
+# list cell: structure() runs inside a function, and a bare assignment
+# would shadow the module global as a local (Silu CPython-style scoping)
+# - emit_all would then read the stale default 1 (latent: the backend
+# hardcodes (memory i64 1), so the corpus never exercised it)
+MEMC: list[int] = [1]
 MEM_HAS: list[int] = [0]
 EXP_NM: list[str] = []
 EXP_KIND: list[int] = []
@@ -367,7 +371,7 @@ def structure() -> int:
                     name_add(nm2, len(IMP_MOD) - 1)
                 elif head == "memory":
                     MEM_HAS[0] = 1
-                    MEM_MIN = atom_int(ttext(i + 3))
+                    MEMC[0] = atom_int(ttext(i + 3))
                 elif head == "global":
                     gnm: str = ttext(i + 2)
                     mut: int = 0
@@ -1028,7 +1032,7 @@ def emit_all() -> int:
     # memory section (5): only when the WAT declares a memory
     # payload = mem-count (1) + limits (flags 0x04 = i64 index, min)
     if MEM_HAS[0] == 1:
-        OS[0] = "01" + "04" + uleb_hex(MEM_MIN)
+        OS[0] = "01" + "04" + uleb_hex(MEMC[0])
         emit_section(5)
     # global section (6)
     if len(GN_NAME) > 0:
