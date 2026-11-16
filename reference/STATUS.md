@@ -772,10 +772,21 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   **根因层**：Python 的 kind 词汇表 const str = RAWSTR 但值域 pystr，
   coercion/temp 归属跨 _convert_node/_coerce/_rawstr_operand 三层；
   Rust 的 Typed 词汇（Str/PStr/Pyo）与 Python kind 不一一对应——
-  raw_arm 判据（任一 Typed::Str）误判链式内层。**下一轮路径**：
-  对仪器化的 kind 流追一轮（typed_expr 臂打印 kinds + _coerce 调用
-  层），产出 produce×consume 表后按表镜像；探针（temp_free.si /
-  concat_chain.si / 形状矩阵 s1-s5）已备。驱动错误透传本轮即立功
+  raw_arm 判据（任一 Typed::Str）误判链式内层。**下一轮路径 + 本轮 kind 流追的证据（SILU_TRACE_CONCAT）**：
+  wordcount 的 `"w" + str(i)`——COERCE->RAWSTR from obj ×2 发生在
+  操作数求值层（str(i) 的 call 返回 coercion + const 的值构造），
+  binop 收到 rawstr|rawstr 且 a_temp/b_temp 全 None（coercion 临时
+  在 _coerce/_unbox 层产生、无人释放 = 泄漏的字节兼容形态）；concat
+  臂在 flatten/normalize 上下文中的分流（direct conv 与 siluc1 路径
+  行为一致但 owned-pass 未生效的原因未定位）。**已试并验证的设计**：
+  universal obj->rawstr-coercion 注册（_coerce 处）+ concat 臂
+  owned-pass + Rust to_raw 注册 + raw_arm(not-both-Pyo)——Rust 侧独立
+  可编译可运行，但与 Python 侧合流后仍 18/21（Rust 多 free：Python
+  的注册后 free 未出现在 .ll 的原因未定位——嫌疑在 flatten 上下文或
+  _owned_str_fresh 的 key 生命周期）。**下一轮路径**：先仪器化
+  _owned_str_fresh 的 add/del/free 三点（trace 每个 key 的生死），
+  定位注册后 free 不出现的层；探针（temp_free.si / concat_chain.si /
+  形状矩阵 s1-s5）已备。驱动错误透传本轮即立功
   （探针的 ValueError 不再静默）。
 
 ## 四、其余 TODO（优先级序）
