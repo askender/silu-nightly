@@ -802,7 +802,19 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   不置位；两平面同 flag），或运行时发射期结束时的强制双 set 清空
   （须先定位 Python 侧的等价边界）。**教训**：跨 init/convert 相位
   的全局状态（所有权追踪字典）必须有相位门；纯 Python direct 验证
-  不能代表自举版（flatten+silu 化后的行为差异要过 siluc1 全链）。驱动错误透传本轮即立功
+  不能代表自举版（flatten+silu 化后的行为差异要过 siluc1 全链）。
+  **相位门实施（第三轮，回退）——最终发现**：IN_USER_PHASE 相位门
+  （Python list 标记——bool 注解属性被 .si 转换吃掉，AGENTS CTX 教训
+  再证）+ Rust IN_USER_PHASE 后：小输入过、**大输入（自举源）仍
+  SIGABRT 且连 silu_fe 自己重建后都崩**——根因升级：**运行时函数体
+  是惰性创建的**（_unbox_inst_cache is None 模式），用户相位期间
+  惰性发射的运行时体仍会注册/释放。**下一轮的正确设计**：所有权集
+  按 CURRENT FUNCTION 隔离（每函数一个 set，concat 臂读当前函数的
+  set——运行时体与用户体天然隔离，无需相位门），或等价地给 _unbox/
+  _rawstr_operand/concat 臂全部加 current_builder 归属校验。
+  **状态**：P9 泄漏修复合入必须与该重设计同轮；树已回绿
+  （ll 21/21、ir 22/22、irvm 10/10、pytest 子集 28/28、corpus 16/16
+  复跑全过）。驱动错误透传本轮即立功
   （探针的 ValueError 不再静默）。
 
 ## 四、其余 TODO（优先级序）
