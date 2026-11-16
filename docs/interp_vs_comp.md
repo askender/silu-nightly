@@ -28,7 +28,7 @@
 | Cython (cdef long) | 28 ms | ~25 ms | 9× |
 | CPython 3.12 | 67 ms | ~60 ms | 22× |
 | monty (Rust Python 沙箱) | 116 ms | ~88 ms | 39× |
-| **silu 字节码 VM 孪生 (Silu→native)** | **87 ms** | ~82 ms | **~22×** |
+| **silu 字节码 VM 孪生 (Silu→native)** | **66 ms** | ~60 ms | **~17×** |
 | silu IR 解释器 native -O2 | 1,760 ms | ~1,700 ms | 578× |
 | silu IR 解释器 wasm (node) | 1,168 ms* | — | — |
 | silu AST 解释器 | 15,256 ms | — | 5,085× |
@@ -56,8 +56,8 @@ wasm 65ms；siluc1 wasm 151ms；Python 平面 conv 185ms；driver 全链
    - **每帧 `vec![0i64; nslots]` 堆分配**——63 万次调用 = 63 万次
      malloc/free。改成共享 flat 槽区（append 零槽 + 帧记 sbase，与
      Silu 孪生的 SLOTAREA 同构）后消掉。
-4. **Silu 孪生（Silu 写的 VM 再编译）比 Rust 手写 VM 慢 ~1.6×**
-   （内联热臂栈操作 + 按频次重排 elif 链后，115→84ms；此前 ~2×）。
+4. **Silu 孪生（Silu 写的 VM 再编译）比 Rust 手写 VM 慢 ~1.2×**
+   （内联热臂 → 频次重排 → pc/end/sbase 寄存器化，115→84→60ms）。
    剩余差距是结构性的：循环顶 4 张平行 list 的 `[len-1]` 读取
    （Rust 是结构体字段直读）、elif 链逐个比较（Rust match 编译成
    跳转表）——Python 子集没有 switch/goto，计算跳转不可表达。
@@ -93,7 +93,7 @@ KB 级用户部分）；VM 链的编译段 = silu_fe 前端（.si→IR JSON）�
 
 | workload | native 默认链 | native siluc 链 | rust VM | silu VM 孪生 | ir_interp 解释 | CPython | 裁决 |
 |---|---|---|---|---|---|---:|---|
-| fib(28) | 580（576+4） | 176（172+4） | 59（fe 3+vm 56） | 87（fe 3+vm 84） | 1777（fe 3+interp 1774） | 63 | **编译快**（siluc 10×；VM 30×） |
+| fib(28) | 580（576+4） | 176（172+4） | 59（fe 3+vm 56） | 66（fe 3+vm 60） | 1777（fe 3+interp 1774） | 63 | **编译快**（siluc 10×；VM 30×） |
 | 循环密集 1M | 581（577+4） | 181（177+4） | 79（fe 3+vm 76） | 163（fe 3+vm 160） | 2363（fe 3+interp 2360） | 149 | **编译快**（siluc 13×；VM 30×） |
 | 短脚本 3 print | 593（590+3） | 169（166+3） | 6（fe 3+vm 3） | 6（fe 3+vm 3） | 6（fe 3+interp 3） | 27 | native：解释快；VM/解释打平 |
 | fib(12) | 553（551+2） | 178（175+3） | 6（fe 3+vm 3） | 6（fe 3+vm 3） | 7（fe 3+interp 4） | 28 | 同上 |

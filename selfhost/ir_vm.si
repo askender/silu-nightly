@@ -776,18 +776,22 @@ def run_vm() -> int:
     FRAME_PC.append(0)
     FRAME_END.append(MODULE_LEN[0])
     FRAME_VBASE.append(0)
+    # frame state lives in bare scalars: each instruction updates the
+    # locals and the parallel frame lists are only written/read at
+    # frame switches (CALL writes the caller's resume pc; RETURN and
+    # the implicit-return path restore caller state from the lists) -
+    # saves three list round-trips per dispatched instruction
+    pc: int = 0
+    end: int = MODULE_LEN[0]
+    sbase: int = sb0
     # loop-hoisted operand temporaries (the arms assign them bare;
     # distinct names per role avoid re-annotating in one function)
     d: int = 0
     sa: int = 0
     sb: int = 0
     while len(FRAME_PC) > 0:
-        pc: int = FRAME_PC[len(FRAME_PC) - 1]
-        end: int = FRAME_END[len(FRAME_END) - 1]
-        sbase: int = FRAME_SLOTBASE[len(FRAME_SLOTBASE) - 1]
         if pc >= end:
             # fell off the region end: implicit return 0
-            ret0: int = 0
             FRAME_SLOTBASE.pop()
             FRAME_PC.pop()
             FRAME_END.pop()
@@ -795,18 +799,20 @@ def run_vm() -> int:
             if len(FRAME_PC) == 0:
                 return 0
             vstack_truncate(vbase0)
-            VSTACK.append(ret0)
+            VSTACK.append(0)
+            pc = FRAME_PC[len(FRAME_PC) - 1]
+            end = FRAME_END[len(FRAME_END) - 1]
+            sbase = FRAME_SLOTBASE[len(FRAME_SLOTBASE) - 1]
             continue
         op: int = CODE[pc]
-        FRAME_PC[len(FRAME_PC) - 1] = pc + 1
+        pc += 1
         # arms ordered by dynamic frequency on the fib/loops corpus:
         # call/return/jif/local traffic dominates, then compares and
         # adds. stack ops are inlined (append/pop + direct d-2 store)
         # - the helper calls cost ~2x on the recursive benchmark
         if op == OP_CALL:
-            k: int = CODE[pc + 1]
-            w: int = CODE[pc + 2] + CODE[pc + 3] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 4
+            k: int = CODE[pc]
+            w: int = CODE[pc + 1] + CODE[pc + 2] * 256
             fi2: int = w
             if fi2 >= len(FN_START):
                 fi2 = 0
@@ -829,9 +835,15 @@ def run_vm() -> int:
                 ai2 += 1
             vstack_truncate(arg_start)
             FRAME_VBASE.append(arg_start)
+            # the caller's resume point lands in its frame slot now;
+            # RETURN restores caller state from the lists
+            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
             FRAME_SLOTBASE.append(sb2)
             FRAME_PC.append(FN_START[fi2])
             FRAME_END.append(FN_START[fi2] + FN_LEN[fi2])
+            pc = FN_START[fi2]
+            end = FN_START[fi2] + FN_LEN[fi2]
+            sbase = sb2
         elif op == OP_RETURN:
             d = len(VSTACK)
             ret2: int = VSTACK[d - 1]
@@ -844,22 +856,25 @@ def run_vm() -> int:
                 return 0
             vstack_truncate(vbase2)
             VSTACK.append(ret2)
+            pc = FRAME_PC[len(FRAME_PC) - 1]
+            end = FRAME_END[len(FRAME_END) - 1]
+            sbase = FRAME_SLOTBASE[len(FRAME_SLOTBASE) - 1]
         elif op == OP_JUMP_IF_FALSE:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
+            w = CODE[pc] + CODE[pc + 1] * 256
             d = len(VSTACK)
             v: int = VSTACK[d - 1]
             VSTACK.pop()
             if v == 0:
-                FRAME_PC[len(FRAME_PC) - 1] = w
+                pc = w
             else:
-                FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+                pc += 2
         elif op == OP_LOAD_LOCAL:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            w = CODE[pc] + CODE[pc + 1] * 256
+            pc += 2
             VSTACK.append(SLOTAREA[sbase + w])
         elif op == OP_LOAD_CONST:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            w = CODE[pc] + CODE[pc + 1] * 256
+            pc += 2
             VSTACK.append(CONSTS[w])
         elif op == OP_CMP_LT:
             d = len(VSTACK)
@@ -883,14 +898,14 @@ def run_vm() -> int:
             VSTACK[d - 2] = VSTACK[d - 2] * VSTACK[d - 1]
             VSTACK.pop()
         elif op == OP_STORE_LOCAL:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+            w = CODE[pc] + CODE[pc + 1] * 256
+            pc += 2
             d = len(VSTACK)
             SLOTAREA[sbase + w] = VSTACK[d - 1]
             VSTACK.pop()
         elif op == OP_JUMP:
-            w = CODE[pc + 1] + CODE[pc + 2] * 256
-            FRAME_PC[len(FRAME_PC) - 1] = w
+            w = CODE[pc] + CODE[pc + 1] * 256
+            pc = w
         elif op == OP_CMP_EQ:
             d = len(VSTACK)
             sa = VSTACK[d - 2]
@@ -964,8 +979,8 @@ def run_vm() -> int:
             else:
                 VSTACK[d - 2] = ipow_vm(sa, sb)
         elif op == OP_PRINT:
-            k = CODE[pc + 1]
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 2
+            k = CODE[pc]
+            pc += 1
             if len(VSTACK) < k:
                 bail("stack underflow at print")
                 return 0

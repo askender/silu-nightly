@@ -94,8 +94,9 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   自包含，stdin 首行 "@dump" 选 dump 模式）。门禁两道（探针在
   tools/irvm/probes/）：执行差分 test.sh（vs ir_interp，9/9）、跨平面
   字节一致 bytecode_diff.sh（Rust dump vs 孪生 dump，9/9 逐字节）。
-  **速度（fib28 总耗时）**：Rust VM 50ms / 孪生 native 80ms（分派臂
-  内联+按频次重排；原 115ms）/ monty 116ms / ir_interp 1.76s / AST
+  **速度（fib28 总耗时）**：Rust VM 50ms / 孪生 native 60ms（内联热臂
+  → 频次重排 → pc/end/sbase 寄存器化，115→84→60ms）/ monty 116ms /
+  ir_interp 1.76s / AST
   解释器 ~15s（CPython 60ms 仍略快——C 级解释器）。Rust VM 曾
   0.775s——每指令 env 查询（调试残留）+ 每帧堆分配两连修后 15.5×；
   **VM 循环内禁止 env 查询/每帧分配**。孪生回物理栈模型（VDEPTH
