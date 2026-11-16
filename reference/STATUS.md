@@ -814,7 +814,22 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   _rawstr_operand/concat 臂全部加 current_builder 归属校验。
   **状态**：P9 泄漏修复合入必须与该重设计同轮；树已回绿
   （ll 21/21、ir 22/22、irvm 10/10、pytest 子集 28/28、corpus 16/16
-  复跑全过）。驱动错误透传本轮即立功
+  复跑全过）。
+  **第四轮（同日，推进到 19/21 后回退）——两张决定性地图**：
+  ①**两遍 free 结构**（Python 臂的真实形态）：pass 1 = coerced temps
+  （a_temp/b_temp：to_raw 强制临时 + char1 视图）按操作数序；pass 2 =
+  owned 表达式临时（concat 结果/slice/str-get，produce 站点入册）按
+  操作数序——Rust 单遍合并会颠倒顺序（ir_interp 的 .357/.352 颠倒
+  实证）；改两遍后 ir_interp ✓ 绿。②**consume 站点清单仍缺一类**：
+  silu_fe 的 join 分隔符（`rawlist_str_join(out, "")` 的接收者
+  to_raw 临时）——Python 经 _rawstr_finish 机制性泄漏（不 free），
+  Rust 经 CONCAT_TEMPS 注册被释放（多 1 free）——join 是
+  produce×consume 表的新 consume 站点，Python 侧需补 free 或 Rust
+  侧对齐不释放。**.si 可表达性清单（第四轮实证）**：bool 注解类属性
+  ✗、属性下标赋值 ✗、plain int 属性 ✓、模块级 list 旗 ✓、
+  方法调用的注册/释放辅助 ✓。**下一轮收口清单**：join consume 站点
+  对齐（唯一剩余分歧，1 个形状）→ concat_chain.si 探针入仓 →
+  全门禁 → RSS 复测 → 重钉。全部 probe/锚点已验证可重放。驱动错误透传本轮即立功
   （探针的 ValueError 不再静默）。
 
 ## 四、其余 TODO（优先级序）
