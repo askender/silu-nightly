@@ -759,12 +759,24 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   已实证的**潜在既有分歧**（探针形状暴露，非本次引入）：模块层 coerced
   临时 Python 释放/Rust 不释放；双 PStr concat 的 slice 操作数同分歧。
   去掉两门 → wordcount/silu_fe 反向过激（to_raw 临时 Rust 释放/
-  Python 不释放）。**剩余工作**：把两平面 free 规则收敛到同一张
-  "produce(concat/slice/str-get/char1/to_raw) × consume(concat=free,
-  char1=parent free, assign=move, return/global-store=transfer,
-  compare=borrow)"表，逐形状过 ll 门禁（benchmarks/temp_free.si 探针
-  已写好暂不入仓——会置红 ll 门禁）。驱动错误透传本轮即立功（探针的
-  ValueError 不再静默）。
+  Python 不释放）。**剩余工作 + 本轮新增实证（形状矩阵，五探针双平面 diff）**：
+  s1 raw 局部单 concat=0 分歧（两平面同泄漏）；s4 链式=0 分歧（同泄漏，
+  纯 raw 链的修复**字节可落地**）；s2 const+str(i)=全局声明顺序分歧
+  （free 集相同——潜在既有分歧，与 free 无关）；s3 slice+const=Python
+  多 1 free（slice 临时 Python 入册释放/Rust 不入册）；s5 字面量初始化
+  list 的 push(concat)=**Rust bail "elem type"**（既有能力缺口，宁报
+  ERROR ✓）。**wordcount 实证**：Python concat 臂触发 2 次
+  （SILU_TRACE_CONCAT 探针）但 a_temp/b_temp 全 None——coercion
+  （pystr_to_rawstr）在 _convert_node/_coerce 层发生而非
+  _rawstr_operand，Python 该形状本就不 free（泄漏且字节与 Rust 一致）。
+  **根因层**：Python 的 kind 词汇表 const str = RAWSTR 但值域 pystr，
+  coercion/temp 归属跨 _convert_node/_coerce/_rawstr_operand 三层；
+  Rust 的 Typed 词汇（Str/PStr/Pyo）与 Python kind 不一一对应——
+  raw_arm 判据（任一 Typed::Str）误判链式内层。**下一轮路径**：
+  对仪器化的 kind 流追一轮（typed_expr 臂打印 kinds + _coerce 调用
+  层），产出 produce×consume 表后按表镜像；探针（temp_free.si /
+  concat_chain.si / 形状矩阵 s1-s5）已备。驱动错误透传本轮即立功
+  （探针的 ValueError 不再静默）。
 
 ## 四、其余 TODO（优先级序）
 
