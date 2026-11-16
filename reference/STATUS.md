@@ -832,6 +832,14 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   **新增教训**：patch 脚本必须逐条 assert 当前文件实际状态（本轮
   三次 stale-anchor 空写）；_rawstr_operand 的 del 语义 = "temp-return
   接管"，与 owned-pass 互斥——两套释放模型不能并存于同一注册。
+  **第六轮（同日，最终泊车）——渐进 patch 循环的教训**：六轮
+  patch/revert 循环后文件状态漂移（Rust 全套已入、Python 全裸的
+  混合态反复出现；逐个失败脚本重放互相覆盖）——**结论：此类多文件
+  双平面改动必须一次性原子落地**（单一脚本/单一 commit，全门禁后
+  提交），禁止增量 patch-循环。最终设计已五轮验证、全部锚点已实证
+  可重放；剩余工作（.si 表达性已解：plain int 属性/模块级旗；两遍
+  free 结构；Pyo-only 注册；push/join/call/compare 逐 consume 站点）
+  = 一次原子实施，预计一轮内收口。
   **第四轮（同日，推进到 19/21 后回退）——两张决定性地图**：
   ①**两遍 free 结构**（Python 臂的真实形态）：pass 1 = coerced temps
   （a_temp/b_temp：to_raw 强制临时 + char1 视图）按操作数序；pass 2 =
