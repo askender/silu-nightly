@@ -50,6 +50,7 @@ static int g_err_capture_fd = -1; /* request child's captured stderr */
 static int g_serving_child = 0; /* a request child: no atexit teardown */
 
 static void die(const char *msg);
+static const char *resolve_self(void);
 
 static void make_cache_dirs(const char *path) {
     char partial[4096];
@@ -452,7 +453,22 @@ static int run_compile(int argc, char **argv) {
     base = base ? base + 1 : src_abs;
     int rc = run_capture(siluc1_argv, base, &full_ll, &full_len);
     chdir(oldcwd);
-    if (rc != 0 || full_len == 0) die("siluc1 failed on the input");
+    if (rc != 0 || full_len == 0) {
+        /* the FE prints parse errors on STDOUT (the .ll stream this
+           pipeline captures) - discarding the capture silenced every
+           syntax error; surface the first line in the die message */
+        char head[512];
+        size_t k = 0;
+        while (k < sizeof head - 1 && full_ll[k] && full_ll[k] != '\n') {
+            head[k] = full_ll[k];
+            k++;
+        }
+        head[k] = 0;
+        char msg[640];
+        snprintf(msg, sizeof msg, "siluc1 failed on the input: %.480s",
+                 head);
+        die(msg);
+    }
 
     /* 2. runtime prefix: load cache, or rebuild it once */
     char *rt_ll = have_rt ? read_all(rt_ll_path, NULL) : NULL;
@@ -980,6 +996,68 @@ static int serve_mode(void) {
     }
 
     g_dbg_fd = dup(2);
+    /* the build cache must not outlive the compiler that produced it:
+       fold siluc1 + rt.o identity (size, mtime) into a stamp; on
+       mismatch the log truncates (review leftover: cache hits bypassed
+       the direct path's rt.clang stamp after compiler updates) */
+    {
+        char self_buf[4096], siluc1_path[4200], rt_path[4096];
+        snprintf(self_buf, sizeof self_buf, "%s", resolve_self());
+        char *dd = dirname(self_buf);
+        snprintf(siluc1_path, sizeof siluc1_path, "%s/siluc1", dd);
+        snprintf(rt_path, sizeof rt_path, "%s/rt.o", g_cache_dir);
+        unsigned long long fp = 1469598103934665603ULL;
+        const char *parts[2] = { siluc1_path, rt_path };
+        for (int pi = 0; pi < 2; pi++) {
+            struct stat pst;
+            if (stat(parts[pi], &pst) == 0) {
+                char one[256];
+                snprintf(one, sizeof one, "|%ld %lld", (long)pst.st_mtime,
+                         (long long)pst.st_size);
+                for (const char *q = one; *q; q++) {
+                    fp ^= (unsigned char)*q;
+                    fp *= 1099511628211ULL;
+                }
+            }
+        }
+        char stamp[64], stamp_path[4096], log_path[4096];
+        snprintf(stamp, sizeof stamp, "%016llx", fp);
+        snprintf(stamp_path, sizeof stamp_path, "%s/silucd.stamp", g_cache_dir);
+        snprintf(log_path, sizeof log_path, "%s/builds.log", g_cache_dir);
+        FILE *sf = fopen(stamp_path, "r");
+        char old_stamp[64] = "";
+        if (sf) {
+            if (!fgets(old_stamp, sizeof old_stamp, sf)) old_stamp[0] = 0;
+            char *nlc = strchr(old_stamp, '\n');
+            if (nlc) *nlc = 0;
+            fclose(sf);
+        }
+        if (strcmp(old_stamp, stamp) != 0) {
+            /* compiler identity changed (or first run): stale cache
+               lines would keep serving binaries from an older siluc1 */
+            FILE *lf = fopen(log_path, "w");
+            if (lf) fclose(lf);
+            sf = fopen(stamp_path, "w");
+            if (sf) { fputs(stamp, sf); fclose(sf); }
+        } else {
+            /* compaction: the log grows per build; cap it by keeping
+               the tail when it passes 512KB */
+            struct stat lst;
+            if (stat(log_path, &lst) == 0 && lst.st_size > 512 * 1024) {
+                char *all = read_all(log_path, NULL);
+                if (all) {
+                    long size = (long)strlen(all);
+                    long cut = size - 64 * 1024;
+                    while (cut > 0 && all[cut] != '\n') cut--;
+                    if (cut > 0) {
+                        FILE *lf = fopen(log_path, "w");
+                        if (lf) { fputs(all + cut + 1, lf); fclose(lf); }
+                    }
+                    free(all);
+                }
+            }
+        }
+    }
     g_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (g_server_fd < 0) die("daemon socket");
     if (bind(g_server_fd, (struct sockaddr *)&addr, sizeof addr) != 0)

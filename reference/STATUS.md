@@ -736,10 +736,12 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
 已实证排除：寄存器化语义等价（5 组探针）、wasm br_table 九探针（嵌套
 循环/连续 match/臂内 break/负值/1024 边界）、switch 镜像决策一致、
 深度帽无误伤（1500 深递归正确求值，CPython 反而 RecursionError）、
-缓存键正确性四场景、kill -9 后陈旧 socket 接管。遗留观察（未修）：
-builds.log 无限增长慢退化；缓存键不含编译器身份（siluc1 更新后旧缓存
-继续命中——直接路径有 rt.clang 戳，命中路径绕过）；**siluc1 对真语法
-错误 stderr 全静默**（rc=1 无输出，两平面共有 UX 问题，独立小项）。
+缓存键正确性四场景、kill -9 后陈旧 socket 接管。遗留观察：三小项已于同日第二巡修复——①**siluc1 语法错误静默**实为
+  错误走 stdout 被驱动 .ll 管道捕获后丢弃（Rust FE 用 eprintln 本就
+  正确）→ 驱动失败时把捕获首行带进 die 消息，直连/daemon 双链响亮；
+  ②缓存键缺编译器身份 → serve 启动时叠 siluc1+rt.o (mtime,size) 为
+  silucd.stamp，错配即清 builds.log；③builds.log 过 512KB 尾部截断
+  64KB。
 
 ## 四、其余 TODO（优先级序）
 
