@@ -786,7 +786,23 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   _owned_str_fresh 的 key 生命周期）。**下一轮路径**：先仪器化
   _owned_str_fresh 的 add/del/free 三点（trace 每个 key 的生死），
   定位注册后 free 不出现的层；探针（temp_free.si / concat_chain.si /
-  形状矩阵 s1-s5）已备。驱动错误透传本轮即立功
+  形状矩阵 s1-s5）已备。
+  **第二轮实施（同日，回退）——崩溃链完整取证**：universal-coercion
+  注册 + owned-pass + to_raw 注册 + 4 slice/get 入册 + raw_arm
+  (not-both-Pyo) + 双边界清空（walk_module / _convert_toplevel）全部
+  落地后，**自举版 conv 在 __py_init（运行时前缀发射期）SIGABRT**
+  （lldb: ___BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_
+  ALLOCATED ← rawstr_free ← LiteralStructType ← TypedCodegen___py_init
+  ← main；direct Python conv 同补丁完全正常、free 正确触发）。根因：
+  注册/释放跨了**运行时前缀发射期**与用户转换期的边界——发射期的
+  concat 臂（运行时体含 concat）注册的 operand 名字含字面量结构体
+  路径（LiteralStructType，非 malloc 分配），owned-pass 对其发 free。
+  **修复要求（下轮）**：相位门——注册/释放仅在用户转换期生效
+  （IN_USER_PHASE flag：convert() 入口置位、__init__ 的运行时创建
+  不置位；两平面同 flag），或运行时发射期结束时的强制双 set 清空
+  （须先定位 Python 侧的等价边界）。**教训**：跨 init/convert 相位
+  的全局状态（所有权追踪字典）必须有相位门；纯 Python direct 验证
+  不能代表自举版（flatten+silu 化后的行为差异要过 siluc1 全链）。驱动错误透传本轮即立功
   （探针的 ValueError 不再静默）。
 
 ## 四、其余 TODO（优先级序）
