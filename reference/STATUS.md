@@ -743,6 +743,29 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   silucd.stamp，错配即清 builds.log；③builds.log 过 512KB 尾部截断
   64KB。
 
+**P9 里程碑 spec（2026-11-17 普查完成，实施待字节对齐轮）**——"codegen
+  层临时值不释放"（§3.18 遗留正道项）的精确边界：**泄漏实账**（30 万次
+  循环 RSS）：`(s+s)+s` 模块层 6.1MB vs 无串基线 1.0MB（~17B/次滞留）；
+  命名局部重赋值 1.2MB 无泄漏（赋值 move + 旧值释放已正确）；跨函数
+  返回的 concat 结果泄漏（追踪按函数边界清空，不跨函数）。**泄漏主体**
+  = 被 `+` 消费的表达式临时（concat 结果/切片/str-get）——TODO #1 的
+  str 生命周期只覆盖下标/切片的视图消费路径。**修复设计**（两平面）：
+  Python 复用 _owned_str_fresh（concat 臂消费 owned 操作数即 free +
+  结果入册，链式传递/下标取 concat 走视图父缓冲——**已实现并实测
+  6.1→1.3MB**）；Rust 镜像 CONCAT_TEMPS（已实现）。**byte-parity 未达
+  ——实施中止点**：Python 的 _rawstr_operand 对 const/pystr 强制临时
+  返回 temp 并释放，Rust 的 to_raw 临时走 TEMP_STRS 且 cleanup 被
+  IN_FN + dynamic_operands 双门控——同一源形状两平面 free 集合不同；
+  已实证的**潜在既有分歧**（探针形状暴露，非本次引入）：模块层 coerced
+  临时 Python 释放/Rust 不释放；双 PStr concat 的 slice 操作数同分歧。
+  去掉两门 → wordcount/silu_fe 反向过激（to_raw 临时 Rust 释放/
+  Python 不释放）。**剩余工作**：把两平面 free 规则收敛到同一张
+  "produce(concat/slice/str-get/char1/to_raw) × consume(concat=free,
+  char1=parent free, assign=move, return/global-store=transfer,
+  compare=borrow)"表，逐形状过 ll 门禁（benchmarks/temp_free.si 探针
+  已写好暂不入仓——会置红 ll 门禁）。驱动错误透传本轮即立功（探针的
+  ValueError 不再静默）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
