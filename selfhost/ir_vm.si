@@ -406,7 +406,16 @@ def collect_funcs(stmts: JV) -> int:
 def emit_expr(node: JV) -> int:
     t: str = jtag(node)
     if t == "const":
-        v: int = node.arr[1].n
+        cv: JV = node.arr[1]
+        if cv.kind == 1:
+            # bool const: the value lives in .b (.n is always 0) - both
+            # used to emit LOAD_INT0, silently falsifying `if True`
+            if cv.b:
+                emit(OP_LOAD_INT1)
+            else:
+                emit(OP_LOAD_INT0)
+            return 0
+        v: int = cv.n
         if v == 0:
             emit(OP_LOAD_INT0)
         elif v == 1:

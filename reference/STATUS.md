@@ -721,6 +721,26 @@ fd 会在客户端早断后静默破坏编译**——SIGPIPE 忽略下 clang 写
 的表现是"无声消失"，差分定位 3 轮）；EOF 界定协议，客户端按行解析、
 非 OK/ERR 行转投 stderr。
 
+**复查轮（2026-11-17，独立审查代理 96 探针实证）**：7 项确认全修——
+S7【静默错误输出】孪生 VM bool 常量编成 0（b6a39c0 起：`if True:` 走
+else、`while True` 体被跳过，全 rc=0；根因 const 臂只读 `.n`，bool 存
+`.b`）→ kind==BOOL 臂修 + bool_lit.si 探针入门禁（10/10）；
+S1【静默错误输出】daemon builds.log 缓存投毒（mtime 测试被"更新的覆盖"
+命中，同 out 不同源供给旧二进制）→ **last-record-wins**；
+S2 相对 `-o` 按 daemon cwd 落盘 + 相对键污染 → out 绝对化；
+S3【挂死】自启 daemon 继承客户端 stdio（等待管道 EOF 挂 300s）→
+fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成功报
+失败）→ 动态缓冲读到 EOF；S5 空格路径按空格分词会编错源 → 检出空格
+直连；S6 失败路径诊断全丢（die 在 run_compile 内部，post-compile 流回
+不执行）→ **die 钩子流回捕获的 stderr**（ld/clang 详情现在到达客户端）。
+已实证排除：寄存器化语义等价（5 组探针）、wasm br_table 九探针（嵌套
+循环/连续 match/臂内 break/负值/1024 边界）、switch 镜像决策一致、
+深度帽无误伤（1500 深递归正确求值，CPython 反而 RecursionError）、
+缓存键正确性四场景、kill -9 后陈旧 socket 接管。遗留观察（未修）：
+builds.log 无限增长慢退化；缓存键不含编译器身份（siluc1 更新后旧缓存
+继续命中——直接路径有 rt.clang 戳，命中路径绕过）；**siluc1 对真语法
+错误 stderr 全静默**（rc=1 无输出，两平面共有 UX 问题，独立小项）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

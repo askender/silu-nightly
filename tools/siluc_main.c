@@ -46,6 +46,7 @@ static char g_exe_dir[4096];
 static char g_cache_dir[4096];
 static int g_conn_fd = -1; /* daemon request socket, -1 when not serving */
 static int g_dbg_fd = -1;  /* the daemon's original stderr, for post-dup2 logging */
+static int g_err_capture_fd = -1; /* request child's captured stderr */
 static int g_serving_child = 0; /* a request child: no atexit teardown */
 
 static void die(const char *msg);
@@ -68,8 +69,18 @@ static void make_cache_dirs(const char *path) {
 static void die(const char *msg) {
     fprintf(stderr, "siluc: %s\n", msg);
     if (g_conn_fd >= 0) {
-        /* serving a daemon request: the client's stderr is wired to
-           this process, close the protocol with a failure line */
+        /* serving a daemon request: die() fires INSIDE run_compile, so
+           the post-compile diagnostic streaming never runs - stream the
+           captured stderr here, then close the protocol with the
+           failure line (review S6) */
+        if (g_err_capture_fd >= 0) {
+            lseek(g_err_capture_fd, 0, SEEK_SET);
+            char dbuf[8192];
+            ssize_t dn;
+            while ((dn = read(g_err_capture_fd, dbuf, sizeof dbuf)) > 0) {
+                if (write(g_conn_fd, dbuf, (size_t)dn) < 0) break;
+            }
+        }
         dprintf(g_conn_fd, "ERR %s\n", msg);
     }
     exit(1);
@@ -824,20 +835,24 @@ static int build_cache_hit(const char *hash, const char *out) {
     FILE *f = fopen(log_path, "r");
     if (!f) return 0;
     char line[8192];
-    int hit = 0;
+    /* the LAST record for this out is authoritative: builds.log is
+       append-only, so a later build from a DIFFERENT source leaves a
+       newer record whose hash must win over an older same-hash line
+       (review S1: the old mtime-only test served a stale binary) */
+    char last_hash[32] = "";
+    long last_mtime = 0;
     while (fgets(line, sizeof line, f)) {
         char lhash[32], lout[4096];
         long lmtime;
         if (sscanf(line, "%31s %ld %4095s", lhash, &lmtime, lout) != 3) continue;
-        if (strcmp(lhash, hash) != 0 || strcmp(lout, out) != 0) continue;
-        struct stat st;
-        if (stat(out, &st) == 0 && (long)st.st_mtime >= lmtime - 1) {
-            hit = 1;
-            break;
-        }
+        if (strcmp(lout, out) != 0) continue;
+        snprintf(last_hash, sizeof last_hash, "%s", lhash);
+        last_mtime = lmtime;
     }
     fclose(f);
-    return hit;
+    if (strcmp(last_hash, hash) != 0) return 0;
+    struct stat st;
+    return stat(out, &st) == 0 && (long)st.st_mtime >= last_mtime - 1;
 }
 
 static void build_cache_record(const char *hash, const char *out) {
@@ -880,6 +895,7 @@ static void serve_request(int conn) {
     int err_fd = mkstemp(err_path);
     if (err_fd < 0) { dprintf(conn, "ERR mkstemp\n"); _exit(1); }
     unlink(err_path);
+    g_err_capture_fd = err_fd;
     dup2(err_fd, 2);
     char req[8192];
     ssize_t got = read(conn, req, sizeof req - 1);
@@ -915,18 +931,19 @@ static void serve_request(int conn) {
     if (g_dbg_fd >= 0) dprintf(g_dbg_fd, "silucd: child starting compile\n");
     int crc = run_compile(4, argv);
     if (g_dbg_fd >= 0) dprintf(g_dbg_fd, "silucd: child compile rc=%d\n", crc);
-    if (crc != 0) {
-        dprintf(conn, "ERR compile failed\n");
-        _exit(1);
-    }
-    build_cache_record(hash, out);
-    /* stream the captured diagnostics first; the verdict is LAST */
+    /* the captured diagnostics stream before the verdict on BOTH
+       paths - a failed link's ld details reach the client (review S6) */
     char diag[8192];
     lseek(err_fd, 0, SEEK_SET);
     ssize_t dn;
     while ((dn = read(err_fd, diag, sizeof diag)) > 0) {
         if (write(conn, diag, (size_t)dn) < 0) break;
     }
+    if (crc != 0) {
+        dprintf(conn, "ERR compile failed\n");
+        _exit(1);
+    }
+    build_cache_record(hash, out);
     dprintf(conn, "OK %ld built\n", now_ms() - t0);
     _exit(0);
 }
@@ -1031,8 +1048,16 @@ static int try_forward(const char *src_abs, const char *out) {
         pid_t pid = fork();
         if (pid == 0) {
             setsid();
-            close(0);
-            open("/dev/null", O_RDONLY);
+            /* detach ALL stdio: inherited stdout/stderr kept the
+               starting client's pipe open - a caller waiting for EOF
+               hung until the daemon's 300s idle exit (review S3) */
+            int dn = open("/dev/null", O_RDWR);
+            if (dn >= 0) {
+                dup2(dn, 0);
+                dup2(dn, 1);
+                dup2(dn, 2);
+                if (dn > 2) close(dn);
+            }
             execl(self_exe, "siluc", "--serve", (char *)NULL);
             _exit(1);
         }
@@ -1057,15 +1082,29 @@ static int try_forward(const char *src_abs, const char *out) {
         if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: client write failed: %s\n", strerror(errno));
         close(fd); return -1;
     }
-    char resp[16384];
-    ssize_t got = 0, n;
-    while (got < (ssize_t)sizeof resp - 1
-           && (n = read(fd, resp + got, sizeof resp - 1 - got)) > 0) {
-        got += n;
+    /* read to EOF into a growing buffer: the verdict is the LAST line
+       and diagnostics can exceed any fixed size (review S4) */
+    size_t cap = 65536;
+    char *resp = (char *)malloc(cap);
+    if (!resp) { close(fd); return -1; }
+    size_t got = 0;
+    ssize_t n;
+    for (;;) {
+        if (got == cap) {
+            if (cap >= (8u << 20)) break; /* absurd diagnostics: stop */
+            cap *= 2;
+            char *bigger = (char *)realloc(resp, cap);
+            if (!bigger) break;
+            resp = bigger;
+        }
+        n = read(fd, resp + got, cap - got);
+        if (n <= 0) break;
+        got += (size_t)n;
     }
     close(fd);
-    if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: client got %zd bytes\n", got);
-    if (got <= 0) return -1; /* daemon died mid-request: go direct */
+    if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: client got %zu bytes\n", got);
+    if (got == 0) { free(resp); return -1; }
+    resp[got] = 0;
     resp[got] = 0;
     /* EOF-delimited protocol: everything on the connection is the
        build's diagnostics (the child wires its stderr here); the FINAL
@@ -1106,16 +1145,31 @@ int main(int argc, char **argv) {
     compute_cache_dir();
     if (src && out && g_object_mode == 0 && g_no_lto == 0
             && getenv("SILUC_DAEMON")) {
-        /* resolve src against the cwd exactly like run_compile does */
-        char src_abs[4096];
+        /* resolve src AND out against the cwd exactly like
+           run_compile does - a relative out used to land in the
+           daemon's cwd and record relative cache keys (review S2) */
+        char src_abs[4096], out_abs[4096];
         if (src[0] == '/') snprintf(src_abs, sizeof src_abs, "%s", src);
         else {
             if (!getcwd(src_abs, sizeof src_abs)) die("getcwd");
             strncat(src_abs, "/", sizeof src_abs - strlen(src_abs) - 1);
             strncat(src_abs, src, sizeof src_abs - strlen(src_abs) - 1);
         }
+        if (out[0] == '/') snprintf(out_abs, sizeof out_abs, "%s", out);
+        else {
+            if (!getcwd(out_abs, sizeof out_abs)) die("getcwd");
+            strncat(out_abs, "/", sizeof out_abs - strlen(out_abs) - 1);
+            strncat(out_abs, out, sizeof out_abs - strlen(out_abs) - 1);
+        }
+        /* the line protocol is space-tokenized: paths with whitespace
+           go direct (review S5) */
+        if (strchr(src_abs, ' ') || strchr(out_abs, ' ')
+                || strchr(src_abs, '\n') || strchr(out_abs, '\n')) {
+            make_cache_dirs(g_cache_dir);
+            return run_compile(argc, argv);
+        }
         /* only the default link mode forwards; flags stay direct */
-        int fw = try_forward(src_abs, out);
+        int fw = try_forward(src_abs, out_abs);
         if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: try_forward -> %d\n", fw);
         if (fw >= 0) return fw;
         /* fall through: direct compile, untouched path */

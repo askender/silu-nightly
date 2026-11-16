@@ -1,0 +1,16 @@
+b: bool = True
+c: bool = False
+if b:
+    print(1)
+else:
+    print(2)
+if c:
+    print(3)
+else:
+    print(4)
+n: int = 0
+while True:
+    n += 1
+    if n >= 3:
+        break
+print(n)

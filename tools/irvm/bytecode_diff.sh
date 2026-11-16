@@ -8,7 +8,7 @@ set -e
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 IRVM="$REPO/tools/irvm/target/release/silu-irvm"
 FE="$REPO/silu_fe"
-PROBES="${*:-$REPO/tools/irvm/probes/c_and_or.si $REPO/tools/irvm/probes/fib.si $REPO/tools/irvm/probes/loops.si $REPO/tools/irvm/probes/unary.si $REPO/tools/irvm/probes/pow.si $REPO/tools/irvm/probes/boolint.si $REPO/tools/irvm/probes/fibseq.si $REPO/tools/irvm/probes/fib10.si $REPO/tools/irvm/probes/dbl.si}"
+PROBES="${*:-$REPO/tools/irvm/probes/c_and_or.si $REPO/tools/irvm/probes/fib.si $REPO/tools/irvm/probes/loops.si $REPO/tools/irvm/probes/unary.si $REPO/tools/irvm/probes/pow.si $REPO/tools/irvm/probes/boolint.si $REPO/tools/irvm/probes/bool_lit.si $REPO/tools/irvm/probes/fibseq.si $REPO/tools/irvm/probes/fib10.si $REPO/tools/irvm/probes/dbl.si}"
 
 # the twin's native binary: build once if absent (compiler output is
 # content-checked by the driver cache, so a stale binary cannot survive
