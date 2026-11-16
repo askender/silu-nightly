@@ -27,6 +27,11 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/select.h>
+#include <time.h>
+#include <signal.h>
 #include <libgen.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -39,6 +44,9 @@
 
 static char g_exe_dir[4096];
 static char g_cache_dir[4096];
+static int g_conn_fd = -1; /* daemon request socket, -1 when not serving */
+static int g_dbg_fd = -1;  /* the daemon's original stderr, for post-dup2 logging */
+static int g_serving_child = 0; /* a request child: no atexit teardown */
 
 static void die(const char *msg);
 
@@ -59,6 +67,11 @@ static void make_cache_dirs(const char *path) {
 
 static void die(const char *msg) {
     fprintf(stderr, "siluc: %s\n", msg);
+    if (g_conn_fd >= 0) {
+        /* serving a daemon request: the client's stderr is wired to
+           this process, close the protocol with a failure line */
+        dprintf(g_conn_fd, "ERR %s\n", msg);
+    }
     exit(1);
 }
 
@@ -354,7 +367,7 @@ static const char *c_type_of(const char *ll_ty) {
     return "void*"; /* pyobj and raw structs pass as opaque */
 }
 
-int main(int argc, char **argv) {
+static int run_compile(int argc, char **argv) {
     const char *src = NULL, *out = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) out = argv[++i];
@@ -386,13 +399,6 @@ int main(int argc, char **argv) {
     char siluc1[4096];
     snprintf(siluc1, sizeof siluc1, "%s/siluc1", dir);
 
-    /* cache dir */
-    const char *home = getenv("HOME");
-    const char *xdg = getenv("XDG_CACHE_HOME");
-    if (xdg && *xdg)
-        snprintf(g_cache_dir, sizeof g_cache_dir, "%s/silu-runtime/driver", xdg);
-    else
-        snprintf(g_cache_dir, sizeof g_cache_dir, "%s/.cache/silu-runtime/driver", home ? home : ".");
     make_cache_dirs(g_cache_dir);
 
     char rt_ll_path[4096], rt_o_path[4096], rt_syms_path[4096];
@@ -766,4 +772,356 @@ int main(int argc, char **argv) {
     unlink(user_ll_path);
     unlink(user_o_path);
     return 0;
+}
+
+/* ---------------- daemon mode ----------------
+ *
+ *     siluc --serve                       resident compile server
+ *     SILUC_DAEMON=1 siluc file.si -o out forward to the server
+ *
+ * The daemon keeps the driver process warm and content-caches builds:
+ * a request is "hash(source) out mtime" in <cache>/builds.log; a hit
+ * whose output still exists and is at least as new as the recorded
+ * build responds without compiling (~2ms vs ~160ms). Requests run in
+ * forked children (fresh siluc1/clang state per build, same
+ * concurrency properties as N direct siluc processes); a child's
+ * stderr is wired to its client so compiler diagnostics stream live.
+ * The direct path is untouched: without SILUC_DAEMON nothing changes.
+ */
+
+static void compute_cache_dir(void) {
+    const char *home = getenv("HOME");
+    const char *xdg = getenv("XDG_CACHE_HOME");
+    if (xdg && *xdg)
+        snprintf(g_cache_dir, sizeof g_cache_dir, "%s/silu-runtime/driver", xdg);
+    else
+        snprintf(g_cache_dir, sizeof g_cache_dir, "%s/.cache/silu-runtime/driver", home ? home : ".");
+}
+
+static unsigned long long fnv1a64_file(const char *path, int *ok) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { *ok = 0; return 0; }
+    unsigned long long h = 1469598103934665603ULL;
+    char buf[65536];
+    size_t n;
+    *ok = 1;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
+        for (size_t i = 0; i < n; i++) {
+            h ^= (unsigned char)buf[i];
+            h *= 1099511628211ULL;
+        }
+    }
+    fclose(f);
+    return h;
+}
+
+/* build-cache hit: hash matches, the output exists and is at least as
+   new as the recorded build (an output overwritten by a later build
+   of different source fails the mtime test) */
+static int build_cache_hit(const char *hash, const char *out) {
+    char log_path[4096];
+    snprintf(log_path, sizeof log_path, "%s/builds.log", g_cache_dir);
+    FILE *f = fopen(log_path, "r");
+    if (!f) return 0;
+    char line[8192];
+    int hit = 0;
+    while (fgets(line, sizeof line, f)) {
+        char lhash[32], lout[4096];
+        long lmtime;
+        if (sscanf(line, "%31s %ld %4095s", lhash, &lmtime, lout) != 3) continue;
+        if (strcmp(lhash, hash) != 0 || strcmp(lout, out) != 0) continue;
+        struct stat st;
+        if (stat(out, &st) == 0 && (long)st.st_mtime >= lmtime - 1) {
+            hit = 1;
+            break;
+        }
+    }
+    fclose(f);
+    return hit;
+}
+
+static void build_cache_record(const char *hash, const char *out) {
+    struct stat st;
+    if (stat(out, &st) != 0) return;
+    char log_path[4096];
+    snprintf(log_path, sizeof log_path, "%s/builds.log", g_cache_dir);
+    FILE *f = fopen(log_path, "a");
+    if (!f) return;
+    fprintf(f, "%s %ld %s\n", hash, (long)st.st_mtime, out);
+    fclose(f);
+}
+
+static long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+/* one request, in a forked child: parse "COMPILE <src> <out>", serve
+   from the content cache or run the full pipeline in-process */
+static void on_crash(int sig) {
+    if (g_dbg_fd >= 0) dprintf(g_dbg_fd, "silucd: child crashed sig=%d\n", sig);
+    if (g_conn_fd >= 0) dprintf(g_conn_fd, "ERR crashed sig=%d\n", sig);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void serve_request(int conn) {
+    g_conn_fd = conn;
+    signal(SIGCHLD, SIG_DFL); /* run_compile's run_quiet needs waitpid */
+    signal(SIGSEGV, on_crash);
+    signal(SIGABRT, on_crash);
+    signal(SIGBUS, on_crash);
+    /* diagnostics are captured to a temp file and streamed BEFORE the
+       verdict: sharing the connection fd with stderr let a client-side
+       close turn the compile's stderr writes into silent breakage */
+    g_serving_child = 1;
+    char err_path[] = "/tmp/silucd_errXXXXXX";
+    int err_fd = mkstemp(err_path);
+    if (err_fd < 0) { dprintf(conn, "ERR mkstemp\n"); _exit(1); }
+    unlink(err_path);
+    dup2(err_fd, 2);
+    char req[8192];
+    ssize_t got = read(conn, req, sizeof req - 1);
+    if (got <= 0) _exit(1);
+    req[got] = 0;
+    char *nl = strchr(req, '\n');
+    if (nl) *nl = 0;
+    char cmd[16], src[4096], out[4096];
+    if (sscanf(req, "%15s %4095s %4095s", cmd, src, out) != 3
+            || strcmp(cmd, "COMPILE") != 0) {
+        dprintf(conn, "ERR bad request\n");
+        _exit(1);
+    }
+    long t0 = now_ms();
+    int ok;
+    unsigned long long hv = fnv1a64_file(src, &ok);
+
+    if (!ok) {
+        dprintf(conn, "ERR cannot read source\n");
+        _exit(1);
+    }
+    char hash[32];
+    snprintf(hash, sizeof hash, "%016llx", hv);
+    if (build_cache_hit(hash, out)) {
+        dprintf(conn, "OK %ld CACHED\n", now_ms() - t0);
+        _exit(0);
+    }
+    char *argv[4];
+    argv[0] = (char *)"siluc";
+    argv[1] = src;
+    argv[2] = (char *)"-o";
+    argv[3] = out;
+    if (g_dbg_fd >= 0) dprintf(g_dbg_fd, "silucd: child starting compile\n");
+    int crc = run_compile(4, argv);
+    if (g_dbg_fd >= 0) dprintf(g_dbg_fd, "silucd: child compile rc=%d\n", crc);
+    if (crc != 0) {
+        dprintf(conn, "ERR compile failed\n");
+        _exit(1);
+    }
+    build_cache_record(hash, out);
+    /* stream the captured diagnostics first; the verdict is LAST */
+    char diag[8192];
+    lseek(err_fd, 0, SEEK_SET);
+    ssize_t dn;
+    while ((dn = read(err_fd, diag, sizeof diag)) > 0) {
+        if (write(conn, diag, (size_t)dn) < 0) break;
+    }
+    dprintf(conn, "OK %ld built\n", now_ms() - t0);
+    _exit(0);
+}
+
+static int g_server_fd = -1;
+static char g_sock_path[4096];
+
+static void serve_teardown(void) {
+    if (g_serving_child) return; /* a die()ing child must not unlink */
+    if (g_server_fd >= 0) close(g_server_fd);
+    unlink(g_sock_path);
+}
+
+static int serve_mode(void) {
+    compute_cache_dir();
+    make_cache_dirs(g_cache_dir);
+    snprintf(g_sock_path, sizeof g_sock_path, "%s/silucd.sock", g_cache_dir);
+
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, SIG_IGN); /* no zombies */
+
+    /* stale socket from a dead daemon: a refused connect means it is
+       safe to take over; a live daemon means we are done (idempotent) */
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, g_sock_path, sizeof addr.sun_path - 1);
+    int probe = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (probe >= 0) {
+        int alive = (connect(probe, (struct sockaddr *)&addr, sizeof addr) == 0);
+        close(probe);
+        if (alive) return 0;
+        unlink(g_sock_path);
+    }
+
+    g_dbg_fd = dup(2);
+    g_server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (g_server_fd < 0) die("daemon socket");
+    if (bind(g_server_fd, (struct sockaddr *)&addr, sizeof addr) != 0)
+        die("daemon bind (socket in use?)");
+    if (listen(g_server_fd, 16) != 0) die("daemon listen");
+    atexit(serve_teardown);
+    fprintf(stderr, "silucd: listening on %s\n", g_sock_path);
+
+    for (;;) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(g_server_fd, &rfds);
+        struct timeval tv = { 300, 0 }; /* idle exit: no requests in 5min */
+        int r = select(g_server_fd + 1, &rfds, NULL, NULL, &tv);
+        if (r <= 0) {
+            serve_teardown();
+            _exit(0);
+        }
+        int conn = accept(g_server_fd, NULL, NULL);
+        if (conn < 0) continue;
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(g_server_fd);
+            serve_request(conn);
+        }
+        close(conn); /* parent: the child owns the connection */
+    }
+}
+
+/* self path for the daemon exec */
+static char g_self_buf[4096];
+static const char *resolve_self(void) {
+    ssize_t n = readlink("/proc/self/exe", g_self_buf, sizeof g_self_buf - 1);
+#ifdef __APPLE__
+    if (n < 0) {
+        uint32_t sz = sizeof g_self_buf;
+        if (_NSGetExecutablePath(g_self_buf, &sz) == 0)
+            n = strlen(g_self_buf);
+    }
+#endif
+    if (n < 0 || (size_t)n >= sizeof g_self_buf) return "siluc";
+    g_self_buf[n] = 0;
+    return g_self_buf;
+}
+
+/* client forward: returns 0 when the daemon handled the build, 1 when
+   the daemon REPORTED a compile error, -1 to fall through to the
+   direct path (no daemon reachable) */
+static int try_forward(const char *src_abs, const char *out) {
+    snprintf(g_sock_path, sizeof g_sock_path, "%s/silucd.sock", g_cache_dir);
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, g_sock_path, sizeof addr.sun_path - 1);
+    signal(SIGPIPE, SIG_IGN);
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: connect refused (%s), auto-start\n", strerror(errno));
+        close(fd);
+        /* auto-start: spawn a detached daemon, then retry briefly */
+        const char *da = getenv("SILUC_DAEMON");
+        if (!da || strcmp(da, "0") == 0) return -1;
+        const char *self_exe = resolve_self();
+        pid_t pid = fork();
+        if (pid == 0) {
+            setsid();
+            close(0);
+            open("/dev/null", O_RDONLY);
+            execl(self_exe, "siluc", "--serve", (char *)NULL);
+            _exit(1);
+        }
+        int started = 0;
+        for (int i = 0; i < 40 && !started; i++) {
+            usleep(50000); /* 2s worst case */
+            fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (fd < 0) return -1;
+            if (connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0)
+                started = 1;
+            else
+                close(fd);
+        }
+        if (!started) return -1;
+    }
+    struct timeval tv = { 600, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    char req[8192];
+    snprintf(req, sizeof req, "COMPILE %s %s\n", src_abs, out);
+    if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: client sending req\n");
+    if (write(fd, req, strlen(req)) < 0) {
+        if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: client write failed: %s\n", strerror(errno));
+        close(fd); return -1;
+    }
+    char resp[16384];
+    ssize_t got = 0, n;
+    while (got < (ssize_t)sizeof resp - 1
+           && (n = read(fd, resp + got, sizeof resp - 1 - got)) > 0) {
+        got += n;
+    }
+    close(fd);
+    if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: client got %zd bytes\n", got);
+    if (got <= 0) return -1; /* daemon died mid-request: go direct */
+    resp[got] = 0;
+    /* EOF-delimited protocol: everything on the connection is the
+       build's diagnostics (the child wires its stderr here); the FINAL
+       line is the OK/ERR verdict. Diagnostics stream to our stderr. */
+    char *verdict = NULL;
+    char *cur = resp;
+    while (cur && *cur) {
+        char *eol = strchr(cur, '\n');
+        if (!eol) break;
+        *eol = 0;
+        if (strncmp(cur, "OK ", 3) == 0 || strncmp(cur, "ERR", 3) == 0)
+            verdict = cur;
+        else if (cur[0])
+            fprintf(stderr, "silucd: %s\n", cur);
+        cur = eol + 1;
+    }
+    if (verdict && strncmp(verdict, "OK", 2) == 0) {
+        printf("silucd: %s\n", verdict);
+        return 0;
+    }
+    if (verdict)
+        fprintf(stderr, "silucd: %s\n", verdict);
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    const char *src = NULL, *out = NULL;
+    int want_serve = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) out = argv[++i];
+        else if (strcmp(argv[i], "--object") == 0) g_object_mode = 1;
+        else if (strcmp(argv[i], "--no-lto") == 0) g_no_lto = 1;
+        else if (strcmp(argv[i], "--serve") == 0) want_serve = 1;
+        else if (argv[i][0] != '-') src = argv[i];
+    }
+    if (want_serve) return serve_mode();
+
+    compute_cache_dir();
+    if (src && out && g_object_mode == 0 && g_no_lto == 0
+            && getenv("SILUC_DAEMON")) {
+        /* resolve src against the cwd exactly like run_compile does */
+        char src_abs[4096];
+        if (src[0] == '/') snprintf(src_abs, sizeof src_abs, "%s", src);
+        else {
+            if (!getcwd(src_abs, sizeof src_abs)) die("getcwd");
+            strncat(src_abs, "/", sizeof src_abs - strlen(src_abs) - 1);
+            strncat(src_abs, src, sizeof src_abs - strlen(src_abs) - 1);
+        }
+        /* only the default link mode forwards; flags stay direct */
+        int fw = try_forward(src_abs, out);
+        if (getenv("SILUC_DEBUG")) fprintf(stderr, "silucd: try_forward -> %d\n", fw);
+        if (fw >= 0) return fw;
+        /* fall through: direct compile, untouched path */
+        make_cache_dirs(g_cache_dir);
+        return run_compile(argc, argv);
+    }
+    make_cache_dirs(g_cache_dir);
+    return run_compile(argc, argv);
 }

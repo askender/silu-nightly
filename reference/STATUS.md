@@ -677,6 +677,49 @@ raise SystemExit(n) 的既有语义不受影响（BaseException 直接穿透）�
   就能抓住；③VM 循环内禁止 env 查询等系统调用形状的开销，哪怕
   "只是读个开关"；④每帧堆分配在递归 workload 上是数量级杀手。
 
+## 三点二十二、P8 match switch/br_table + siluc daemon（2026-11-17）
+
+**P8（用户决策通过，提案入档 reference/PROPOSALS.md §12，commit 39225ef）**：
+全 int 字面量 match（value 模式为 `["const", int]` + 可选**末位**无名
+通配 `case _`，无 guard/捕获/or，无重复值，≥1 值臂）降为 LLVM
+`switch`（三 conv 逐字节一致）与 wasm `br_table`（backend +
+wat2wasm.si 新 br_table 分支）；其余模式维持原链式降路。**FE 零改动**
+（三前端早已解析 int 模式、`case` 已是关键字）。门禁：ir 22/22、
+ll 21/21（语料 benchmarks/match_int.si 自动进 ir/ll/compile(21/21)/
+wat2wasm/corpus 五道）、wat2wasm 34/34、corpus 16/16、backend 18/18、
+test_compiled_match 20/20（新增 4 个降路测试）。
+
+- **字节契约的实验事实**：llvmlite switch 单行渲染 `[i64 1, label
+  %"match_case" i64 5, ...]`（case 对空格分隔、块去重 `.1/.2` 与具名
+  值共享命名空间）、**消耗一个匿名槽（与 br 相同）**、具名块零槽——
+  Rust 镜像据此写单行 switch + 一次 `b.silent()`。
+- **llvmlite.si 孪生无需加 switch**（add_case/渲染早已预置）——但
+  **`.si 孪生不支持关键字调用**：`switch(v, default=blk)` 编译期
+  "no method 'switch'"，必须位置传参（AGENTS 教训的新实例：.si 面
+  的 API 差异在编译期才爆）。
+- **wasm br_table 两个语义点**：①OOB 索引取 default（wasm 规范），
+  **无需 guard**（负数 wrap 后自然超界）；②**通配 body 必须在 match
+  块之外**（br 到 match-exit 标签 = 退出该块落到其后；case 臂用外层
+  块跳过通配区）——首轮实现把通配放块内，未匹配值静默保留旧值
+  （1317→813，差分实证后修）。③汇编器侧：br_table 的**索引表达式
+  字节必须在 0x0E 之前入栈**（同 br_if 的操作数在前）。
+- **siluc_main.c 环境关键**：daemon 的 `SIGCHLD SIG_IGN` 会被 fork
+  链继承——run_quiet 的 waitpid 拿到 ECHILD+垃圾状态，clang 成败
+  判断全乱；**请求子进程必须恢复 SIG_DFL**。
+
+**siluc daemon（commit 本轮）**：`siluc --serve` 常驻编译服务 +
+`SILUC_DAEMON=1 siluc file.si -o out` 透明转发（`--object`/`--no-lto`
+不转发、无 daemon 自动拉起、空闲 300s 自退）；**直连路径零改动**。
+内容键缓存（`<cache>/builds.log`：FNV-1a(源码) + out mtime 校验）：
+**重复编译 ~0ms（vs 160ms）**；每请求 fork 隔离（4 路并发实测全过），
+缓存追加 O_APPEND 原子、rt.o 刷新沿用内容校验——**多任务无串扰**。
+实测：direct 160ms / daemon 首编 160-190ms（管线未变）/ cached ~0ms /
+4 路并发 188ms 全绿。诊断流：子进程 stderr 捕获到临时文件，成功时
+先行流式发送、verdict 永远最后一行（**教训：stderr 与协议共用一个
+fd 会在客户端早断后静默破坏编译**——SIGPIPE 忽略下 clang 写死连接
+的表现是"无声消失"，差分定位 3 轮）；EOF 界定协议，客户端按行解析、
+非 OK/ERR 行转投 stderr。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

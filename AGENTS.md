@@ -64,6 +64,8 @@ $PY312 reference/diff_harness.py ll conv rustconv # 完整 .ll 平面，应 20/2
 reference/rust/target/debug/silu-conv benchmarks/fib.si > /tmp/rust.ll
 cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 ./target/debug/silu-fe selfhost/silu_fe.si  # 单独跑 Rust 前端（相对路径）
+SILUC_DAEMON=1 ./siluc prog.si -o prog     # 经 daemon 编译（重复编译 ~0ms）
+./siluc --serve                            # 常驻编译服务（空闲 300s 自退）
 ```
 
 注意：`silu-conv` 通过子进程调同目录 `silu-fe`；`.si` 路径按当前工作
@@ -71,8 +73,22 @@ cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
 `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
 homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
 
-## 当前状态锚点（2026-11-14 深夜）
+## 当前状态锚点（2026-11-17）
 
+- **P8 match switch/br_table + siluc daemon（2026-11-17，STATUS.md
+  §3.22）**：全 int 字面量 match 降为 LLVM switch（三 conv 字节一致）
+  与 wasm br_table（backend+wat2wasm.si 新分支）；其余模式维持链式。
+  门禁：ir 22/22、ll 21/21（新语料 benchmarks/match_int.si）、
+  wat2wasm 34/34、corpus 16/16、backend 18/18、compile 21/21。
+  **wasm br_table 三坑**：OOB 取 default 无需 guard；通配 body 必须
+  在 match 块之外（br 到 match-exit = 退出整块）；索引字节先于 0x0E
+  入栈。**siluc daemon**：`siluc --serve` + `SILUC_DAEMON=1 siluc
+  file.si -o out` 透明转发（--object/--no-lto 不转发；直连路径零
+  改动）；内容键缓存**重复编译 ~0ms**（vs 160ms），fork 隔离多任务
+  无串扰；EOF 界定协议（verdict 永远最后一行）——**stderr 与协议
+  共用 fd 会在客户端早断后静默破坏编译**。daemon 子进程必须恢复
+  `SIGCHLD SIG_DFL`（父的 SIG_IGN 让 run_quiet 的 waitpid 拿到
+  ECHILD 垃圾状态）。
 - **irvm 字节码平面落地（2026-11-14 深夜，STATUS.md §3.21）**：
   Rust 平面 tools/irvm（f0e1de8）+ Silu 孪生 selfhost/ir_vm.si（单文件
   自包含，stdin 首行 "@dump" 选 dump 模式）。门禁两道（探针在

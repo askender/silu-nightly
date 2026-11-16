@@ -50,6 +50,6 @@ def test_frontend_corpus_parity():
             f"front ends diverge on {path}"
         )
         checked += 1
-    # 15 benchmarks (incl. the Json-sum jsonparse twin) + calc
+    # 16 benchmarks (incl. the Json-sum jsonparse twin + match_int) + calc
     # + ir_interp + silu_fe + flat converter
-    assert checked == 19
+    assert checked == 20
