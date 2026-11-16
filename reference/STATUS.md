@@ -410,8 +410,9 @@ INTERP_SKIP → test_run 把它喂给 ir_interp（int-only）→ **崩/挂**
 ir_interp 两文件本轮零改动=非回归）。处置：strbuf_sem 入 INTERP_SKIP
 （容器平面归 backend 门禁，既定纪律），**ir_interp 对不支持构造的
 "崩/挂"而非响亮 gap 记为已知问题**（int-only 边界无声响化；与 backend
-的 unreachable 纪律不同——ir_interp 是参考实现风格，响亮化列为后续
-小项）。教训：**给示例集新增文件要过一遍四门禁的每一门**——test_run
+的 unreachable 纪律不同——ir_interp 是参考实现风格，响亮化已于
+  §3.17 落地（两阶段预检），深度帽 2026-11-17 补齐（见 §3.22））。
+  教训：**给示例集新增文件要过一遍四门禁的每一门**——test_run
 自动吃 examples/ 全目录，新示例会静默进入不兼容的解释器平面。
 
 ## 三点十三、语料门禁正式化 + stdin 管道（2026-11-14，TODO #3 关闭）

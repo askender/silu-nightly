@@ -4,6 +4,29 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### v1.20.0
+Match dispatches, an optional compile daemon, and a faster twin VM.
+
+- **match int-literal cases dispatch (P8)**: an all-int-literal match
+  lowers to an LLVM switch (byte-identical across the three
+  converters) and a wasm br_table; the wildcard body lives outside the
+  match block and the assembler emits the index bytes before 0x0E.
+  Non-eligible matches keep the icmp chain. New corpus
+  benchmarks/match_int.si: ir 22/22, ll 21/21, wat2wasm 34/34,
+  wasm corpus 16/16, compile 21/21.
+- **siluc daemon (optional)**: `siluc --serve` + `SILUC_DAEMON=1`
+  forwards transparently; content-keyed build cache makes repeat
+  compiles ~0ms (vs ~160ms); fork-isolated requests, direct path
+  unchanged. Protocol: diagnostics stream before an EOF-delimited
+  verdict line; request children reset SIGCHLD.
+- **irvm twin speedup**: inline hot dispatch arms, frequency-ordered
+  opcode chain, pc/end/sbase in locals with frame lists touched only
+  at switches - fib(28) 115ms -> 60ms, beating monty (~88ms exec) and
+  within 1.2x of the hand-written Rust VM.
+- **ir_interp loud depth caps**: 300k-deep JSON nesting and
+  f(200000)-deep user recursion used to SIGSEGV; both bail with
+  "ir_interp bail: ..." + exit 3 now.
+
 ### v1.19.0
 The self-hosted compiler ships to the browser (the WASM workflow).
 

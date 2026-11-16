@@ -60,6 +60,7 @@ class Json:
     src: str
     pos: int
     err: str
+    depth: int
 
     def ws(self) -> int:
         while self.pos < len(self.src):
@@ -71,15 +72,24 @@ class Json:
         return 0
 
     def value(self) -> JValue:
+        if self.depth >= 2000:
+            self.err = "json nesting too deep"
+            return jnull()
         self.ws()
         if self.pos >= len(self.src):
             self.err = "unexpected end of json"
             return jnull()
         ch = self.src[self.pos]
         if ch == "{":
-            return self.object()
+            self.depth += 1
+            r: JValue = self.object()
+            self.depth -= 1
+            return r
         if ch == "[":
-            return self.array()
+            self.depth += 1
+            r2: JValue = self.array()
+            self.depth -= 1
+            return r2
         if ch == '"':
             return jstr(self.string())
         if ch == "t":
@@ -369,6 +379,7 @@ class Interp:
     ret: int
     has_ret: bool
     err: str
+    depth: int
 
     def get_int(self, name: str) -> int:
         # function scope falls back to module scope: call_user swaps in
@@ -387,6 +398,10 @@ class Interp:
         if name not in self.funcs:
             self.err = "call to unknown function '" + name + "'"
             return 0
+        if self.depth >= 2000:
+            self.err = "call depth exceeded (recursion too deep)"
+            return 0
+        self.depth += 1
         idx: int = self.funcs[name]
         vals: list[int] = []
         i: int = 0
@@ -403,6 +418,7 @@ class Interp:
         self.has_ret = False
         self.ret = 0
         self.exec_stmts(fn_body_get(idx))
+        self.depth -= 1
         self.env = saved
         return self.ret
 
@@ -646,7 +662,7 @@ class Interp:
 
 def main() -> int:
     src: str = read_stdin()
-    parser: Json = Json(src, 0, "")
+    parser: Json = Json(src, 0, "", 0)
     root: JValue = parser.value()
     if parser.err != "":
         print("ir_interp bail: bad IR json: " + parser.err)
@@ -661,7 +677,7 @@ def main() -> int:
     # module scope doubles as the global fallback: env and genv start
     # as the SAME dict, and call_user swaps env to a fresh dict per call
     menv: dict[str, int] = {}
-    interp: Interp = Interp(menv, menv, "", {}, 0, False, "")
+    interp: Interp = Interp(menv, menv, "", {}, 0, False, "", 0)
     interp.exec_stmts(body)
     if interp.err != "":
         # nothing of the program output is printed - loud failure only

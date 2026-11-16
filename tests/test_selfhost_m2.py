@@ -80,3 +80,44 @@ def test_m2_empty_module(m2_bin):
     )
     assert run.returncode == 0
     assert run.stdout == ""
+
+
+def test_m2_deep_json_nesting_bails_loudly(m2_bin):
+    # 300k-deep nested unary minus used to SIGSEGV the hand-rolled JSON
+    # parser's recursion; it must now bail loudly before any parse blowup
+    head = '["module",[["line",1],["ann_assign","x",'
+    tail = ',["name","int"]],["line",2],["print",["name","x"]]]]'
+    doc = head + '["-",' * 300000 + '["const",1]' + ']' * 300000 + tail
+    run = subprocess.run(
+        [m2_bin], input=doc, capture_output=True, text=True, timeout=30
+    )
+    assert run.returncode == 3
+    assert "json nesting too deep" in run.stdout
+
+
+def test_m2_deep_recursion_bails_loudly(m2_bin):
+    # f(200000) used to SIGSEGV the interpreter's per-call recursion;
+    # it must bail loudly like CPython's RecursionError
+    src = (
+        "def f(n: int) -> int:\n"
+        "    if n <= 0:\n"
+        "        return 0\n"
+        "    return f(n - 1) + 1\n"
+        "print(f(200000))\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(src)
+        path = f.name
+    ir_file = path + ".ir.json"
+    gen = subprocess.run(
+        [sys.executable, "-m", "silu", "ir", path, "--output", ir_file,
+         "--format", "json"],
+        capture_output=True, text=True,
+    )
+    assert gen.returncode == 0, gen.stderr
+    run = subprocess.run(
+        [m2_bin], stdin=open(ir_file), capture_output=True, text=True,
+        timeout=60,
+    )
+    assert run.returncode == 3
+    assert "call depth exceeded" in run.stdout
