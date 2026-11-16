@@ -815,6 +815,23 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   **状态**：P9 泄漏修复合入必须与该重设计同轮；树已回绿
   （ll 21/21、ir 22/22、irvm 10/10、pytest 子集 28/28、corpus 16/16
   复跑全过）。
+  **第五轮（同日，wordcount ✓ 绿后回退）——consume 站点清单完整化**：
+  universal obj→rawstr 注册（_unbox 门控版）+ owned-pass + to_raw
+  Pyo-only 注册 + raw_arm(not-both-Pyo) + pass1 的 CONCAT_TEMPS
+  retain（双重 free 修复——P9_DEBUG 实证：pass1 free .351 后集合仍
+  含 .351，pass2 再放）→ **wordcount ✓ 绿**（Python/Rust free 完全
+  对齐）。剩余唯一分歧类：**arg-conversion 路径的 consume 站点**
+  （push/join 的参数 _coerce 注册后无人释放——Python 经
+  _rawstr_finish/temp-return 模型性泄漏，Rust 经注册被释放）。
+  **完整 consume 站点清单**（produce×consume 表的 consume 列）：
+  concat 操作数 ✓已对齐、char1 视图 ✓、push 参数 ✗、join 分隔符 ✗、
+  call 参数 ✗、compare/contains 操作数 ✗、return/global-store
+  （transfer，删注册即可）——每个站点 = 一行 owned-pass（free+del），
+  Python/Rust 各 ~2 行。**下一轮**：逐站点补齐（每补一个过一次
+  ll 门禁）→ concat_chain.si 探针入仓 → 全门禁 → RSS 复测 → 重钉。
+  **新增教训**：patch 脚本必须逐条 assert 当前文件实际状态（本轮
+  三次 stale-anchor 空写）；_rawstr_operand 的 del 语义 = "temp-return
+  接管"，与 owned-pass 互斥——两套释放模型不能并存于同一注册。
   **第四轮（同日，推进到 19/21 后回退）——两张决定性地图**：
   ①**两遍 free 结构**（Python 臂的真实形态）：pass 1 = coerced temps
   （a_temp/b_temp：to_raw 强制临时 + char1 视图）按操作数序；pass 2 =
