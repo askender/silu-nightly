@@ -220,3 +220,84 @@ class TestCompiledMatchUnsupported:
                 "    case 1:\n"
                 '        print("one")\n'
             )
+
+
+class TestMatchSwitchLowering:
+    """P8: all-int-literal matches lower to an LLVM switch instead of
+    the icmp chain (reference/PROPOSALS.md P8); everything else keeps
+    the chain. The Rust twin must stay byte-identical - that contract
+    is gated by reference/diff_harness.py ll on benchmarks/match_int.si."""
+
+    def _ll(self, source: str) -> str:
+        return TypedCodegen().convert(
+            json.dumps(SiluIRGenerator().visit(ast.parse(source)))
+        )
+
+    def test_int_literals_lower_to_switch(self):
+        ll = self._ll(
+            "x: int = 2\n"
+            "match x:\n"
+            "    case 1:\n"
+            "        print(10)\n"
+            "    case 2:\n"
+            "        print(20)\n"
+            "    case _:\n"
+            "        print(42)\n"
+        )
+        assert "switch i64" in ll
+        assert 'label %"match_default"' in ll
+        assert 'label %"match_case"' in ll
+        # the chain shape is gone for this program
+        assert "case_body" not in ll
+
+    def test_guard_keeps_chain(self):
+        ll = self._ll(
+            "x: int = 12\n"
+            "match x:\n"
+            "    case 0:\n"
+            "        print(10)\n"
+            "    case n if n > 10:\n"
+            "        print(20)\n"
+            "    case _:\n"
+            "        print(42)\n"
+        )
+        assert "switch i64" not in ll
+        assert "case_body" in ll
+
+    def test_str_subject_keeps_chain(self):
+        ll = self._ll(
+            's: str = "hello"\n'
+            "match s:\n"
+            '    case "bye":\n'
+            "        print(1)\n"
+            '    case "hello":\n'
+            "        print(2)\n"
+            "    case _:\n"
+            "        print(3)\n"
+        )
+        assert "switch i64" not in ll
+
+    def test_duplicate_values_keep_chain(self):
+        # duplicate int values would be invalid LLVM switch cases;
+        # first-match-wins semantics stay on the icmp chain
+        ll = self._ll(
+            "x: int = 1\n"
+            "match x:\n"
+            "    case 1:\n"
+            "        print(10)\n"
+            "    case 1:\n"
+            "        print(20)\n"
+            "    case _:\n"
+            "        print(42)\n"
+        )
+        assert "switch i64" not in ll
+
+    def test_wildcard_body_runs_via_default(self):
+        assert check(
+            "x: int = 7\n"
+            "match x:\n"
+            "    case 1:\n"
+            "        print(10)\n"
+            "    case _:\n"
+            "        print(42)\n"
+        ) == "42\n"

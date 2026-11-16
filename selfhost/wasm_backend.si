@@ -1348,6 +1348,118 @@ def bind_match_fields(g: Gen, sl: str, ci: int, pat: JValue) -> int:
     return 0
 
 
+def emit_match_switch(g: Gen, subject: JValue, cases: JValue) -> int:
+    # P8: all-int-literal cases (value consts + optional TRAILING
+    # unnamed wildcard, no guards/duplicates) dispatch through a
+    # br_table over [min..max]: the index is i32.wrap_i64(subj-min),
+    # and an out-of-range index takes the default label per the wasm
+    # spec - no guard needed. Returns 1 when not eligible (caller
+    # falls back to the tag chain); nothing is emitted then. Written
+    # in the selfhost-safe subset: no zip, no nested unpacking, no set.
+    nc: int = len(cases.arr)
+    if nc == 0:
+        return 1
+    vals: list[int] = []
+    bodys: list[JValue] = []
+    has_wild: int = 0
+    wild_body: JValue = elem(cases, 0)
+    k: int = 0
+    while k < nc:
+        cs: JValue = elem(cases, k)
+        if elem(cs, 2).kind != JKind.NIL:
+            return 1
+        pat: JValue = elem(cs, 1)
+        if tag(pat) == "match_value":
+            mv: JValue = elem(pat, 1)
+            if tag(mv) != "const":
+                return 1
+            if elem(mv, 1).kind != JKind.NUM:
+                return 1
+            v: int = elem(mv, 1).n
+            dup: int = 0
+            p: int = 0
+            while p < len(vals):
+                if vals[p] == v:
+                    dup = 1
+                p += 1
+            if dup == 1:
+                return 1
+            vals.append(v)
+            bodys.append(elem(cs, 3))
+        else:
+            if tag(pat) != "match_as":
+                return 1
+            if elem(pat, 1).kind != JKind.NIL:
+                return 1
+            if elem(pat, 2).kind != JKind.NIL:
+                return 1
+            if has_wild == 1 or k != nc - 1:
+                return 1
+            has_wild = 1
+            wild_body = elem(cs, 3)
+        k += 1
+    if len(vals) == 0:
+        return 1
+    lo: int = vals[0]
+    hi: int = vals[0]
+    p = 0
+    while p < len(vals):
+        if vals[p] < lo:
+            lo = vals[p]
+        if vals[p] > hi:
+            hi = vals[p]
+        p += 1
+    rng: int = hi - lo + 1
+    if rng > 1024:
+        return 1
+    g.tmp += 1
+    ma: str = "$ma" + g.show_int(g.tmp)
+    g.emit("(block " + ma)
+    g.tmp += 1
+    me: str = "$me" + g.show_int(g.tmp)
+    sl: str = g.fresh()
+    g.emit("(local.set " + sl + " " + emit_expr(g, subject) + ")")
+    g.emit("(block " + me)
+    clbls: list[str] = []
+    k = 0
+    while k < len(vals):
+        g.tmp += 1
+        clbls.append("$mc" + g.show_int(g.tmp))
+        k += 1
+    k = len(vals) - 1
+    while k >= 0:
+        g.emit("(block " + clbls[k])
+        k -= 1
+    tbl: list[str] = []
+    v = lo
+    while v <= hi:
+        lab: str = me
+        p = 0
+        while p < len(vals):
+            if vals[p] == v:
+                lab = clbls[p]
+            p += 1
+        tbl.append(lab)
+        v += 1
+    idxexpr: str = ("(i32.wrap_i64 (i64.sub (local.get " + sl
+                    + ") (i64.const " + str(lo) + ")))")
+    g.emit("(br_table " + " ".join(tbl) + " " + me + " " + idxexpr + ")")
+    k = 0
+    while k < len(vals):
+        g.emit(")")
+        emit_stmts(g, bodys[k])
+        # jump past the wildcard region (which sits AFTER $me: a br to
+        # $me EXITS the match block and lands there - it must not be
+        # reached from a matched arm)
+        g.emit("(br " + ma + ")")
+        k += 1
+    g.emit(")")
+    if has_wild == 1:
+        emit_stmts(g, wild_body)
+    g.emit(")")
+    return 0
+
+
 def emit_match_cases(g: Gen, sl: str, cases: JValue, idx: int) -> int:
     # sequential case chain (first match wins, like CPython): each
     # class pattern becomes a tag test, the wildcard becomes the final
@@ -1840,12 +1952,14 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
         g.loop_top = saved_wt
         return 0
     if t == "match":
-        # record narrowing: evaluate the subject once, then the tag
-        # chain (non-record subjects are a documented loud trap - the
-        # tag load on a non-pointer would trap anyway)
-        sl: str = g.fresh()
-        g.emit("(local.set " + sl + " " + emit_expr(g, elem(stmt, 1)) + ")")
-        emit_match_cases(g, sl, elem(stmt, 2), 0)
+        # P8: int-literal cases dispatch through a br_table; anything
+        # else falls back to the record-narrowing tag chain (evaluate
+        # the subject once; non-record subjects are a documented loud
+        # trap - the tag load on a non-pointer would trap anyway)
+        if emit_match_switch(g, elem(stmt, 1), elem(stmt, 2)) == 1:
+            sl: str = g.fresh()
+            g.emit("(local.set " + sl + " " + emit_expr(g, elem(stmt, 1)) + ")")
+            emit_match_cases(g, sl, elem(stmt, 2), 0)
         return 0
     if t == "break":
         if g.loop_exit == "":

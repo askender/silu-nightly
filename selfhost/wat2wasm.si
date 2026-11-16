@@ -862,6 +862,37 @@ def emit_form(i: int, fi: int) -> str:
             dep = atom_int(lbl)
         NI[0] = j + 1
         return "".join(cond_parts) + "0D" + uleb_hex(dep)
+    if op == "br_table":
+        # (br_table $l0 $l1 ... $lN EXPR): label tokens first (the last
+        # one is the default), then the index value expression. Binary:
+        # 0x0E, vec of the N table labels, the default, then the value.
+        lbl_parts: list[str] = []
+        j: int = i + 2
+        while tkind(j) != TK_RP and ttext(j)[0:1] == "$":
+            nm3: str = ttext(j)
+            top3: int = len(LSTK) - 1
+            d3: int = top3
+            while d3 >= 0:
+                if LSTK[d3] == nm3:
+                    break
+                d3 -= 1
+            lbl_parts.append(uleb_hex(top3 - d3))
+            j += 1
+        val_parts: list[str] = []
+        while tkind(j) != TK_RP:
+            val_parts.append(emit_form(j, fi))
+            j = NI[0]
+        NI[0] = j + 1
+        ntab: int = len(lbl_parts) - 1
+        out3: str = "0E" + uleb_hex(ntab)
+        p3: int = 0
+        while p3 < ntab:
+            out3 += lbl_parts[p3]
+            p3 += 1
+        out3 += lbl_parts[ntab]
+        # the index value must hit the stack BEFORE the br_table opcode
+        # (same order as br_if: operand bytes first)
+        return "".join(val_parts) + out3
     if op == "i64.const":
         NI[0] = match_close(i)
         return "42" + sleb_hex(atom_int(ttext(i + 2)))

@@ -206,6 +206,112 @@ class TypedMatchMixin:
             "==", subject_tv[1], value_tv[1]
         )
 
+    def _match_switch_arms(self, node):
+        """([(int_value, body)...], wildcard_body) when the match is
+        switch-eligible, else None. Structural rules the Rust twin
+        replicates verbatim (reference/PROPOSALS.md P8): every case is
+        a non-bool int const value pattern or the TRAILING unnamed
+        wildcard, no guards, no duplicate values, at least one value
+        arm. Written in the selfhost-safe subset (no zip, no nested
+        tuple unpacking, no set) - this file is spliced into
+        typed_codegen_flat.si and compiled by silu itself."""
+        cases = node[2]
+        if not cases:
+            return None
+        arms = []
+        wild_body = None
+        for ci, case in enumerate(cases):
+            if (
+                not isinstance(case, (list, tuple))
+                or len(case) < 4
+                or case[0] != "match_case"
+            ):
+                return None
+            pattern = case[1]
+            guard = case[2]
+            body = case[3]
+            if guard is not None:
+                return None
+            if (
+                isinstance(pattern, (list, tuple))
+                and len(pattern) >= 3
+                and pattern[0] == "match_as"
+                and pattern[1] is None
+                and pattern[2] is None
+            ):
+                if wild_body is not None or ci != len(cases) - 1:
+                    return None
+                wild_body = body
+                continue
+            if (
+                isinstance(pattern, (list, tuple))
+                and len(pattern) >= 2
+                and pattern[0] == "match_value"
+                and isinstance(pattern[1], (list, tuple))
+                and len(pattern[1]) >= 2
+                and pattern[1][0] == "const"
+                and isinstance(pattern[1][1], int)
+                and not isinstance(pattern[1][1], bool)
+            ):
+                value = pattern[1][1]
+                dup = False
+                for prev in arms:
+                    if prev[0] == value:
+                        dup = True
+                if dup:
+                    return None
+                arms.append((value, body))
+                continue
+            return None
+        if not arms:
+            return None
+        return (arms, wild_body)
+
+    def _convert_match_switch(self, node, sw_arms, subject_tv):
+        """P8 switch fast path: block creation order (default, cases in
+        source order, end) is part of the byte contract with the Rust
+        twin; llvmlite renders the switch as ONE line
+        `switch i64 %v, label %d [i64 1, label %c i64 5, label %c.1]`
+        and consumes one anonymous slot like br."""
+        arms = sw_arms[0]
+        wild_body = sw_arms[1]
+        func = self.current_function
+        default_block = func.append_basic_block("match_default")
+        case_blocks = []
+        k = 0
+        while k < len(arms):
+            case_blocks.append(func.append_basic_block("match_case"))
+            k += 1
+        end_block = func.append_basic_block("match_end")
+        # positional only: the .si llvmlite twin has no keyword calls
+        sw = self.current_builder.switch(subject_tv[1], default_block)
+        k = 0
+        while k < len(arms):
+            sw.add_case(
+                ir.const_(ir.IntType(64), arms[k][0]), case_blocks[k]
+            )
+            k += 1
+        k = 0
+        while k < len(arms):
+            self.current_builder.position_at_end(case_blocks[k])
+            body = arms[k][1]
+            for stmt in body:
+                self._convert_statement(stmt)
+                if self.current_builder.block.is_terminated:
+                    break
+            if not self.current_builder.block.is_terminated:
+                self.current_builder.branch(end_block)
+            k += 1
+        self.current_builder.position_at_end(default_block)
+        if wild_body is not None:
+            for stmt in wild_body:
+                self._convert_statement(stmt)
+                if self.current_builder.block.is_terminated:
+                    break
+        if not self.current_builder.block.is_terminated:
+            self.current_builder.branch(end_block)
+        self.current_builder.position_at_end(end_block)
+
     def _convert_match(self, node: list):
         """match statement over a statically-typed scalar/str subject.
 
@@ -221,6 +327,11 @@ class TypedMatchMixin:
                 "compiled match needs a statically typed subject "
                 "(annotate it: x: int / float / bool / str)"
             )
+        if subject_kind == I64:
+            sw_arms = self._match_switch_arms(node)
+            if sw_arms is not None:
+                self._convert_match_switch(node, sw_arms, subject_tv)
+                return
         func = self.current_function
         end_block = func.append_basic_block("match_end")
 

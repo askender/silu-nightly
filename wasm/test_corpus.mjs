@@ -20,8 +20,8 @@ const REPO = new URL("..", import.meta.url).pathname;
 const dec = new TextDecoder();
 
 const PASS_NAMES = ["arith", "dict", "fannkuch", "fib", "float", "jsonparse",
-  "jsonparse_json", "knucleotide", "list", "mandelbrot", "nbody", "spectral",
-  "string", "trees", "wordcount"];
+  "jsonparse_json", "knucleotide", "list", "mandelbrot", "match_int", "nbody",
+  "spectral", "string", "trees", "wordcount"];
 // jsonparse + jsonparse_json: the reference plane is the silu
 // interpreter (CPython has no auto-record-constructor / Json-sum-type
 // semantics)

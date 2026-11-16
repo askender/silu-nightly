@@ -3031,6 +3031,143 @@ fn emit_return_str_drops(b: &mut FnB, locals: &[String]) {
     }
 }
 
+// P8 switch-path eligibility: every case is a plain int-const value
+// pattern or the TRAILING unnamed wildcard, no guards, no duplicates,
+// at least one value arm. Structural decision mirrored by the Python
+// twin's _match_switch_arms (silu/typed_match.py) - keep both in lock
+// step (reference/PROPOSALS.md P8).
+fn match_switch_arms(
+    cases: &[Val],
+) -> Option<(Vec<(i64, Vec<Val>)>, Option<Vec<Val>>)> {
+    let mut arms: Vec<(i64, Vec<Val>)> = Vec::new();
+    let mut wild: Option<Vec<Val>> = None;
+    for (ci, c) in cases.iter().enumerate() {
+        if c.head() != "match_case" {
+            return None;
+        }
+        if !matches!(c.get(2), Val::Null) {
+            return None;
+        }
+        let pat = c.get(1);
+        if pat.head() == "match_as"
+            && matches!(pat.get(1), Val::Null)
+            && matches!(pat.get(2), Val::Null)
+        {
+            if wild.is_some() || ci + 1 != cases.len() {
+                return None;
+            }
+            wild = Some(c.get(3).items());
+            continue;
+        }
+        if pat.head() == "match_value" {
+            let mv = pat.get(1);
+            if mv.head() == "const" {
+                if let Val::Int(v) = mv.get(1) {
+                    if arms.iter().any(|(k, _)| *k == v) {
+                        return None;
+                    }
+                    arms.push((v, c.get(3).items()));
+                    continue;
+                }
+            }
+        }
+        return None;
+    }
+    if arms.is_empty() {
+        None
+    } else {
+        Some((arms, wild))
+    }
+}
+
+// P8 switch lowering: block creation order default, cases in source
+// order, end is the byte contract with llvmlite; the switch renders
+// as ONE line `switch i64 %v, label %d [i64 1, label %c i64 5, ...]`
+// and consumes exactly one anonymous slot like br (numbering proven
+// identical to cbranch; named blocks consume none). Case bodies close
+// via the conv_block tail rule through MATCH_END; the default block
+// is closed here. Returns true when the match terminated the block
+// (trailing statement of a function: typed default ret, exactly like
+// the chain arm).
+fn conv_match_switch(
+    b: &mut FnB,
+    plan: &(Vec<(i64, Vec<Val>)>, Option<Vec<Val>>),
+    vref: &str,
+    end_lbl: String,
+    stmts: &[Val],
+    i: usize,
+    loops: &mut Vec<String>,
+) -> bool {
+    let (arms, wild) = plan;
+    MATCH_END.with(|m| m.borrow_mut().push(end_lbl.clone()));
+    let def_lbl = b.uniq_label("match_default");
+    let def_b = b.add_block(&def_lbl);
+    let mut case_lbls: Vec<String> = Vec::new();
+    let mut case_bs: Vec<usize> = Vec::new();
+    for _ in arms.iter() {
+        let cl = b.uniq_label("match_case");
+        let cb = b.add_block(&cl);
+        case_lbls.push(cl);
+        case_bs.push(cb);
+    }
+    let end_b = b.add_block(&end_lbl);
+    let mut swline =
+        format!("  switch i64 {}, label %\"{}\" [", vref, def_lbl);
+    for (si, (sval, _)) in arms.iter().enumerate() {
+        if si > 0 {
+            swline.push(' ');
+        }
+        swline.push_str(&format!("i64 {}, label %\"{}\"", sval, case_lbls[si]));
+    }
+    swline.push(']');
+    b.silent();
+    b.line(swline);
+    for (si, (_sval, sbody)) in arms.iter().enumerate() {
+        b.pos(case_bs[si]);
+        CASE_DEPTH.with(|c| {
+            c.borrow_mut().push(LOOP_DEPTH.with(|d| *d.borrow()))
+        });
+        conv_block(b, sbody, loops);
+        CASE_DEPTH.with(|c| c.borrow_mut().pop());
+    }
+    b.pos(def_b);
+    if let Some(wbody) = wild {
+        CASE_DEPTH.with(|c| {
+            c.borrow_mut().push(LOOP_DEPTH.with(|d| *d.borrow()))
+        });
+        conv_block(b, wbody, loops);
+        CASE_DEPTH.with(|c| c.borrow_mut().pop());
+    }
+    let term = b.blocks[b.cur].1.last()
+        .map(|l| l.trim_start().starts_with("br ")
+            || l.trim_start().starts_with("ret ")
+            || l.trim_start().starts_with("unreachable"))
+        .unwrap_or(false);
+    if !term {
+        b.silent();
+        b.line(format!("  br label %\"{}\"", end_lbl));
+    }
+    MATCH_END.with(|m| m.borrow_mut().pop());
+    b.pos(end_b);
+    let is_last = i + 1 >= stmts.len();
+    if is_last && IN_FN.with(|v| *v.borrow()) {
+        let rty = FN_RET.with(|r| r.borrow().clone());
+        b.silent();
+        match rty.as_str() {
+            "float" => b.line(format!(
+                "  ret double {}", double_bits(0.0))),
+            t if t.starts_with("inst:") || t == "str"
+                || t.starts_with("list:") =>
+                b.line("  ret i8* null".into()),
+            "none" | "pyobj" =>
+                b.line("  ret {i32, i8*}* null".into()),
+            _ => b.line("  ret i64 0".into()),
+        }
+        return true;
+    }
+    false
+}
+
 // recursive main-body statement converter; `loops` stacks enclosing
 // loop-end labels for break. Returns true when the current block was
 // terminated (break) so callers skip their trailing br.
@@ -3611,6 +3748,16 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                         String::new()
                     }
                 };
+                if !vref.is_empty() {
+                    if let Some(sw_plan) = match_switch_arms(&cases) {
+                        if conv_match_switch(b, &sw_plan, &vref,
+                            end_lbl.clone(), stmts, i, loops) {
+                            return true;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                }
                 MATCH_END.with(|m| m.borrow_mut().push(end_lbl.clone()));
                 for (ci, c) in cases.iter().enumerate() {
                     // match_case = [match_case, pattern, guard, body]

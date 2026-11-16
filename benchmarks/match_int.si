@@ -1,0 +1,25 @@
+def classify(n: int) -> int:
+    if n < 0:
+        return -1
+    m: int = n % 8
+    match m:
+        case 0:
+            return 100
+        case 1:
+            return 101
+        case 5:
+            return 105
+        case _:
+            return 42
+    return 0
+
+total: int = 0
+i: int = 0
+while i < 20:
+    total += classify(i)
+    i += 1
+match i:
+    case 20:
+        print(total)
+    case _:
+        print(-1)

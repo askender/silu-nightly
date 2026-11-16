@@ -583,3 +583,48 @@ sed -n '3524p' selfhost/typed_codegen_flat.si
 "## 评估结论（日期/评估方）"，逐条记录：采纳/否决/缓议、理由、
 以及（若采纳）目标版本。实施类提案一律走"双实现同 commit + 门禁
 全绿 + 重钉"流程。
+
+## 12. P8：match int-literal 降路升级（LLVM switch / wasm br_table）
+
+**状态：用户决策通过，2026-11-16 已实施**（双实现同 commit + 门禁全绿）。
+
+### 现状
+
+match 语句已全平面存在（类模式窄化 v1.7.0、value/or/capture/wildcard
+模式随后），但 int 字面量模式在两 conv 里降为 **icmp+cbranch 链**
+（逐 case 一次比较 + 两个块）：k 个 case = k 次 icmp + 2k 块。
+wasm backend 对 int 字面量模式直接 `(unreachable)`（响亮拒绝）。
+
+### 提案
+
+全 int 字面量 match（value 模式均为 `["const", int]` + 可选的**末位**
+无名通配 `case _`，无 guard/捕获/or，无重复值，≥1 个值臂）降为：
+
+- native（typed_match.py + silu-conv.rs 镜像）：**LLVM `switch`**
+  （O(1) 跳转表；块创建顺序 = 字节契约：default、case×N、end）。
+- wasm（wasm_backend.si）：**`br_table`**（guard `br_if` 越界 → default；
+  表大小 = max-min+1，>1024 回退链式）。
+- wat2wasm.si 增加 `br_table` 分支 + `i32.ge_u` 操作码。
+
+不满足条件的 match（str/f64/类模式/捕获/guard/重复值）维持原链式降路，
+行为零变化。FE 不动（三前端已解析 int 模式；`case` 已是关键字）。
+
+### 改动面
+
+typed_match.py（switch 路径 ~60 行）→ flatten → typed_codegen_flat.si
+→ siluc1 重建；silu-conv.rs 镜像（同决策 + 同块序 + 同 switch 行格式，
+llvmlite 单行渲染 `[i64 1, label %"match_case" i64 5, ...]`）；
+wasm_backend.si（br_table 路径 ~50 行）；wat2wasm.si（br_table
+变长 label 向量分支 + i32.ge_u 表项）。语料：benchmarks/match_int.si
+（ir/ll/wat2wasm/corpus 四门禁自动扩展）。
+
+### 风险与反论
+
+- 字节契约面新增一处跨孪生镜像（switch 行格式、块序、silent 槽计数）
+  ——以 ll 门禁逐字节对拍兜底。
+- br_table 的 OOB 陷阱由 `br_if` guard 前置规避（wasm 规范：OOB 索引
+  陷阱；guard 后 OOB 不可达）。
+- 反论：llvmlite/LLVM 对稀疏 case 的 switch 自身会做平衡树或跳转表
+  （-O2 后），链式 cbranch 也可能被 LLVM 优化成 switch——收益取决于
+  用户 -O 级别。实测（tools/irvm 评测口径）保留给后续评测集；
+  本提案的主要价值是 wasm 平面从"响亮拒绝"变为可用 + 语义表达力。
