@@ -535,8 +535,9 @@ wasm/artifacts/wat2wasm.wasm）。
   空 else 省略 / sleb 终止符 / global 臂三处下标。
 - **输出形态**：hex 文本流一行（宿主 Buffer.from(hex,'hex')）；模块
   magic + wasm64 version `01 00 00 00`。
-- **已知性能项**：~2s/KB（46KB WAT ≈100s compiled）——逐形字符串
-  累积二次方；改 list[str]+join 是后续小项，playground 手输无感。
+- **性能项已关闭（§3.18 3800× 修复覆盖）**：本条曾记 ~2s/KB——§3.18
+  的逐行化 + T_TXT 直存落地后实测 wat2wasm.wasm 对 46KB WAT（mandelbrot
+  全量）**18ms**（host.mjs 端到端），二次方累积已消除。
 - **结构（~1200 行）**：tokenize（kind/pos/len 三列表）→ structure
   （imports/globals/memory/export/data/funcs 五收集，top-level 形整体
   跳过）→ emit_form（后序折叠 WAT；block/loop/if 前序头 + 条件；
@@ -931,6 +932,41 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   全门禁 → RSS 复测 → 重钉。全部 probe/锚点已验证可重放。驱动错误透传本轮即立功
   （探针的 ValueError 不再静默）。
 
+## 三点二十三、默认构建走运行时缓存 + P9 形状入仓 + 陈旧注记清理（2026-11-18）
+
+- **默认构建 470ms → 210ms（2.2×）**：`silu build` 的运行时缓存快路径
+  （runtime_cache.build_with_cache：~350KB 运行时一次编译成缓存 .o，
+  每程序 clang 只看用户部分）原是 **SILU_RUNTIME_CACHE=1 opt-in**，
+  基础设施完备但默认不用——§3.21 记录的 "默认 530ms vs daemon 170ms"
+  差距的根源。翻转默认（**SILU_RUNTIME_CACHE=0 显式退出**；dynamic
+  codegen 保持不缓存）。**安全性**：该路径被 selfhost_build 每日锤炼
+  （siluc1/silu_fe 工具链构建全走它）+ 全门禁背书；本轮新增 18 基准
+  **A/B 执行对拍**（cache 路径 vs 全量 clang 路径，逐文件输出 cmp）
+  全一致；缓存目录 `~/.cache/silu-runtime/`（根）与 daemon 的
+  `driver/` 子目录分离，内容键指纹含全部转换器源（本轮 P9 修改自动
+  失效旧缓存）。实测 fib 210-220ms 稳定（冷启动 0.60s：一次性 rt.o
+  编译）。剩余 210-160ms 差 = Python
+  llvmlite 转换 vs 原生 siluc1 转换——不动（默认构建保持 Python 平面
+  转换器的 bootstrap 身份）。
+  **翻转揭出的 opt-in 路径潜在 bug（split 修复）**：Apple Clang 16+
+  拒绝同名重复 declare（"invalid redefinition of function"，最小 ll
+  复现实证）——split() 的 header_declares 扫**全文本**（含 user_body
+  自己的 C-import declare）→ 每个带 `from c import` 的程序在缓存路径
+  必炸（user.ll 中 sqrt declare ×2）；selfhost 程序无 C import 所以
+  opt-in 时代从未触发，**唯 c_abi 测试能抓**（翻转即价值）。修复：
+  header_declares 只取运行时前缀 rb 的 declare，且排除 user_body 已
+  声明/定义的符号（用户的 declare 是调用点签名的权威）。c_abi
+  6 过 1 跳 + A/B 18/18 + 冷暖缓存时序验证。
+- **char_pair.si 入仓（P9 回归钉）**：第七轮对齐的 const+view concat
+  形状的最小探针（CPython 对拍 "x4" ✓、双平面字节一致 ✓）；
+  ll 门禁 23/23、ir 24/24（枚举自动收录），
+  test_frontend_parity_corpus 计数 21→22。
+- **陈旧注记清理（实测驱动）**：①§3.16 的 "~2s/KB" 性能项——
+  §3.18 的 3800× 修复（逐行化+T_TXT 直存）早已覆盖，实测
+  wat2wasm.wasm 对 46KB WAT（mandelbrot 全量）**18ms**，条目改写为
+  已关闭；②TODO #2 的 pytest 竞态——flock（build_lock）+ os.replace
+  原子落位早已在 tools/selfhost_build.py 落地，条目改 ✅。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
@@ -980,15 +1016,13 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
    前移（v1.18.1 现指 e3f5713，编译器源码与 bced6d9 一致）。驱动速度
    门禁 0.25→0.50（macos-15 镜像慢 ~15%，e3f5713）。
    **当前工作重心已切换：WASM 化 L0/L1/L2，计划见 `docs/wasm_plan.md`。**
-2. pytest 全量其余偶发单失败（m4/driver/pipeline 簇）：**本轮调查未复现**
-   ——串行 ×1 + xdist -n4（缓存态）×1 + 强制 touch 源造并发重建 ×1，
-   74 测试全绿（2026-11-10）。代码审查确认竞态面存在：tools/selfhost_build.py
-   的 ensure_* 无锁，CONV_FLAT/FE_BIN/CONV_BIN/siluc1/siluc 均在最终路径
-   非原子直写（对照 silu/runtime_cache.py:97 有 os.replace 原子写），
-   并发重建时读方可撕读。**修复设计已备**：flock 串行化 ensure_* +
-   构建到临时路径 os.replace 落位；**无复现证据不动构建工具链**（release
-   链正用），等真复现（CI 慢机器窗口更宽）再实施。另注意教训 5：本簇
-   历史偶发可能是 parity 真回归的误判，已被 02b53a3/bdd39fc 顺手消灭。
+2. ✅ **pytest 全量其余偶发单失败（m4/driver/pipeline 簇）——修复已落地**：
+   代码审查确认的竞态面（ensure_* 并发重建读方撕读）已在
+   tools/selfhost_build.py 修复——**每个 ensure_* 持进程级可重入
+   flock（build_lock）+ 产物一律写临时路径 os.replace 原子落位**（
+   头注明载 SIGSEGV 竞态史）；2026-11-18 复核确认，本条旧文本的
+   "无锁/非原子直写" 已过时。历史偶发另注意教训 5：本簇部分为
+   parity 真回归的误判，已被 02b53a3/bdd39fc 顺手消灭。
 3. g-清单 #10：未注解局部从 chr()/concat 初始化的推断分歧（Python 保持
    pyobj vs Oracle 推 str；`object` 注解 Oracle 空 bail）→ utf8_probe 因此
    无动态段；动态语义由 tests/test_utf8_runtime.py 执行级守护。深水区，

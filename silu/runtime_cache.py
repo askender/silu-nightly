@@ -165,11 +165,22 @@ def split(full_text, rt_text=None):
             ty, is_const = rt_globals[name]
             kind = "constant" if is_const else "global"
             decls.append(f'@"{name}" = external {kind} {ty}')
-    # external declares (printf, intrinsics) live in the full text's
-    # header region; the user module keeps its own copies
-    header_declares = re.findall(
-        r'^declare\s+[^\n]+$', _body(full_text), re.M
-    )
+    # declarations the user module still needs from the stripped runtime
+    # prefix: the runtime's external declares (printf, libc, LLVM
+    # intrinsics). A symbol the user body declares or defines itself (a
+    # C import, an intrinsic with call-site-specific signatures) keeps
+    # the USER's own copy - Apple Clang 16+ rejects a repeated
+    # declaration of the same symbol ("invalid redefinition of
+    # function"), which the previous sweep-everything header_declares
+    # tripped on for every from-c-import program
+    user_decl_names = user_defined | set(re.findall(
+        r'^declare\s+[^\n]*@"([A-Za-z0-9_.$]+)"', user_body, re.M
+    ))
+    header_declares = []
+    for d in re.findall(r'^declare\s+[^\n]+$', rb, re.M):
+        nm = re.search(r'@"([A-Za-z0-9_.$]+)"', d)
+        if nm is None or nm.group(1) not in user_decl_names:
+            header_declares.append(d)
     # Keep the converter's actual target: a hard-coded ARM64 Darwin
     # triple would poison Linux and Intel-Mac user modules.
     header = full_text[:_HEADER_RE.match(full_text).end()]

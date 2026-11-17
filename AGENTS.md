@@ -89,6 +89,11 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   corpus 16/16、irvm 10/10×2、backend 18/18、wat2wasm 35/35、
   ruff 净、RSS 1.15MB（30 万链式 concat，修复前 6.1MB）。**版本重钉
   1.21.0**（v1.20.0 发布于 P9 输出变更之前）。
+- **默认构建走运行时缓存（2026-11-18，STATUS.md §3.23）**：`silu build`
+  470→210ms——运行时缓存快路径由 SILU_RUNTIME_CACHE=1 opt-in 翻转为
+  默认（**=0 显式退出**，dynamic codegen 不缓存）；路径由 selfhost_build
+  每日锤炼 + 18 基准 A/B 执行对拍背书。char_pair.si 入仓钉 P9 形状
+  （ll 23/23、ir 24/24、corpus 计数 22）。
 - **P8 match switch/br_table + siluc daemon（2026-11-17，STATUS.md
   §3.22）**：全 int 字面量 match 降为 LLVM switch（三 conv 字节一致）
   与 wasm br_table（backend+wat2wasm.si 新分支）；其余模式维持链式。
