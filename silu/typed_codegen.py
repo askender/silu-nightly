@@ -6634,12 +6634,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             # sep.join(parts): one allocation instead of n appends
             parts_tv = self._convert_node(args_node[0])
             if parts_tv[0] == RAWLIST_S:
-                import os as _os
-                if _os.environ.get("SILU_TRACE_CONCAT"):
-                    print("JOIN s_ptr=", s_ptr.name,
-                          "owned=", s_ptr.name in self._owned_str_fresh,
-                          "temp=", "None" if temp is None else temp.name,
-                          flush=True)
+                joined = self.current_builder.call(
+                    self.rawlist_str_join, [parts_tv[1], s_ptr]
+                )
                 # P9: a receiver that arrived as an obj->rawstr coercion
                 # temp is owned by this statement - free it once the
                 # join has copied the bytes (the separator dies with
