@@ -374,8 +374,23 @@ impl FnB {
         if n == 0 { base.to_string() } else { format!("{}.{}", base, n) }
     }
     fn line(&mut self, l: String) { self.blocks[self.cur].1.push(l); }
-    fn nx(&mut self) -> String { self.anon += 1; format!(".{}", self.anon) }
-    fn silent(&mut self) { self.anon += 1; }
+    fn nx(&mut self) -> String {
+        self.anon += 1;
+        if std::env::var("P9_SLOT_TRACE").is_ok() {
+            eprintln!("SLOT nx {} anon={}", self.cur_tag(), self.anon);
+        }
+        format!(".{}", self.anon)
+    }
+    fn silent(&mut self) {
+        self.anon += 1;
+        if std::env::var("P9_SLOT_TRACE").is_ok() {
+            eprintln!("SLOT silent {} anon={}", self.cur_tag(), self.anon);
+        }
+    }
+    fn cur_tag(&self) -> String {
+        let f = CUR_FN.with(|f| f.borrow().clone());
+        format!("{}#{}", f, self.anon)
+    }
     fn panic_defs(&self) -> usize {
         self.blocks.iter().filter(|(l, _)| l.starts_with("panic_bad")).count()
     }
