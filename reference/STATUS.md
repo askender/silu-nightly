@@ -904,6 +904,16 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   pytest **1374 通过/3 跳过**、corpus 16/16、irvm 10/10×2、backend
   18/18、wat2wasm 35/35、run 4/18+14 loud、ruff 净、**RSS 1.15MB**
   （30 万次链式 concat，修复前 6.1MB）。P9 ll 平面收口；剩余：版本重钉。
+  **重钉 + 收尾（同日）**：版本 1.21.0（setup.py + __init__，tag
+  v1.21.0 已推，release run 全绿后 promote——4 平台二进制 + sha256 上
+  silu-lang releases）。**clippy 收敛（bf99c64）**：silu-conv.rs +
+  main.rs 全部 80 条手工清零（**不用 --fix**：它可能删除"结果未用"的
+  b.nx() 槽号调用 = 发射位移）——46 条 TLS const 块、contains/fn-path
+  闭包、MAIN_OUT static mut→TLS RefCell（unsafe 块消失）、死代码
+  （field_ll_ty/local_slot/Ty/Slot/ns4/Val::push/HG 三字段）、不可达
+  臂×2、&mut [String] 签名×2；每批跑 silu_fe 字节 cmp + ll/ir 门禁
+  全绿。STATUS §四 TODO 全部 ✅ 或等触发（pytest 并发重建竞态修复
+  设计已备但无复现证据不动；pyobj_utf8_cp_offset 死函数等下次动前缀）。
   **第四轮（同日，推进到 19/21 后回退）——两张决定性地图**：
   ①**两遍 free 结构**（Python 臂的真实形态）：pass 1 = coerced temps
   （a_temp/b_temp：to_raw 强制临时 + char1 视图）按操作数序；pass 2 =
