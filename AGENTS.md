@@ -33,11 +33,11 @@
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
 2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
-**silu 1.18.1（cp-offset 缓存重钉；1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
+**silu 1.21.0（P9 concat 所有权重钉；1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
-**状态（2026-11-07）：已完成**——前端 IR **21/21**、完整 .ll **20/20**（含 utf8_probe）
+**状态（2026-11-18）：已完成**——前端 IR **23/23**、完整 .ll **22/22**（含 silu_fe/match_int/concat_chain）
 全语料逐字节一致。规模对照、参考特性分诊、语言设计建议见校准报告。
 
 **关键文档（都在 reference/）**：
@@ -73,8 +73,22 @@ SILUC_DAEMON=1 ./siluc prog.si -o prog     # 经 daemon 编译（重复编译 ~0
 `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
 homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
 
-## 当前状态锚点（2026-11-17）
+## 当前状态锚点（2026-11-18）
 
+- **P9 收口：ll 22/22 全绿（2026-11-18，34c2a61，STATUS.md P9 第七轮）**：
+  codegen 层 concat/临时值所有权追踪跨 ll 全语料逐字节一致（silu_fe
+  首次）。残差全归因（形状序列法——槽号多重集比对被 free 占槽漂移污染，
+  不可用）：6 个额外 free 全是 push 参数 coercion 临时；json_quote 是
+  集合交换（py free coercion 泄漏 char1 / rs 反向）。修复三点：py push
+  臂 kind 门释放（**RAWSTR 实参的 _coerce 结果是 list 持有的 copy，
+  释放 = use-after-free**）、py const 融合预 coerce 处 char1 相位门注册、
+  rs 逐侧 pause 门 + 两个 push 站点扩展。**仪器化退役教训**：
+  SILU_TRACE_CONCAT 的 `import os as _os` 使新编 siluc1 读未定义全局——
+  仓库根二进制曾是仪器化前旧物（门禁跑的是旧 py 平面）；调试仪器化
+  随调试结束立即摘除。门禁全绿：ll 22/22、ir 23/23、pytest 1374/3、
+  corpus 16/16、irvm 10/10×2、backend 18/18、wat2wasm 35/35、
+  ruff 净、RSS 1.15MB（30 万链式 concat，修复前 6.1MB）。**版本重钉
+  1.21.0**（v1.20.0 发布于 P9 输出变更之前）。
 - **P8 match switch/br_table + siluc daemon（2026-11-17，STATUS.md
   §3.22）**：全 int 字面量 match 降为 LLVM switch（三 conv 字节一致）
   与 wasm br_table（backend+wat2wasm.si 新分支）；其余模式维持链式。
