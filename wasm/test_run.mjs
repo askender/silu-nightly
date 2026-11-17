@@ -34,7 +34,10 @@ const NATIVE_INTERP = "/tmp/ir_interp_native";
       input: readFileSync(si),
       maxBuffer: 1 << 26,
     }));
-    execFileSync("clang", [llPath, "-o", NATIVE_INTERP], { cwd: REPO });
+    // -lm: the ir_interp .ll references floor/fmod/pow - Linux splits
+    // libm from libc (macOS folds it into libSystem, which is why the
+    // bare link worked locally); without -lm the Ubuntu link fails
+    execFileSync("clang", [llPath, "-lm", "-o", NATIVE_INTERP], { cwd: REPO });
   }
 }
 

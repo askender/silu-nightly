@@ -16,7 +16,10 @@
 环境：IR_INTERP=路径 覆盖 ir_interp -O2 二进制（缺省 /tmp/ir_interp_O2，
       缺失时自动构建）；IRVM_TWIN=路径 覆盖孪生二进制（缺省自动构建）。
 """
-import subprocess, time, sys, os
+import os
+import subprocess
+import sys
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PY = "/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3"
