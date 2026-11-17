@@ -819,199 +819,203 @@ def run_vm() -> int:
         # call/return/jif/local traffic dominates, then compares and
         # adds. stack ops are inlined (append/pop + direct d-2 store)
         # - the helper calls cost ~2x on the recursive benchmark
-        if op == OP_CALL:
-            k: int = CODE[pc]
-            w: int = CODE[pc + 1] + CODE[pc + 2] * 256
-            fi2: int = w
-            if fi2 >= len(FN_START):
-                fi2 = 0
-            argc: int = k
-            if len(VSTACK) < argc:
-                bail("stack underflow at call")
-                return 0
-            arg_start: int = len(VSTACK) - argc
-            nslots: int = FN_NSLOTS[fi2]
-            if nslots < argc:
-                nslots = argc
-            sb2: int = len(SLOTAREA)
-            zi2: int = 0
-            while zi2 < nslots:
-                SLOTAREA.append(0)
-                zi2 += 1
-            ai2: int = 0
-            while ai2 < argc:
-                SLOTAREA[sb2 + ai2] = VSTACK[arg_start + ai2]
-                ai2 += 1
-            vstack_truncate(arg_start)
-            FRAME_VBASE.append(arg_start)
-            # the caller's resume point lands in its frame slot now;
-            # RETURN restores caller state from the lists
-            FRAME_PC[len(FRAME_PC) - 1] = pc + 3
-            FRAME_SLOTBASE.append(sb2)
-            FRAME_PC.append(FN_START[fi2])
-            FRAME_END.append(FN_START[fi2] + FN_LEN[fi2])
-            pc = FN_START[fi2]
-            end = FN_START[fi2] + FN_LEN[fi2]
-            sbase = sb2
-        elif op == OP_RETURN:
-            d = len(VSTACK)
-            ret2: int = VSTACK[d - 1]
-            VSTACK.pop()
-            FRAME_SLOTBASE.pop()
-            FRAME_PC.pop()
-            FRAME_END.pop()
-            vbase2: int = FRAME_VBASE.pop()
-            if len(FRAME_PC) == 0:
-                return 0
-            vstack_truncate(vbase2)
-            VSTACK.append(ret2)
-            pc = FRAME_PC[len(FRAME_PC) - 1]
-            end = FRAME_END[len(FRAME_END) - 1]
-            sbase = FRAME_SLOTBASE[len(FRAME_SLOTBASE) - 1]
-        elif op == OP_JUMP_IF_FALSE:
-            w = CODE[pc] + CODE[pc + 1] * 256
-            d = len(VSTACK)
-            v: int = VSTACK[d - 1]
-            VSTACK.pop()
-            if v == 0:
-                pc = w
-            else:
+        # P8 dogfood: the opcode dispatch is a match with numeric case
+        # literals -> the LLVM switch jump table (the elif chain this
+        # replaces was the pre-P8 expression of the same dispatch)
+        match op:
+            case 18:
+                k: int = CODE[pc]
+                w: int = CODE[pc + 1] + CODE[pc + 2] * 256
+                fi2: int = w
+                if fi2 >= len(FN_START):
+                    fi2 = 0
+                argc: int = k
+                if len(VSTACK) < argc:
+                    bail("stack underflow at call")
+                    return 0
+                arg_start: int = len(VSTACK) - argc
+                nslots: int = FN_NSLOTS[fi2]
+                if nslots < argc:
+                    nslots = argc
+                sb2: int = len(SLOTAREA)
+                zi2: int = 0
+                while zi2 < nslots:
+                    SLOTAREA.append(0)
+                    zi2 += 1
+                ai2: int = 0
+                while ai2 < argc:
+                    SLOTAREA[sb2 + ai2] = VSTACK[arg_start + ai2]
+                    ai2 += 1
+                vstack_truncate(arg_start)
+                FRAME_VBASE.append(arg_start)
+                # the caller's resume point lands in its frame slot now;
+                # RETURN restores caller state from the lists
+                FRAME_PC[len(FRAME_PC) - 1] = pc + 3
+                FRAME_SLOTBASE.append(sb2)
+                FRAME_PC.append(FN_START[fi2])
+                FRAME_END.append(FN_START[fi2] + FN_LEN[fi2])
+                pc = FN_START[fi2]
+                end = FN_START[fi2] + FN_LEN[fi2]
+                sbase = sb2
+            case 19:
+                d = len(VSTACK)
+                ret2: int = VSTACK[d - 1]
+                VSTACK.pop()
+                FRAME_SLOTBASE.pop()
+                FRAME_PC.pop()
+                FRAME_END.pop()
+                vbase2: int = FRAME_VBASE.pop()
+                if len(FRAME_PC) == 0:
+                    return 0
+                vstack_truncate(vbase2)
+                VSTACK.append(ret2)
+                pc = FRAME_PC[len(FRAME_PC) - 1]
+                end = FRAME_END[len(FRAME_END) - 1]
+                sbase = FRAME_SLOTBASE[len(FRAME_SLOTBASE) - 1]
+            case 17:
+                w = CODE[pc] + CODE[pc + 1] * 256
+                d = len(VSTACK)
+                v: int = VSTACK[d - 1]
+                VSTACK.pop()
+                if v == 0:
+                    pc = w
+                else:
+                    pc += 2
+            case 2:
+                w = CODE[pc] + CODE[pc + 1] * 256
                 pc += 2
-        elif op == OP_LOAD_LOCAL:
-            w = CODE[pc] + CODE[pc + 1] * 256
-            pc += 2
-            VSTACK.append(SLOTAREA[sbase + w])
-        elif op == OP_LOAD_CONST:
-            w = CODE[pc] + CODE[pc + 1] * 256
-            pc += 2
-            VSTACK.append(CONSTS[w])
-        elif op == OP_CMP_LT:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sa < sb:
-                VSTACK[d - 2] = 1
-            else:
-                VSTACK[d - 2] = 0
-        elif op == OP_ADD:
-            d = len(VSTACK)
-            VSTACK[d - 2] = VSTACK[d - 2] + VSTACK[d - 1]
-            VSTACK.pop()
-        elif op == OP_SUB:
-            d = len(VSTACK)
-            VSTACK[d - 2] = VSTACK[d - 2] - VSTACK[d - 1]
-            VSTACK.pop()
-        elif op == OP_MUL:
-            d = len(VSTACK)
-            VSTACK[d - 2] = VSTACK[d - 2] * VSTACK[d - 1]
-            VSTACK.pop()
-        elif op == OP_STORE_LOCAL:
-            w = CODE[pc] + CODE[pc + 1] * 256
-            pc += 2
-            d = len(VSTACK)
-            SLOTAREA[sbase + w] = VSTACK[d - 1]
-            VSTACK.pop()
-        elif op == OP_JUMP:
-            w = CODE[pc] + CODE[pc + 1] * 256
-            pc = w
-        elif op == OP_CMP_EQ:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sa == sb:
-                VSTACK[d - 2] = 1
-            else:
-                VSTACK[d - 2] = 0
-        elif op == OP_CMP_NE:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sa != sb:
-                VSTACK[d - 2] = 1
-            else:
-                VSTACK[d - 2] = 0
-        elif op == OP_CMP_LE:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sa <= sb:
-                VSTACK[d - 2] = 1
-            else:
-                VSTACK[d - 2] = 0
-        elif op == OP_CMP_GT:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sa > sb:
-                VSTACK[d - 2] = 1
-            else:
-                VSTACK[d - 2] = 0
-        elif op == OP_CMP_GE:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sa >= sb:
-                VSTACK[d - 2] = 1
-            else:
-                VSTACK[d - 2] = 0
-        elif op == OP_FLOORDIV:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sb == 0:
-                bail("division by zero")
-                return 0
-            VSTACK[d - 2] = sa // sb
-        elif op == OP_MOD:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sb == 0:
-                bail("modulo by zero")
-                return 0
-            VSTACK[d - 2] = sa % sb
-        elif op == OP_POW:
-            d = len(VSTACK)
-            sa = VSTACK[d - 2]
-            sb = VSTACK[d - 1]
-            VSTACK.pop()
-            if sb < 0:
-                VSTACK[d - 2] = 0
-            else:
-                VSTACK[d - 2] = ipow_vm(sa, sb)
-        elif op == OP_PRINT:
-            k = CODE[pc]
-            pc += 1
-            if len(VSTACK) < k:
-                bail("stack underflow at print")
-                return 0
-            first: int = 1
-            vi: int = len(VSTACK) - k
-            while vi < len(VSTACK):
-                if first == 0:
-                    OUT.append(" ")
-                OUT.append(str(VSTACK[vi]))
-                first = 0
-                vi += 1
-            OUT.append("\n")
-            vstack_truncate(vi)
-        elif op == OP_POP:
-            vstack_pop()
-        elif op == OP_LOAD_INT0:
-            VSTACK.append(0)
-        elif op == OP_LOAD_INT1:
-            VSTACK.append(1)
-        else:
-            bail("unknown opcode " + str(op))
-            return 0
+                VSTACK.append(SLOTAREA[sbase + w])
+            case 1:
+                w = CODE[pc] + CODE[pc + 1] * 256
+                pc += 2
+                VSTACK.append(CONSTS[w])
+            case 12:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sa < sb:
+                    VSTACK[d - 2] = 1
+                else:
+                    VSTACK[d - 2] = 0
+            case 4:
+                d = len(VSTACK)
+                VSTACK[d - 2] = VSTACK[d - 2] + VSTACK[d - 1]
+                VSTACK.pop()
+            case 5:
+                d = len(VSTACK)
+                VSTACK[d - 2] = VSTACK[d - 2] - VSTACK[d - 1]
+                VSTACK.pop()
+            case 6:
+                d = len(VSTACK)
+                VSTACK[d - 2] = VSTACK[d - 2] * VSTACK[d - 1]
+                VSTACK.pop()
+            case 3:
+                w = CODE[pc] + CODE[pc + 1] * 256
+                pc += 2
+                d = len(VSTACK)
+                SLOTAREA[sbase + w] = VSTACK[d - 1]
+                VSTACK.pop()
+            case 16:
+                w = CODE[pc] + CODE[pc + 1] * 256
+                pc = w
+            case 10:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sa == sb:
+                    VSTACK[d - 2] = 1
+                else:
+                    VSTACK[d - 2] = 0
+            case 11:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sa != sb:
+                    VSTACK[d - 2] = 1
+                else:
+                    VSTACK[d - 2] = 0
+            case 13:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sa <= sb:
+                    VSTACK[d - 2] = 1
+                else:
+                    VSTACK[d - 2] = 0
+            case 14:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sa > sb:
+                    VSTACK[d - 2] = 1
+                else:
+                    VSTACK[d - 2] = 0
+            case 15:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sa >= sb:
+                    VSTACK[d - 2] = 1
+                else:
+                    VSTACK[d - 2] = 0
+            case 7:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sb == 0:
+                    bail("division by zero")
+                    return 0
+                VSTACK[d - 2] = sa // sb
+            case 8:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sb == 0:
+                    bail("modulo by zero")
+                    return 0
+                VSTACK[d - 2] = sa % sb
+            case 9:
+                d = len(VSTACK)
+                sa = VSTACK[d - 2]
+                sb = VSTACK[d - 1]
+                VSTACK.pop()
+                if sb < 0:
+                    VSTACK[d - 2] = 0
+                else:
+                    VSTACK[d - 2] = ipow_vm(sa, sb)
+            case 20:
+                k = CODE[pc]
+                pc += 1
+                if len(VSTACK) < k:
+                    bail("stack underflow at print")
+                    return 0
+                first: int = 1
+                vi: int = len(VSTACK) - k
+                while vi < len(VSTACK):
+                    if first == 0:
+                        OUT.append(" ")
+                    OUT.append(str(VSTACK[vi]))
+                    first = 0
+                    vi += 1
+                OUT.append("\n")
+                vstack_truncate(vi)
+            case 21:
+                vstack_pop()
+            case 22:
+                VSTACK.append(0)
+            case 23:
+                VSTACK.append(1)
+            case _:
+                    bail("unknown opcode " + str(op))
+                    return 0
         if is_err() == 1:
             return 0
     return 0

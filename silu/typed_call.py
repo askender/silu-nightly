@@ -116,6 +116,16 @@ class TypedCallMixin:
                     self.current_builder.call(
                         self.rawlist_str_push, [list_ptr, elem[1]]
                     )
+                    # P9: the arg conversion's owned temps (obj->rawstr
+                    # coercions / concat results) die once the push has
+                    # copied the bytes
+                    if arg_tv[0] == RAWSTR:
+                        nm = arg_tv[1].name
+                        if nm in self._owned_str_fresh:
+                            self._owned_fresh_del(self._owned_str_fresh, nm)
+                            self.current_builder.call(
+                                self.rawstr_free, [arg_tv[1]]
+                            )
                 else:
                     elem_bits = elem[1]
                     if elem_kind == F64:

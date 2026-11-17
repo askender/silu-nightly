@@ -386,6 +386,10 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
         entry_block = main_func.append_basic_block("entry")
         self.current_builder = ir.builder_(entry_block)
 
+        # P9: the user conversion phase begins - ownership tracking
+        # (concat-temp registration/free) activates from here on
+        self._owned_user_phase = 1
+
         # Convert IR (skip function definitions in main)
         self._convert_toplevel(ir_data)
 

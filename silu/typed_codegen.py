@@ -140,6 +140,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         # (llvmlite NameScope dedup) and work on both planes
         self._owned_str_fresh: Dict[str, bool] = {}
         self._owned_view_parent: Dict[str, Any] = {}
+        # P9 phase flag: 1 = the user conversion phase (registration/
+        # free active); 0 = the runtime-prefix emission phase (the
+        # conv's own runtime bodies are built in __init__ - their
+        # concat arms must not register/free user-tracking names).
+        # Plain int attribute: the .si twin's scope rules eat
+        # annotated bool attrs and attribute-subscript assignment
+        self._owned_user_phase = 0
 
         # class layouts (dataclass semantics): class name ->
         # {"fields": [(fname, kind, default_node, field_class)], "methods": ...};
@@ -5705,7 +5712,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         if kind == I1:
             return self.current_builder.call(self.unbox_bool, [obj])
         if kind == RAWSTR:
-            return self.current_builder.call(self.pystr_to_rawstr, [obj])
+            res = self.current_builder.call(self.pystr_to_rawstr, [obj])
+            if self._owned_user_phase == 1:
+                # P9: the obj->rawstr coercion produces an owned fresh
+                # buffer; the consuming statement releases it (the
+                # concat arm frees it after copying the bytes;
+                # _rawstr_operand consumes the registration when the
+                # caller takes over via its temp-return path)
+                self._owned_fresh_add(self._owned_str_fresh, res.name)
+            return res
         raise ValueError(f"cannot unbox into {kind}")
 
     def _coerce(self, tv: Tuple[str, Any], target: str) -> Tuple[str, Any]:
@@ -5943,6 +5958,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         if tv[0] == RAWSTR:
             return tv[1], None
         raw_ptr = self._coerce(tv, RAWSTR)[1]
+        # the caller's temp-return path owns the coercion now: drop the
+        # P9 registration so the concat arm's owned-pass does not free
+        # what this temp-return already frees
+        if raw_ptr.name in self._owned_str_fresh:
+            self._owned_fresh_del(self._owned_str_fresh, raw_ptr.name)
         return raw_ptr, raw_ptr
 
     def _convert_obj_number(self, arg_tv, to_float):

@@ -47,6 +47,18 @@ class TypedExprMixin:
             for temp in (a_temp, b_temp):
                 if temp is not None:
                     self.current_builder.call(self.rawstr_free, [temp])
+            # P9: an operand produced by an earlier expression (concat
+            # result / obj->rawstr coercion / slice / str-get) is owned
+            # by this statement - free it once the concat has copied
+            # its bytes; the result joins the owned set so chains
+            # release transitively (user phase only)
+            for ov in (a_ptr, b_ptr):
+                nm = ov.name
+                if nm in self._owned_str_fresh:
+                    self._owned_fresh_del(self._owned_str_fresh, nm)
+                    self.current_builder.call(self.rawstr_free, [ov])
+            if self._owned_user_phase == 1:
+                self._owned_fresh_add(self._owned_str_fresh, result.name)
             return (RAWSTR, result)
         if left[0] == OBJ or right[0] == OBJ:
             l_obj = self._box(left)

@@ -1102,6 +1102,10 @@ thread_local! {
     static FN_PARAM_NAMES: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static CV_ERR_NAME: RefCell<Option<String>> = RefCell::new(None);
     static TEMP_STRS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    // P9: concat results / obj->rawstr coercion temps awaiting
+    // consumption - freed when a later concat copies their bytes,
+    // mirroring the Python twin's _owned_str_fresh registration
+    static CONCAT_TEMPS: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static COMPARE_VIEW: RefCell<bool> = RefCell::new(false);
     static SPLIT_FORM: RefCell<bool> = RefCell::new(false);
     static PENDING_PAIR: RefCell<Option<String>> = RefCell::new(None);
@@ -2237,6 +2241,7 @@ fn conv_str_list_decl(b: &mut FnB, name: &str, rhs: &Val) {
         b.line(format!(
             "  %\"{}\" = call i64 @\"rawlist_str_push\"(i8* %\"{}\", i8* {})",
             p, c, r));
+        maybe_free_owned(b, &r);
     }
     if IN_FN.with(|v| *v.borrow()) {
         FN_ALLOCAS.with(|f| f.borrow_mut().push((name.to_string(), "list".into())));
@@ -3212,6 +3217,11 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                         let av = eval_mod(b, &args[0], &fs);
                         let needs_copy = matches!(&av, Typed::Str(_) | Typed::Inst(_));
                         let r = to_raw(b, av);
+                        // P9: the ORIGINAL (pre-copy) value is the
+                        // registered owned temp - the push copies it,
+                        // the original dies
+                        let orig_owned = maybe_free_owned_probe(b, &r);
+                        let orig = r.clone();
                         let r = if needs_copy {
                             let cp = b.nx();
                             b.line(format!(
@@ -3222,6 +3232,9 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                         b.line(format!(
                             "  %\"{}\" = call i64 @\"rawlist_str_push\"(i8* {}, i8* {})",
                             c, list, r));
+                        if orig_owned {
+                            maybe_free_owned(b, &orig);
+                        }
                     } else {
                     let fs = F_SLOTS.with(|f| f.borrow().clone());
                     let rv = eval_mod(b, &recv, &fs);
@@ -3265,6 +3278,8 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                     // str append: to_raw, copy only an existing rawstr
                     let needs_copy = matches!(&v, Typed::Str(_) | Typed::Inst(_));
                     let r = to_raw(b, v);
+                    let orig_owned = maybe_free_owned_probe(b, &r);
+                    let orig = r.clone();
                     let r = if needs_copy {
                         let cp = b.nx();
                         b.line(format!(
@@ -3275,6 +3290,9 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                     b.line(format!(
                         "  %\"{}\" = call i64 @\"rawlist_str_push\"(i8* %\"{}\", i8* {})",
                         c, l, r));
+                    if orig_owned {
+                        maybe_free_owned(b, &orig);
+                    }
                 } else if elem == "float" {
                     let r = to_f64(b, v);
                     let ib = b.nx();
@@ -4511,10 +4529,30 @@ fn conv_dyn_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
     b.pos(end_b);
 }
 
+// P9: membership probe (no side effects)
+fn maybe_free_owned_probe(b: &mut FnB, r: &str) -> bool {
+    CONCAT_TEMPS.with(|t| t.borrow().iter().any(|x| x == r))
+}
+
+// P9: free an owned expression temp (concat result / obj->rawstr
+// coercion / slice / str-get) once a consuming runtime call has copied
+// its bytes; no-op for unregistered values
+fn maybe_free_owned(b: &mut FnB, r: &str) {
+    let ct = CONCAT_TEMPS.with(|t| t.borrow().iter().any(|x| x == r));
+    if ct {
+        CONCAT_TEMPS.with(|t| t.borrow_mut().retain(|x| x != r));
+        b.silent();
+        b.line(format!("  call void @\"rawstr_free\"(i8* {})", r));
+    }
+}
+
 // module-level walk (main body). Returns fn_defs; globals land in TAIL.
 fn walk_module(stmts: &[Val]) -> Vec<Val> {
     let mut b = FnB::new(1); // .1 = main ret slot
     let mut loops: Vec<String> = Vec::new();
+    // P9 boundary: drop registrations leaked from an earlier phase
+    CONCAT_TEMPS.with(|t| *t.borrow_mut() = Vec::new());
+    TEMP_STRS.with(|t| *t.borrow_mut() = Vec::new());
     conv_block(&mut b, stmts, &mut loops);
     let has_user_main = stmts.iter().any(|st| {
         st.head() == "func_def" && st.get(1).str_of() == "main"
@@ -4649,6 +4687,7 @@ fn convert_func(fd: &Val) -> String {
     FN_B.with(|y| *y.borrow_mut() = Vec::new());
     FN_STOR.with(|y| *y.borrow_mut() = Vec::new());
     TEMP_STRS.with(|t| *t.borrow_mut() = Vec::new());
+    CONCAT_TEMPS.with(|t| *t.borrow_mut() = Vec::new());
     FN_ALLOCAS.with(|f| *f.borrow_mut() = Vec::new());
     FN_PARAMS.with(|f| *f.borrow_mut() = Vec::new());
     FN_PARAM_NAMES.with(|f| *f.borrow_mut() = params.iter()
@@ -5919,6 +5958,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     let ev = eval_expr(b, &idxe.get(2), slot_i, slot_f, fslots);
                     let Typed::I64(er) = ev else { bail("field slice end") };
                     let sl = b.nx();
+                    CONCAT_TEMPS.with(|t| t.borrow_mut().push(format!("%\"{}\"", sl)));
                     b.line(format!(
                         "  %\"{}\" = call i8* @\"rawstr_slice\"(i8* %\"{}\", i64 {}, i64 {})",
                         sl, sp, sr, er));
@@ -5962,6 +6002,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let Typed::I64(k) = kr else { bail("attr list key") };
             if elty == "str" {
                 let c = b.nx();
+                CONCAT_TEMPS.with(|t| t.borrow_mut().push(format!("%\"{}\"", c)));
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"rawlist_str_get\"(i8* {}, i64 {})",
                     c, or_, k));
@@ -6078,6 +6119,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 let ev = eval_expr(b, &e.get(2).get(2), slot_i, slot_f, fslots);
                 let Typed::I64(er) = ev else { bail("slice end") };
                 let sl = b.nx();
+                CONCAT_TEMPS.with(|t| t.borrow_mut().push(format!("%\"{}\"", sl)));
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"rawstr_slice\"(i8* %\"{}\", i64 {}, i64 {})",
                     sl, l, sr, er));
@@ -6134,6 +6176,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let elty = lst_elem_ty(&n);
             if elty == "str" {
                 let c = b.nx();
+                CONCAT_TEMPS.with(|t| t.borrow_mut().push(format!("%\"{}\"", c)));
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"rawlist_str_get\"(i8* {}, i64 {})",
                     c, objref, k));
@@ -6737,15 +6780,38 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 || TEMP_STRS.with(|t| t.borrow().iter().any(|r| r == &lr));
             let rtemp = (rpy && !pause_any)
                 || TEMP_STRS.with(|t| t.borrow().iter().any(|r| r == &rr));
-            let cleanup_temps = IN_FN.with(|v| *v.borrow()) && !dynamic_operands
-                && (!pause_any || !lpy);
+            // P9: the Python twin frees in TWO passes inside the raw
+            // arm (raw_arm: both-pyo shapes take the pyobj path
+            // instead) - pass 1: coerced temps (the pystr coercions
+            // and char1 views), operand order; pass 2: owned
+            // expression temps (concat results / slices / str-gets
+            // registered at their produce sites), operand order
+            let raw_arm = !(matches!(lt, Typed::Pyo(_))
+                && matches!(rt, Typed::Pyo(_)));
             for (r, is_temp) in [(&lr, ltemp), (&rr, rtemp)] {
-                if cleanup_temps && is_temp {
+                if raw_arm && is_temp {
+                    CONCAT_TEMPS
+                        .with(|t| t.borrow_mut().retain(|x| x != r));
                     b.silent();
                     b.line(format!("  call void @\"rawstr_free\"(i8* {})", r));
                 }
             }
             TEMP_STRS.with(|t| t.borrow_mut().retain(|r| r != &lr && r != &rr));
+            for ov in [&lr, &rr] {
+                let ct = CONCAT_TEMPS
+                    .with(|t| t.borrow().iter().any(|x| x == ov));
+                if raw_arm && ct {
+                    CONCAT_TEMPS
+                        .with(|t| t.borrow_mut().retain(|x| x != ov));
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"rawstr_free\"(i8* {})", ov));
+                }
+            }
+            if raw_arm {
+                CONCAT_TEMPS
+                    .with(|t| t.borrow_mut().push(format!("%\"{}\"", cc)));
+            }
             Typed::Str(format!("%\"{}\"", cc))
         }
         "+" | "-" | "*" | "/" | "//" | "%" => {
@@ -7163,6 +7229,11 @@ fn to_raw_alias(b: &mut FnB, t: Typed, alias: bool) -> String {
 
 #[track_caller]
 fn to_raw(b: &mut FnB, t: Typed) -> String {
+    // P9: an obj->rawstr coercion produces an owned fresh buffer; the
+    // consuming concat frees it after copying. A PStr coercion stays
+    // unregistered: Python kinds pystr values RAWSTR-with-pystr-value
+    // and borrows them (STATUS P9 kind/vocabulary mapping)
+    let is_obj = matches!(t, Typed::Pyo(_));
     match t {
         Typed::Str(r) | Typed::Inst(r) => r,
         Typed::PStr(r) | Typed::Pyo(r) => {
@@ -7170,6 +7241,12 @@ fn to_raw(b: &mut FnB, t: Typed) -> String {
             b.line(format!(
                 "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* {})",
                 rr, r));
+            // P9: register only obj-domain coercions (see above)
+            if is_obj {
+                CONCAT_TEMPS.with(|t| {
+                    t.borrow_mut().push(format!("%\"{}\"", rr))
+                });
+            }
             format!("%\"{}\"", rr)
         }
         other => bail(&format!("to_raw on non-str in {} at line {}: {:?}",
