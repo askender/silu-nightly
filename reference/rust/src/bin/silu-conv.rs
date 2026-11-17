@@ -120,20 +120,20 @@ fn escape_bytes(data: &[u8]) -> String {
 thread_local! {
     // function-body context: local typed names, hoisted allocas
     // (first-appearance order, params first), return type, signatures
-    static FN_I: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static FN_F: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static FN_ALLOCAS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
-    static FN_PARAMS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
-    static FN_L: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
-    static FN_PY: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static FN_D: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static JSON_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static IN_FN: RefCell<bool> = RefCell::new(false);
-    static CUR_FN: RefCell<String> = RefCell::new(String::new());
-    static FN_RET: RefCell<String> = RefCell::new(String::new());
-    static LST_ELEM: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+    static FN_I: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static FN_F: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static FN_ALLOCAS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    static FN_PARAMS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    static FN_L: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    static FN_PY: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static FN_D: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static JSON_SLOTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static IN_FN: RefCell<bool> = const { RefCell::new(false) };
+    static CUR_FN: RefCell<String> = const { RefCell::new(String::new()) };
+    static FN_RET: RefCell<String> = const { RefCell::new(String::new()) };
+    static LST_ELEM: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     static FN_SIGS: RefCell<Vec<(String, Vec<String>, String)>> =
-        RefCell::new(Vec::new()); // (name, arg types, ret type)
+        const { RefCell::new(Vec::new()) }; // (name, arg types, ret type)
 }
 
 fn enum_val(enum_: &str, variant: &str) -> Option<i64> {
@@ -172,11 +172,6 @@ fn is_class(n: &str) -> bool {
 
 fn is_enum(n: &str) -> bool {
     ENUMS.with(|m| m.borrow().iter().any(|(k, _)| k == n))
-}
-
-// field LLVM type from its annotation
-fn field_ll_ty(t: &str) -> &'static str {
-    match t { "float" => "double", _ => "i64" } // int/Tok/instance/str-ptr slots
 }
 
 fn tv_valtype(tv: &Val) -> String {
@@ -270,12 +265,12 @@ fn inst_stor(n: &str) -> Option<String> {
 thread_local! {
     // tail globals in strict CREATION order: strings and module var
     // declarations interleave as they are first emitted (list.si find)
-    static TAIL: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static STR_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static LST_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new()); // list-typed globals
-    static DCT_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new()); // dict-typed globals
-    static DCT_KEYS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new()); // dict key types
-    static DCT_VALS: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new()); // dict value types
+    static TAIL: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static STR_SLOTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static LST_SLOTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; // list-typed globals
+    static DCT_SLOTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; // dict-typed globals
+    static DCT_KEYS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) }; // dict key types
+    static DCT_VALS: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) }; // dict value types
 }
 
 fn tail_push(line: String) {
@@ -341,9 +336,6 @@ fn double_bits(v: f64) -> String {
     format!("{:>16}", format!("0x{:x}", bits))
 }
 
-#[derive(Clone, PartialEq)]
-enum Ty { I64, F64 } // typed expression results
-
 // ---------- block-list function builder ----------
 
 struct FnB {
@@ -352,8 +344,6 @@ struct FnB {
     anon: usize,
     reg_names: Vec<String>, // named (non-block) registrations, e.g. allocas
 }
-
-enum Slot { Global(String) } // @"name" variables (module scope)
 
 impl FnB {
     fn new(anon_start: usize) -> FnB {
@@ -469,8 +459,9 @@ impl FnB {
     // float zero check: fcmp oeq against +0.0 (llvmlite pads hex)
     fn fzero_check(&mut self, divisor: &str) {
         let zc = self.nx();
+        let zero_padded = format!("{:>16}", "0x0");
         self.line(format!("  %\"{}\" = fcmp oeq double {}, {}",
-                          zc, divisor, format!("{:>16}", "0x0")));
+                          zc, divisor, zero_padded));
         self.silent();
         let suffix = self.panic_suffix();
         self.line(format!(
@@ -926,7 +917,6 @@ impl FnB {
 }
 
 fn global_slot(n: &str) -> String { format!("@\"{}\"", n) }
-fn local_slot(n: &str) -> String { format!("%\"{}\"", n) }
 
 // ---------- statement converters ----------
 
@@ -1106,48 +1096,51 @@ impl FnB {
     }
 }
 
+// dynamic-instance layer: (class, [(field, ty)])
+type ClassDef = (String, Vec<(String, String)>);
+
 // shared float-global registry (thread-local so the recursive block
 // converter can update it from any nesting depth)
 thread_local! {
-    static F_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static FUNC_DEFS: RefCell<Vec<Val>> = RefCell::new(Vec::new());
-    static MAIN_ALLOCAS: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static FN_B: RefCell<Vec<String>> = RefCell::new(Vec::new()); // local bools
-    static FN_STOR: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
-    static FN_PARAM_NAMES: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static CV_ERR_NAME: RefCell<Option<String>> = RefCell::new(None);
-    static TEMP_STRS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static F_SLOTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static FUNC_DEFS: RefCell<Vec<Val>> = const { RefCell::new(Vec::new()) };
+    static MAIN_ALLOCAS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static FN_B: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; // local bools
+    static FN_STOR: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    static FN_PARAM_NAMES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static CV_ERR_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+    static TEMP_STRS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // P9: concat results / obj->rawstr coercion temps awaiting
     // consumption - freed when a later concat copies their bytes,
     // mirroring the Python twin's _owned_str_fresh registration
-    static CONCAT_TEMPS: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static COMPARE_VIEW: RefCell<bool> = RefCell::new(false);
-    static SPLIT_FORM: RefCell<bool> = RefCell::new(false);
-    static PENDING_PAIR: RefCell<Option<String>> = RefCell::new(None);
-    static SLICE_NO_COPY: RefCell<bool> = RefCell::new(false);
-    static DYN_CLASSES: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static PY_SLOTS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static CONCAT_TEMPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static COMPARE_VIEW: RefCell<bool> = const { RefCell::new(false) };
+    static SPLIT_FORM: RefCell<bool> = const { RefCell::new(false) };
+    static PENDING_PAIR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SLICE_NO_COPY: RefCell<bool> = const { RefCell::new(false) };
+    static DYN_CLASSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static PY_SLOTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // enclosing match_end targets: while_end branches back to the match
     // merge, an inner match ends with a forward branch to the parent's
     // merge (jsonparse main evidence)
-    static MATCH_END: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static MATCH_END: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // whether the tagged-union Json runtime is pulled in
-    static TAGGED: RefCell<bool> = RefCell::new(false);
+    static TAGGED: RefCell<bool> = const { RefCell::new(false) };
     // loop-body nesting depth; a match case body records the depth it
     // entered at so the block-fallthrough rule can tell a case body
     // (branch to match_end) from a while body (the loop re-branches)
-    static LOOP_DEPTH: RefCell<usize> = RefCell::new(0);
-    static CASE_DEPTH: RefCell<Vec<usize>> = RefCell::new(Vec::new());
-    static CONTINUE_TO: RefCell<Vec<String>> = RefCell::new(Vec::new());
-    static ENUM_CTR: RefCell<usize> = RefCell::new(0);
-    static PY_RETS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static LOOP_DEPTH: RefCell<usize> = const { RefCell::new(0) };
+    static CASE_DEPTH: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    static CONTINUE_TO: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static ENUM_CTR: RefCell<usize> = const { RefCell::new(0) };
+    static PY_RETS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     // dynamic-instance layer: enums, classes, method signatures
-    static ENUMS: RefCell<Vec<(String, Vec<String>)>> = RefCell::new(Vec::new());
-    static CLASSES: RefCell<Vec<(String, Vec<(String, String)>)>> =
-        RefCell::new(Vec::new()); // (class, [(field, ty)])
-    static FN_TY: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
-    static FN_S: RefCell<Vec<String>> = RefCell::new(Vec::new()); // local strs
-    static FN_SBUF: RefCell<Vec<String>> = RefCell::new(Vec::new()); // local strbufs
+    static ENUMS: RefCell<Vec<(String, Vec<String>)>> = const { RefCell::new(Vec::new()) };
+    static CLASSES: RefCell<Vec<ClassDef>> =
+        const { RefCell::new(Vec::new()) }; // (class, [(field, ty)])
+    static FN_TY: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    static FN_S: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; // local strs
+    static FN_SBUF: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; // local strbufs
 }
 
 fn is_declared(name: &str) -> bool {
@@ -2470,7 +2463,7 @@ fn conv_assign(b: &mut FnB, st: &Val) {
             }
         }
         if rhs.head() == "list" && !rhs.get(1).items().is_empty()
-            && rhs.get(1).items().iter().all(|el| is_str_expr(el)) {
+            && rhs.get(1).items().iter().all(is_str_expr) {
             conv_str_list_decl(b, &name, &rhs);
             return;
         }
@@ -2812,7 +2805,7 @@ fn conv_assign(b: &mut FnB, st: &Val) {
             bail("assign to container");
         }
         if rhs.head() == "list" && !rhs.get(1).items().is_empty()
-            && rhs.get(1).items().iter().all(|el| is_str_expr(el)) {
+            && rhs.get(1).items().iter().all(is_str_expr) {
             conv_str_list_decl(b, &name, &rhs);
             return;
         }
@@ -3056,9 +3049,12 @@ fn emit_return_str_drops(b: &mut FnB, locals: &[String]) {
 // at least one value arm. Structural decision mirrored by the Python
 // twin's _match_switch_arms (silu/typed_match.py) - keep both in lock
 // step (reference/PROPOSALS.md P8).
+// P8 switch-lowering plan: (literal-arm list, trailing wildcard)
+type SwitchPlan = (Vec<(i64, Vec<Val>)>, Option<Vec<Val>>);
+
 fn match_switch_arms(
     cases: &[Val],
-) -> Option<(Vec<(i64, Vec<Val>)>, Option<Vec<Val>>)> {
+) -> Option<SwitchPlan> {
     let mut arms: Vec<(i64, Vec<Val>)> = Vec::new();
     let mut wild: Option<Vec<Val>> = None;
     for (ci, c) in cases.iter().enumerate() {
@@ -3111,7 +3107,7 @@ fn match_switch_arms(
 // the chain arm).
 fn conv_match_switch(
     b: &mut FnB,
-    plan: &(Vec<(i64, Vec<Val>)>, Option<Vec<Val>>),
+    plan: &SwitchPlan,
     vref: &str,
     end_lbl: String,
     stmts: &[Val],
@@ -4587,7 +4583,7 @@ fn conv_dyn_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
 }
 
 // P9: membership probe (no side effects)
-fn maybe_free_owned_probe(b: &mut FnB, r: &str) -> bool {
+fn maybe_free_owned_probe(_b: &mut FnB, r: &str) -> bool {
     CONCAT_TEMPS.with(|t| t.borrow().iter().any(|x| x == r))
 }
 
@@ -4638,13 +4634,13 @@ fn walk_module(stmts: &[Val]) -> Vec<Val> {
     if let Some(epos) = out.find("entry:\n") {
         out.insert_str(epos + "entry:\n".len(), &alloca_lines);
     }
-    unsafe {
-        MAIN_OUT = Some(out);
-    }
+    MAIN_OUT.with(|m| *m.borrow_mut() = Some(out));
     FUNC_DEFS.with(|f| f.borrow().clone())
 }
 
-static mut MAIN_OUT: Option<String> = None;
+thread_local! {
+    static MAIN_OUT: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 // convert one function: params + body via conv_block with the FN_*
 // context (locals shadow globals); allocas splice in reverse
@@ -4772,7 +4768,7 @@ fn convert_func(fd: &Val) -> String {
         "define internal {} @\"{}\"({}){}\n",
         rty_ll, name,
         params.iter().zip(atys.iter()).enumerate()
-            .map(|(i, (p, t))| format!("{} %\".{}\"",
+            .map(|(i, (_, t))| format!("{} %\".{}\"",
                 arg_ll(t), i + 1))
             .collect::<Vec<_>>().join(", "),
         if rty == "none" || rty == "pyobj" { "" }
@@ -5016,7 +5012,6 @@ fn convert_func(fd: &Val) -> String {
         "view" => "{i64, i64, i8*, i64}",
         "pyobj" => "{i32, i8*}*",
         "list" | "str" | "inst" | "i8*" => "i8*",
-        "i8*" => "i8*",
         "float" => "double",
         t if t.starts_with("list:") || t.starts_with("inst:")
             || t == "str" || t == "buf" => "i8*",
@@ -5063,10 +5058,8 @@ fn expr_class(e: &Val) -> Option<String> {
             } else if e.get(1).head() == "attribute"
                 && e.get(1).get(1).head() == "name" {
                 let bn = e.get(1).get(1).get(1).str_of();
-                match fn_ty_of(&bn) {
-                    Some(c) => format!("{}__{}", c, e.get(1).get(2).str_of()),
-                    None => return None,
-                }
+                let cls = fn_ty_of(&bn)?;
+                format!("{}__{}", cls, e.get(1).get(2).str_of())
             } else { return None; };
             FN_SIGS.with(|s| s.borrow().iter().find(|(k, _, _)| k == &fname)
                 .and_then(|(_, _, r)| r.strip_prefix("inst:").map(str::to_string)))
@@ -5730,7 +5723,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             let c = b.nx();
             b.line(format!(
                 "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", c, l));
-            return Typed::Str(format!("%\"{}\"", c));
+            Typed::Str(format!("%\"{}\"", c))
         }
                 "==" | "!=" | "<" | "<=" | ">" | ">="
             if e.get(1).head() == "name"
@@ -5761,7 +5754,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             b.line(format!(
                 "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_eq\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\")",
                 r, ps, cs));
-            return Typed::Pyo(format!("%\"{}\"", r));
+            Typed::Pyo(format!("%\"{}\"", r))
         }
 "==" | "!=" | "<" | "<=" | ">" | ">=" => {
             Typed::Bool(eval_i1(b, e))
@@ -5970,7 +5963,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             b.line(format!(
                 "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_subscript\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
                 r, ps, iv));
-            return Typed::Pyo(format!("%\"{}\"", r));
+            Typed::Pyo(format!("%\"{}\"", r))
         }
         "subscript" if e.get(1).head() == "attribute" => {
             // self.toks[i]: field-resolved list read
@@ -6726,7 +6719,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             if rty == "buf" {
                 return Typed::Str(format!("%\"{}\"", c));
             }
-            for (nm, raw, before, boxed) in writebacks {
+            for (nm, _raw, before, boxed) in writebacks {
                 let back = b.nx();
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"pylist_to_rawlist_str\"({{i32, i8*}}* {})",
@@ -6826,8 +6819,6 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 }
                 rr = to_raw(b, rt.clone());
             }
-            let dynamic_operands = matches!(&lt, Typed::Pyo(_) | Typed::PStr(_))
-                && matches!(&rt, Typed::Pyo(_) | Typed::PStr(_));
             let cc = b.nx();
             b.line(format!(
                 "  %\"{}\" = call i8* @\"rawstr_concat\"(i8* {}, i8* {})",
@@ -7170,7 +7161,7 @@ fn raw_str_list_expr(e: &Val) -> bool {
         }
         "list" => FN_RET.with(|r| r.borrow().as_str() == "list:str")
             && !e.get(1).items().is_empty()
-            && e.get(1).items().iter().all(|el| is_str_expr(el)),
+            && e.get(1).items().iter().all(is_str_expr),
         "call" => {
             let target = if e.get(1).head() == "name" {
                 e.get(1).get(1).str_of()
@@ -7275,8 +7266,6 @@ fn to_pyobj(b: &mut FnB, t: Typed) -> String {
                 "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* {})", c, r));
             format!("%\"{}\"", c)
         }
-        other => bail(&format!("pyobj coercion in {}: {:?}",
-            CUR_FN.with(|f| f.borrow().clone()), other)),
     }
 }
 
@@ -7316,7 +7305,7 @@ fn to_raw(b: &mut FnB, t: Typed) -> String {
     }
 }
 
-fn pystr_of(b: &mut FnB, t: &Typed) -> (String, bool) {
+fn pystr_of(_b: &mut FnB, t: &Typed) -> (String, bool) {
     match t {
         Typed::PStr(r) | Typed::Pyo(r) => (r.clone(), true), // pystr: needs to_rawstr
         Typed::Str(r) | Typed::Inst(r) => (r.clone(), false), // already raw
@@ -7571,7 +7560,7 @@ fn infer_ret_of(e: &Val, binds: &[(String, String)]) -> String {
         "list" => {
             let items = e.get(1).items();
             let computed = items.iter().any(|el| el.head() != "const");
-            if computed && items.iter().all(|el| is_str_expr(el)) {
+            if computed && items.iter().all(is_str_expr) {
                 "list:str".into()
             } else { "pyobj".into() }
         }
@@ -8549,7 +8538,7 @@ fn main() {
         if let Val::List(items) = v {
             if v.head() == "match_class" {
                 let cn = v.get(1).get(1).str_of();
-                if !DYN_CLASSES.with(|d| d.borrow().iter().any(|x| *x == cn)) {
+                if !DYN_CLASSES.with(|d| d.borrow().contains(&cn)) {
                     DYN_CLASSES.with(|d| d.borrow_mut().push(cn));
                 }
             }
@@ -8629,7 +8618,7 @@ fn main() {
             let mut added = false;
             for fd in fdefs.iter() {
                 let nm = fd.get(1).str_of();
-                if PY_RETS.with(|r| r.borrow().iter().any(|x| *x == nm)) {
+                if PY_RETS.with(|r| r.borrow().contains(&nm)) {
                     continue;
                 }
                 let is_py_ret = infer_ret(&fd.get(3).items(),
@@ -8642,10 +8631,9 @@ fn main() {
             // propagate: bodies whose returns call PY_RETS functions
             for fd in fdefs.iter() {
                 let nm = fd.get(1).str_of();
-                if PY_RETS.with(|r| r.borrow().iter().any(|x| *x == nm)) {
+                if PY_RETS.with(|r| r.borrow().contains(&nm)) {
                     continue;
                 }
-                let mut hits_py_call = false;
                 fn walk_ret(v: &Val, py: &[String]) -> bool {
                     if let Val::List(items) = v {
                         if v.head() == "return" {
@@ -8661,7 +8649,7 @@ fn main() {
                     false
                 }
                 let pys = PY_RETS.with(|r| r.borrow().clone());
-                hits_py_call = walk_ret(fd, &pys);
+                let hits_py_call = walk_ret(fd, &pys);
                 if hits_py_call {
                     PY_RETS.with(|r| r.borrow_mut().push(nm.clone()));
                     added = true;
@@ -8746,12 +8734,8 @@ fn main() {
     for fd in &func_defs {
         out.push_str(&convert_func(fd));
     }
-    unsafe {
-        let mo = MAIN_OUT.as_ref().unwrap();
-        let has_user_main = FUNC_DEFS.with(|f| f.borrow().iter()
-            .any(|fd| fd.get(1).str_of() == "main"));
-        out.push_str(mo);
-    }
+    let mo = MAIN_OUT.with(|m| m.borrow().clone()).unwrap();
+    out.push_str(&mo);
     // tail globals: strict creation order (strings and vars interleaved)
     TAIL.with(|t| {
         let all = t.borrow();

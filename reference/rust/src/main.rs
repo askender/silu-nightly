@@ -61,15 +61,11 @@ impl Val {
     fn str_or(&self) -> Option<String> {
         match self { Val::Str(s) => Some(s.clone()), _ => None }
     }
-    fn push(&mut self, x: Val) {
-        if let Val::List(v) = self { v.push(x); }
-    }
 }
 
 fn n0(head: &str) -> Val { Val::node(head, vec![]) }
 fn ns2(a: &str, b: Val) -> Val { Val::node(a, vec![b]) }
 fn ns3(a: &str, b: Val, c: Val) -> Val { Val::node(a, vec![b, c]) }
-fn ns4(a: &str, b: Val, c: Val, d: Val) -> Val { Val::node(a, vec![b, c, d]) }
 
 // ---------- lexer ----------
 
@@ -1810,7 +1806,7 @@ fn fe_expand_imports(modv: Val, seen: &mut Vec<String>, stack: &mut Vec<String>,
     fe_hoist_nested(mod2, seen, stack, alias_names, alias_exports)
 }
 
-fn fe_load_splice(path: &str, nm: &str, seen: &mut Vec<String>, stack: &mut Vec<String>,
+fn fe_load_splice(path: &str, nm: &str, seen: &mut Vec<String>, stack: &mut [String],
                   alias_names: &mut Vec<String>, alias_exports: &mut Exports) -> Vec<Val> {
     let mut stmts: Vec<Val> = Vec::new();
     if stack.iter().any(|s| s == path) {
@@ -1819,7 +1815,7 @@ fn fe_load_splice(path: &str, nm: &str, seen: &mut Vec<String>, stack: &mut Vec<
     }
     if !seen.iter().any(|s| s == path) {
         seen.push(path.to_string());
-        let mut nstack = stack.clone();
+        let mut nstack = stack.to_vec();
         nstack.push(path.to_string());
         let mut sub = parse_file_module(path);
         sub = fe_expand_imports(sub, seen, &mut nstack, alias_names, alias_exports);
@@ -1929,7 +1925,7 @@ fn fe_subst_pass_stmt(st: &Val, consumed: &[Val]) -> Val {
     st.clone()
 }
 
-fn fe_hoist_nested(modv: Val, seen: &mut Vec<String>, stack: &mut Vec<String>,
+fn fe_hoist_nested(modv: Val, seen: &mut Vec<String>, stack: &mut [String],
                    alias_names: &mut Vec<String>, alias_exports: &mut Exports) -> Val {
     let stmts = body_list(&modv.get(1));
     let mut inserts: Vec<Vec<Val>> = Vec::new();
@@ -2042,12 +2038,9 @@ fn fe_rewrite_aliases(node: &Val, alias_names: &[String], alias_exports: &Export
 
 struct HG {
     prefix: String,
-    cls_name: String,
-    is_method: bool,
     ren_src: Vec<String>,
     ren_dst: Vec<String>,
     counter: i64,
-    globals: Vec<String>,
     locals: Vec<String>,
 }
 
@@ -2290,12 +2283,9 @@ fn hoist_def(func_def: &Val, cls_name: &str, is_method: bool,
     hoist_collect_assigned(&func_def.get(3), &mut g_locals);
     let mut g = HG {
         prefix: prefix.clone(),
-        cls_name: cls_name.to_string(),
-        is_method,
         ren_src: Vec::new(),
         ren_dst: Vec::new(),
         counter: 0,
-        globals: global_names.to_vec(),
         locals: g_locals,
     };
     let mut hoisted: Vec<Val> = Vec::new();
@@ -2404,9 +2394,8 @@ fn hoist_module(modv: &Val) -> Val {
     for st in &stmts {
         if st.is_node() {
             let h = st.head();
-            if h == "func_def" || h == "class_def" {
-                global_names.push(st.get(1).as_str());
-            } else if h == "assign" || h == "ann_assign" {
+            if h == "func_def" || h == "class_def"
+                || h == "assign" || h == "ann_assign" {
                 global_names.push(st.get(1).as_str());
             }
         }
