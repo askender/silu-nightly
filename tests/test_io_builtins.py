@@ -8,7 +8,6 @@ able to read its source.
 
 import ast
 import io
-import json
 import shutil
 import subprocess
 import sys

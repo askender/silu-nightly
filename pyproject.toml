@@ -39,6 +39,19 @@ selfhost = ["*.si"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.ruff]
+# The .si sources are the Python-syntax subset the self-hosting
+# compiler consumes - lint them with the same contract (ruff parses
+# them as Python; the file extension is the only difference)
+extend-include = ["selfhost/*.si", "tools/*.si"]
+extend-exclude = [
+    "aok",           # historical experiment tree (AGENTS: do not clean)
+    ".attic",
+    "get_case_divide_by_zero.py",   # repo-root legacy probes
+    "get_ret_from_json.py",
+    "get_ret_from_json_debug.py",
+]
+
 [tool.ruff.lint]
 # Keep the lint contract explicit: an unconstrained new Ruff release
 # must not silently turn a working development tree into a red CI gate.
@@ -46,6 +59,24 @@ select = ["E4", "E7", "E9", "F"]
 # F403/F405: star imports are the dual-valid single-source pattern
 # (typed_helpers.__all__ feeds the converter family; flatten inlines it)
 ignore = ["F403", "F405"]
+
+[tool.ruff.lint.per-file-ignores]
+# selfhost .si sources: the wrapper injects I/O primitives (read_stdin/
+# write_stdout/file_exists) and the .si conversion injects Enum - ruff
+# cannot see the injected prelude (F821); import placement and duplicate
+# defs follow the .si conversion conventions (E402/F811); slice-use and
+# reassignment patterns trip the F841 data-flow heuristic. The unused
+# module imports (F401) are the .si runtime dependencies the conversion
+# maps - not dead code.
+"selfhost/*.si" = ["F821", "E402", "F811", "F401", "F841", "E741"]
+"tools/*.si" = ["E741", "F821"]
+"test_examples/*" = ["E731"]
+# tests: cosmetic patterns (mid-file imports for the fixture ordering,
+# assigned-but-unused locals kept for the doc value)
+"tests/test_conditional_expressions.py" = ["E402"]
+"tests/test_strbuf.py" = ["F841"]
+"tests/test_symbolic_executor.py" = ["F841"]
+"tests/test_typed_codegen.py" = ["F841"]
 
 [tool.coverage.run]
 # subprocess coverage: pytest-cov sets COVERAGE_PROCESS_START, the

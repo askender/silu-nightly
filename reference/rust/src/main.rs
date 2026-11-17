@@ -123,10 +123,10 @@ impl Lexer {
         }
     }
     fn is_name_start_cp(&self, c: i64) -> bool {
-        (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95
+        (97..=122).contains(&c) || (65..=90).contains(&c) || c == 95
     }
     fn is_name_char_cp(&self, c: i64) -> bool {
-        self.is_name_start_cp(c) || (c >= 48 && c <= 57)
+        self.is_name_start_cp(c) || (48..=57).contains(&c)
     }
     fn slice(&self, a: usize, b: usize) -> String {
         self.src[a..b].iter().collect()
@@ -182,7 +182,7 @@ impl Lexer {
             let kind = if KW.contains(&text.as_str()) { TokKind::Kw } else { TokKind::Name };
             return Token { kind, text, line, col };
         }
-        if c >= 48 && c <= 57 {
+        if (48..=57).contains(&c) {
             let start = self.pos;
             let nxt = self.peek2_cp();
             if c == 48 && (nxt == 120 || nxt == 88) {
@@ -190,7 +190,7 @@ impl Lexer {
                 self.advance();
                 while self.pos < self.src.len() {
                     let d = self.peek_cp();
-                    if (d >= 48 && d <= 57) || (d >= 97 && d <= 102) || (d >= 65 && d <= 70) {
+                    if (48..=57).contains(&d) || (97..=102).contains(&d) || (65..=70).contains(&d) {
                         self.advance();
                     } else { break; }
                 }
@@ -201,7 +201,7 @@ impl Lexer {
                 self.advance();
                 while self.pos < self.src.len() {
                     let d = self.peek_cp();
-                    if (d >= 48 && d <= 57) || d == 95 {
+                    if (48..=57).contains(&d) || d == 95 {
                         self.advance();
                     } else { break; }
                 }
@@ -211,7 +211,7 @@ impl Lexer {
             let mut seen_exp = false;
             while self.pos < self.src.len() {
                 let d = self.peek_cp();
-                if (d >= 48 && d <= 57) || d == 95 {
+                if (48..=57).contains(&d) || d == 95 {
                     self.advance();
                 } else if d == 46 && !seen_dot && !seen_exp && self.peek2_cp() != 46 {
                     seen_dot = true;
@@ -310,9 +310,9 @@ fn tokenize(src: &str) -> Vec<Token> {
 
 fn hex_val(ch: char) -> i64 {
     let o = ch as i64;
-    if o >= 48 && o <= 57 { return o - 48; }
-    if o >= 97 && o <= 102 { return o - 87; }
-    if o >= 65 && o <= 70 { return o - 55; }
+    if (48..=57).contains(&o) { return o - 48; }
+    if (97..=102).contains(&o) { return o - 87; }
+    if (65..=70).contains(&o) { return o - 55; }
     -1
 }
 
@@ -369,12 +369,12 @@ fn unescape(s: &str) -> String {
                 }
                 _ => {
                     let o8 = nxt as i64;
-                    if o8 >= 48 && o8 <= 55 {
+                    if (48..=55).contains(&o8) {
                         let mut val8 = o8 - 48;
                         let mut cnt8 = 1usize;
                         while cnt8 < 3 && i + cnt8 + 1 < n {
                             let d8 = src[i + cnt8 + 1] as i64;
-                            if d8 >= 48 && d8 <= 55 {
+                            if (48..=55).contains(&d8) {
                                 val8 = val8 * 8 + (d8 - 48);
                                 cnt8 += 1;
                             } else { break; }
@@ -1361,11 +1361,10 @@ impl Parser {
                     if self.cur().text != ":" && self.cur().text != "]" {
                         hi = self.parse_expr_nt();
                     }
-                    if self.accept(":") {
-                        if self.cur().text != "]" {
+                    if self.accept(":")
+                        && self.cur().text != "]" {
                             step = self.parse_expr_nt();
                         }
-                    }
                     self.expect("]");
                     node = Val::node("subscript",
                                      vec![node, Val::node("slice", vec![lo, hi, step])]);
@@ -1386,11 +1385,10 @@ impl Parser {
                         if self.cur().text != ":" && self.cur().text != "]" {
                             hi2 = self.parse_expr_nt();
                         }
-                        if self.accept(":") {
-                            if self.cur().text != "]" {
+                        if self.accept(":")
+                            && self.cur().text != "]" {
                                 step2 = self.parse_expr_nt();
                             }
-                        }
                         self.expect("]");
                         node = Val::node("subscript",
                                          vec![node, Val::node("slice", vec![lo2, hi2, step2])]);
@@ -2064,11 +2062,10 @@ fn hg_lookup(g: &HG, name: &str) -> String {
 
 fn hoist_mentions(node: &Val, name: &str) -> bool {
     if node.is_scalar() { return false; }
-    if node.is_node() {
-        if node.head() == "name" && node.len() == 2 && node.get(1).as_str() == name {
+    if node.is_node()
+        && node.head() == "name" && node.len() == 2 && node.get(1).as_str() == name {
             return true;
         }
-    }
     body_list(node).iter().any(|c| hoist_mentions(c, name))
 }
 
@@ -2076,11 +2073,10 @@ fn hoist_calls_one_of(node: &Val, names: &[String]) -> bool {
     if node.is_scalar() { return false; }
     if node.is_node() && node.head() == "call" {
         let callee = node.get(1);
-        if callee.is_node() && callee.head() == "name" {
-            if hg_in_list(names, &callee.get(1).as_str()) {
+        if callee.is_node() && callee.head() == "name"
+            && hg_in_list(names, &callee.get(1).as_str()) {
                 return true;
             }
-        }
     }
     body_list(node).iter().any(|c| hoist_calls_one_of(c, names))
 }
@@ -2166,15 +2162,14 @@ fn hoist_collect_assigned(stmts: &Val, sink: &mut Vec<String>) {
 
 fn hoist_free_names(node: &Val, out: &mut Vec<String>) {
     if node.is_scalar() { return; }
-    if node.is_node() {
-        if node.head() == "name" && node.len() == 2 {
+    if node.is_node()
+        && node.head() == "name" && node.len() == 2 {
             let nm = node.get(1).as_str();
             if !hg_in_list(out, &nm) {
                 out.push(nm);
             }
             return;
         }
-    }
     for c in body_list(node) {
         hoist_free_names(&c, out);
     }
@@ -2184,15 +2179,14 @@ fn hoist_insert_self(body: &Val, needing: &[String]) -> Val {
     if body.is_scalar() { return body.clone(); }
     if body.is_node() && body.head() == "call" {
         let callee = body.get(1);
-        if callee.is_node() && callee.head() == "name" {
-            if hg_in_list(needing, &callee.get(1).as_str()) {
+        if callee.is_node() && callee.head() == "name"
+            && hg_in_list(needing, &callee.get(1).as_str()) {
                 let mut new_args = vec![ns2("name", Val::s("self"))];
                 for a in body_list(&body.get(2)) {
                     new_args.push(hoist_insert_self(&a, needing));
                 }
                 return Val::node("call", vec![callee, Val::List(new_args), body.get(3)]);
             }
-        }
     }
     if body.is_node() {
         let mut out2 = vec![Val::s(body.head())];
@@ -2319,12 +2313,11 @@ fn hoist_def(func_def: &Val, cls_name: &str, is_method: bool,
         changed = false;
         for h2 in &hoisted {
             let mangled = h2.get(1).as_str();
-            if !hg_in_list(&needing, &mangled) {
-                if hoist_calls_one_of(&h2.get(3), &needing) {
+            if !hg_in_list(&needing, &mangled)
+                && hoist_calls_one_of(&h2.get(3), &needing) {
                     needing.push(mangled);
                     changed = true;
                 }
-            }
         }
     }
 

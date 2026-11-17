@@ -4,7 +4,6 @@ key routing, str slicing on promoted strings). Every case is checked
 against the IR interpreter - the reference semantics.
 """
 
-import pytest
 
 from tests.test_str_builtins import run_ir, run_mcjit
 

@@ -17,7 +17,8 @@ def check_all_planes(source: str, expected: str):
     )
     assert r.returncode == 0, r.stderr
     assert r.stdout == expected
-    import tempfile, os
+    import tempfile
+    import os
 
     ir = subprocess.run(
         [PY, "-m", "silu", "ir", "--source", source, "--format", "json"],

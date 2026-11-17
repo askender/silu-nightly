@@ -47,7 +47,6 @@ TOOLS = {
 
 def build_tool(name):
     """One selfhost tool -> wasm64 (compiler .ll via the Python planes)."""
-    import re
 
     os.makedirs(ART, exist_ok=True)
     src = TOOLS[name] if os.path.isabs(TOOLS[name]) else os.path.join(REPO, TOOLS[name])

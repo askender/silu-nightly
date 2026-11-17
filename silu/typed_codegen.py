@@ -5300,6 +5300,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self._scan_calls(child, calls)
 
     def _rawstr_finish(self, temp, result):
+        import os as _os
+        if _os.environ.get("SILU_TRACE_CONCAT"):
+            print("FINISH temp=", "None" if temp is None else temp.name,
+                  flush=True)
         if temp is not None:
             self.current_builder.call(self.rawstr_free, [temp])
         return result
@@ -6630,6 +6634,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 joined = self.current_builder.call(
                     self.rawlist_str_join, [parts_tv[1], s_ptr]
                 )
+                # P9: a receiver that arrived as an obj->rawstr coercion
+                # temp is owned by this statement - free it once the
+                # join has copied the bytes (the separator dies with
+                # the joined allocation)
+                if s_ptr.name in self._owned_str_fresh:
+                    self._owned_fresh_del(self._owned_str_fresh, s_ptr.name)
+                    self.current_builder.call(self.rawstr_free, [s_ptr])
                 return self._rawstr_finish(temp, (RAWSTR, joined))
         return self._rawstr_finish(temp, None)
 

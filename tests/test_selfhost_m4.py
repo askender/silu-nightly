@@ -590,7 +590,8 @@ def test_m5_benchmarks_match_cpython(ir2c_bin):
         )
         assert c.returncode == 0, (f, c.stdout[:200])
         with tempfile.TemporaryDirectory() as td:
-            cf = os.path.join(td, "x.c"); bf = os.path.join(td, "x")
+            cf = os.path.join(td, "x.c")
+            bf = os.path.join(td, "x")
             with open(cf, "w") as h:
                 h.write(c.stdout)
             # generated benchmark C uses pow (nbody); Linux needs -lm

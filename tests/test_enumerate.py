@@ -7,7 +7,6 @@ bug that mis-kinded every parameter of _generate_dynamic_function_body
 in the self-hosted converter).
 """
 
-import pytest
 
 from tests.test_str_builtins import run_ir, run_mcjit
 

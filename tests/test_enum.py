@@ -6,15 +6,11 @@ Python's wrapped member objects.
 """
 
 import ast
-import io
 import json
-from contextlib import redirect_stdout
 
 import pytest
 
-from silu.interpreter import SiluInterpreter
 from silu.ir_generator import SiluIRGenerator
-from silu.ir_interpreter import IRInterpreter
 from silu.typed_codegen import TypedCodegen
 
 from tests.test_str_builtins import run_ast, run_ir, run_mcjit
