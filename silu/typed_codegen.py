@@ -5300,10 +5300,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self._scan_calls(child, calls)
 
     def _rawstr_finish(self, temp, result):
-        import os as _os
-        if _os.environ.get("SILU_TRACE_CONCAT"):
-            print("FINISH temp=", "None" if temp is None else temp.name,
-                  flush=True)
         if temp is not None:
             self.current_builder.call(self.rawstr_free, [temp])
         return result
@@ -6585,9 +6581,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 "(push/to_str only; convert with to_str() for str "
                 "operations)"
             )
-        import os as _os
-        if _os.environ.get("SILU_TRACE_CONCAT") and method_name == "join":
-            print("JOIN-ENTRY kind=", obj_tv[0], flush=True)
         s_ptr, temp = self._rawstr_operand(obj_tv)
 
         if method_name == "strip" and not args_node:
@@ -9531,8 +9524,24 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     )
 
                 if is_str_const(node[1]) or is_str_const(node[2]):
+                    l_view = left[0] == RAWCHAR_VIEW
+                    r_view = right[0] == RAWCHAR_VIEW
                     left = self._coerce(left, RAWSTR)
                     right = self._coerce(right, RAWSTR)
+                    # P9: a view operand's char1 was coerced here, ahead
+                    # of the concat arm's temp-return - register it so
+                    # the arm's owned-pass frees it once the concat has
+                    # copied the bytes (user phase only, mirroring the
+                    # _unbox registration gate)
+                    if self._owned_user_phase == 1:
+                        if l_view:
+                            self._owned_fresh_add(
+                                self._owned_str_fresh, left[1].name
+                            )
+                        if r_view:
+                            self._owned_fresh_add(
+                                self._owned_str_fresh, right[1].name
+                            )
             return self._typed_binop(op, left, right)
 
         if op in ("==", "!=", "<", "<=", ">", ">="):

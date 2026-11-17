@@ -126,6 +126,22 @@ class TypedCallMixin:
                             self.current_builder.call(
                                 self.rawstr_free, [arg_tv[1]]
                             )
+                    # P9: the arg's pystr->rawstr coercion temp (const /
+                    # str() / dynamic pyobj sources) or char1 view temp
+                    # dies with the push too. Only when the KIND had to
+                    # convert: a RAWSTR arg's _coerce result is the
+                    # rawstr_copy the list now owns - freeing it would
+                    # corrupt the list
+                    if arg_tv[0] != RAWSTR:
+                        en = elem[1].name
+                        if en != arg_tv[1].name:
+                            if en in self._owned_str_fresh:
+                                self._owned_fresh_del(
+                                    self._owned_str_fresh, en
+                                )
+                            self.current_builder.call(
+                                self.rawstr_free, [elem[1]]
+                            )
                 else:
                     elem_bits = elem[1]
                     if elem_kind == F64:

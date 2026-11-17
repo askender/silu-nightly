@@ -3231,6 +3231,12 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                         if args.len() != 1 { bail("append arity"); }
                         let av = eval_mod(b, &args[0], &fs);
                         let needs_copy = matches!(&av, Typed::Str(_) | Typed::Inst(_));
+                        // P9: the arg's pystr->rawstr coercion temp (the
+                        // PStr consts / str() calls too, not just the
+                        // Pyo dynamic sources) and the char1 view temps
+                        // die once the push has copied the bytes -
+                        // matching the Python twin's name-diff free
+                        let coerced = matches!(&av, Typed::PStr(_) | Typed::Pyo(_));
                         let r = to_raw(b, av);
                         // P9: the ORIGINAL (pre-copy) value is the
                         // registered owned temp - the push copies it,
@@ -3247,8 +3253,24 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                         b.line(format!(
                             "  %\"{}\" = call i64 @\"rawlist_str_push\"(i8* {}, i8* {})",
                             c, list, r));
-                        if orig_owned {
-                            maybe_free_owned(b, &orig);
+                        if coerced {
+                            CONCAT_TEMPS
+                                .with(|t| t.borrow_mut().retain(|x| x != &orig));
+                            b.silent();
+                            b.line(format!(
+                                "  call void @\"rawstr_free\"(i8* {})", orig));
+                        } else {
+                            let view_temp = TEMP_STRS
+                                .with(|t| t.borrow().iter().any(|x| x == &orig));
+                            if view_temp {
+                                TEMP_STRS
+                                    .with(|t| t.borrow_mut().retain(|x| x != &orig));
+                                b.silent();
+                                b.line(format!(
+                                    "  call void @\"rawstr_free\"(i8* {})", orig));
+                            } else if orig_owned {
+                                maybe_free_owned(b, &orig);
+                            }
                         }
                     } else {
                     let fs = F_SLOTS.with(|f| f.borrow().clone());
@@ -3292,6 +3314,10 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                     }
                     // str append: to_raw, copy only an existing rawstr
                     let needs_copy = matches!(&v, Typed::Str(_) | Typed::Inst(_));
+                    // P9: the arg's pystr->rawstr coercion temp (PStr
+                    // consts / str() calls too) and char1 view temps die
+                    // with the push - matching the Python twin
+                    let coerced = matches!(&v, Typed::PStr(_) | Typed::Pyo(_));
                     let r = to_raw(b, v);
                     let orig_owned = maybe_free_owned_probe(b, &r);
                     let orig = r.clone();
@@ -3305,8 +3331,24 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                     b.line(format!(
                         "  %\"{}\" = call i64 @\"rawlist_str_push\"(i8* %\"{}\", i8* {})",
                         c, l, r));
-                    if orig_owned {
-                        maybe_free_owned(b, &orig);
+                    if coerced {
+                        CONCAT_TEMPS
+                            .with(|t| t.borrow_mut().retain(|x| x != &orig));
+                        b.silent();
+                        b.line(format!(
+                            "  call void @\"rawstr_free\"(i8* {})", orig));
+                    } else {
+                        let view_temp = TEMP_STRS
+                            .with(|t| t.borrow().iter().any(|x| x == &orig));
+                        if view_temp {
+                            TEMP_STRS
+                                .with(|t| t.borrow_mut().retain(|x| x != &orig));
+                            b.silent();
+                            b.line(format!(
+                                "  call void @\"rawstr_free\"(i8* {})", orig));
+                        } else if orig_owned {
+                            maybe_free_owned(b, &orig);
+                        }
                     }
                 } else if elem == "float" {
                     let r = to_f64(b, v);
@@ -6790,10 +6832,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             b.line(format!(
                 "  %\"{}\" = call i8* @\"rawstr_concat\"(i8* {}, i8* {})",
                 cc, lr, rr));
-            let pause_any = pause_lhs || pause_rhs;
-            let ltemp = (lpy && !pause_any)
+            // P9: the lpy/rpy suppression is PER-SIDE - a paused operand
+            // is the SSA view struct (not a heap temp, must not free),
+            // but the OTHER side's coercion temp still dies here
+            // (json_quote evidence: the const's pystr_to_rawstr leaked
+            // under the old !pause_any gate)
+            let ltemp = (lpy && !pause_lhs)
                 || TEMP_STRS.with(|t| t.borrow().iter().any(|r| r == &lr));
-            let rtemp = (rpy && !pause_any)
+            let rtemp = (rpy && !pause_rhs)
                 || TEMP_STRS.with(|t| t.borrow().iter().any(|r| r == &rr));
             // P9: the Python twin frees in TWO passes inside the raw
             // arm (raw_arm: both-pyo shapes take the pyobj path

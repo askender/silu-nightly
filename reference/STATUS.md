@@ -840,6 +840,70 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   可重放；剩余工作（.si 表达性已解：plain int 属性/模块级旗；两遍
   free 结构；Pyo-only 注册；push/join/call/compare 逐 consume 站点）
   = 一次原子实施，预计一轮内收口。
+  **第六轮落地（2026-11-18，commit 60ced6d 已推 nightly）——join
+  consume 站点 + 探针入仓，泊车态 ll 21/22**：①join 臂修复落地。此前
+  patch 曾把 `joined = call(rawlist_str_join,…)` 赋值行整个替换掉
+  （NameError 崩溃的直接根因，也解释了 Python 侧 join free"缺失"——
+  join 调用本身没发射）；恢复赋值 + 接收者 obj→rawstr coercion 临时
+  在 join 后释放（_rawstr_finish 机制性 free temp；obj 域接收者的
+  分歧闭合）。②to_raw Pyo-only 注册 + pass-1 CONCAT_TEMPS retain
+  （P9_DEBUG 实证 pass1 free 后集合仍含条目 → pass2 双 free，retain
+  修复）。③concat_chain.si（链式 concat 所有权探针，CPython 验证）
+  入仓：ir 23/23、ll 语料 22。④**当前门禁态**：ll 21/22（唯 silu_fe）、
+  ir 23/23、irvm 10/10×2、corpus 16/16、ruff 净、pytest 子集全绿；
+  RSS 复测 1.15MB（修复前 6.1MB）。
+  **silu_fe 残差定性（hunk 级分析，difflib 全量）**：frees
+  py 240 / rs 246（Rust 多 6），260 个 hunk，delta 形态 = +1/-1 位置对
+  （同一 free 的顺序漂移）+ -2/-2/-1/-1/-3 簇（Rust 额外 free）——
+  **系统性形状类**而非逐 hunk 可修：char-pair pause free（Rust pause
+  路径释放 char1+left，Python 经 temp-return/pause 路径泄漏）、
+  push-orig 捕获、join 分隔符、free 落块归属。**kind 词汇表映射（下轮
+  实施地基）**：Python OBJ→_unbox→pystr_to_rawstr = 注册+释放；
+  PStr/pystr 值 = RAWSTR-with-pystr-value 借用类 = 不注册；raw_arm =
+  not-both-Pyo（pyobj 形状走 pyobj 路径）。**下轮规格**：先逐函数
+  free 归因（P9_DEBUG/trace 定位 6 个额外 free 的函数与形状）→ Python
+  侧 pause 路径补注册+释放（正当性：char1 在 concat 后即死）或 Rust
+  侧 !pause_any 门控 → 全门禁 → RSS 复测 → 重钉。
+  **教训（本轮新增）**：槽号 pattern 是 `%"\.(\d+)"`（bisect 脚本曾写
+  `="\.(\d+)"` 匹配全空）；发射关键文件内仪器化只许 stderr（clippy
+  --fix 曾位移 .ll 发射 21→20，checkout 回退）；stale-anchor 空写的
+  对策 = 写前 assert 文件实际状态。
+  **第七轮（2026-11-18）——ll 22/22 收口 ✓ 残差全归因 + 三点对齐**：
+  ①**归因方法论**：free 的槽号多重集比对被 free 自身占槽导致的漂移污染
+  （free 一多，后续全部槽号错位）——**形状序列比对**（每个 freed 操作数
+  回溯其定义形态：COERCE/CONCAT/COPY/CHAR1/LOAD:var，平移不变）才是可
+  靠工具；difflib operand 级对齐定性残差。**结论推翻前几轮的形状猜想**：
+  6 个额外 free 全部 = **push 参数 coercion 临时**（.30/.191/.226/.336/
+  .363/.824，喂 rawlist_str_push 的 pystr_to_rawstr 结果），json_quote
+  的差异 = **集合交换**（py free coercion 泄漏 char1，rs free char1 泄漏
+  coercion，计数相等净零）——char-pair/join/free-落块 猜想全部排除。
+  ②**根因链**：py 的 const 融合预 coerce（typed_codegen 9521-9535）在
+  _typed_binop 之外把双操作数 coerce 成 (RAWSTR,…) → concat 臂的
+  _rawstr_operand 双双走借用分支 → 左（OBJ→_unbox 注册 ✓ owned-pass
+  释放）与右（view→char1 未注册 = 泄漏）；rs 对称地 free char1
+  （TEMP_STRS）泄漏 PStr coercion（const=PStr 不注册 + 旧 !pause_any
+  门把非暂停侧的 lpy 释放也压掉）。push 侧：rs 释放 Pyo 域 coercion
+  （CONCAT_TEMPS 注册→orig_owned），py 的 cleanup 只查 arg_tv[0]==RAWSTR
+  漏掉 OBJ 实参的 coercion。
+  ③**修复（三点，全绿验证）**：py push 臂 kind 门释放（arg_tv[0]!=RAWSTR
+  且 SSA 名变——**RAWSTR 实参的 _coerce 结果是 list 持有的 rawstr_copy，
+  释放它 = use-after-free，第一版曾自伤，kind 门保护**）；py 预 coerce
+  处 view→char1 相位门注册（concat 臂 owned-pass 释放，顺序
+  [coercion, char1] 与 rs pass-1 逐侧门一致）；rs `!pause_any` 改逐侧
+  （!pause_lhs/!pause_rhs——暂停侧是 SSA view 结构体非堆临时，非暂停侧
+  的 coercion 照常释放）+ **两个 push 站点**（3230 方法臂 + 3308 通用臂
+  ——只改一个曾致 ir_interp 反向分歧）扩展 coerced/view_temp 释放。
+  ④**仪器化退役**：SILU_TRACE_CONCAT（import os as _os）让新编 siluc1
+  运行时读未定义全局 `_os`（FE 对函数级 import 是 no-op）——**fresh
+  toolchain 自仪器化引入后首次可构建**；此前仓库根二进制是仪器化之前的
+  旧物（前轮门禁跑的是旧 py 平面！）。两处 trace 块摘除（纯 stderr 诊断
+  零 .ll 影响）。**教训：调试仪器化必须随调试结束立即退役**；py 双平面
+  改动后必须重建自举孪生并重发布仓库根二进制（内容键指纹会自动换目录，
+  但仓库根拷贝是手工步骤）。
+  ⑤**门禁（全绿）**：ll **22/22**（silu_fe 首次逐字节）、ir 23/23、
+  pytest **1374 通过/3 跳过**、corpus 16/16、irvm 10/10×2、backend
+  18/18、wat2wasm 35/35、run 4/18+14 loud、ruff 净、**RSS 1.15MB**
+  （30 万次链式 concat，修复前 6.1MB）。P9 ll 平面收口；剩余：版本重钉。
   **第四轮（同日，推进到 19/21 后回退）——两张决定性地图**：
   ①**两遍 free 结构**（Python 臂的真实形态）：pass 1 = coerced temps
   （a_temp/b_temp：to_raw 强制临时 + char1 视图）按操作数序；pass 2 =
