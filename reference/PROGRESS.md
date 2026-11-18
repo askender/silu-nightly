@@ -502,7 +502,7 @@ strbuf 方案曾使其段错误）。
    importer.expand_imports_tree 入口 tokenize 扫描拒绝 `;` 语句分隔
    （字符串/注释免疫）；自举/Rust 前端本就拒绝。tests/test_semicolon_rejected.py。
 
-### Oracle 未钉形状清单（2026-11-09 逐探针实证，g1-g12）
+### Oracle 未钉形状清单（2026-11-18 重普查更新；原始 2026-11-09 实证 g1-g12）
 
 探针法：`siluc1 < gN.si`（Python 平面，恒 rc=0）vs `silu-conv gN.si`，
 比 rc 与（rc=0 时）规范化后字节。**本轮已钉**：表达式内 `b.to_str()`
@@ -519,6 +519,27 @@ strbuf 方案曾使其段错误）。
 | 6 | `d.setdefault(k,v)` | g7 bail "method base type" | dict 方法族未注册 |
 | 7 | dict[int,*] 存储路径 | g9 rc=0 但 25 行分歧 | 待逐形状细分（get/set 字面量已钉，store 组合有分歧） |
 | 8 | l.pop/l.clear/x in list/d.pop/d.clear/to_pylist/to_pydict | 运行时 47 函数仅 16 被引用普查 | 由 3/6 连锁；补齐需配套语料文件 |
+
+### 2026-11-18 重普查（g-探针复跑，双平面 rc + 字节）
+
+**语言面（Python 平面 + native 产品链）已大幅前进**：g3 族（非空列表
+字面量 int/str、append、len、下标）在 Python 平面早已支持；本轮把
+Oracle 面补齐——**`x in list` membership（rawlist_contains_bits /
+rawlist_str_contains，in/not-in、const/var/loop-var 实参）、模块级
+list[str] 字面量、list:str 调用实参（装箱 + pylist_to_rawlist_str）**
+全部字节对齐；**连带修复全局容器名 eval 的错误类型读**（eval_expr 与
+eval_mod 的 name 臂原把 LST_SLOTS/DCT_SLOTS 全局落到 i64 兜底 load，
+现按 i8* 槽读 + Typed::Inst，与 py 的 `load i8*, i8** @"name"` 一致）。
+新语料钉板 benchmarks/list_ops.si（ll 24/24、ir 25/25、CPython 对拍
+1/2/1/2/4/4/7 一致）。**仍未钉（全部响亮 bail = 纪律内 ERROR）**：
+g1（ctor 实参走 str-only to_raw 撞 I64）、g9（dict[int,*] store 同
+类）、g5 pop / clear（语句级方法臂只有 append；模块级与函数内皆
+bail）、g6/g7（dict 方法族）、join 的 str 参数接收者（`sep.join(parts)`
+中 sep 为函数参数）。g2（模块级注解实例赋值）与 g4（链式构造）未复验。
+**隐式规约新增**：membership 实参的 str-coercion 临时**两平面一致
+泄漏**（py 的 _typed_contains RAWLIST_S 臂不释放——P9 consume 站点
+在 list-contains 处两侧同开同漏，字节对齐；如未来补齐须双平面同
+commit）。
 
 ### 1.18.1 追记：m8 中间态回归（355s→0.52s）与孪生双循环
 

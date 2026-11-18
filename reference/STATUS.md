@@ -967,6 +967,36 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   已关闭；②TODO #2 的 pytest 竞态——flock（build_lock）+ os.replace
   原子落位早已在 tools/selfhost_build.py 落地，条目改 ✅。
 
+## 三点二十四、Oracle membership 族补齐 + 全局容器名 eval 修复（2026-11-18）
+
+- **g3 族 Oracle 面字节对齐（语料压力 T3 触发）**：g-探针复跑发现
+  语言面（py 平面 + native）早已支持非空列表字面量族，唯 Oracle 落后。
+  补齐三处：①**`x in list` membership**（eval_i1 的 in/not-in 臂：
+  int/float 走 rawlist_contains_bits 位比对（bool zext/f64 bitcast），
+  str 走 rawlist_str_contains；实参 coercion 临时**两平面一致泄漏**
+  ——py 的 _typed_contains RAWLIST_S 臂本就不释放）；②模块级
+  list[str] 字面量（ann_assign 循环补 str 臂：to_raw +
+  rawlist_str_push，同样对齐泄漏）；③**list:str 调用实参**（py 按
+  **实参位置类型**分派装箱 build + pylist_to_rawlist_str，rs 原按
+  callee 返回类型分派——probe(["alpha","beta"]) 形态对齐）。
+- **连带修复：全局容器名 eval 错误类型读**：eval_expr 与 eval_mod
+  的 name 臂都把 LST_SLOTS/DCT_SLOTS 全局落到 **i64 兜底 load**（裸
+  读一个 i8* 槽当 i64）——补 LST_SLOTS||DCT_SLOTS 臂（`load i8*` +
+  Typed::Inst），与 py 的发射一致。**教训：rs 有两个平行的 name-eval
+  （eval_expr + eval_mod 各一份完整分发）——改 name 语义必须两处同
+  改，漏一处 = 半数路径仍旧类型**。
+- **新语料**：benchmarks/list_ops.si（模块级 int 字面量 + append +
+  in/not-in（const/not-in/loop-var）+ 函数 list[str] 参数 + 函数内
+  append + list:str 调用实参 + 字面量 + 下标；CPython 对拍
+  1/2/1/2/4/4/7 一致）。ll **24/24**、ir **25/25**、corpus 计数 23、
+  native 输出 = CPython。PROGRESS g-清单 2026-11-18 重普查入档。
+- **仍未钉（响亮 bail = 纪律内）**：g1 ctor 列表实参（str-only
+  to_raw 撞 I64）、g9 dict[int,*] store（同类）、pop/clear 语句臂
+  （只有 append）、g6/g7 dict 方法族、join 的 str 参数接收者。
+- 三次自伤修正入档：membership 臂的调用格式缺类型前缀（`i64 2`/
+  `i8* %x`——py 的调用点逐参前缀）、`create_list()` 的括号进引号、
+  草稿残渣（b.pop_line 不存在）——每次都被探针字节 diff 当场抓获。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

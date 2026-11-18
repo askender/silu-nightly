@@ -1,0 +1,24 @@
+xs: list[int] = [1, 2, 3]
+xs.append(4)
+if 2 in xs:
+    print(1)
+if 9 not in xs:
+    print(2)
+i: int = 0
+while i < 3:
+    if i in xs:
+        print(i)
+    i += 1
+
+def probe(names: list[str]) -> int:
+    if "beta" in names:
+        names.append("gamma")
+    if "delta" not in names:
+        names.append("delta")
+    return len(names)
+
+print(probe(["alpha", "beta"]))
+print(xs[3])
+words: list[str] = ["alpha", "beta"]
+if "beta" in words:
+    print(7)

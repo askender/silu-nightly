@@ -1250,6 +1250,64 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
                 }
                 return format!("%\"{}\"", c);
             }
+            // rawlist membership: the container is a list slot (its
+            // load rides as Inst); int/float elems scan i64 bit
+            // patterns, str elems scan rawstr copies - the Python
+            // twin's _typed_contains list arms (g3 probe evidence).
+            // The item's str-coercion temp is NOT freed: the Python
+            // twin leaks it here too (byte-aligned; both planes would
+            // need to move together)
+            if e.get(2).head() == "name" {
+                let cn = e.get(2).get(1).str_of();
+                let is_list_slot =
+                    FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &cn))
+                    || LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &cn));
+                if is_list_slot {
+                    let d = match &dv {
+                        Typed::Inst(r) | Typed::Str(r) => r.clone(),
+                        _ => bail("list membership container"),
+                    };
+                    let elem = lst_elem_ty(&cn);
+                    let kv = eval_mod(b, &e.get(1), &fs);
+                    let arg = if elem == "str" {
+                        to_raw(b, kv)
+                    } else {
+                        match &kv {
+                            Typed::I64(r) => r.clone(),
+                            Typed::Bool(r) => {
+                                let z = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = zext i1 {} to i64", z, r));
+                                format!("%\"{}\"", z)
+                            }
+                            Typed::F64(r) => {
+                                let bt = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = bitcast double {} to i64", bt, r));
+                                format!("%\"{}\"", bt)
+                            }
+                            _ => bail(&format!("list membership item {} in {}: {:?}",
+                                elem, CUR_FN.with(|f| f.borrow().clone()), kv)),
+                        }
+                    };
+                    let c = b.nx();
+                    if elem == "str" {
+                        b.line(format!(
+                            "  %\"{}\" = call i1 @\"rawlist_str_contains\"(i8* {}, i8* {})",
+                            c, d, arg));
+                    } else {
+                        b.line(format!(
+                            "  %\"{}\" = call i1 @\"rawlist_contains_bits\"(i8* {}, i64 {})",
+                            c, d, arg));
+                    }
+                    if e.head() == "not in" {
+                        let x = b.nx();
+                        b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                        return format!("%\"{}\"", x);
+                    }
+                    return format!("%\"{}\"", c);
+                }
+            }
             let d = match dv {
                 Typed::Inst(r) | Typed::Str(r) => r,
                 _ => bail(&format!("membership container in {}: {:?}",
@@ -2103,6 +2161,15 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
                         b.line(format!(
                             "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 %\"{}\")",
                             pu, c, ib));
+                    } else if elem == "str" {
+                        // str elements: to_raw + rawlist_str_push; the
+                        // coercion temp is NOT freed - the Python twin's
+                        // literal builder leaks it too (byte-aligned)
+                        let r = to_raw(b, v);
+                        let pu = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i64 @\"rawlist_str_push\"(i8* %\"{}\", i8* {})",
+                            pu, c, r));
                     } else {
                         let Typed::I64(r) = v else { bail("elem type") };
                         let pu = b.nx();
@@ -5582,6 +5649,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     l, n));
                 return Typed::Pyo(format!("%\"{}\"", l));
             }
+            if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
+                || DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
+                // container globals: the slot is an i8* (raw list / dict
+                // pointer) - the old i64 fallback load was a wrong-type
+                // read (g3 probe evidence)
+                b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+                return Typed::Inst(format!("%\"{}\"", l));
+            }
             b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, n));
             Typed::I64(format!("%\"{}\"", l))
         }
@@ -6594,6 +6669,31 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     if a.head() == "list" {
                         let elems = a.items().get(1).cloned()
                             .unwrap_or(Val::Null);
+                        if ty == "list:str" {
+                            // str-typed callee param: boxed build then
+                            // pylist_to_rawlist_str (probe(["alpha",
+                            // "beta"]) evidence) - the Python twin keys
+                            // this on the PARAM type, not the callee ret
+                            let c = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call {{i32, i8*}}* @\"create_list\"()", c));
+                            if let Val::List(vs) = &elems {
+                                for el in vs.iter() {
+                                    let ev = eval_expr(b, el, slot_i, slot_f, fslots);
+                                    let s = to_pyobj(b, ev);
+                                    let ap = b.nx();
+                                    b.line(format!(
+                                        "  %\"{}\" = call {{i32, i8*}}* @\"list_append\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
+                                        ap, c, s));
+                                }
+                            }
+                            let rl = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"pylist_to_rawlist_str\"({{i32, i8*}}* %\"{}\")",
+                                rl, c));
+                            parts.push(format!("i8* %\"{}\"", rl));
+                            continue;
+                        }
                         if rty == "pyobj" || rty == "json" {
                             // pyobj/json-callee list literal arg: boxed domain
                             // create_list + create_int + list_append,
@@ -8009,6 +8109,13 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         if is_local_i(&n) {
             b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", l, n));
             return Typed::I64(format!("%\"{}\"", l));
+        }
+        if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
+            || DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
+            // container globals: i8* slot (same as the eval_expr arm;
+            // the i64 fallback was a wrong-type read)
+            b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+            return Typed::Inst(format!("%\"{}\"", l));
         }
         b.line(format!("  %\"{}\" = load i64, i64* @\"{}\"", l, n));
         return Typed::I64(format!("%\"{}\"", l));

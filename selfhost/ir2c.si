@@ -1003,8 +1003,13 @@ class Gen:
                 call = "dict_has(" + b_in.text + ", " + a_in.text + ")"
             elif b_in.ty == "str":
                 call = "str_in_str(" + a_in.text + ", " + b_in.text + ")"
+            elif b_in.ty == "list:str":
+                call = "str_in_list(" + a_in.text + ", " + b_in.text + ")"
+            elif b_in.ty == "list:int":
+                # int-list membership: i64 word scan (list_ops corpus)
+                call = "i64_in_list(" + a_in.text + ", " + b_in.text + ")"
             else:
-                # tuple/list membership: linear string scan
+                # tuple membership: linear string scan
                 call = "str_in_list(" + a_in.text + ", " + b_in.text + ")"
             if t == "not in":
                 call = "(!" + call + ")"
@@ -2399,6 +2404,7 @@ RUNTIME: list[str] = [
     "static Str* str_mod(Str* fmt, int64_t v) { char buf[64]; const char* f = fmt->data; char* o = buf; while (*f) { if (*f == '%' && f[1]) { f++; if (*f == 'd') { o += sprintf(o, \"%lld\", (long long)v); } else if (*f == 'x') { o += sprintf(o, \"%llx\", (unsigned long long)v); } else if (*f == 's') { o += sprintf(o, \"%lld\", (long long)v); } else { int w = 0; while (*f >= '0' && *f <= '9') { w = w * 10 + (*f - '0'); f++; } if (*f == 'x') { o += sprintf(o, \"%0*llx\", w, (unsigned long long)v); } else { o += sprintf(o, \"%lld\", (long long)v); } } f++; } else { *o++ = *f++; } } *o = 0; return str_of(buf); }",
     "static int str_in_str(Str* needle, Str* hay) { if (needle->len == 0) return 1; for (int64_t i = 0; i + needle->len <= hay->len; i++) if (memcmp(hay->data + i, needle->data, needle->len) == 0) return 1; return 0; }",
     "static int str_in_list(Str* s, List* l) { for (int64_t i = 0; i < l->len; i++) if (str_eq(s, (Str*)list_get(l, i))) return 1; return 0; }",
+    "static int i64_in_list(int64_t v, List* l) { for (int64_t i = 0; i < l->len; i++) if (list_get(l, i) == v) return 1; return 0; }",
     "static int p_truthy(PObj* o) { switch (o->tag) { case 0: return 0; case 1: case 3: return o->i != 0; case 2: return o->f != 0; case 4: return o->s->cp != 0; case 5: return o->items->len != 0; default: return 0; } }",
     "static PObj* plist_strs(List* l) { List* o = list_new(); for (int64_t i = 0; i < l->len; i++) list_push(o, (int64_t)pstr((Str*)list_get(l, i))); return plist(o); }",
     "static void pset(PObj* o, int64_t i, PObj* v) { if (o->tag != 5) return; if (i < 0) i += o->items->len; if (i < 0 || i >= o->items->len) return; o->items->items[i] = (int64_t)v; }",
