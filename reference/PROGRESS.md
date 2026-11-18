@@ -536,9 +536,16 @@ clear、丢弃式 rawstr 语句值释放（py 的 _convert_statement_scoped 对�
 物）、装箱 join（str_join_boxed 两段式求值镜像）、全局 str 尾序
 （declare 在 eval 后）全部字节对齐。**g5 关闭后 ir2c 第三平面同轮补齐（2026-11-19）**：C 后端 pop/clear 臂
 + list_pop/list_pop_str/list_clear 助手（弹出槽清零 + 空 pop panic），
-pop_clear 经 C 平面对拍 CPython 一致。**仍未钉（全部响亮 bail = 纪律内
-ERROR）**：g1（ctor 实参走 str-only to_raw 撞 I64）、g9（dict[int,*]
-store 同类）、g6/g7（dict 方法族）。join 的 str 参数接收者已被全局
+pop_clear 经 C 平面对拍 CPython 一致。**g6/g7 关闭（2026-11-19，STATUS §3.26）**：dict pop（del/pop_or）/
+clear/setdefault × str/int key 域 + str-key store 的 tag 验证
+（emit_pyobj_key_view 共享机器：tag==2 检查 + panic + 借用 str_view）
+全部字节对齐。**g9 作废**（dict[int,*] store 重普查时即字节一致）。
+**ir2c 第三平面同轮补齐（2026-11-19）**：C 后端 dict 方法族（pop/
+setdefault/clear × dict/dicti）+ 助手；dicti 探针必须与 dicti_set 的
+ihash 同哈希（真哈希非恒等——探针错位 = 合法 key KeyError）。dict_ops
+经 C 平面对拍 CPython 一致。**仍未钉（响亮 bail = 纪律内 ERROR）**：
+g2/g1（模块级实例 ann_assign）、局部 dict 的 key/val 类型注册、get(k)
+单参装箱 phi。join 的 str 参数接收者已被全局
 容器名 eval 修复带好（字节一致）。g2（模块级注解实例赋值）与 g4（链式构造）未复验。
 **隐式规约新增**：membership 实参的 str-coercion 临时**两平面一致
 泄漏**（py 的 _typed_contains RAWLIST_S 臂不释放——P9 consume 站点

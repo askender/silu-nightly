@@ -195,6 +195,12 @@ fn lst_elem_ty(n: &str) -> String {
 }
 
 // dict value annotation is Json? (dict[str,Json] evidence)
+fn dct_val_ty(n: &str) -> String {
+    DCT_VALS.with(|m| m.borrow().iter()
+        .find(|(k, _)| k == n).map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "int".into()))
+}
+
 fn dct_val_is_json(n: &str) -> bool {
     DCT_VALS.with(|m| m.borrow().iter()
         .any(|(k, v)| k == n && v == "Json"))
@@ -3045,7 +3051,12 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val) {
                 let kv = eval_mod(b, &st.get(2), &fs);
                 match kv {
                     Typed::Str(r) | Typed::Inst(r) => r,
-                    Typed::PStr(_) => to_raw(b, kv),
+                    Typed::PStr(_) | Typed::Pyo(_) => {
+                        // pystr-domain key: the Python twin validates the
+                        // tag and borrows the view (dict store evidence)
+                        let py = to_pyobj(b, kv);
+                        emit_pyobj_key_view(b, &py)
+                    }
                     _ => bail("dict str key"),
                 }
             };
@@ -6570,6 +6581,94 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         return Typed::I64(format!("%\"{}\"", c));
                     }
                 }
+                // dict method family: pop/clear/setdefault over the raw
+                // dict slots - the Python twin's _rawdict_key_call
+                // machinery (g6 probes). Const str keys take the checked
+                // view shape; raw str keys pass their buffer directly;
+                // int keys ride as i64. GLOBAL dicts only: local dict
+                // slots carry no key/val type registrations yet
+                if base.head() == "name"
+                    && (mname == "pop" || mname == "clear"
+                        || mname == "setdefault") {
+                    let bn = base.get(1).str_of();
+                    let is_dict_slot = DCT_SLOTS.with(|t| t.borrow()
+                        .iter().any(|f| f == &bn));
+                    if is_dict_slot {
+                        let l = b.nx();
+                        b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                            l, dct_slot(&bn)));
+                        let key_str = dct_key_ty(&bn) == "str";
+                        let val_ty = dct_val_ty(&bn);
+                        if mname == "clear" {
+                            if key_str {
+                                b.silent();
+                                b.line(format!(
+                                    "  call void @\"rawdict_str_clear\"(i8* %\"{}\")", l));
+                            } else {
+                                b.silent();
+                                b.line(format!(
+                                    "  call void @\"rawdict_clear\"(i8* %\"{}\")", l));
+                            }
+                            return Typed::Inst(format!("%\"{}\"", l));
+                        }
+                        let args = e.get(2).items();
+                        let kn: &str = match (key_str, mname.as_str(), args.len()) {
+                            (true, "pop", 1) => "rawdict_str_del",
+                            (true, "pop", 2) => "rawdict_str_pop_or",
+                            (false, "pop", 1) => "rawdict_del",
+                            (false, "pop", 2) => "rawdict_pop_or",
+                            (true, "setdefault", 2) => "rawdict_str_setdefault",
+                            (false, "setdefault", 2) => "rawdict_setdefault",
+                            _ => bail("dict method arity"),
+                        };
+                        let tail = if args.len() == 2 {
+                            let dv = eval_expr(b, &args[1], slot_i, slot_f, fslots);
+                            match &dv {
+                                Typed::I64(r) => format!(", i64 {}", r),
+                                _ => bail("dict method value"),
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let karg = if key_str {
+                            if args[0].head() == "const"
+                                && matches!(args[0].get(1), Val::Str(_)) {
+                                emit_const_key_view(b,
+                                    &args[0].get(1).str_of())
+                            } else {
+                                let kv = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                                match &kv {
+                                    Typed::Str(r) => r.clone(),
+                                    Typed::PStr(_) | Typed::Pyo(_) => {
+                                        let py = to_pyobj(b, kv);
+                                        emit_pyobj_key_view(b, &py)
+                                    }
+                                    _ => bail("dict key type"),
+                                }
+                            }
+                        } else {
+                            let kv = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                            match &kv {
+                                Typed::I64(r) => r.clone(),
+                                _ => bail("dict key type"),
+                            }
+                        };
+                        let c = b.nx();
+                        if key_str {
+                            b.line(format!(
+                                "  %\"{}\" = call i64 @\"{}\"(i8* %\"{}\", i8* {}{})",
+                                c, kn, l, karg, tail));
+                        } else {
+                            b.line(format!(
+                                "  %\"{}\" = call i64 @\"{}\"(i8* %\"{}\", i64 {}{})",
+                                c, kn, l, karg, tail));
+                        }
+                        return match val_ty.as_str() {
+                            "str" => Typed::Str(format!("%\"{}\"", c)),
+                            _ => Typed::I64(format!("%\"{}\"", c)),
+                        };
+                    }
+                }
                 if base.head() != "name" {
                     bail(&format!("method base in {}: {:?}",
                         CUR_FN.with(|f| f.borrow().clone()), e));
@@ -7908,6 +8007,22 @@ fn emit_const_key_direct(b: &mut FnB, dl: &str, text: &str) -> String {
 
 fn emit_const_key_get_mode(b: &mut FnB, dl: &str, text: &str,
                            def: Option<i64>) -> String {
+    let vbc = emit_const_key_view(b, text);
+    let res = b.nx();
+    match def {
+        Some(d) => b.line(format!(
+            "  %\"{}\" = call i64 @\"rawdict_str_get_or\"(i8* {}, i8* {}, i64 {})",
+            res, dl, vbc, d)),
+        None => b.line(format!(
+            "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* {}, i8* {})",
+            res, dl, vbc)),
+    }
+    format!("%\"{}\"", res)
+}
+
+// const str key -> create_str + the pyobj key view; returns the view
+// pointer (shared by the dict read and the method family)
+fn emit_const_key_view(b: &mut FnB, text: &str) -> String {
     let gname = add_str(text);
     let blen = text.len();
     let g = b.nx();
@@ -7918,10 +8033,17 @@ fn emit_const_key_get_mode(b: &mut FnB, dl: &str, text: &str,
     b.line(format!(
         "  %\"{}\" = call {{i32, i8*}}* @\"create_str\"(i8* %\"{}\", i32 {})",
         cs, g, blen));
+    emit_pyobj_key_view(b, &format!("%\"{}\"", cs))
+}
+
+// evaluated pyobj key -> tag check (str) + unpack + borrowed str_view;
+// returns the view pointer. The Python twin runs this validation for
+// EVERY pystr-domain dict key (the store/reads/method family)
+fn emit_pyobj_key_view(b: &mut FnB, py: &str) -> String {
     let gp0 = b.nx();
     b.line(format!(
-        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 0",
-        gp0, cs));
+        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* {}, i32 0, i32 0",
+        gp0, py));
     let tg = b.nx();
     b.line(format!(
         "  %\"{}\" = load i32, i32* %\"{}\"", tg, gp0));
@@ -7942,8 +8064,8 @@ fn emit_const_key_get_mode(b: &mut FnB, dl: &str, text: &str,
     // unpack: field1 -> payload {i32,i8*}*, its field1 = chars, field0 = len
     let gp1 = b.nx();
     b.line(format!(
-        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 1",
-        gp1, cs));
+        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* {}, i32 0, i32 1",
+        gp1, py));
     let pay = b.nx();
     b.line(format!(
         "  %\"{}\" = load i8*, i8** %\"{}\"", pay, gp1));
@@ -7993,16 +8115,7 @@ fn emit_const_key_get_mode(b: &mut FnB, dl: &str, text: &str,
     b.line(format!(
         "  %\"{}\" = bitcast {{i64, i64, i8*, i64}}* %\"{}\" to i8*",
         vbc, vn));
-    let res = b.nx();
-    match def {
-        Some(d) => b.line(format!(
-            "  %\"{}\" = call i64 @\"rawdict_str_get_or\"(i8* {}, i8* %\"{}\", i64 {})",
-            res, dl, vbc, d)),
-        None => b.line(format!(
-            "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* {}, i8* %\"{}\")",
-            res, dl, vbc)),
-    }
-    format!("%\"{}\"", res)
+    format!("%\"{}\"", vbc)
 }
 
 fn as_slice_sub(v: &Val) -> Option<(String, Val)> {

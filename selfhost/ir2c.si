@@ -1199,6 +1199,27 @@ class Gen:
                     return te("dicti_get_or(" + recv2.text + ", " + self.expr(elem(args, 0)).text + ", " + self.expr(elem(args, 1)).text + ")", "int")
                 if recv2.ty.startswith("dict:") or recv2.ty == "dict":
                     return te("dict_get_or(" + recv2.text + ", " + self.expr(elem(args, 0)).text + ", " + self.expr(elem(args, 1)).text + ")", "int")
+            is_dict_recv = (recv2.ty.startswith("dict:I")
+                            or recv2.ty.startswith("dict:")
+                            or recv2.ty == "dict")
+            if mname == "pop" and len(args.arr) >= 1 and is_dict_recv:
+                a1: TE = self.expr(elem(args, 1)) if len(args.arr) == 2 else te("", "none")
+                if recv2.ty.startswith("dict:I"):
+                    if len(args.arr) == 2:
+                        return te("dicti_pop_or(" + recv2.text + ", " + arg0.text + ", " + a1.text + ")", "int")
+                    return te("dicti_del(" + recv2.text + ", " + arg0.text + ")", "int")
+                if len(args.arr) == 2:
+                    return te("dict_pop_or(" + recv2.text + ", " + arg0.text + ", " + a1.text + ")", "int")
+                return te("dict_del(" + recv2.text + ", " + arg0.text + ")", "int")
+            if mname == "setdefault" and len(args.arr) == 2 and is_dict_recv:
+                a1s: TE = self.expr(elem(args, 1))
+                if recv2.ty.startswith("dict:I"):
+                    return te("dicti_setdefault(" + recv2.text + ", " + arg0.text + ", " + a1s.text + ")", "int")
+                return te("dict_setdefault(" + recv2.text + ", " + arg0.text + ", " + a1s.text + ")", "int")
+            if mname == "clear" and len(args.arr) == 0 and is_dict_recv:
+                if recv2.ty.startswith("dict:I"):
+                    return te("dicti_clear(" + recv2.text + ")", "none")
+                return te("dict_clear(" + recv2.text + ")", "none")
             if mname == "startswith" or mname == "endswith":
                 fn_s: str = "str_starts_with"
                 if mname == "endswith":
@@ -2433,6 +2454,14 @@ RUNTIME: list[str] = [
     "static int64_t silu_file_exists(Str* s) { char* b = silu_malloc(s->len + 1); memcpy(b, s->data, s->len); b[s->len] = 0; FILE* f = fopen(b, \"r\"); if (f) { fclose(f); return 1; } return 0; }",
     "static int64_t dicti_has(DictI* d, int64_t k) { int64_t j = ihash(k) % d->cap; while (d->ents[j].used) { if (d->ents[j].key == k) return 1; j = (j + 1) % d->cap; } return 0; }",
     "static int64_t dict_get_or(Dict* d, Str* k, int64_t def) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return d->ents[j].val; j = (j + 1) % d->cap; } return def; }",
+    "static int64_t dict_del(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) { int64_t v = d->ents[j].val; d->ents[j].used = 0; d->cnt--; return v; } j = (j + 1) % d->cap; } fprintf(stderr, \"KeyError\\n\"); exit(1); return 0; }",
+    "static int64_t dict_pop_or(Dict* d, Str* k, int64_t def) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) { int64_t v = d->ents[j].val; d->ents[j].used = 0; d->cnt--; return v; } j = (j + 1) % d->cap; } return def; }",
+    "static int64_t dict_setdefault(Dict* d, Str* k, int64_t v) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return d->ents[j].val; j = (j + 1) % d->cap; } dict_set(d, k, v); return v; }",
+    "static void dict_clear(Dict* d) { memset(d->ents, 0, sizeof(DEnt) * d->cap); d->cnt = 0; }",
+    "static int64_t dicti_del(DictI* d, int64_t k) { int64_t j = ihash(k) % d->cap; while (d->ents[j].used) { if (d->ents[j].key == k) { int64_t v = d->ents[j].val; d->ents[j].used = 0; d->cnt--; return v; } j = (j + 1) % d->cap; } fprintf(stderr, \"KeyError\\n\"); exit(1); return 0; }",
+    "static int64_t dicti_pop_or(DictI* d, int64_t k, int64_t def) { int64_t j = ihash(k) % d->cap; while (d->ents[j].used) { if (d->ents[j].key == k) { int64_t v = d->ents[j].val; d->ents[j].used = 0; d->cnt--; return v; } j = (j + 1) % d->cap; } return def; }",
+    "static int64_t dicti_setdefault(DictI* d, int64_t k, int64_t v) { int64_t j = ihash(k) % d->cap; while (d->ents[j].used) { if (d->ents[j].key == k) return d->ents[j].val; j = (j + 1) % d->cap; } dicti_set(d, k, v); return v; }",
+    "static void dicti_clear(DictI* d) { memset(d->ents, 0, sizeof(IEnt) * d->cap); d->cnt = 0; }",
     "static List* list_repeat_i(int64_t e, int64_t n) { List* l = list_new(); for (int64_t i = 0; i < n; i++) list_push(l, e); return l; }",
     "static List* list_repeat_f(double e, int64_t n) { List* l = list_new(); int64_t b = 0; memcpy(&b, &e, 8); for (int64_t i = 0; i < n; i++) list_push(l, b); return l; }",
     "static void list_push_f(List* l, double v) { int64_t b = 0; memcpy(&b, &v, 8); list_push(l, b); }",

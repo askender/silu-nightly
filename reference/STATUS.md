@@ -1035,6 +1035,38 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
 - **仍未钉（响亮 bail）**：g1 ctor 列表实参、g9 dict[int,*] store、
   g6/g7 dict 方法族。
 
+## 三点二十六、dict 方法族 + str-key store 验证（g6/g7 关闭，2026-11-19）
+
+- **dict 方法族（Oracle 补齐）**：pop（1 参 = rawdict_del/str_del
+  KeyError panic 形；2 参 = pop_or + default）/clear/setdefault ×
+  str/int key 域，全部经 emit_pyobj_key_view（新抽取的共享机器：pyobj
+  tag==2 检查 + panic "TypeError: expected str key" + 解包 + 借用
+  str_view——py 对每个 pystr 域 dict key 都跑此验证）。**RAWSTR key
+  直接传缓冲**（无 view 无验证——py 同）；const key 走 checked 视图。
+- **str-key store 验证补齐**：`d["a"] = 1` 的 key 在 py 有 tag 检查
+  （_rawdict_key_call 机器），rs 原 pystr_to_rawstr 直通——dict.si
+  语料全是 int key 所以从未触及（**语料覆盖面教训再证**）。PStr/Pyo
+  key 现走共享视图；RAWSTR 直通不变。
+- **emit_const_key_view 重构**：get 专用的 emit_const_key_get_mode
+  拆出共享视图构建（返回已包裹指针，调用点 verbatim）——get/store/
+  方法族三处共用同一形状。
+- **新语料**：benchmarks/dict_ops.si（2 参 pop + setdefault + int-key
+  dict 全族 + clear；CPython 对拍 7/3/10/20/0 一致）。ll **25/25**、
+  ir **26/26**、corpus 计数 25。**g9 条目作废**（dict[int,*] store
+  字节早已一致——重普查时 g9b 即绿，g-list 未更新）。
+- **ir2c 第三平面联动（第三轮同模式）**：C 后端无 dict 方法族 →
+  实参降级 `0;` → 输出错值。补方法臂（pop 1/2 参、setdefault、clear ×
+  dict/dicti）+ C 助手（dict_del/pop_or/setdefault/clear + dicti_* 四
+  件套）。**哈希一致性手伤**：dicti 助手的探针原写 `k % cap`，而
+  dicti_set/get 用 `ihash(k) % cap`（真哈希非恒等）——探针错位 = 合法
+  key KeyError；探针必须与插入方同一哈希。C 输出 = CPython ✓、
+  m4/m5 全绿。
+- **仍未钉（响亮 bail）**：g2/g1（模块级实例 ann_assign）、局部 dict
+  的 key/val 类型注册（方法臂限定全局 dict）、get(k) 单参装箱 phi。
+- 伤痕记录：emit_pyobj_key_view 抽取时 cs/py 引用与包裹层级三次
+  手伤（双引号/裸指针/漏改解包基址）——全部被探针字节 diff 当场
+  抓获；py 的调用点逐参类型前缀（i64/i8*）继续是对齐的主坑。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

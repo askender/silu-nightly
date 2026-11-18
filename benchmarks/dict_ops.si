@@ -1,0 +1,14 @@
+d: dict[str, int] = {}
+d["a"] = 1
+v1: int = d.pop("missing", 7)
+print(v1)
+n: int = d.setdefault("b", 3)
+print(n)
+di: dict[int, int] = {}
+di[1] = 10
+v2: int = di.pop(1)
+print(v2)
+di.setdefault(2, 20)
+print(di[2])
+di.clear()
+print(len(di))
