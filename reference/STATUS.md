@@ -997,6 +997,44 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   `i8* %x`——py 的调用点逐参前缀）、`create_list()` 的括号进引号、
   草稿残渣（b.pop_line 不存在）——每次都被探针字节 diff 当场抓获。
 
+## 三点二十五、pop/clear + 丢弃式 rawstr 释放 + 装箱 join + 全局 str 尾序（2026-11-19）
+
+- **pop/clear 臂（g5 关闭）**：eval_expr 的方法分派补 pop/clear（int →
+  `rawlist_pop` → I64；str → `rawlist_str_pop` → Str——**缓冲 move 给
+  消费者，无拷贝**；clear → `void rawlist_clear` → 返回容器）。置名
+  分派前（join 臂后），以 FN_L||LST_SLOTS 门控。
+- **丢弃式 rawstr 语句值释放（通用机制补齐）**：py 的
+  `_convert_statement_scoped` 对裸表达式的 RAWSTR 结果做语句尾 free
+  （赋值族别名槽存储、由各自臂分派、永不经此路）——rs 的 bare-call
+  臂原样 `let _ =` 丢弃。补齐后 `words.pop()` 丢弃式的弹出串释放对齐。
+  语料无此形状（门禁曾绿）——探针当场抓获。
+- **装箱 join（两段式分派镜像）**：`(s+t).join(lit)` 形状 py 走
+  `str_join_boxed`：raw-join 探针先求值实参一次（其产物留在 .ll 里
+  是**死代码但字节在场**），generic 回退**再求值一次** + 接收者装箱
+  （rawstr_to_pystr）+ 结果 pystr_to_rawstr——rs 必须镜像两次求值。
+  join 实参为全局 list 的 bail 此前已被 name-eval 修复免费带好。
+- **全局 str 尾序修复**：模块级非 const str 全局的声明（tail_push）
+  原在 eval 之前——py 按值类别在 **eval 后**声明（str.x/str.y 等初值
+  intern 的串先于全局名进 tail；join_concat 探针证据）。ord1
+  （input()）与 ord2（raw concat）此前即一致（tail 内无竞争条目/
+  走 raw 臂）——竞争条目场景唯 join 形状暴露。
+- **新语料**：benchmarks/pop_clear.si（int/str 双 pop（valued +
+  discarded）+ clear + append；CPython 对拍 3/2/0/b/1/2 一致）。
+  ll 24/24、ir 25/25、corpus 计数 24。join 探针（global list 接收者）
+  字节一致——name-eval 修复的免费红利。
+- **ir2c 第三平面联动（m5 当场抓获，与 membership 轮同模式）**：C 后端
+  无 pop/clear → 实参降级为 `0;` 空操作 → `w: str = words.pop()` 把 0
+  赋给 Str* → print 解引用 NULL → **SIGSEGV 空输出**。补 method 臂
+  （pop int/str、clear）+ C 助手（list_pop/list_pop_str/list_clear：
+  弹出槽清零镜像 .ll rawlist_pop 规则、空 pop panic "IndexError: pop
+  from empty list"）。C 输出 = CPython ✓、m4/m5 59 全过。
+  **测试方法教训**：手动验证 ir2c 必须用 `python -m silu ir --format
+  json`（m5 的 IR 来源）——用 silu_fe 的 JSON 会静默得空 main（两前端
+  JSON 序列化不同，ir2c 解析后者失败降级）——该静默降级本身是 ir2c
+  的响亮化欠账（待办）。
+- **仍未钉（响亮 bail）**：g1 ctor 列表实参、g9 dict[int,*] store、
+  g6/g7 dict 方法族。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

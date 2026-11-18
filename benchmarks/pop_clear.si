@@ -1,0 +1,14 @@
+xs: list[int] = [1, 2, 3]
+v: int = xs.pop()
+print(v)
+print(len(xs))
+xs.clear()
+print(len(xs))
+words: list[str] = ["a", "b"]
+w: str = words.pop()
+print(w)
+print(len(words))
+words.append("c")
+words.append("d")
+words.pop()
+print(len(words))

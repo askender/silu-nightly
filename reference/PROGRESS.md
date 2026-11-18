@@ -531,11 +531,15 @@ list[str] 字面量、list:str 调用实参（装箱 + pylist_to_rawlist_str）*
 eval_mod 的 name 臂原把 LST_SLOTS/DCT_SLOTS 全局落到 i64 兜底 load，
 现按 i8* 槽读 + Typed::Inst，与 py 的 `load i8*, i8** @"name"` 一致）。
 新语料钉板 benchmarks/list_ops.si（ll 24/24、ir 25/25、CPython 对拍
-1/2/1/2/4/4/7 一致）。**仍未钉（全部响亮 bail = 纪律内 ERROR）**：
-g1（ctor 实参走 str-only to_raw 撞 I64）、g9（dict[int,*] store 同
-类）、g5 pop / clear（语句级方法臂只有 append；模块级与函数内皆
-bail）、g6/g7（dict 方法族）、join 的 str 参数接收者（`sep.join(parts)`
-中 sep 为函数参数）。g2（模块级注解实例赋值）与 g4（链式构造）未复验。
+1/2/1/2/4/4/7 一致）。**g5 pop/clear 已关闭（2026-11-19，STATUS §3.25）**：pop（int/str）、
+clear、丢弃式 rawstr 语句值释放（py 的 _convert_statement_scoped 对应
+物）、装箱 join（str_join_boxed 两段式求值镜像）、全局 str 尾序
+（declare 在 eval 后）全部字节对齐。**g5 关闭后 ir2c 第三平面同轮补齐（2026-11-19）**：C 后端 pop/clear 臂
++ list_pop/list_pop_str/list_clear 助手（弹出槽清零 + 空 pop panic），
+pop_clear 经 C 平面对拍 CPython 一致。**仍未钉（全部响亮 bail = 纪律内
+ERROR）**：g1（ctor 实参走 str-only to_raw 撞 I64）、g9（dict[int,*]
+store 同类）、g6/g7（dict 方法族）。join 的 str 参数接收者已被全局
+容器名 eval 修复带好（字节一致）。g2（模块级注解实例赋值）与 g4（链式构造）未复验。
 **隐式规约新增**：membership 实参的 str-coercion 临时**两平面一致
 泄漏**（py 的 _typed_contains RAWLIST_S 臂不释放——P9 consume 站点
 在 list-contains 处两侧同开同漏，字节对齐；如未来补齐须双平面同

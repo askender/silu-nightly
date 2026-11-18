@@ -1218,6 +1218,14 @@ class Gen:
                 if recv2.ty.startswith("list:"):
                     return te("list_push(" + recv2.text + ", (int64_t)(" + arg0.text + "))", "none")
                 return te("list_push(" + recv2.text + ", (int64_t)(" + arg0.text + "))", "none")
+            if mname == "pop" and len(args.arr) == 0:
+                # popped slot zeroed (the .ll runtime's rawlist_pop rule);
+                # empty pop panics like the native IndexError
+                if recv2.ty == "list:str":
+                    return te("list_pop_str(" + recv2.text + ")", "str")
+                return te("list_pop(" + recv2.text + ")", "int")
+            if mname == "clear" and len(args.arr) == 0:
+                return te("list_clear(" + recv2.text + ")", "none")
         return te("0", "int")
 
     def args_text(self, args: JValue) -> str:
@@ -2405,6 +2413,9 @@ RUNTIME: list[str] = [
     "static int str_in_str(Str* needle, Str* hay) { if (needle->len == 0) return 1; for (int64_t i = 0; i + needle->len <= hay->len; i++) if (memcmp(hay->data + i, needle->data, needle->len) == 0) return 1; return 0; }",
     "static int str_in_list(Str* s, List* l) { for (int64_t i = 0; i < l->len; i++) if (str_eq(s, (Str*)list_get(l, i))) return 1; return 0; }",
     "static int i64_in_list(int64_t v, List* l) { for (int64_t i = 0; i < l->len; i++) if (list_get(l, i) == v) return 1; return 0; }",
+    "static int64_t list_pop(List* l) { if (l->len == 0) { fprintf(stderr, \"IndexError: pop from empty list\\n\"); exit(1); } l->len--; int64_t v = l->items[l->len]; l->items[l->len] = 0; return v; }",
+    "static Str* list_pop_str(List* l) { if (l->len == 0) { fprintf(stderr, \"IndexError: pop from empty list\\n\"); exit(1); } l->len--; Str* s = (Str*)l->items[l->len]; l->items[l->len] = 0; return s; }",
+    "static void list_clear(List* l) { l->len = 0; }",
     "static int p_truthy(PObj* o) { switch (o->tag) { case 0: return 0; case 1: case 3: return o->i != 0; case 2: return o->f != 0; case 4: return o->s->cp != 0; case 5: return o->items->len != 0; default: return 0; } }",
     "static PObj* plist_strs(List* l) { List* o = list_new(); for (int64_t i = 0; i < l->len; i++) list_push(o, (int64_t)pstr((Str*)list_get(l, i))); return plist(o); }",
     "static void pset(PObj* o, int64_t i, PObj* v) { if (o->tag != 5) return; if (i < 0) i += o->items->len; if (i < 0 || i >= o->items->len) return; o->items->items[i] = (int64_t)v; }",

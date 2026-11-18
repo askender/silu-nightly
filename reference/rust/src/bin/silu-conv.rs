@@ -2217,11 +2217,16 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             STR_SLOTS.with(|sl| sl.borrow_mut().push(name.clone()));
             if !matches!(&init.items().get(1), Some(Val::Str(_))) {
                 // call/expr init: no init constant (doc = input());
-                // slice inits keep the slice's own buffer (no copy)
+                // slice inits keep the slice's own buffer (no copy).
+                // The global declaration lands AFTER the init
+                // evaluation - the Python twin declares the module
+                // global once the value exists, so strings the init
+                // interns precede it in the tail (join_concat probe
+                // evidence)
                 SLICE_NO_COPY.with(|c| *c.borrow_mut() = true);
-                tail_push(format!("@\"{}\" = global i8* null", name));
                 let fsx = F_SLOTS.with(|f| f.borrow().clone());
                 let v = eval_mod(b, &init, &fsx);
+                tail_push(format!("@\"{}\" = global i8* null", name));
                 let r = to_raw_alias(b, v, init.head() == "name");
                 let oldr = b.nx();
                 b.line(format!(
@@ -3458,7 +3463,16 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
             "call" => {
                 // bare expression statement: valued call, discard result
                 let fs = F_SLOTS.with(|f| f.borrow().clone());
-                let _ = eval_mod(b, &st, &fs);
+                let rv = eval_mod(b, &st, &fs);
+                // P9: a discarded rawstr result is a statement temporary
+                // - the Python twin frees it like a Rust end-of-statement
+                // drop (the assignment family aliases slot storage and is
+                // dispatched by its own arms, never here)
+                if let Typed::Str(r) = rv {
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"rawstr_free\"(i8* {})", r));
+                }
             }
             "while" => {
                 let body = st.get(2).items();
@@ -6485,8 +6499,29 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     if args.len() != 1 { bail("join arity"); }
                     let sv = eval_expr(b, &base, slot_i, slot_f, fslots);
                     let owned = matches!(sv, Typed::PStr(_) | Typed::Pyo(_));
+                    let sv_keep = sv.clone();
                     let sep = to_raw(b, sv);
                     let pv = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                    if let Typed::Pyo(_) = &pv {
+                        // boxed parts: the Python twin's two-stage
+                        // dispatch probed the raw join (the arg
+                        // evaluation above), then the generic fallback
+                        // boxes the receiver and RE-EVALUATES the arg
+                        // into str_join_boxed - mirror both evaluations
+                        // (join_concat probe evidence)
+                        let sv_box = to_pyobj(b, sv_keep);
+                        let pv2 = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                        let parts2 = to_pyobj(b, pv2);
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call {{i32, i8*}}* @\"str_join_boxed\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
+                            c, sv_box, parts2));
+                        let pr = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
+                            pr, c));
+                        return Typed::Str(format!("%\"{}\"", pr));
+                    }
                     let parts = match pv {
                         Typed::Inst(r) | Typed::Str(r) => r,
                         other => bail(&format!("join list in {}: {:?}",
@@ -6501,6 +6536,39 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         b.line(format!("  call void @\"rawstr_free\"(i8* {})", sep));
                     }
                     return Typed::Str(format!("%\"{}\"", c));
+                }
+                // list pop/clear: the Python twin's rawlist_pop family
+                // (g5 probe). pop yields the element (str elems via
+                // rawlist_str_pop - the buffer moves to the consumer,
+                // no copy); clear discards and returns the container
+                if base.head() == "name" && (mname == "pop" || mname == "clear") {
+                    let bn = base.get(1).str_of();
+                    let is_list_slot =
+                        FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &bn))
+                        || LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn));
+                    if is_list_slot {
+                        let l = b.nx();
+                        b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                            l, lst_slot(&bn)));
+                        if mname == "clear" {
+                            b.silent();
+                            b.line(format!(
+                                "  call void @\"rawlist_clear\"(i8* %\"{}\")", l));
+                            return Typed::Inst(format!("%\"{}\"", l));
+                        }
+                        if lst_elem_ty(&bn) == "str" {
+                            let c = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"rawlist_str_pop\"(i8* %\"{}\")",
+                                c, l));
+                            return Typed::Str(format!("%\"{}\"", c));
+                        }
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i64 @\"rawlist_pop\"(i8* %\"{}\")",
+                            c, l));
+                        return Typed::I64(format!("%\"{}\"", c));
+                    }
                 }
                 if base.head() != "name" {
                     bail(&format!("method base in {}: {:?}",
