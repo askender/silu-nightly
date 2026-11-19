@@ -33,12 +33,12 @@
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
 2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
-**silu 1.21.0（P9 concat 所有权重钉；1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
+**silu 1.22.0（g-清单闭合重钉；1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
-**状态（2026-11-18）：已完成**——前端 IR **23/23**、完整 .ll **22/22**（含 silu_fe/match_int/concat_chain）
-全语料逐字节一致。规模对照、参考特性分诊、语言设计建议见校准报告。
+**状态（2026-11-20）：已完成**——前端 IR **28/28**、完整 .ll **27/27**（含 silu_fe/dict_ops/record_global 全语料）
+逐字节一致；语料 27 文件（六枚能力钉板：char_pair/list_ops/pop_clear/dict_ops/record_global/dict_local）。规模对照、参考特性分诊、语言设计建议见校准报告。
 
 **关键文档（都在 reference/）**：
 
