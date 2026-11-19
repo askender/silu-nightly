@@ -562,6 +562,9 @@ def test_m5_self_hosted_toolchain(fe_bin, ir2c_bin):
 # ---- M5 coverage: benchmarks through the Silu-written backend ----
 
 BENCHMARK_SKIP = {
+    "record_global.si",  # record classes: CPython has no implicit-ctor
+    # semantics - the reference plane is silu interpret (the native and
+    # ir2c outputs are verified against it in the round notes)
     "jsonparse.si",  # heterogeneous dynamic program, known gap
     # Json sum-type twin: the json_* builtins are not in the ir2c
     # plane (C runtime has no tagged-block library); its four-plane

@@ -1022,7 +1022,13 @@ class Gen:
             fv: TE = self.expr(node.arr[3])
             ty2: str = tv.ty
             return te("(" + self.cond_text(cond0) + " ? " + tv.text + " : " + fv.text + ")", ty2)
+        # dead-value contexts tolerate the 0 degrade (the self-hosting
+        # chain's frontend binary has always carried them - the m5
+        # execution comparison guards the value-consuming sites); the
+        # STATEMENT fallback in gen_stmt is the loud one (the
+        # empty-main class)
         return te("0", "int")
+
 
     def and_rest(self, node: JValue) -> str:
         out: str = ""
@@ -1547,7 +1553,9 @@ class Gen:
         if t == "match":
             self.gen_match(stmt)
             return 0
-        return 0
+        # 宁报 ERROR: a silently skipped statement degrades the whole
+        # main body (the empty-main class); rc=1 is the failure signal
+        raise SystemExit(1)
 
     def gen_print(self, args: JValue, kwargs: JValue) -> int:
         i: int = 0

@@ -166,6 +166,11 @@ fn fn_ty_of(n: &str) -> Option<String> {
         .map(|(_, v)| v.clone()))
 }
 
+fn global_ty_of(n: &str) -> Option<String> {
+    GLOBAL_TY.with(|t| t.borrow().iter().find(|(k, _)| k == n)
+        .map(|(_, v)| v.clone()))
+}
+
 fn is_class(n: &str) -> bool {
     CLASSES.with(|c| c.borrow().iter().any(|(k, _)| k == n))
 }
@@ -1145,6 +1150,8 @@ thread_local! {
     static CLASSES: RefCell<Vec<ClassDef>> =
         const { RefCell::new(Vec::new()) }; // (class, [(field, ty)])
     static FN_TY: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    // module-level instance globals: name -> class (g2 probe)
+    static GLOBAL_TY: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     static FN_S: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; // local strs
     static FN_SBUF: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; // local strbufs
 }
@@ -2289,6 +2296,21 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
                 b.line(format!("  store double {}, double* @\"{}\"",
                                r, name));
             }
+        } else if is_class(&anno) {
+            // module-level instance global: the ctor evals to an Inst
+            // pointer (malloc + field stores inside the ctor arm); the
+            // i8* slot owns it (the g2 probe)
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &init, &fs);
+            let ptr = match &v {
+                Typed::Inst(r) => r.clone(),
+                _ => bail("instance init"),
+            };
+            GLOBAL_TY.with(|t| t.borrow_mut()
+                .push((name.clone(), anno.clone())));
+            tail_push(format!("@\"{}\" = global i8* null", name));
+            b.silent();
+            b.line(format!("  store i8* {}, i8** @\"{}\"", ptr, name));
         } else {
             // int binding: rhs eval first, then slot + global + store
             // (spectral: rhs-created strings number before the slot)
@@ -5675,10 +5697,11 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 return Typed::Pyo(format!("%\"{}\"", l));
             }
             if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
-                || DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
-                // container globals: the slot is an i8* (raw list / dict
-                // pointer) - the old i64 fallback load was a wrong-type
-                // read (g3 probe evidence)
+                || DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
+                || global_ty_of(&n).is_some() {
+                // container/instance globals: the slot is an i8* - the
+                // old i64 fallback load was a wrong-type read (g3/g2
+                // probe evidence)
                 b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
                 return Typed::Inst(format!("%\"{}\"", l));
             }
@@ -5937,7 +5960,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             // enum value Tok.NUM or instance field self.toks / node.kind
             let base = e.get(1).get(1).str_of();
             let fld = e.get(2).str_of();
-            if let Some(cls) = fn_ty_of(&base) {
+            let cls_m = fn_ty_of(&base).or_else(|| global_ty_of(&base));
+            if let Some(cls) = cls_m {
                 let fields = class_fields(&cls)
                     .unwrap_or_else(|| bail("class fields"));
                 let (off, fty) = fields.iter().position(|(f, _)| f == &fld)
@@ -6069,7 +6093,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             // self.toks[i]: field-resolved list read
             let base = e.get(1);
             let bn = base.get(1).get(1).str_of();
-            let cls = fn_ty_of(&bn)
+            let cls = fn_ty_of(&bn).or_else(|| global_ty_of(&bn))
                 .unwrap_or_else(|| bail("attr subscript base"));
             let fields = class_fields(&cls)
                 .unwrap_or_else(|| bail("class fields"));
@@ -6388,7 +6412,51 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     return Typed::Inst(format!("%\"{}\"", c));
                 }
                 for (i, (_, fty)) in fields.iter().enumerate() {
-                    let av = eval_expr(b, &args[i], slot_i, slot_f, fslots);
+                    let av = if args[i].head() == "list"
+                        && fty.starts_with("list:") {
+                        // field-typed list literal: raw build in the
+                        // field's element context (the g1c probe) - the
+                        // context-free eval would box it
+                        let elty = fty.strip_prefix("list:")
+                            .unwrap_or("int").to_string();
+                        let c0 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"rawlist_new\"(i64 8)", c0));
+                        if let Val::List(vs) = &args[i].items().get(1)
+                            .cloned().unwrap_or(Val::Null) {
+                            for el in vs.iter() {
+                                let ev = eval_expr(b, el, slot_i, slot_f, fslots);
+                                match (&ev, elty.as_str()) {
+                                    (Typed::I64(r), "int") => {
+                                        let pu = b.nx();
+                                        b.line(format!(
+                                            "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 {})",
+                                            pu, c0, r));
+                                    }
+                                    (Typed::F64(r), "float") => {
+                                        let ib = b.nx();
+                                        b.line(format!(
+                                            "  %\"{}\" = bitcast double {} to i64", ib, r));
+                                        let pu = b.nx();
+                                        b.line(format!(
+                                            "  %\"{}\" = call i64 @\"rawlist_push\"(i8* %\"{}\", i64 {})",
+                                            pu, c0, ib));
+                                    }
+                                    (_, "str") => {
+                                        let r = to_raw(b, ev);
+                                        let pu = b.nx();
+                                        b.line(format!(
+                                            "  %\"{}\" = call i64 @\"rawlist_str_push\"(i8* %\"{}\", i8* {})",
+                                            pu, c0, r));
+                                    }
+                                    _ => bail("ctor list arg elem"),
+                                }
+                            }
+                        }
+                        Typed::Inst(format!("%\"{}\"", c0))
+                    } else {
+                        eval_expr(b, &args[i], slot_i, slot_f, fslots)
+                    };
                     // str fields: to_raw BEFORE the field gep (calc)
                     let av = match (&av, fty.as_str()) {
                         (Typed::Pyo(r), _) if is_obj_annotation(fty) => {
@@ -6674,21 +6742,29 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         CUR_FN.with(|f| f.borrow().clone()), e));
                 }
                 let bn = base.get(1).str_of();
-                let cls = fn_ty_of(&bn)
+                let cls = fn_ty_of(&bn).or_else(|| global_ty_of(&bn))
                     .unwrap_or_else(|| bail("method base type"));
                 let target = format!("{}__{}", cls, mname);
                 // method dispatch: double-load the base (calc evidence)
                 let _bv = eval_expr(b, &base, slot_i, slot_f, fslots);
                 let is_ptr = bn == "self" || inst_stor(&bn).is_none()
                     || inst_stor(&bn).as_deref() == Some("i8*");
+                // the receiver slot: local alloca %bn, module global @bn
+                // (global instance method call, g2m probe)
+                let rslot = if fn_ty_of(&bn).is_none()
+                    && global_ty_of(&bn).is_some() {
+                    format!("@\"{}\"", bn)
+                } else {
+                    format!("%\"{}\"", bn)
+                };
                 let or_ = {
                     let lv = b.nx();
                     if is_ptr {
-                        b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"",
-                            lv, bn));
+                        b.line(format!("  %\"{}\" = load i8*, i8** {}",
+                            lv, rslot));
                     } else {
-                        b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"",
-                            lv, bn));
+                        b.line(format!("  %\"{}\" = load i64, i64* {}",
+                            lv, rslot));
                         let pt = b.nx();
                         b.line(format!(
                             "  %\"{}\" = inttoptr i64 %\"{}\" to i8*",

@@ -1,0 +1,9 @@
+class C:
+    x: int
+    cps: list[int]
+    def val(self) -> int:
+        return self.x * 2
+
+c: C = C(21, [1, 2, 3])
+print(c.val())
+print(c.cps[1])
