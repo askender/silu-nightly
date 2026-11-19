@@ -89,6 +89,21 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   corpus 16/16、irvm 10/10×2、backend 18/18、wat2wasm 35/35、
   ruff 净、RSS 1.15MB（30 万链式 concat，修复前 6.1MB）。**版本重钉
   1.21.0**（v1.20.0 发布于 P9 输出变更之前）。
+- **g-清单闭合：语料压力五轮（2026-11-19/20，STATUS §3.24-3.27）**：
+  membership、pop/clear、dict 方法族（pop/setdefault/clear × str/int
+  key）、局部 dict 全族、模块级实例全局（GLOBAL_TY 注册表 + 方法调用
+  + ctor 字段上下文）、str-key store 验证（emit_pyobj_key_view 共享
+  机器）、装箱 join、丢弃式 rawstr 释放、alloca 收集序——全部四平面
+  字节对齐。**语料 22→27**（char_pair/list_ops/pop_clear/dict_ops/
+  record_global/dict_local 六枚钉板）。**m5 执行比对三次当场抓获 C
+  后端静默降级/SIGSEGV**（membership/pop_clear/dict_ops 三轮）；
+  ir2c 语句级响亮化落地（expr 级 0 降级为设计线：自举链 C 前端一直
+  带死值 0 工作，m5 执行比对守护值消费位点）。**教训**：rs 有两份
+  平行 name-eval 分发（eval_expr/eval_mod）——改 name 语义必须两处
+  同改；哈希探针必须与插入方同哈希；方法臂插入位置敏感（dict 臂
+  无类型门曾截走 list 的 clear → SIGSEGV）。g-list 终态：g1-g12
+  全部关闭或作废，唯余 dss 1 参 get（响亮 bail）。ll 27/27、ir 28/28、
+  pytest 1392/3。
 - **默认构建走运行时缓存（2026-11-18，STATUS.md §3.23）**：`silu build`
   470→210ms——运行时缓存快路径由 SILU_RUNTIME_CACHE=1 opt-in 翻转为
   默认（**=0 显式退出**，dynamic codegen 不缓存）；路径由 selfhost_build
