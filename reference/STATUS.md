@@ -1067,6 +1067,26 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   手伤（双引号/裸指针/漏改解包基址）——全部被探针字节 diff 当场
   抓获；py 的调用点逐参类型前缀（i64/i8*）继续是对齐的主坑。
 
+## 三点二十七、局部 dict 族 + 1 参装箱 get（g7 闭合，2026-11-20）
+
+- **局部 dict 全族字节对齐**：三处修复——①**len 臂的 dict 分支槽域**
+  （硬编码 @"n" → dct_slot：FN_D → %、否则 @；全局 dict 字节不变）；
+  ②**2 参 get 臂的槽域**（同上）；③**int/float 局部的 alloca 收集序**
+  （FN_ALLOCAS push 从 RHS 求值前移到后——py 在值存在后才声明局部，
+  竞争条目（dict key 视图）场景的 alloca 序才一致；list_ops/pop_clear
+  等既有语料无竞争条目、字节不变）。
+- **1 参装箱 get（has/phi 机器首次入 rs）**：key 视图先物化（两臂共享）
+  → rawdict_str_has → get_hit（rawdict_str_get + create_int）/
+  get_miss（null）→ **phi  {i32, i8*}***（llvmlite 双空格风格）→
+  unbox_int（模块级与局部 int ann_assign 的 Pyo unbox 边界补齐——
+  py 的 _coerce(OBJ→int) 对应物）。dss（str 值）1 参 get 未钉（响亮
+  bail：create_int 硬编码 int 值域）。
+- **新语料**：benchmarks/dict_local.si（局部 dict 全族：store/setdefault/
+  pop/clear/len/2 参 get/1 参装箱 get；interpret = native = ir2c =
+  1/1/2 一致）。ll 27/27、ir 28/28、corpus 计数 27。
+- **g-list 终态**：g1-g12 全部关闭或作废；唯余 dss 1 参 get（响亮
+  bail）。dict 家族四平面完整。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

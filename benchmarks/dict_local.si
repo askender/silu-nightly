@@ -1,0 +1,10 @@
+def f() -> int:
+    d: dict[str, int] = {}
+    d["a"] = 1
+    d.setdefault("b", 2)
+    v: int = d.pop("a")
+    print(v)
+    print(len(d))
+    return d.get("b", 0)
+
+print(f())

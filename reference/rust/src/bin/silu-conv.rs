@@ -2080,16 +2080,29 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             bail(&format!("dup local {} in {}", name,
                 CUR_FN.with(|f| f.borrow().clone())));
         }
-        FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), t.to_string())));
         let fs = F_SLOTS.with(|f| f.borrow().clone());
         let v = eval_mod(b, &init, &fs);
+        // the alloca joins the entry batch AFTER the RHS's own entry
+        // allocations - the Python twin declares the local once the
+        // value exists (the g7 probe's view/alloca interleaving)
+        FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), t.to_string())));
         if t == "float" {
             let r = to_f64(b, v);
             b.silent();
             b.line(format!("  store double {}, double* %\"{}\"", r, name));
             FN_F.with(|f| f.borrow_mut().push(name.clone()));
         } else {
-            let Typed::I64(r) = v else { bail("local init type") };
+            let r = match &v {
+                Typed::I64(r) => r.clone(),
+                Typed::Pyo(p) => {
+                    let u = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i64 @\"unbox_int\"({{i32, i8*}}* {})",
+                        u, p));
+                    format!("%\"{}\"", u)
+                }
+                _ => bail("local init type"),
+            };
             b.silent();
             b.line(format!("  store i64 {}, i64* %\"{}\"", r, name));
             FN_I.with(|f| f.borrow_mut().push(name.clone()));
@@ -2329,7 +2342,19 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             } else {
                 let fs = F_SLOTS.with(|f| f.borrow().clone());
                 let v = eval_mod(b, &init, &fs);
-                let Typed::I64(r) = v else { bail("ann_assign type") };
+                let r = match &v {
+                    Typed::I64(r) => r.clone(),
+                    // a boxed int result (the 1-arg dict get phi): the
+                    // Python twin unboxes at the coercion boundary
+                    Typed::Pyo(p) => {
+                        let u = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i64 @\"unbox_int\"({{i32, i8*}}* {})",
+                            u, p));
+                        format!("%\"{}\"", u)
+                    }
+                    _ => bail("ann_assign type"),
+                };
                 tail_push(format!("@\"{}\" = global i64 0", name));
                 b.silent();
                 b.line(format!("  store i64 {}, i64* @\"{}\"", r, name));
@@ -8717,7 +8742,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         }
         if DCT_SLOTS.with(|s| s.borrow().iter().any(|f| f == &n)) {
             let l = b.nx();
-            b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, n));
+            b.line(format!("  %\"{}\" = load i8*, i8** {}", l, dct_slot(&n)));
             let bc = b.nx();
             b.line(format!(
                 "  %\"{}\" = bitcast i8* %\"{}\" to {{i64, i64, i64, i64, i64*, i64*, i64*}}*",
@@ -8790,10 +8815,63 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
         // bitcast, load value (wordcount print arg evidence)
         let d = e.get(1).get(1).get(1).str_of();
         let args = e.get(2).items();
-        if args.len() != 2 { bail("get arity"); }
+        if args.len() != 1 && args.len() != 2 { bail("get arity"); }
         let dl = b.nx();
-        b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", dl, d));
+        b.line(format!("  %\"{}\" = load i8*, i8** {}", dl, dct_slot(&d)));
         let fs = F_SLOTS.with(|f| f.borrow().clone());
+        // 1-arg get: the boxed phi (present -> pint(value), missing ->
+        // null; the g7c probe). The key view materializes BEFORE the
+        // branch so both arms share it
+        if args.len() == 1 {
+            let karg = if args[0].head() == "const"
+                && matches!(args[0].get(1), Val::Str(_)) {
+                emit_const_key_view(b, &args[0].get(1).str_of())
+            } else {
+                let kv = eval_mod(b, &args[0], fslots);
+                match &kv {
+                    Typed::Str(r) => r.clone(),
+                    Typed::PStr(_) | Typed::Pyo(_) => {
+                        let py = to_pyobj(b, kv);
+                        emit_pyobj_key_view(b, &py)
+                    }
+                    _ => bail("dict key type"),
+                }
+            };
+            let h = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i1 @\"rawdict_str_has\"(i8* %\"{}\", i8* {})",
+                h, dl, karg));
+            let hit_lbl = b.uniq_label("get_hit");
+            let miss_lbl = b.uniq_label("get_miss");
+            b.silent();
+            b.line(format!(
+                "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+                h, hit_lbl, miss_lbl));
+            let hb = b.add_block(&hit_lbl);
+            b.pos(hb);
+            let g = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* %\"{}\", i8* {})",
+                g, dl, karg));
+            let bi = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 %\"{}\")",
+                bi, g));
+            b.silent();
+            b.line(format!("  br label %\"{}\"", "get_merge"));
+            let mb = b.add_block(&miss_lbl);
+            b.pos(mb);
+            b.silent();
+            b.line(format!("  br label %\"{}\"", "get_merge"));
+            let mg_lbl = b.uniq_label("get_merge");
+            let mg = b.add_block(&mg_lbl);
+            b.pos(mg);
+            let phi = b.nx();
+            b.line(format!(
+                "  %\"{}\" = phi  {{i32, i8*}}* [%\"{}\", %\"{}\"], [null, %\"{}\"]",
+                phi, bi, hit_lbl, miss_lbl));
+            return Typed::Pyo(format!("%\"{}\"", phi));
+        }
         if args[0].head() == "const" && matches!(args[0].get(1), Val::Str(_)) {
             let text = args[0].get(1).str_of();
             let def = args[1].get(1).int_of();

@@ -543,9 +543,11 @@ clear/setdefault × str/int key 域 + str-key store 的 tag 验证
 **ir2c 第三平面同轮补齐（2026-11-19）**：C 后端 dict 方法族（pop/
 setdefault/clear × dict/dicti）+ 助手；dicti 探针必须与 dicti_set 的
 ihash 同哈希（真哈希非恒等——探针错位 = 合法 key KeyError）。dict_ops
-经 C 平面对拍 CPython 一致。**仍未钉（响亮 bail = 纪律内 ERROR）**：
-g2/g1（模块级实例 ann_assign）、局部 dict 的 key/val 类型注册、get(k)
-单参装箱 phi。join 的 str 参数接收者已被全局
+经 C 平面对拍 CPython 一致。**g7 关闭（2026-11-20，STATUS §3.27）**：局部 dict 全族（方法臂槽域
+经 dct_slot、alloca 收集序对齐、1 参装箱 get 的 has/phi 机器首次入
+rs + 模块/局部 int ann_assign 的 Pyo unbox 边界）字节对齐。
+**g-list 终态：g1-g12 全部关闭或作废**；唯余 dss 1 参 get（响亮
+bail：create_int 硬编码 int 值域）。dict 家族四平面完整。join 的 str 参数接收者已被全局
 容器名 eval 修复带好（字节一致）。g2（模块级注解实例赋值）与 g4（链式构造）未复验。
 **隐式规约新增**：membership 实参的 str-coercion 临时**两平面一致
 泄漏**（py 的 _typed_contains RAWLIST_S 臂不释放——P9 consume 站点
