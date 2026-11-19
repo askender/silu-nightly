@@ -4783,11 +4783,9 @@ fn walk_module(stmts: &[Val]) -> Vec<Val> {
         b.silent(); // ret
         b.line("  ret i32 0".into());
     }
-    // the Python twin's inter-function blank precedes main; with user
-    // functions the last fn's own trailing blank already provides it
-    let no_user_fns = FUNC_DEFS.with(|f| f.borrow().is_empty());
-    let main_sep = if no_user_fns { "\n" } else { "" };
-    let mut out = b.render(&format!("{main_sep}define i32 @\"main\"()\n"));
+    // the b.render tail already ends with the inter-function blank
+    // (the blocks' rendering); py's main follows the same single blank
+    let mut out = b.render("define i32 @\"main\"()\n");
     let mut alloca_lines = String::new();
     MAIN_ALLOCAS.with(|m| {
         for vn in m.borrow().iter().rev() {
@@ -6671,27 +6669,46 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 // global gep + constant length; raw vars pass their
                 // buffer; the receiver's coercion temp dies after the
                 // call on both planes
+                let is_str_family = matches!(mname.as_str(), "strip" | "split"
+                    | "replace" | "lower" | "upper" | "find" | "index"
+                    | "startswith" | "endswith" | "isdigit" | "isalpha"
+                    | "isspace");
+                if is_str_family {
+
                 let sv = eval_expr(b, &base, slot_i, slot_f, fslots);
                 let owned = matches!(sv, Typed::PStr(_) | Typed::Pyo(_));
                 let sv_keep = sv.clone();
                 let s_ptr = to_raw(b, sv);
-                let args = e.get(2).items();
-                if mname == "strip" && args.is_empty() {
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_strip\"(i8* {})", c, s_ptr));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", c));
-                }
-                if mname == "split" {
-                    if args.is_empty() {
+                    let args = e.get(2).items();
+                    if mname == "strip" && args.is_empty() {
                         let c = b.nx();
                         b.line(format!(
-                            "  %\"{}\" = call i8* @\"rawstr_split_ws\"(i8* {})", c, s_ptr));
+                            "  %\"{}\" = call i8* @\"rawstr_strip\"(i8* {})", c, s_ptr));
+                        if owned {
+                            b.silent();
+                            b.line(format!(
+                                "  call void @\"rawstr_free\"(i8* {})", s_ptr));
+                        }
+                        return Typed::Str(format!("%\"{}\"", c));
+                    }
+                    if mname == "split" {
+                        if args.is_empty() {
+                            let c = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"rawstr_split_ws\"(i8* {})", c, s_ptr));
+                            if owned {
+                                b.silent();
+                                b.line(format!(
+                                    "  call void @\"rawstr_free\"(i8* {})", s_ptr));
+                            }
+                            return Typed::Inst(format!("%\"{}\"", c));
+                        }
+                        let (dtext, ltext) = emit_rawstr_append_data(
+                            b, &args[0], slot_i, slot_f, fslots);
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"rawstr_split_sep\"(i8* {}, i8* {}, i64 {})",
+                            c, s_ptr, dtext, ltext));
                         if owned {
                             b.silent();
                             b.line(format!(
@@ -6699,587 +6716,136 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         }
                         return Typed::Inst(format!("%\"{}\"", c));
                     }
-                    let (dtext, ltext) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_split_sep\"(i8* {}, i8* {}, i64 {})",
-                        c, s_ptr, dtext, ltext));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Inst(format!("%\"{}\"", c));
-                }
-                if mname == "replace" && args.len() == 2 {
-                    let (otext, olen) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let (ntext, nlen) = emit_rawstr_append_data(
-                        b, &args[1], slot_i, slot_f, fslots);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_replace\"(i8* {}, i8* {}, i64 {}, i8* {}, i64 {})",
-                        c, s_ptr, otext, olen, ntext, nlen));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", c));
-                }
-                // str lower/upper: the boxed round-trip (to_pystr ->
-                // str_lower/upper -> pystr_to_rawstr; the g-lower probe)
-                if mname == "lower" || mname == "upper" {
-                    let fn_name = if mname == "lower" { "str_lower" }
-                                  else { "str_upper" };
-                    let ps = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* {})",
-                        ps, s_ptr));
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"{}\"({{i32, i8*}}* %\"{}\")",
-                        c, fn_name, ps));
-                    let pr = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
-                        pr, c));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", pr));
-                }
-                // str predicates/search: startswith/endswith via the
-                // append-operand (data+length); isdigit/isalpha/isspace
-                // raw; find/index in the BOXED domain (str_find/
-                // list_index - the Python twin's dispatch, the find probe)
-                if mname == "startswith" || mname == "endswith" {
-                    if args.len() != 1 { bail("starts/ends arity"); }
-                    let (dtext, ltext) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let fn_name = if mname == "startswith" {
-                        "rawstr_starts_with"
-                    } else {
-                        "rawstr_ends_with"
-                    };
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i1 @\"{}\"(i8* {}, i8* {}, i64 {})",
-                        c, fn_name, s_ptr, dtext, ltext));
-                    return Typed::Bool(format!("%\"{}\"", c));
-                }
-                if mname == "isdigit" || mname == "isalpha"
-                    || mname == "isspace" {
-                    let fn_name = format!("rawstr_{}", mname);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i1 @\"{}\"(i8* {})", c, fn_name, s_ptr));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Bool(format!("%\"{}\"", c));
-                }
-                if mname == "find" && args.len() == 1 {
-                    let ps = to_pyobj(b, sv_keep);
-                    let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                    let ap = to_pyobj(b, av);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
-                        c, ps, ap));
-                    return Typed::Pyo(format!("%\"{}\"", c));
-                }
-                if mname == "index" && args.len() == 1 {
-                    // str.index(sub): the boxed str_find (the cp
-                    // position) + the ValueError panic on the miss - the
-                    // old list_index dispatch's element loop never
-                    // matched a str receiver (the silent -1)
-                    let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                    let ap = to_pyobj(b, av);
-                    let ps = to_pyobj(b, sv_keep);
-                    let f = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
-                        f, ps, ap));
-                    // the Python twin's _load_number_as_i64 shape:
-                    // field1 payload -> bitcast i64* -> load
-                    let g1 = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 1",
-                        g1, f));
-                    let pay = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i8*, i8** %\"{}\"", pay, g1));
-                    let bc = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, pay));
-                    let idx = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i64, i64* %\"{}\"", idx, bc));
-                    let neg = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = icmp slt i64 %\"{}\", 0", neg, idx));
-                    let err_lbl = b.uniq_label("panic_bad");
-                    let ok_lbl = b.uniq_label("panic_ok");
-                    b.silent();
-                    b.line(format!(
-                        "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
-                        neg, err_lbl, ok_lbl));
-                    let eb = b.add_block(&err_lbl);
-                    b.emit_panic_body(eb, "ValueError: substring not found");
-                    let ob = b.add_block(&ok_lbl);
-                    b.pos(ob);
-                    return Typed::I64(format!("%\"{}\"", idx));
-                }
-                // list pop/clear: the Python twin's rawlist_pop family
-                // (g5 probe). pop yields the element (str elems via
-                // rawlist_str_pop - the buffer moves to the consumer,
-                // no copy); clear discards and returns the container
-                if base.head() == "name" && (mname == "pop" || mname == "clear") {
-                    let bn = base.get(1).str_of();
-                    let is_list_slot =
-                        FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &bn))
-                        || LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn));
-                    if is_list_slot {
-                        let l = b.nx();
-                        b.line(format!("  %\"{}\" = load i8*, i8** {}",
-                            l, lst_slot(&bn)));
-                        if mname == "clear" {
-                            b.silent();
-                            b.line(format!(
-                                "  call void @\"rawlist_clear\"(i8* %\"{}\")", l));
-                            return Typed::Inst(format!("%\"{}\"", l));
-                        }
-                        if lst_elem_ty(&bn) == "str" {
-                            let c = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = call i8* @\"rawlist_str_pop\"(i8* %\"{}\")",
-                                c, l));
-                            return Typed::Str(format!("%\"{}\"", c));
-                        }
+                    if mname == "replace" && args.len() == 2 {
+                        let (otext, olen) = emit_rawstr_append_data(
+                            b, &args[0], slot_i, slot_f, fslots);
+                        let (ntext, nlen) = emit_rawstr_append_data(
+                            b, &args[1], slot_i, slot_f, fslots);
                         let c = b.nx();
                         b.line(format!(
-                            "  %\"{}\" = call i64 @\"rawlist_pop\"(i8* %\"{}\")",
-                            c, l));
-                        return Typed::I64(format!("%\"{}\"", c));
-                    }
-                }
-                // str strip/split/replace: the Python twin's raw
-                // method family (the strv probe). Const args pass their
-                // global gep + constant length; raw vars pass their
-                // buffer; the receiver's coercion temp dies after the
-                // call on both planes
-                let sv = eval_expr(b, &base, slot_i, slot_f, fslots);
-                let owned = matches!(sv, Typed::PStr(_) | Typed::Pyo(_));
-                let sv_keep = sv.clone();
-                let s_ptr = to_raw(b, sv);
-                let args = e.get(2).items();
-                if mname == "strip" && args.is_empty() {
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_strip\"(i8* {})", c, s_ptr));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", c));
-                }
-                if mname == "split" {
-                    if args.is_empty() {
-                        let c = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = call i8* @\"rawstr_split_ws\"(i8* {})", c, s_ptr));
+                            "  %\"{}\" = call i8* @\"rawstr_replace\"(i8* {}, i8* {}, i64 {}, i8* {}, i64 {})",
+                            c, s_ptr, otext, olen, ntext, nlen));
                         if owned {
                             b.silent();
                             b.line(format!(
                                 "  call void @\"rawstr_free\"(i8* {})", s_ptr));
                         }
-                        return Typed::Inst(format!("%\"{}\"", c));
+                        return Typed::Str(format!("%\"{}\"", c));
                     }
-                    let (dtext, ltext) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_split_sep\"(i8* {}, i8* {}, i64 {})",
-                        c, s_ptr, dtext, ltext));
-                    if owned {
-                        b.silent();
+                    // str lower/upper: the boxed round-trip (to_pystr ->
+                    // str_lower/upper -> pystr_to_rawstr; the g-lower probe)
+                    if mname == "lower" || mname == "upper" {
+                        let fn_name = if mname == "lower" { "str_lower" }
+                                      else { "str_upper" };
+                        let ps = b.nx();
                         b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Inst(format!("%\"{}\"", c));
-                }
-                if mname == "replace" && args.len() == 2 {
-                    let (otext, olen) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let (ntext, nlen) = emit_rawstr_append_data(
-                        b, &args[1], slot_i, slot_f, fslots);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_replace\"(i8* {}, i8* {}, i64 {}, i8* {}, i64 {})",
-                        c, s_ptr, otext, olen, ntext, nlen));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", c));
-                }
-                // str lower/upper: the boxed round-trip (to_pystr ->
-                // str_lower/upper -> pystr_to_rawstr; the g-lower probe)
-                if mname == "lower" || mname == "upper" {
-                    let fn_name = if mname == "lower" { "str_lower" }
-                                  else { "str_upper" };
-                    let ps = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* {})",
-                        ps, s_ptr));
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"{}\"({{i32, i8*}}* %\"{}\")",
-                        c, fn_name, ps));
-                    let pr = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
-                        pr, c));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", pr));
-                }
-                // str predicates/search: startswith/endswith via the
-                // append-operand (data+length); isdigit/isalpha/isspace
-                // raw; find/index in the BOXED domain (str_find/
-                // list_index - the Python twin's dispatch, the find probe)
-                if mname == "startswith" || mname == "endswith" {
-                    if args.len() != 1 { bail("starts/ends arity"); }
-                    let (dtext, ltext) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let fn_name = if mname == "startswith" {
-                        "rawstr_starts_with"
-                    } else {
-                        "rawstr_ends_with"
-                    };
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i1 @\"{}\"(i8* {}, i8* {}, i64 {})",
-                        c, fn_name, s_ptr, dtext, ltext));
-                    return Typed::Bool(format!("%\"{}\"", c));
-                }
-                if mname == "isdigit" || mname == "isalpha"
-                    || mname == "isspace" {
-                    let fn_name = format!("rawstr_{}", mname);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i1 @\"{}\"(i8* {})", c, fn_name, s_ptr));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Bool(format!("%\"{}\"", c));
-                }
-                if mname == "find" && args.len() == 1 {
-                    let ps = to_pyobj(b, sv_keep);
-                    let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                    let ap = to_pyobj(b, av);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
-                        c, ps, ap));
-                    return Typed::Pyo(format!("%\"{}\"", c));
-                }
-                if mname == "index" && args.len() == 1 {
-                    // str.index(sub): the boxed str_find (the cp
-                    // position) + the ValueError panic on the miss - the
-                    // old list_index dispatch's element loop never
-                    // matched a str receiver (the silent -1)
-                    let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                    let ap = to_pyobj(b, av);
-                    let ps = to_pyobj(b, sv_keep);
-                    let f = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
-                        f, ps, ap));
-                    // the Python twin's _load_number_as_i64 shape:
-                    // field1 payload -> bitcast i64* -> load
-                    let g1 = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 1",
-                        g1, f));
-                    let pay = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i8*, i8** %\"{}\"", pay, g1));
-                    let bc = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, pay));
-                    let idx = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i64, i64* %\"{}\"", idx, bc));
-                    let neg = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = icmp slt i64 %\"{}\", 0", neg, idx));
-                    let err_lbl = b.uniq_label("panic_bad");
-                    let ok_lbl = b.uniq_label("panic_ok");
-                    b.silent();
-                    b.line(format!(
-                        "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
-                        neg, err_lbl, ok_lbl));
-                    let eb = b.add_block(&err_lbl);
-                    b.emit_panic_body(eb, "ValueError: substring not found");
-                    let ob = b.add_block(&ok_lbl);
-                    b.pos(ob);
-                    return Typed::I64(format!("%\"{}\"", idx));
-                }
-                // list pop/clear: the Python twin's rawlist_pop family
-                // (g5 probe). pop yields the element (str elems via
-                // rawlist_str_pop - the buffer moves to the consumer,
-                // no copy); clear discards and returns the container
-                if base.head() == "name" && (mname == "pop" || mname == "clear") {
-                    let bn = base.get(1).str_of();
-                    let is_list_slot =
-                        FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &bn))
-                        || LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn));
-                    if is_list_slot {
-                        let l = b.nx();
-                        b.line(format!("  %\"{}\" = load i8*, i8** {}",
-                            l, lst_slot(&bn)));
-                        if mname == "clear" {
-                            b.silent();
-                            b.line(format!(
-                                "  call void @\"rawlist_clear\"(i8* %\"{}\")", l));
-                            return Typed::Inst(format!("%\"{}\"", l));
-                        }
-                        if lst_elem_ty(&bn) == "str" {
-                            let c = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = call i8* @\"rawlist_str_pop\"(i8* %\"{}\")",
-                                c, l));
-                            return Typed::Str(format!("%\"{}\"", c));
-                        }
+                            "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* {})",
+                            ps, s_ptr));
                         let c = b.nx();
                         b.line(format!(
-                            "  %\"{}\" = call i64 @\"rawlist_pop\"(i8* %\"{}\")",
-                            c, l));
-                        return Typed::I64(format!("%\"{}\"", c));
-                    }
-                }
-                // list pop/clear: the Python twin's rawlist_pop family
-                // (g5 probe). pop yields the element (str elems via
-                // rawlist_str_pop - the buffer moves to the consumer,
-                // no copy); clear discards and returns the container
-                if base.head() == "name" && (mname == "pop" || mname == "clear") {
-                    let bn = base.get(1).str_of();
-                    let is_list_slot =
-                        FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &bn))
-                        || LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn));
-                    if is_list_slot {
-                        let l = b.nx();
-                        b.line(format!("  %\"{}\" = load i8*, i8** {}",
-                            l, lst_slot(&bn)));
-                        if mname == "clear" {
-                            b.silent();
-                            b.line(format!(
-                                "  call void @\"rawlist_clear\"(i8* %\"{}\")", l));
-                            return Typed::Inst(format!("%\"{}\"", l));
-                        }
-                        if lst_elem_ty(&bn) == "str" {
-                            let c = b.nx();
-                            b.line(format!(
-                                "  %\"{}\" = call i8* @\"rawlist_str_pop\"(i8* %\"{}\")",
-                                c, l));
-                            return Typed::Str(format!("%\"{}\"", c));
-                        }
-                        let c = b.nx();
+                            "  %\"{}\" = call {{i32, i8*}}* @\"{}\"({{i32, i8*}}* %\"{}\")",
+                            c, fn_name, ps));
+                        let pr = b.nx();
                         b.line(format!(
-                            "  %\"{}\" = call i64 @\"rawlist_pop\"(i8* %\"{}\")",
-                            c, l));
-                        return Typed::I64(format!("%\"{}\"", c));
-                    }
-                }
-                // str strip/split/replace: the Python twin's raw
-                // method family (the strv probe). Const args pass their
-                // global gep + constant length; raw vars pass their
-                // buffer; the receiver's coercion temp dies after the
-                // call on both planes
-                let sv = eval_expr(b, &base, slot_i, slot_f, fslots);
-                let owned = matches!(sv, Typed::PStr(_) | Typed::Pyo(_));
-                let sv_keep = sv.clone();
-                let s_ptr = to_raw(b, sv);
-                let args = e.get(2).items();
-                if mname == "strip" && args.is_empty() {
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_strip\"(i8* {})", c, s_ptr));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", c));
-                }
-                if mname == "split" {
-                    if args.is_empty() {
-                        let c = b.nx();
-                        b.line(format!(
-                            "  %\"{}\" = call i8* @\"rawstr_split_ws\"(i8* {})", c, s_ptr));
+                            "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
+                            pr, c));
                         if owned {
                             b.silent();
                             b.line(format!(
                                 "  call void @\"rawstr_free\"(i8* {})", s_ptr));
                         }
-                        return Typed::Inst(format!("%\"{}\"", c));
+                        return Typed::Str(format!("%\"{}\"", pr));
                     }
-                    let (dtext, ltext) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_split_sep\"(i8* {}, i8* {}, i64 {})",
-                        c, s_ptr, dtext, ltext));
-                    if owned {
+                    // str predicates/search: startswith/endswith via the
+                    // append-operand (data+length); isdigit/isalpha/isspace
+                    // raw; find/index in the BOXED domain (str_find/
+                    // list_index - the Python twin's dispatch, the find probe)
+                    if mname == "startswith" || mname == "endswith" {
+                        if args.len() != 1 { bail("starts/ends arity"); }
+                        let (dtext, ltext) = emit_rawstr_append_data(
+                            b, &args[0], slot_i, slot_f, fslots);
+                        let fn_name = if mname == "startswith" {
+                            "rawstr_starts_with"
+                        } else {
+                            "rawstr_ends_with"
+                        };
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i1 @\"{}\"(i8* {}, i8* {}, i64 {})",
+                            c, fn_name, s_ptr, dtext, ltext));
+                        return Typed::Bool(format!("%\"{}\"", c));
+                    }
+                    if mname == "isdigit" || mname == "isalpha"
+                        || mname == "isspace" {
+                        let fn_name = format!("rawstr_{}", mname);
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i1 @\"{}\"(i8* {})", c, fn_name, s_ptr));
+                        if owned {
+                            b.silent();
+                            b.line(format!(
+                                "  call void @\"rawstr_free\"(i8* {})", s_ptr));
+                        }
+                        return Typed::Bool(format!("%\"{}\"", c));
+                    }
+                    if mname == "find" && args.len() == 1 {
+                        let ps = to_pyobj(b, sv_keep);
+                        let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                        let ap = to_pyobj(b, av);
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
+                            c, ps, ap));
+                        return Typed::Pyo(format!("%\"{}\"", c));
+                    }
+                    if mname == "index" && args.len() == 1 {
+                        // str.index(sub): the boxed str_find (the cp
+                        // position) + the ValueError panic on the miss - the
+                        // old list_index dispatch's element loop never
+                        // matched a str receiver (the silent -1)
+                        let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                        let ap = to_pyobj(b, av);
+                        let ps = to_pyobj(b, sv_keep);
+                        let f = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
+                            f, ps, ap));
+                        // the Python twin's _load_number_as_i64 shape:
+                        // field1 payload -> bitcast i64* -> load
+                        let g1 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 1",
+                            g1, f));
+                        let pay = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i8*, i8** %\"{}\"", pay, g1));
+                        let bc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, pay));
+                        let idx = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i64, i64* %\"{}\"", idx, bc));
+                        let neg = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = icmp slt i64 %\"{}\", 0", neg, idx));
+                        let err_lbl = b.uniq_label("panic_bad");
+                        let ok_lbl = b.uniq_label("panic_ok");
                         b.silent();
                         b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
+                            "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+                            neg, err_lbl, ok_lbl));
+                        let eb = b.add_block(&err_lbl);
+                        b.emit_panic_body(eb, "ValueError: substring not found");
+                        let ob = b.add_block(&ok_lbl);
+                        b.pos(ob);
+                        return Typed::I64(format!("%\"{}\"", idx));
                     }
-                    return Typed::Inst(format!("%\"{}\"", c));
-                }
-                if mname == "replace" && args.len() == 2 {
-                    let (otext, olen) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let (ntext, nlen) = emit_rawstr_append_data(
-                        b, &args[1], slot_i, slot_f, fslots);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_replace\"(i8* {}, i8* {}, i64 {}, i8* {}, i64 {})",
-                        c, s_ptr, otext, olen, ntext, nlen));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", c));
-                }
-                // str lower/upper: the boxed round-trip (to_pystr ->
-                // str_lower/upper -> pystr_to_rawstr; the g-lower probe)
-                if mname == "lower" || mname == "upper" {
-                    let fn_name = if mname == "lower" { "str_lower" }
-                                  else { "str_upper" };
-                    let ps = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* {})",
-                        ps, s_ptr));
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"{}\"({{i32, i8*}}* %\"{}\")",
-                        c, fn_name, ps));
-                    let pr = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
-                        pr, c));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Str(format!("%\"{}\"", pr));
-                }
-                // str predicates/search: startswith/endswith via the
-                // append-operand (data+length); isdigit/isalpha/isspace
-                // raw; find/index in the BOXED domain (str_find/
-                // list_index - the Python twin's dispatch, the find probe)
-                if mname == "startswith" || mname == "endswith" {
-                    if args.len() != 1 { bail("starts/ends arity"); }
-                    let (dtext, ltext) = emit_rawstr_append_data(
-                        b, &args[0], slot_i, slot_f, fslots);
-                    let fn_name = if mname == "startswith" {
-                        "rawstr_starts_with"
-                    } else {
-                        "rawstr_ends_with"
-                    };
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i1 @\"{}\"(i8* {}, i8* {}, i64 {})",
-                        c, fn_name, s_ptr, dtext, ltext));
-                    return Typed::Bool(format!("%\"{}\"", c));
-                }
-                if mname == "isdigit" || mname == "isalpha"
-                    || mname == "isspace" {
-                    let fn_name = format!("rawstr_{}", mname);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call i1 @\"{}\"(i8* {})", c, fn_name, s_ptr));
-                    if owned {
-                        b.silent();
-                        b.line(format!(
-                            "  call void @\"rawstr_free\"(i8* {})", s_ptr));
-                    }
-                    return Typed::Bool(format!("%\"{}\"", c));
-                }
-                if mname == "find" && args.len() == 1 {
-                    let ps = to_pyobj(b, sv_keep);
-                    let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                    let ap = to_pyobj(b, av);
-                    let c = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
-                        c, ps, ap));
-                    return Typed::Pyo(format!("%\"{}\"", c));
-                }
-                if mname == "index" && args.len() == 1 {
-                    // str.index(sub): the boxed str_find (the cp
-                    // position) + the ValueError panic on the miss - the
-                    // old list_index dispatch's element loop never
-                    // matched a str receiver (the silent -1)
-                    let av = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                    let ap = to_pyobj(b, av);
-                    let ps = to_pyobj(b, sv_keep);
-                    let f = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = call {{i32, i8*}}* @\"str_find\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
-                        f, ps, ap));
-                    // the Python twin's _load_number_as_i64 shape:
-                    // field1 payload -> bitcast i64* -> load
-                    let g1 = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = getelementptr {{i32, i8*}}, {{i32, i8*}}* %\"{}\", i32 0, i32 1",
-                        g1, f));
-                    let pay = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i8*, i8** %\"{}\"", pay, g1));
-                    let bc = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, pay));
-                    let idx = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = load i64, i64* %\"{}\"", idx, bc));
-                    let neg = b.nx();
-                    b.line(format!(
-                        "  %\"{}\" = icmp slt i64 %\"{}\", 0", neg, idx));
-                    let err_lbl = b.uniq_label("panic_bad");
-                    let ok_lbl = b.uniq_label("panic_ok");
-                    b.silent();
-                    b.line(format!(
-                        "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
-                        neg, err_lbl, ok_lbl));
-                    let eb = b.add_block(&err_lbl);
-                    b.emit_panic_body(eb, "ValueError: substring not found");
-                    let ob = b.add_block(&ok_lbl);
-                    b.pos(ob);
-                    return Typed::I64(format!("%\"{}\"", idx));
-                }
-                // list pop/clear: the Python twin's rawlist_pop family
-                // (g5 probe). pop yields the element (str elems via
-                // rawlist_str_pop - the buffer moves to the consumer,
-                // no copy); clear discards and returns the container
+                    // list pop/clear: the Python twin's rawlist_pop family
+                    // (g5 probe). pop yields the element (str elems via
+                    // rawlist_str_pop - the buffer moves to the consumer,
+                    // no copy); clear discards and returns the container
                 if base.head() == "name" && (mname == "pop" || mname == "clear") {
+                }
                     let bn = base.get(1).str_of();
                     let is_list_slot =
                         FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &bn))
@@ -9865,14 +9431,28 @@ fn main() {
     let mut out = String::new();
     out.push_str(CONST_PREFIX);
     if TAGGED.with(|t| *t.borrow()) {
+        // the CONST tail ends with a single newline: the inter-function
+        // blank before the tagged runtime is ours to emit
+        out.push('\n');
         out.push_str(TAGGED_PREFIX);
-        out.push('\n'); // blank line before the first user function
+    } else {
+        // the same boundary for the non-tagged path: the blank before
+        // the first user function (jsonparse evidence)
+        out.push('\n');
     }
+    let mut first_user_fn = true;
     for fd in &func_defs {
-        // the Python twin's inter-function blank precedes each function
-        out.push_str("\n");
+        // the tagged runtime's tail ends without a blank: the first
+        // user fn's preceding blank is ours (the jsonparse probe)
+        if first_user_fn {
+            out.push_str("\n");
+            first_user_fn = false;
+        }
         out.push_str(&convert_func(fd));
     }
+    // the last user fn's trailing blank covers the fn->main boundary
+    // for multi-fn modules; fn-less modules need ours (the CONST tail
+    // ends with a single newline)
     let mo = MAIN_OUT.with(|m| m.borrow().clone()).unwrap();
     out.push_str(&mo);
     // tail globals: strict creation order (strings and vars interleaved)
