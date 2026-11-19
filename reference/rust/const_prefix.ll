@@ -8034,6 +8034,89 @@ ss_tail:
 }
 
 @"str.ValueError_3a_20empty_20separator" = constant [28 x i8] c"ValueError: empty separator\00"
+define i8* @"rawstr_replace"(i8* %".1", i8* %".2", i64 %".3", i8* %".4", i64 %".5")
+{
+entry:
+  %".7" = bitcast i8* %".1" to {i64, i64, i8*, i64}*
+  %".8" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".7", i32 0, i32 2
+  %".9" = load i8*, i8** %".8"
+  %".10" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".7", i32 0, i32 0
+  %".11" = load i64, i64* %".10"
+  %".12" = icmp eq i64 %".3", 0
+  br i1 %".12", label %"rp_empty", label %"rp_init"
+rp_empty:
+  ret i8* %".1"
+rp_init:
+  %".15" = call i8* @"rawstr_new_copy"(i8* %".9", i64 0)
+  %"rp_acc" = alloca i8*
+  store i8* %".15", i8** %"rp_acc"
+  %"rp_i" = alloca i64
+  %"rp_start" = alloca i64
+  %"rp_j" = alloca i64
+  store i64 0, i64* %"rp_i"
+  store i64 0, i64* %"rp_start"
+  br label %"rp_cond"
+rp_cond:
+  %".20" = load i64, i64* %"rp_i"
+  %".21" = add i64 %".20", %".3"
+  %".22" = icmp sle i64 %".21", %".11"
+  br i1 %".22", label %"rp_mcond", label %"rp_tail"
+rp_mcond:
+  store i64 0, i64* %"rp_j"
+  br label %"rp_mbody"
+rp_mbody:
+  %".26" = load i64, i64* %"rp_j"
+  %".27" = icmp slt i64 %".26", %".3"
+  br i1 %".27", label %"rp_mcmp", label %"rp_match"
+rp_mcmp:
+  %".29" = load i64, i64* %"rp_i"
+  %".30" = add i64 %".29", %".26"
+  %".31" = getelementptr i8, i8* %".9", i64 %".30"
+  %".32" = load i8, i8* %".31"
+  %".33" = getelementptr i8, i8* %".2", i64 %".26"
+  %".34" = load i8, i8* %".33"
+  %".35" = icmp eq i8 %".32", %".34"
+  br i1 %".35", label %"rp_mnext", label %"rp_adv"
+rp_mnext:
+  %".37" = add i64 %".26", 1
+  store i64 %".37", i64* %"rp_j"
+  br label %"rp_mbody"
+rp_match:
+  %".40" = load i64, i64* %"rp_i"
+  %".41" = load i64, i64* %"rp_start"
+  %".42" = load i8*, i8** %"rp_acc"
+  %".43" = getelementptr i8, i8* %".9", i64 %".41"
+  %".44" = sub i64 %".40", %".41"
+  %".45" = call i8* @"rawstr_new_copy"(i8* %".43", i64 %".44")
+  %".46" = call i8* @"rawstr_concat"(i8* %".42", i8* %".45")
+  call void @"rawstr_free"(i8* %".45")
+  call void @"rawstr_free"(i8* %".42")
+  %".49" = call i8* @"rawstr_new_copy"(i8* %".4", i64 %".5")
+  %".50" = call i8* @"rawstr_concat"(i8* %".46", i8* %".49")
+  call void @"rawstr_free"(i8* %".49")
+  call void @"rawstr_free"(i8* %".46")
+  store i8* %".50", i8** %"rp_acc"
+  %".54" = add i64 %".40", %".3"
+  store i64 %".54", i64* %"rp_i"
+  store i64 %".54", i64* %"rp_start"
+  br label %"rp_cond"
+rp_adv:
+  %".58" = load i64, i64* %"rp_i"
+  %".59" = add i64 %".58", 1
+  store i64 %".59", i64* %"rp_i"
+  br label %"rp_cond"
+rp_tail:
+  %".62" = load i64, i64* %"rp_start"
+  %".63" = load i8*, i8** %"rp_acc"
+  %".64" = getelementptr i8, i8* %".9", i64 %".62"
+  %".65" = sub i64 %".11", %".62"
+  %".66" = call i8* @"rawstr_new_copy"(i8* %".64", i64 %".65")
+  %".67" = call i8* @"rawstr_concat"(i8* %".63", i8* %".66")
+  call void @"rawstr_free"(i8* %".66")
+  call void @"rawstr_free"(i8* %".63")
+  ret i8* %".67"
+}
+
 define void @"rawlist_str_set"(i8* %".1", i64 %".2", i8* %".3")
 {
 entry:
@@ -9471,4 +9554,3 @@ entry:
   %".44" = select  i1 %".41", {i32, i8*}* %".42", {i32, i8*}* %".43"
   ret {i32, i8*}* %".44"
 }
-

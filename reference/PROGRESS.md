@@ -547,7 +547,14 @@ ihash 同哈希（真哈希非恒等——探针错位 = 合法 key KeyError）�
 经 dct_slot、alloca 收集序对齐、1 参装箱 get 的 has/phi 机器首次入
 rs + 模块/局部 int ann_assign 的 Pyo unbox 边界）字节对齐。
 **g-list 终态：g1-g12 全部关闭或作废**；唯余 dss 1 参 get（响亮
-bail：create_int 硬编码 int 值域）。dict 家族四平面完整。join 的 str 参数接收者已被全局
+bail：create_int 硬编码 int 值域）。dict 家族四平面完整。
+
+**str 方法族轮（2026-11-20，WIP）**：strip/split/replace/lower/upper/
+find/index/谓词/print-bool 四平面落地（**index 语义修复**：原 list_index
+分派对 str 接收者静默 -1，改 str_find + ValueError panic）；replace =
+新 .ll 运行时 rawstr_replace（append 风格签名）+ const_prefix.ll 重生成。
+四平面执行 = CPython ✓；ll parity 15/29——14 文件细粒度差异（dict 方法
+臂形状 + 2 字节项）入档 STATUS §3.28，下一轮首项。join 的 str 参数接收者已被全局
 容器名 eval 修复带好（字节一致）。g2（模块级注解实例赋值）与 g4（链式构造）未复验。
 **隐式规约新增**：membership 实参的 str-coercion 临时**两平面一致
 泄漏**（py 的 _typed_contains RAWLIST_S 臂不释放——P9 consume 站点

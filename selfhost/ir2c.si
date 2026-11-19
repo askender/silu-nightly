@@ -1233,6 +1233,26 @@ class Gen:
                 return te(fn_s + "(" + recv2.text + ", " + arg0.text + ")", "bool")
             if mname == "join":
                 return te("str_join(" + arg0.text + ", " + recv2.text + ")", "str")
+            if mname == "replace" and len(args.arr) == 2:
+                a1r: TE = self.expr(elem(args, 1))
+                return te("str_replace(" + recv2.text + ", " + arg0.text + ", " + a1r.text + ")", "str")
+            if mname == "strip" and len(args.arr) == 0:
+                return te("str_strip(" + recv2.text + ")", "str")
+            if mname == "lower" and len(args.arr) == 0:
+                return te("str_lower(" + recv2.text + ")", "str")
+            if mname == "upper" and len(args.arr) == 0:
+                return te("str_upper(" + recv2.text + ")", "str")
+            if mname == "find" and len(args.arr) == 1:
+                a0f: TE = self.expr(elem(args, 0))
+                return te("str_find(" + recv2.text + ", " + a0f.text + ")", "int")
+            if mname == "index" and len(args.arr) == 1:
+                a0i: TE = self.expr(elem(args, 0))
+                return te("str_index(" + recv2.text + ", " + a0i.text + ")", "int")
+            if mname == "split" and len(args.arr) <= 1:
+                if len(args.arr) == 0:
+                    return te("str_split_ws(" + recv2.text + ")", "list:str")
+                a0s: TE = self.expr(elem(args, 0))
+                return te("str_split(" + recv2.text + ", " + a0s.text + ")", "list:str")
             if mname == "isdigit":
                 return te("str_isdigit(" + recv2.text + ")", "bool")
             if mname == "isalpha":
@@ -2422,6 +2442,17 @@ RUNTIME: list[str] = [
     "static int64_t dict_get(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return d->ents[j].val; j = (j + 1) % d->cap; } return 0; }",
     "static int str_starts_with(Str* s, Str* p) { return s->len >= p->len && memcmp(s->data, p->data, p->len) == 0; }",
     "static int str_ends_with(Str* s, Str* p) { return s->len >= p->len && memcmp(s->data + s->len - p->len, p->data, p->len) == 0; }",
+    "static Str* str_replace(Str* s, Str* old, Str* nw) { if (old->len == 0) return s; int64_t cnt = 0; for (int64_t i = 0; i + old->len <= s->len; ) { int match = 1; for (int64_t j = 0; j < old->len; j++) if (s->data[i + j] != old->data[j]) { match = 0; break; } if (match) { cnt++; i += old->len; } else i++; } if (cnt == 0) return s; int64_t total = s->len - cnt * old->len + cnt * nw->len; char* buf = silu_malloc(total + 1); int64_t o = 0, i = 0; while (i < s->len) { int match = 0; if (i + old->len <= s->len) { match = 1; for (int64_t j = 0; j < old->len; j++) if (s->data[i + j] != old->data[j]) { match = 0; break; } } if (match) { memcpy(buf + o, nw->data, nw->len); o += nw->len; i += old->len; } else { buf[o++] = s->data[i++]; } } return str_new(buf, total); }",
+    "static int c_is_ws(char c) { return c == 32 || (c >= 9 && c <= 13); }",
+    "static Str* str_strip(Str* s) { int64_t lo = 0, hi = s->len; while (lo < hi && c_is_ws(s->data[lo])) lo++; while (hi > lo && c_is_ws(s->data[hi-1])) hi--; return str_new(s->data + lo, hi - lo); }",
+    "static List* str_split(Str* s, Str* sep) { if (sep->len == 0) { fprintf(stderr, \"ValueError: empty separator\\n\"); exit(1); } List* out = list_new(); int64_t start = 0, i = 0; while (i + sep->len <= s->len) { int match = 1; for (int64_t j = 0; j < sep->len; j++) if (s->data[i+j] != sep->data[j]) { match = 0; break; } if (match) { list_push(out, (int64_t)str_new(s->data + start, i - start)); i += sep->len; start = i; } else i++; } list_push(out, (int64_t)str_new(s->data + start, s->len - start)); return out; }",
+    "static Str* str_lower(Str* s) { Str* r = str_new(s->data, s->len); for (int64_t i = 0; i < r->len; i++) if (r->data[i] >= 'A' && r->data[i] <= 'Z') r->data[i] += 32; return r; }",
+    "static int64_t str_find(Str* s, Str* sub) { for (int64_t i = 0; i + sub->len <= s->len; i++) { int match = 1; for (int64_t j = 0; j < sub->len; j++) if (s->data[i+j] != sub->data[j]) { match = 0; break; } if (match) return i; } return -1; }",
+    "static int64_t str_index(Str* s, Str* sub) { int64_t p = str_find(s, sub); if (p < 0) { fprintf(stderr, \"ValueError: substring not found\\n\"); exit(1); } return p; }",
+    "static Str* str_upper(Str* s) { Str* r = str_new(s->data, s->len); for (int64_t i = 0; i < r->len; i++) if (r->data[i] >= 'a' && r->data[i] <= 'z') r->data[i] -= 32; return r; }",
+    "static List* str_split_ws(Str* s) { List* out = list_new(); int64_t i = 0; while (i < s->len) { while (i < s->len && c_is_ws(s->data[i])) i++; if (i >= s->len) break; int64_t start = i; while (i < s->len && !c_is_ws(s->data[i])) i++; list_push(out, (int64_t)str_new(s->data + start, i - start)); } return out; }",
+
+
     "static Str* str_join(List* l, Str* sep) { int64_t total = 0; for (int64_t i = 0; i < l->len; i++) { if (i) total += sep->len; total += ((Str*)l->items[i])->len; } char* buf = silu_malloc(total); int64_t o = 0; for (int64_t i = 0; i < l->len; i++) { Str* s = (Str*)l->items[i]; if (i) { memcpy(buf + o, sep->data, sep->len); o += sep->len; } memcpy(buf + o, s->data, s->len); o += s->len; } return str_new(buf, total); }",
     "typedef struct { int tag; int64_t i; double f; Str* s; List* items; } PObj; /* 0 nil 1 int 2 float 3 bool 4 str 5 list */",
     "static PObj* pmake(int tag) { PObj* o = silu_malloc(sizeof(PObj)); o->tag = tag; o->i = 0; o->f = 0; o->s = 0; o->items = 0; return o; }",

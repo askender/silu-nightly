@@ -1087,6 +1087,38 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
 - **g-list 终态**：g1-g12 全部关闭或作废；唯余 dss 1 参 get（响亮
   bail）。dict 家族四平面完整。
 
+## 三点二十八、str 方法族 + index 语义修复（WIP：ll parity 最后一公里，2026-11-20）
+
+- **str 方法族四平面落地**：strip/split(sep/ws)/replace/lower/upper/
+  find/index/startswith/endswith/isdigit/isalpha/isspace + print-bool。
+  py：replace 臂 + **rawstr_replace 运行时**（新 .ll builder：两遍
+  单缓冲、匹配循环镜像 split_sep、中间串全释放；**签名 = append 风格
+  (s, old_data, old_len, new_data, new_len)**——首版按 rawstr 指针
+  签名、py 臂传 append_operand 的 data 指针 → len 读成数据字节 →
+  replace 恒返回原串，native ≠ CPython 当场抓获）+ **index 语义修复**
+  （原走 list_index 通用分派：str 接收者的 items=null → len=0 → 循环
+  跳过 → **静默 -1**（CPython=6）；改 str_find + unbox（py 的
+  _load_number_as_i64 内联 gep 形状）+ ValueError panic（panic_bad/
+  panic_ok 共享标签））。rs：strip/split/replace/lower/upper/find/
+  index/六谓词/print-bool 臂 + emit_rawstr_append_data（const=全局
+  gep+const len；var=结构体字段 load）+ **const_prefix.ll 重生成**
+  （include_str 快照——新运行时函数必须重生成，教训入档）+ fn 渲染
+  空行（**py 的 inter-function 空行在每个函数之前**：prefix→f 与
+  f→main 统一；main 用 FUNC_DEFS 判空条件式——f 尾部渲染空行已存在，
+  叠加会双空行）。ir2c：replace/strip/split/lower/upper/find/index
+  臂 + C 助手（两遍单缓冲 str_replace、ASCII 空白集 str_strip、
+  str_find/index、str_lower/upper）。
+- **四平面执行 = CPython ✓**（str_methods.si 全 14 语句：interpret =
+  native = ir2c = CPython）；strm 双平面字节一致 ✓。
+- **WIP：ll parity 15/29**——14 文件细粒度差异入档：dict 方法臂的
+  形状细差（dict_local +63/dict_ops +163/pop_clear +135/record_global
+  +31 字节，rs 偏大）+ nbody/spectral +2 + jsonparse ×2 +5。
+  下一轮首项：14 文件的 hunk 级分析 → 臂形状对齐 → ll 29/29。
+- 三次自伤修正：①strip 臂补丁残留双发射；②ir2c str_replace 助手被
+  strip/split 补丁的锚点整个替换（锚点 = str_replace 行本身——插入
+  新助手勿锚在被插对象上）；③fn 渲染空行的 insert 索引偏一行 +
+  叠加双发——全部被探针/门禁当场抓获。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

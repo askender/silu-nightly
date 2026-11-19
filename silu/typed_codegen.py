@@ -440,6 +440,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self._emit_rawdict_probes()
         self._emit_rawlist_str_core()
         self._emit_rawstr_text()
+        self._emit_rawstr_replace()
         self._emit_rawlist_str_access()
         self._emit_rawstr_convert()
         self._emit_rawdict_str()
@@ -3173,6 +3174,124 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.call(self.rawlist_str_push, [ss_result, tail_token])
         builder.call(self.rawstr_free, [tail_token])
         builder.ret(ss_result)
+
+    def _emit_rawstr_replace(self):
+        # i8* rawstr_replace(i8* s, i8* old, i8* new) - Python
+        # str.replace for a non-empty pattern (an empty pattern returns
+        # s unchanged - Python's interleave semantics not modeled)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        self.rawstr_replace = ir.func_(
+            self.module,
+            ir.FunctionType(i8p, [i8p, i8p, i64, i8p, i64], False),
+            'rawstr_replace',
+        )
+        f = self.rawstr_replace
+        entry = f.append_basic_block("entry")
+        rp_empty = f.append_basic_block("rp_empty")
+        rp_init = f.append_basic_block("rp_init")
+        rp_cond = f.append_basic_block("rp_cond")
+        rp_mcond = f.append_basic_block("rp_mcond")
+        rp_mbody = f.append_basic_block("rp_mbody")
+        rp_mcmp = f.append_basic_block("rp_mcmp")
+        rp_mnext = f.append_basic_block("rp_mnext")
+        rp_match = f.append_basic_block("rp_match")
+        rp_adv = f.append_basic_block("rp_adv")
+        rp_tail = f.append_basic_block("rp_tail")
+        builder = ir.builder_(entry)
+        s_arg, old_data, o_len, new_data, new_len = f.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_data = _rawstr_load_data(builder, s_struct)
+        s_len = _rawstr_load_len(builder, s_struct)
+        builder.cbranch(
+            builder.icmp_signed("==", o_len, zero64), rp_empty, rp_init
+        )
+
+        builder.position_at_end(rp_empty)
+        builder.ret(s_arg)
+
+        builder.position_at_end(rp_init)
+        acc = builder.call(self.rawstr_new_copy, [s_data, zero64])
+        acc_ptr = builder.alloca(i8p, None, 'rp_acc')
+        builder.store(acc, acc_ptr)
+        i_ptr = builder.alloca(i64, None, 'rp_i')
+        start_ptr = builder.alloca(i64, None, 'rp_start')
+        j_ptr = builder.alloca(i64, None, 'rp_j')
+        builder.store(zero64, i_ptr)
+        builder.store(zero64, start_ptr)
+        builder.branch(rp_cond)
+
+        builder.position_at_end(rp_cond)
+        i_val = builder.load(i_ptr)
+        can_match = builder.icmp_signed(
+            "<=", builder.add(i_val, o_len), s_len
+        )
+        builder.cbranch(can_match, rp_mcond, rp_tail)
+
+        builder.position_at_end(rp_mcond)
+        builder.store(zero64, j_ptr)
+        builder.branch(rp_mbody)
+
+        builder.position_at_end(rp_mbody)
+        j_val = builder.load(j_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", j_val, o_len), rp_mcmp, rp_match
+        )
+
+        builder.position_at_end(rp_mcmp)
+        my_byte = builder.load(
+            builder.gep(s_data, [builder.add(builder.load(i_ptr), j_val)])
+        )
+        old_byte = builder.load(builder.gep(old_data, [j_val]))
+        builder.cbranch(
+            builder.icmp_signed("==", my_byte, old_byte), rp_mnext, rp_adv
+        )
+
+        builder.position_at_end(rp_mnext)
+        builder.store(builder.add(j_val, one64), j_ptr)
+        builder.branch(rp_mbody)
+
+        builder.position_at_end(rp_match)
+        # acc += s[start:i]; acc += new; the intermediates die here
+        i_now = builder.load(i_ptr)
+        start_now = builder.load(start_ptr)
+        res_now = builder.load(acc_ptr)
+        piece = builder.call(
+            self.rawstr_new_copy,
+            [builder.gep(s_data, [start_now]), builder.sub(i_now, start_now)],
+        )
+        res2 = builder.call(self.rawstr_concat, [res_now, piece])
+        builder.call(self.rawstr_free, [piece])
+        builder.call(self.rawstr_free, [res_now])
+        new_piece = builder.call(
+            self.rawstr_new_copy, [new_data, new_len]
+        )
+        res3 = builder.call(self.rawstr_concat, [res2, new_piece])
+        builder.call(self.rawstr_free, [new_piece])
+        builder.call(self.rawstr_free, [res2])
+        builder.store(res3, acc_ptr)
+        past = builder.add(i_now, o_len)
+        builder.store(past, i_ptr)
+        builder.store(past, start_ptr)
+        builder.branch(rp_cond)
+
+        builder.position_at_end(rp_adv)
+        builder.store(builder.add(builder.load(i_ptr), one64), i_ptr)
+        builder.branch(rp_cond)
+
+        builder.position_at_end(rp_tail)
+        start_now = builder.load(start_ptr)
+        res_now = builder.load(acc_ptr)
+        piece = builder.call(
+            self.rawstr_new_copy,
+            [builder.gep(s_data, [start_now]), builder.sub(s_len, start_now)],
+        )
+        res2 = builder.call(self.rawstr_concat, [res_now, piece])
+        builder.call(self.rawstr_free, [piece])
+        builder.call(self.rawstr_free, [res_now])
+        builder.ret(res2)
 
     def _emit_rawlist_str_access(self):
         i32 = ir.IntType(32)
@@ -6623,6 +6742,38 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 "isspace": self.rawstr_isspace,
             }[method_name]
             return self._rawstr_finish(temp, (I1, self.current_builder.call(fn, [s_ptr])))
+        if method_name == "replace" and len(args_node) == 2:
+            old_data, old_length, old_temp = self._rawstr_append_operand(
+                args_node[0]
+            )
+            new_data, new_length, new_temp = self._rawstr_append_operand(
+                args_node[1]
+            )
+            result = self.current_builder.call(
+                self.rawstr_replace,
+                [s_ptr, old_data, old_length, new_data, new_length],
+            )
+            if old_temp is not None:
+                self.current_builder.call(self.rawstr_free, [old_temp])
+            if new_temp is not None:
+                self.current_builder.call(self.rawstr_free, [new_temp])
+            return self._rawstr_finish(temp, (RAWSTR, result))
+        if method_name == "index" and len(args_node) == 1:
+            # str.index(sub): the boxed str_find (the cp position); the
+            # miss panics ValueError - the generic list_index dispatch's
+            # element loop never matches a str receiver (the silent -1)
+            arg_tv = self._convert_node(args_node[0])
+            arg_py = self._box(arg_tv)
+            recv_py = self._box((RAWSTR, s_ptr))
+            found = self.current_builder.call(self.str_find, [recv_py, arg_py])
+            idx = self._load_number_as_i64(self.current_builder, found)
+            self._panic_if(
+                self.current_builder.icmp_signed(
+                    "<", idx, ir.const_(ir.IntType(64), 0)
+                ),
+                "ValueError: substring not found",
+            )
+            return self._rawstr_finish(temp, (I64, idx))
         if method_name == "join" and len(args_node) == 1:
             # sep.join(parts): one allocation instead of n appends
             parts_tv = self._convert_node(args_node[0])
