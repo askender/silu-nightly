@@ -549,6 +549,10 @@ rs + 模块/局部 int ann_assign 的 Pyo unbox 边界）字节对齐。
 **g-list 终态：g1-g12 全部关闭或作废**；唯余 dss 1 参 get（响亮
 bail：create_int 硬编码 int 值域）。dict 家族四平面完整。
 
+**str 方法族轮收口（2026-11-21，ll 29/29）**：边界空行规则定版（py 的
+.ll = 每个 inter-function 边界恰好一个空行：CONST→TAGGED、TAGGED→首
+用户 fn、fn→main；fn→fn 无空行）+ 局部 dict 槽域全对齐（len/get/方法
+臂的 dct_slot）+ index 语义修复（list_index 分派对 str 接收者静默 -1）。
 **str 方法族轮（2026-11-20，WIP）**：strip/split/replace/lower/upper/
 find/index/谓词/print-bool 四平面落地（**index 语义修复**：原 list_index
 分派对 str 接收者静默 -1，改 str_find + ValueError panic）；replace =

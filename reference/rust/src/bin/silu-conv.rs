@@ -9435,6 +9435,7 @@ fn main() {
         // blank before the tagged runtime is ours to emit
         out.push('\n');
         out.push_str(TAGGED_PREFIX);
+        out.push('\n'); // the tagged -> first user fn boundary
     } else {
         // the same boundary for the non-tagged path: the blank before
         // the first user function (jsonparse evidence)
@@ -9444,10 +9445,6 @@ fn main() {
     for fd in &func_defs {
         // the tagged runtime's tail ends without a blank: the first
         // user fn's preceding blank is ours (the jsonparse probe)
-        if first_user_fn {
-            out.push_str("\n");
-            first_user_fn = false;
-        }
         out.push_str(&convert_func(fd));
     }
     // the last user fn's trailing blank covers the fn->main boundary

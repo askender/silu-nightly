@@ -1119,6 +1119,27 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   新助手勿锚在被插对象上）；③fn 渲染空行的 insert 索引偏一行 +
   叠加双发——全部被探针/门禁当场抓获。
 
+## 三点二十九、ll parity 29/29 收口（2026-11-21）
+
+- **str 方法族轮的 parity 债清偿**：①str-method 前奏的急切接收者求值
+  对 dict 方法也发（双重 load）——dict 族移至 str 族之前；②局部 dict
+  的槽域：多臂硬编码 @d → dct_slot（FN_D → %d）——len/get/方法臂
+  全部对齐；③边界空行规则**定版**：py 的 .ll = 每个 inter-function
+  边界恰好一个空行（CONST→TAGGED、TAGGED→首用户 fn、fn→main——
+  fn→fn 之间**无**空行）；rs 的 emit 点：CONST 尾、TAGGED 尾、
+  fn→main 各一，与 py 逐字节对齐。**文件级验证**：jsonparse_json
+  py = rs = 471526 字节逐字节一致（直跑 cmp ✓）。
+- **门禁数字的平面陈旧伪影**：harness 的 ll 计数在 28/29 与 29/29 间
+  波动——直跑 cmp 恒一致，harness 的平面二进制存在陈旧窗口（本会话
+  教训"改被 ll 门禁钉住的文件必须跑 ll 门禁"的镜像：**ll 门禁的
+  平面二进制也必须与被测源同步重发布**）。以文件级 cmp 为准。
+- **门禁**：ll 29/29（文件级 ✓）、ir 30/30、pytest 1395/3。
+- **str 方法族全量**：strip/split(sep/ws)/replace/lower/upper/find/
+  index/startswith/endswith/isdigit/isalpha/isspace/print-bool +
+  rawstr_replace 运行时（append 风格签名）+ index 语义修复
+  （list_index 分派对 str 接收者静默 -1 → str_find + ValueError
+  panic）+ ir2c 全族 C 助手。str_methods.si 四平面 = CPython。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
