@@ -8404,6 +8404,13 @@ entry:
 define i8* @"pystr_to_rawstr"({i32, i8*}* %".1")
 {
 entry:
+  %".n0" = icmp eq {i32, i8*}* %".1", null
+  br i1 %".n0", label %"ptr_null", label %"ptr_ok"
+ptr_null:
+  %".n1" = getelementptr [1 x i8], [1 x i8]* @"str._25s", i32 0, i32 0
+  %".n2" = call i8* @"rawstr_new_copy"(i8* %".n1", i64 0)
+  ret i8* %".n2"
+ptr_ok:
   %".3" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 0
   %".4" = load i32, i32* %".3"
   %".5" = icmp eq i32 %".4", 2

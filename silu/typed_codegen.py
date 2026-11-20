@@ -3764,10 +3764,27 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self.module, ir.FunctionType(i8p, [pyobj_ptr], False), 'pystr_to_rawstr'
         )
         entry = self.pystr_to_rawstr.append_basic_block("entry")
+        null_block = self.pystr_to_rawstr.append_basic_block("ptr_null")
         ok_block = self.pystr_to_rawstr.append_basic_block("ok")
         error_block = self.pystr_to_rawstr.append_basic_block("type_error")
         builder = ir.builder_(entry)
         (obj_arg,) = self.pystr_to_rawstr.args
+        is_null = builder.icmp_signed(
+            "==", obj_arg, ir.const_(ir.PointerType(pyobj_ptr), None)
+        )
+        builder.cbranch(is_null, null_block, ok_block)
+
+        # a null pystr (dict_get_or's missing-key default) yields the
+        # empty rawstr - Python's None coalesces to "" through the raw
+        # boundary (the dss probe: v = d.get("missing") prints "")
+        builder.position_at_end(null_block)
+        empty_gep = self._create_global_string_with_builder("", builder)
+        empty_copy = builder.call(
+            self.rawstr_new_copy, [empty_gep, ir.const_(i64, 0)]
+        )
+        builder.ret(empty_copy)
+
+        builder.position_at_end(ok_block)
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
         is_str = builder.icmp_signed("==", tag, ir.const_(i32, 2))
         builder.cbranch(is_str, ok_block, error_block)
