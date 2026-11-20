@@ -3112,6 +3112,14 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val) {
                     b.line(format!("  %\"{}\" = ptrtoint i8* {} to i64", pt, r));
                     format!("%\"{}\"", pt)
                 }
+                Typed::PStr(_) | Typed::Pyo(_) => {
+                    // a pystr-domain value: to_raw first, then the
+                    // pointer rides the slot's i64 bits
+                    let raw = to_raw(b, vv);
+                    let pt = b.nx();
+                    b.line(format!("  %\"{}\" = ptrtoint i8* {} to i64", pt, raw));
+                    format!("%\"{}\"", pt)
+                }
                 Typed::I64(r) => r,
                 _ => bail("dict str value"),
             };
@@ -6905,6 +6913,56 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                             return Typed::Inst(format!("%\"{}\"", l));
                         }
                         let args = e.get(2).items();
+                        if mname == "get" && args.len() == 1 && val_ty == "str" {
+                            // the str-valued dict's 1-arg get:
+                            // rawdict_str_get_or with the empty-rawstr
+                            // default (the Python twin's miss = the empty
+                            // str) - the value slot holds the rawstr
+                            // pointer, returned via inttoptr
+                            let karg = if key_str {
+                                if args[0].head() == "const"
+                                    && matches!(args[0].get(1), Val::Str(_)) {
+                                    emit_const_key_view(b,
+                                        &args[0].get(1).str_of())
+                                } else {
+                                    let kv = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                                    match &kv {
+                                        Typed::Str(r) => r.clone(),
+                                        Typed::PStr(_) | Typed::Pyo(_) => {
+                                            let py = to_pyobj(b, kv);
+                                            emit_pyobj_key_view(b, &py)
+                                        }
+                                        _ => bail("dict key type"),
+                                    }
+                                }
+                            } else {
+                                let kv = eval_expr(b, &args[0], slot_i, slot_f, fslots);
+                                match &kv {
+                                    Typed::I64(r) => r.clone(),
+                                    _ => bail("dict key type"),
+                                }
+                            };
+                            let gname = add_str("");
+                            let g = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = getelementptr [1 x i8], [1 x i8]* @\"{}\", i32 0, i32 0",
+                                g, gname));
+                            let ep = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i8* @\"rawstr_new_copy\"(i8* %\"{}\", i64 0)",
+                                ep, g));
+                            let epi = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", epi, ep));
+                            let c = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i64 @\"rawdict_str_get_or\"(i8* %\"{}\", i8* {}, i64 %\"{}\")",
+                                c, l, karg, epi));
+                            let r = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", r, c));
+                            return Typed::Str(format!("%\"{}\"", r));
+                        }
                         let kn: &str = match (key_str, mname.as_str(), args.len()) {
                             (true, "pop", 1) => "rawdict_str_del",
                             (true, "pop", 2) => "rawdict_str_pop_or",
