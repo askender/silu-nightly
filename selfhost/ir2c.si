@@ -641,6 +641,10 @@ class Gen:
                 return te("((PObj*)dict_get(" + base.text + ", " + idx.text + "))", "obj")
             if base.ty == "dict:S:obj":
                 return te("((PObj*)dict_get(" + base.text + ", " + idx.text + "))", "obj")
+            if base.ty == "dict:S:str":
+                # str-valued dict: the value rides raw in the int64 slot;
+                # a miss is the loud KeyError (CPython d[k] semantics)
+                return te("dict_get_str(" + base.text + ", " + idx.text + ")", "str")
             if base.ty.startswith("dict:I"):
                 vt: str = "int"
                 if base.ty.endswith(":float"):
@@ -931,6 +935,7 @@ class Gen:
                 vtes: list[TE] = []
                 all_int_v: bool = True
                 all_float_v: bool = True
+                all_str_v: bool = True
                 all_int_k: bool = True
                 while k < len(w.arr):
                     pairv: JValue = elem(w, k)
@@ -944,6 +949,8 @@ class Gen:
                         all_int_v = False
                     if vv0.ty != "float":
                         all_float_v = False
+                    if vv0.ty != "str":
+                        all_str_v = False
                     k += 1
                 if all_float_v and not all_int_v:
                     # homogeneous float values ride as raw bit patterns
@@ -984,6 +991,17 @@ class Gen:
                     dbody.append("    return d; }")
                     self.litlists.append("\n".join(dbody))
                     return te(dname + "()", "dict:S:int")
+                if all_str_v:
+                    # homogeneous str values stay unboxed: dict[str, str]
+                    # - the value pointer rides raw in the int64 slot
+                    dbody.append("static Dict* " + dname + "(void) { Dict* d = dict_new();")
+                    k2s: int = 0
+                    while k2s < len(vtes) // 2:
+                        dbody.append("    dict_set(d, " + vtes[k2s * 2].text + ", (int64_t)(intptr_t)" + vtes[k2s * 2 + 1].text + ");")
+                        k2s += 1
+                    dbody.append("    return d; }")
+                    self.litlists.append("\n".join(dbody))
+                    return te(dname + "()", "dict:S:str")
                 dbody.append("static Dict* " + dname + "(void) { Dict* d = dict_new();")
                 k3v: int = 0
                 while k3v < len(vtes) // 2:
@@ -1197,10 +1215,18 @@ class Gen:
                 kg: TE = self.expr(elem(args, 0))
                 if recv2.ty == "dict:obj" or recv2.ty == "dict:S:obj":
                     return te("((PObj*)dict_get(" + recv2.text + ", " + kg.text + "))", "obj")
+                if recv2.ty == "dict:S:str":
+                    # the 1-arg get on a str-valued dict: a miss merges to
+                    # the empty str (the Python None via the raw boundary)
+                    return te("((Str*)(intptr_t)dict_get_or(" + recv2.text + ", " + kg.text + ", (int64_t)(intptr_t)str_of(\"\")))", "str")
                 if recv2.ty.startswith("dict:I"):
                     return te("(dicti_has(" + recv2.text + ", " + kg.text + ") ? pint(dicti_get(" + recv2.text + ", " + kg.text + ")) : pnil())", "obj")
                 return te("(dict_has(" + recv2.text + ", " + kg.text + ") ? pint(dict_get(" + recv2.text + ", " + kg.text + ")) : pnil())", "obj")
             if mname == "get" and len(args.arr) == 2:
+                if recv2.ty == "dict:S:str":
+                    kd2: TE = self.expr(elem(args, 0))
+                    dd2: TE = self.expr(elem(args, 1))
+                    return te("((Str*)(intptr_t)dict_get_or(" + recv2.text + ", " + kd2.text + ", (int64_t)(intptr_t)" + dd2.text + "))", "str")
                 if recv2.ty.startswith("dict:I"):
                     return te("dicti_get_or(" + recv2.text + ", " + self.expr(elem(args, 0)).text + ", " + self.expr(elem(args, 1)).text + ")", "int")
                 if recv2.ty.startswith("dict:") or recv2.ty == "dict":
@@ -1214,6 +1240,13 @@ class Gen:
                     if len(args.arr) == 2:
                         return te("dicti_pop_or(" + recv2.text + ", " + arg0.text + ", " + a1.text + ")", "int")
                     return te("dicti_del(" + recv2.text + ", " + arg0.text + ")", "int")
+                if recv2.ty == "dict:S:str":
+                    # str values ride the int64 slot: pop returns the str
+                    # pointer; the 1-arg form is the loud dict_del (miss
+                    # = KeyError, matching the Python twin)
+                    if len(args.arr) == 2:
+                        return te("((Str*)(intptr_t)dict_pop_or(" + recv2.text + ", " + arg0.text + ", (int64_t)(intptr_t)" + a1.text + "))", "str")
+                    return te("((Str*)(intptr_t)dict_del(" + recv2.text + ", " + arg0.text + "))", "str")
                 if len(args.arr) == 2:
                     return te("dict_pop_or(" + recv2.text + ", " + arg0.text + ", " + a1.text + ")", "int")
                 return te("dict_del(" + recv2.text + ", " + arg0.text + ")", "int")
@@ -1221,6 +1254,8 @@ class Gen:
                 a1s: TE = self.expr(elem(args, 1))
                 if recv2.ty.startswith("dict:I"):
                     return te("dicti_setdefault(" + recv2.text + ", " + arg0.text + ", " + a1s.text + ")", "int")
+                if recv2.ty == "dict:S:str":
+                    return te("((Str*)(intptr_t)dict_setdefault(" + recv2.text + ", " + arg0.text + ", (int64_t)(intptr_t)" + a1s.text + "))", "str")
                 return te("dict_setdefault(" + recv2.text + ", " + arg0.text + ", " + a1s.text + ")", "int")
             if mname == "clear" and len(args.arr) == 0 and is_dict_recv:
                 if recv2.ty.startswith("dict:I"):
@@ -1440,6 +1475,9 @@ class Gen:
                     self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(" + val_sa.text + "));")
                 else:
                     self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(" + self.box_te(val_sa) + "));")
+            elif base_sa.ty == "dict:S:str":
+                # str values ride raw in the int64 slot (rs rawdict twin)
+                self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(intptr_t)" + val_sa.text + ");")
             elif base_sa.ty.startswith("dict:I"):
                 self.emit("dicti_set(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
             elif base_sa.ty == "dict" or base_sa.ty.startswith("dict:"):
@@ -1473,6 +1511,9 @@ class Gen:
                 val3b: TE = self.expr(elem(stmt, 3))
                 if base3.ty == "list:float":
                     self.emit("list_set_f(" + base3.text + ", " + key3.text + ", (bits_f(list_get(" + base3.text + ", " + key3.text + ")) " + cop + " " + val3b.text + "));")
+                elif base3.ty == "dict:S:str":
+                    # str aug: loud-miss read + str_add, written back raw
+                    self.emit("dict_set(" + base3.text + ", " + key3.text + ", (int64_t)(intptr_t)str_add(dict_get_str(" + base3.text + ", " + key3.text + "), " + val3b.text + "));")
                 elif base3.ty.startswith("dict:I"):
                     self.emit("dicti_set(" + base3.text + ", " + key3.text + ", (dicti_get(" + base3.text + ", " + key3.text + ") " + cop + " " + val3b.text + "));")
                 elif base3.ty == "dict" or base3.ty.startswith("dict:"):
@@ -2495,6 +2536,7 @@ RUNTIME: list[str] = [
     "static int64_t dict_get_or(Dict* d, Str* k, int64_t def) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return d->ents[j].val; j = (j + 1) % d->cap; } return def; }",
     "static int64_t dict_del(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) { int64_t v = d->ents[j].val; d->ents[j].used = 0; d->cnt--; return v; } j = (j + 1) % d->cap; } fprintf(stderr, \"KeyError\\n\"); exit(1); return 0; }",
     "static int64_t dict_pop_or(Dict* d, Str* k, int64_t def) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) { int64_t v = d->ents[j].val; d->ents[j].used = 0; d->cnt--; return v; } j = (j + 1) % d->cap; } return def; }",
+    "static Str* dict_get_str(Dict* d, Str* k) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return (Str*)(intptr_t)d->ents[j].val; j = (j + 1) % d->cap; } fprintf(stderr, \"KeyError\\n\"); exit(1); return 0; }",
     "static int64_t dict_setdefault(Dict* d, Str* k, int64_t v) { int64_t j = str_hash(k) % d->cap; while (d->ents[j].used) { if (str_eq(d->ents[j].key, k)) return d->ents[j].val; j = (j + 1) % d->cap; } dict_set(d, k, v); return v; }",
     "static void dict_clear(Dict* d) { memset(d->ents, 0, sizeof(DEnt) * d->cap); d->cnt = 0; }",
     "static int64_t dicti_del(DictI* d, int64_t k) { int64_t j = ihash(k) % d->cap; while (d->ents[j].used) { if (d->ents[j].key == k) { int64_t v = d->ents[j].val; d->ents[j].used = 0; d->cnt--; return v; } j = (j + 1) % d->cap; } fprintf(stderr, \"KeyError\\n\"); exit(1); return 0; }",
