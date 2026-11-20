@@ -8404,47 +8404,48 @@ entry:
 define i8* @"pystr_to_rawstr"({i32, i8*}* %".1")
 {
 entry:
-  %".n0" = icmp eq {i32, i8*}* %".1", null
-  br i1 %".n0", label %"ptr_null", label %"ptr_ok"
+  %".3" = icmp eq {i32, i8*}* %".1", null
+  br i1 %".3", label %"ptr_null", label %"ok"
 ptr_null:
-  %".n1" = getelementptr [1 x i8], [1 x i8]* @"str._25s", i32 0, i32 0
-  %".n2" = call i8* @"rawstr_new_copy"(i8* %".n1", i64 0)
-  ret i8* %".n2"
-ptr_ok:
-  %".3" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 0
-  %".4" = load i32, i32* %".3"
-  %".5" = icmp eq i32 %".4", 2
-  br i1 %".5", label %"ok", label %"type_error"
+  %".5" = getelementptr [1 x i8], [1 x i8]* @"str.", i32 0, i32 0
+  %".6" = call i8* @"rawstr_new_copy"(i8* %".5", i64 0)
+  ret i8* %".6"
 ok:
-  %".7" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
-  %".8" = load i8*, i8** %".7"
-  %".9" = bitcast i8* %".8" to {i32, i8*}*
-  %".10" = getelementptr {i32, i8*}, {i32, i8*}* %".9", i32 0, i32 0
-  %".11" = load i32, i32* %".10"
-  %".12" = getelementptr {i32, i8*}, {i32, i8*}* %".9", i32 0, i32 1
-  %".13" = load i8*, i8** %".12"
-  %".14" = sext i32 %".11" to i64
-  %".15" = call i8* @"malloc"(i64 %".14")
-  call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".15", i8* %".13", i64 %".14", i1 0)
-  %".17" = call i64 @"rawutf8_cp_count"(i8* %".13", i64 %".14")
-  %".18" = call i8* @"malloc"(i64 32)
-  %".19" = bitcast i8* %".18" to {i64, i64, i8*, i64}*
-  %".20" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".19", i32 0, i32 0
-  store i64 %".14", i64* %".20"
-  %".22" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".19", i32 0, i32 1
-  store i64 %".14", i64* %".22"
-  %".24" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".19", i32 0, i32 2
-  store i8* %".15", i8** %".24"
-  %".26" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".19", i32 0, i32 3
-  store i64 %".17", i64* %".26"
-  %".28" = bitcast {i64, i64, i8*, i64}* %".19" to i8*
-  ret i8* %".28"
+  %".8" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 0
+  %".9" = load i32, i32* %".8"
+  %".10" = icmp eq i32 %".9", 2
+  br i1 %".10", label %"str_ok", label %"type_error"
 type_error:
-  %".30" = getelementptr [24 x i8], [24 x i8]* @"str.TypeError_3a_20expected_20str", i32 0, i32 0
-  call void @"silu_panic"(i8* %".30")
+  %".35" = getelementptr [24 x i8], [24 x i8]* @"str.TypeError_3a_20expected_20str", i32 0, i32 0
+  call void @"silu_panic"(i8* %".35")
   unreachable
+str_ok:
+  %".12" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
+  %".13" = load i8*, i8** %".12"
+  %".14" = bitcast i8* %".13" to {i32, i8*}*
+  %".15" = getelementptr {i32, i8*}, {i32, i8*}* %".14", i32 0, i32 0
+  %".16" = load i32, i32* %".15"
+  %".17" = getelementptr {i32, i8*}, {i32, i8*}* %".14", i32 0, i32 1
+  %".18" = load i8*, i8** %".17"
+  %".19" = sext i32 %".16" to i64
+  %".20" = call i8* @"malloc"(i64 %".19")
+  call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".20", i8* %".18", i64 %".19", i1 0)
+  %".22" = call i64 @"rawutf8_cp_count"(i8* %".18", i64 %".19")
+  %".23" = call i8* @"malloc"(i64 32)
+  %".24" = bitcast i8* %".23" to {i64, i64, i8*, i64}*
+  %".25" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".24", i32 0, i32 0
+  store i64 %".19", i64* %".25"
+  %".27" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".24", i32 0, i32 1
+  store i64 %".19", i64* %".27"
+  %".29" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".24", i32 0, i32 2
+  store i8* %".20", i8** %".29"
+  %".31" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".24", i32 0, i32 3
+  store i64 %".22", i64* %".31"
+  %".33" = bitcast {i64, i64, i8*, i64}* %".24" to i8*
+  ret i8* %".33"
 }
 
+@"str." = constant [1 x i8] c"\00"
 define i8* @"rawstr_to_cstr"(i8* %".1")
 {
 entry:

@@ -6848,12 +6848,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         b.pos(ob);
                         return Typed::I64(format!("%\"{}\"", idx));
                     }
-                    // list pop/clear: the Python twin's rawlist_pop family
-                    // (g5 probe). pop yields the element (str elems via
-                    // rawlist_str_pop - the buffer moves to the consumer,
-                    // no copy); clear discards and returns the container
-                if base.head() == "name" && (mname == "pop" || mname == "clear") {
                 }
+                // list pop/clear: the Python twin's rawlist_pop family
+                // (g5 probe). pop yields the element (str elems via
+                // rawlist_str_pop - the buffer moves to the consumer,
+                // no copy); clear discards and returns the container
+                if base.head() == "name" && (mname == "pop" || mname == "clear") {
                     let bn = base.get(1).str_of();
                     let is_list_slot =
                         FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &bn))

@@ -1142,27 +1142,41 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   （list_index 分派对 str 接收者静默 -1 → str_find + ValueError
   panic）+ ir2c 全族 C 助手。str_methods.si 四平面 = CPython。
 
-## 三点三十、dss（str 值 dict）轮 WIP：store/1 参 get 双平面 + pystr_to_rawstr null 处理（2026-11-21）
+## 三点三十、dss（str 值 dict）轮收口：快照重生成 + list 臂归位 + 全门禁绿（2026-11-21）
 
 - **dss 探针暴露两平面表示分歧**：py 的 dict[str,str] = 动态 dict
   （pyobj_subscript_set/dict_get_or）；rs 的 = str 值 rawdict
   （rawdict_str_set/rawdict_str_get_or）——语义一致、表示不同、语料
-  从未钉过。执行对齐（非字节对齐）：四平面输出 = CPython。
-- **rs 修复三件**：①store 臂 value match 缺 PStr 臂（PStr 落 `_`
-  bail——bail 消息加 Debug 实证 PStr）→ to_raw + ptrtoint 臂；
-  ②1 参 get：rawdict_str_get_or + 空串默认（rawstr_new_copy("") +
-  ptrtoint）→ inttoptr → Str；③pystr_to_rawstr(null)：rs 的
-  const_prefix 无 null 处理（phi 的 null → 解引用段错误）→ null
-  分支（空 rawstr）补齐。
-- **py 修复**：pystr_to_rawstr builder 加 null 分支（dict_get_or 的
-  missing 默认 null → 空串——Python 的 None 经 raw 边界合流为 ""）。
-- **WIP 谜题**：toolchain 的 siluc1 的 .ll 运行时缺 null 分支
-  （ensure_toolchain 的 fingerprint 应已含 null patch——指纹目录
-  7e994a22 与 siluc1 mtime 的对应关系待精确审计）；native 的 SIGSEGV
-  因此未消。文件级 cmp 为主，harness 计数为辅助。
-- **下一轮首项**：siluc1 陈旧谜题（toolchain 指纹/二进制/flat 的
-  对应关系精确审计）→ null 分支入 siluc1 .ll → dss 四平面执行
-  终验 → 语料钉板。
+  从未钉过。store PStr 臂 + 1 参 get 双平面已落地（77d5e54/855bc7e）。
+- **WIP 谜题破案（ok_block 自循环）**：siluc1 陈旧非指纹问题——
+  pystr_to_rawstr builder 的 tag-check cbranch 目标就是 ok_block 自身
+  （null 分支插入后 br 回命中块 → ret 命中断言）。修复：真 continuation
+  块 str_ok；重建 + 重发布后 null 分支入 siluc1 .ll，native SIGSEGV 消。
+- **ll 门禁 0/29 → 29/29 两连根因**：
+  1. **const_prefix.ll 手写快照违背重生成约定**（0/29 全体 DIFF，
+     总差 1 字节）：上轮手补的 null 分支用命名寄存器 %.n0/独立 ptr_ok
+     块/str._25s 空串全局，py 侧是 llvmlite 匿名槽直跳 ok——快照
+     必须从 py runtime_text() 原样重生成（尾 `}\n`，oracle 自补空行）。
+     重生成 385,611B → 28/29。
+  2. **list pop/clear 臂被 str-family 重定位吞没**（e96ce39 编辑事故，
+     28/29 仅剩 pop_clear ERROR）：整臂落进 is_str_family 块内且守卫
+     被掏空成 no-op `if {}` + 逃逸体——`xs.pop()` 时 is_str_family=false
+     跳过整块 → 落 dict 区 → is_dict_slot=false → 实例分派 →
+     bail("method base type")。修复：臂移出块外（str-family 块闭合
+     之后、dict 区之前），守卫恢复。**v1.23.0 的"29/29"跑在陈旧
+     二进制上——陈旧窗口教训再次命中（提交前门禁必须用刚重建的
+     平面二进制）**。
+- **dss 四平面执行终验**：interpret = CPython（None/alpha ✓）；
+  native = ""/alpha（raw 边界合并，rc=0 ✓）；**ir2c = 静默错 C**——
+  dss 形状走 dsi int 值字典臂（Str* 传 int64_t 参数，clang 拒收），
+  ir2c.si 未获 dss 臂（本轮未触及）→ **下一轮首项：ir2c dss 臂**
+  （str 值 dict 表示 + store/get/print），补齐后 dss 语料钉板。
+- **miss 路径平面边界（既记录边界族，非本轮回归）**：1 参 get miss：
+  dict[str,int] native = 响亮 TypeError panic（既有）；dict[str,str]
+  native = "" 合流（本轮设计——str 域零值）；interpret = CPython None
+  （两者同——解释器 = CPython 语义线）。miss 形状不入语料钉板
+  （钉 2 参 get 默认值 + hit 路径）。
+- **门禁全绿**：ll 29/29、ir 30/30、pytest 1395/3。
 
 ## 四、其余 TODO（优先级序）
 

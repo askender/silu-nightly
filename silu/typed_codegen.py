@@ -3787,9 +3787,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.position_at_end(ok_block)
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
         is_str = builder.icmp_signed("==", tag, ir.const_(i32, 2))
-        builder.cbranch(is_str, ok_block, error_block)
+        str_ok_block = self.pystr_to_rawstr.append_basic_block("str_ok")
+        builder.cbranch(is_str, str_ok_block, error_block)
 
-        builder.position_at_end(ok_block)
+        builder.position_at_end(str_ok_block)
         inner = builder.load(builder.gep(obj_arg, [zero32, one32b]))
         str_struct = builder.bitcast(inner, ir.PointerType(self.pyobj.string_type))
         box_len = builder.load(builder.gep(str_struct, [zero32, zero32]))
