@@ -37,8 +37,8 @@
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
-**状态（2026-11-21）：已完成**——前端 IR **30/30**、完整 .ll **29/29**（含 silu_fe/str_methods/dict_ops/record_global 全语料）
-逐字节一致；语料 28 文件（七枚能力钉板：char_pair/list_ops/pop_clear/dict_ops/record_global/dict_local/str_methods）。规模对照、参考特性分诊、语言设计建议见校准报告。
+**状态（2026-11-21）：已完成**——前端 IR **31/31**、完整 .ll **30/30**（含 silu_fe/str_methods/dict_ops/record_global/dict_str 全语料）
+逐字节一致；语料 29 文件（八枚能力钉板：char_pair/list_ops/pop_clear/dict_ops/record_global/dict_local/str_methods/dict_str——dict[str,str] 四平面表示统一 RAWDICT_SS）。规模对照、参考特性分诊、语言设计建议见校准报告。
 
 **关键文档（都在 reference/）**：
 
