@@ -1134,6 +1134,8 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   教训"改被 ll 门禁钉住的文件必须跑 ll 门禁"的镜像：**ll 门禁的
   平面二进制也必须与被测源同步重发布**）。以文件级 cmp 为准。
 - **门禁**：ll 29/29（文件级 ✓）、ir 30/30、pytest 1395/3。
+- **v1.23.0 已发布**（release run 全绿 + promote：4 平台 + sha256 上
+  silu-lang releases；AGENTS 钉住同步 1.23.0 ✓）。
 - **str 方法族全量**：strip/split(sep/ws)/replace/lower/upper/find/
   index/startswith/endswith/isdigit/isalpha/isspace/print-bool +
   rawstr_replace 运行时（append 风格签名）+ index 语义修复
