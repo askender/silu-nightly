@@ -6258,6 +6258,13 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         let text = e.get(2).get(1).str_of();
                         let r = emit_const_key_direct(b,
                             &format!("%\"{}\"", l), &text);
+                        if dct_val_ty(&n) == "str" {
+                            let rp = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = inttoptr i64 {} to i8*",
+                                rp, r));
+                            return Typed::Str(format!("%\"{}\"", rp));
+                        }
                         return Typed::I64(r);
                     }
                     let kr = if let Some((bname, sl)) = as_slice_sub(&e.get(2)) {
@@ -6271,6 +6278,16 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     b.line(format!(
                         "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* %\"{}\", i8* {})",
                         c, l, kr));
+                    if dct_val_ty(&n) == "str" {
+                        // str-valued dict: the bits ARE the rawstr
+                        // pointer - inttoptr, not an int print (the
+                        // pointer-as-decimal print was accepted wrong
+                        // bytes; iron law)
+                        let r = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", r, c));
+                        return Typed::Str(format!("%\"{}\"", r));
+                    }
                     return Typed::I64(format!("%\"{}\"", c));
                 }
                 let k = eval_expr(b, &e.get(2), slot_i, slot_f, fslots);
@@ -7015,7 +7032,17 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                                 c, kn, l, karg, tail));
                         }
                         return match val_ty.as_str() {
-                            "str" => Typed::Str(format!("%\"{}\"", c)),
+                            "str" => {
+                                // the popped bits are the rawstr pointer:
+                                // inttoptr before the value rides (the
+                                // discard-free and the store both expect
+                                // a pointer, not i64 bits)
+                                let r = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = inttoptr i64 %\"{}\" to i8*",
+                                    r, c));
+                                Typed::Str(format!("%\"{}\"", r))
+                            }
                             _ => Typed::I64(format!("%\"{}\"", c)),
                         };
                     }
@@ -9156,6 +9183,32 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
                     _ => bail("dict key type"),
                 }
             };
+            if dct_val_ty(&d) == "str" {
+                // str-valued dict: get_or with the empty-rawstr default,
+                // inttoptr -> raw Str (the eval_expr twin's shape; the
+                // int-boxed phi below would feed pystr_to_rawstr an int
+                // box and panic at runtime - wrong bytes, iron law)
+                let gname = add_str("");
+                let g = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = getelementptr [1 x i8], [1 x i8]* @\"{}\", i32 0, i32 0",
+                    g, gname));
+                let ep = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_new_copy\"(i8* %\"{}\", i64 0)",
+                    ep, g));
+                let epi = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", epi, ep));
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i64 @\"rawdict_str_get_or\"(i8* %\"{}\", i8* {}, i64 %\"{}\")",
+                    c, dl, karg, epi));
+                let r = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", r, c));
+                return Typed::Str(format!("%\"{}\"", r));
+            }
             let h = b.nx();
             b.line(format!(
                 "  %\"{}\" = call i1 @\"rawdict_str_has\"(i8* %\"{}\", i8* {})",
