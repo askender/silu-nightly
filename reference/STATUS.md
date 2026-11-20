@@ -1178,6 +1178,49 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
   （钉 2 参 get 默认值 + hit 路径）。
 - **门禁全绿**：ll 29/29、ir 30/30、pytest 1395/3。
 
+## 三点三十一、dss 收敛轮：ir2c 臂 + rs 铁律修复 + RAWDICT_SS 表示统一 + 语料钉板（2026-11-21）
+
+- **ir2c dss 臂落地（27b074c）**：anno_type 本就产出 dict:S:str
+  标签，缺的是全部下游消费臂——非空字面量构造（all_str_v 跟踪 +
+  值指针裸放 int64 槽）、store（intptr 强转）、读（dict_get_str
+  新 C 助手——miss 响亮 KeyError 对齐 CPython d[k]）、get 1 参
+  （get_or 空串默认 = None 经 raw 边界合流）、get 2 参/pop/
+  setdefault（intptr 双向强转）、aug（响亮读 + str_add 回写）。
+  宽探针 13 语句 + 4 边缘探针执行 = CPython。
+- **rs 三处被接受但错误的字节（dde4097，铁律违反——执行探针
+  当场抓获，字节门禁从未见过这些形状）**：①eval_mod 全局 1 参
+  get 用 dsi 的 int 装箱 phi（create_int 装裸指针 → pystr_to_rawstr
+  的 tag 检查 panic "expected str"）→ str 值 dict 改走 eval_expr
+  孪生的 get_or 形状（两分发器同形）；②下标读返回 i64 bits →
+  print 发射裸指针十进制（5383412944）→ str 值 dict inttoptr →
+  Str（const 键与一般键两路都修）；③pop 把 del/pop_or 的 bits
+  直接当 Typed::Str（clang 拒收 store i64→i8*，丢弃清理把 bits
+  当指针 free）→ inttoptr 先行。修后最小集 store/get/read/len/
+  pop/clear 执行 = CPython，miss 读/1 参 pop miss 响亮 KeyError。
+- **py 表示收敛 RAWDICT_SS**：dict[str,str] 从动态 dict
+  （pyobj_subscript_set/dict_get_or）切到 str 值 rawdict——kind 表
+  （RAWSTR 值槽）+ 注解映射 + _dict_value_bits/_dict_bits_to_value
+  （ptrtoint/inttoptr）+ store ptrtoint 臂 + get 1 参 get_or 形状
+  （空串全局 @"str." 引用运行时前缀，无 has/phi）+ 读臂 inttoptr。
+  11 探针**一次研磨后全数逐字节一致**（dsi 机制参数化程度的回报）。
+- **dss 语料钉板（benchmarks/dict_str.si，第 8 枚能力钉板）**：
+  store×3/get/下标读/print-read/len/pop×2/clear——py conv = rs conv
+  **406,041B 逐字节**；interpret = native = ir2c = CPython 逐行。
+  已知 rs 响亮 bail 形状（ERROR 不是错误字节，未入钉板）：
+  membership（任何 dict 类型）、非空 dict 字面量、str 值 dict 的
+  aug/2 参 get/2 参 pop（tail PStr 臂缺）/setdefault。
+- **动态 dict pop 语义缺口（记录，未修）**：pyobj_pop_dispatch
+  无默认值参数——dss 动态路径 1 参 pop miss 静默 None（应 KeyError）、
+  2 参 miss 丢默认值（应返回默认）；表示收敛后 dss 不再走该路径，
+  pyobj 类型 dict 的该形状无语料钉住——出现时门禁响亮拦截。
+- **教训**：①siluc1 读 stdin 不读文件参数——文件参数调用静默空转
+  （rc=0 零字节输出），差分前必须核尺寸；②rs 是字节目标但**其
+  产物也要执行验证**——conv rc=0 ≠ 语义正确（本轮三处错误字节全
+  是 clang+运行才暴露）；③工具链 py 编辑后必须 ensure_siluc 重建
+  （fingerprint 驱动，driver 不自动重建参考平面二进制）。
+- **门禁**：ll **30/30**、ir **31/31**、corpus 29 断言更新、
+  pytest **1398/3**。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：

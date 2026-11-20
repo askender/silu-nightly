@@ -55,6 +55,7 @@ __all__ = [
     "JSON_TAG_DICT",
     "RAWLIST_JSON",
     "RAWDICT_SJ",
+    "RAWDICT_SS",
     "RAWDICT_II",
     "RAWDICT_IF",
     "RAWDICT_SI",
@@ -345,14 +346,16 @@ RAWDICT_IF = "rawdict_if"  # dict[int, float] (values as f64 bit patterns)
 RAWDICT_SI = "rawdict_si"  # dict[str, int]: same table, rawstr keys
 RAWDICT_SF = "rawdict_sf"  # dict[str, float]
 RAWDICT_SJ = "rawdict_sj"  # dict[str, Json]: str keys, tagged values
+RAWDICT_SS = "rawdict_ss"  # dict[str, str]: str keys, rawstr-pointer values
 RAWDICT_KINDS = {
     RAWDICT_II: I64,
     RAWDICT_IF: F64,
     RAWDICT_SI: I64,
     RAWDICT_SF: F64,
     RAWDICT_SJ: JSON,
+    RAWDICT_SS: RAWSTR,
 }  # kind -> value kind
-RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF, RAWDICT_SJ)  # kinds with rawstr keys
+RAWDICT_STR_KINDS = (RAWDICT_SI, RAWDICT_SF, RAWDICT_SJ, RAWDICT_SS)  # kinds with rawstr keys
 # class instance: an opaque heap block of 8-byte field slots (the
 # class name lives in the compile-time _var_class side table, never
 # in the object itself - Rust struct layout, no vtable, no header)
@@ -366,6 +369,7 @@ RAW_STORAGE_KINDS[RAWSTR] = RAWSTR
 RAW_STORAGE_KINDS[INSTANCE] = INSTANCE
 RAW_STORAGE_KINDS[JSON] = JSON  # tagged block pointer, null-initialized
 RAW_STORAGE_KINDS[RAWDICT_SJ] = RAWDICT_SJ
+RAW_STORAGE_KINDS[RAWDICT_SS] = RAWDICT_SS
 RAW_STORAGE_KINDS[BUF] = BUF  # i8* slot like rawstr
 LLVM_KIND_TYPES = {
     I64: ir.IntType(64),

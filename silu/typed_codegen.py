@@ -5380,6 +5380,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             bits = self.current_builder.bitcast(
                 value[1], ir.IntType(64)
             )
+        if value_kind == RAWSTR:
+            # str values ride the i64 slot as the rawstr pointer
+            bits = self.current_builder.ptrtoint(
+                value[1], ir.IntType(64)
+            )
         return bits
 
     def _dict_bits_to_value(self, bits, value_kind):
@@ -5387,6 +5392,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return (
                 F64,
                 self.current_builder.bitcast(bits, ir.DoubleType()),
+            )
+        if value_kind == RAWSTR:
+            return (
+                RAWSTR,
+                self.current_builder.inttoptr(
+                    bits, ir.PointerType(ir.IntType(8))
+                ),
             )
         return (I64, bits)
 
@@ -7127,6 +7139,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 # str keys, tagged block values riding the i64 slots
                 self._ensure_tagged_runtime()
                 return RAWDICT_SJ
+            if key_annotation == "str" and value_annotation == "str":
+                # str keys, rawstr-pointer values riding the i64 slots
+                return RAWDICT_SS
         return None
 
     # ================== conservative kind inference ==================
@@ -10894,6 +10909,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     val_bits = self.current_builder.inttoptr(
                         val_bits, LLVM_KIND_TYPES[JSON]
                     )
+                if value_kind == RAWSTR:
+                    # str values ride the i64 slot as the rawstr pointer
+                    val_bits = self.current_builder.inttoptr(
+                        val_bits, ir.PointerType(ir.IntType(8))
+                    )
                 return (value_kind, val_bits)
             if (
                 isinstance(node[2], (list, tuple))
@@ -11359,7 +11379,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     val_bits = self.current_builder.bitcast(
                         value[1], ir.IntType(64)
                     )
-                if value_kind == JSON:
+                if value_kind == JSON or value_kind == RAWSTR:
                     val_bits = self.current_builder.ptrtoint(
                         value[1], ir.IntType(64)
                     )

@@ -228,6 +228,30 @@ class TypedCallMixin:
                     else:
                         key_ptr = self._coerce(key_tv, I64)[1]
                         key_temp = None
+                    if value_kind == RAWSTR:
+                        # str-valued dict: the miss merges to the empty
+                        # str via get_or (the Python None through the raw
+                        # boundary) - no has/phi; the bits ARE the
+                        # rawstr pointer (rs oracle's shape). The empty
+                        # string global lives in the runtime prefix.
+                        empty_gv = self.module.globals["str."]
+                        g = self.current_builder.gep(
+                            empty_gv,
+                            [ir.const_(ir.IntType(32), 0),
+                             ir.const_(ir.IntType(32), 0)],
+                        )
+                        ep = self.current_builder.call(
+                            self.rawstr_new_copy,
+                            [g, ir.const_(ir.IntType(64), 0)],
+                        )
+                        epi = self.current_builder.ptrtoint(
+                            ep, ir.IntType(64)
+                        )
+                        bits = self.current_builder.call(
+                            self.rawdict_str_get_or,
+                            [raw_obj_tv[1], key_ptr, epi],
+                        )
+                        return self._dict_bits_to_value(bits, value_kind)
                     present = self.current_builder.call(
                         _rawdict_call_fn(
                             raw_kind, self.rawdict_has,

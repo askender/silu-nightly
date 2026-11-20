@@ -1,0 +1,17 @@
+d: dict[str, str] = {}
+d["a"] = "alpha"
+d["b"] = "beta"
+v: str = d.get("a")
+print(v)
+x: str = d["b"]
+print(x)
+print(d["a"])
+print(len(d))
+d.pop("b")
+print(len(d))
+d["c"] = "gamma"
+w: str = d.pop("c")
+print(w)
+print(len(d))
+d.clear()
+print(len(d))
