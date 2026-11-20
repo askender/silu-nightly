@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="silu",
-    version="1.22.0",
+    version="1.23.0",
     packages=find_packages(),
     entry_points={
         "console_scripts": [

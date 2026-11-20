@@ -33,12 +33,12 @@
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
 2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
-**silu 1.22.0（g-清单闭合重钉；1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
+**silu 1.23.0（str 方法族重钉；1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
-**状态（2026-11-20）：已完成**——前端 IR **28/28**、完整 .ll **27/27**（含 silu_fe/dict_ops/record_global 全语料）
-逐字节一致；语料 27 文件（六枚能力钉板：char_pair/list_ops/pop_clear/dict_ops/record_global/dict_local）。规模对照、参考特性分诊、语言设计建议见校准报告。
+**状态（2026-11-21）：已完成**——前端 IR **30/30**、完整 .ll **29/29**（含 silu_fe/str_methods/dict_ops/record_global 全语料）
+逐字节一致；语料 28 文件（七枚能力钉板：char_pair/list_ops/pop_clear/dict_ops/record_global/dict_local/str_methods）。规模对照、参考特性分诊、语言设计建议见校准报告。
 
 **关键文档（都在 reference/）**：
 
@@ -89,6 +89,21 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   corpus 16/16、irvm 10/10×2、backend 18/18、wat2wasm 35/35、
   ruff 净、RSS 1.15MB（30 万链式 concat，修复前 6.1MB）。**版本重钉
   1.21.0**（v1.20.0 发布于 P9 输出变更之前）。
+- **str 方法族四平面 + ll parity 29/29（2026-11-20/21，STATUS §3.28-3.29）**：
+  strip/split(sep/ws)/replace/lower/upper/find/index/startswith/endswith/
+  谓词/print-bool 全族四平面字节对齐（rawstr_replace 新 .ll 运行时：
+  append 风格签名——首版 rawstr 指针签名把 len 读成数据字节，replace
+  恒返回原串，native ≠ CPython 当场抓获）；**index 语义修复**（原
+  list_index 通用分派对 str 接收者静默 -1 → str_find + ValueError
+  panic）；str-method 前奏的急切接收者求值对 dict 方法也发（双重
+  load）——dict 族移至 str 族之前；**局部 dict 槽域**（len/get/方法臂
+  dct_slot 对齐）；**边界空行规则定版**（.ll = 每个 inter-function
+  边界恰一空行，fn-fn 无空行——CONST→TAGGED、TAGGED→首用户 fn、
+  fn→main 三处各一）。**教训**：①harness 的 ll 计数有平面二进制陈旧
+  窗口——直跑 cmp 为准；②rs 的运行时前缀 = include_str 快照——新
+  运行时函数必须重生成 const_prefix.ll；③str-method 前奏的急切求值
+  对非 str 方法也是隐藏分支——族块按方法集合门控。str_methods.si
+  四平面 = CPython（14 语句）。ll 29/29、ir 30/30、pytest 1395/3。
 - **g-清单闭合：语料压力五轮（2026-11-19/20，STATUS §3.24-3.27）**：
   membership、pop/clear、dict 方法族（pop/setdefault/clear × str/int
   key）、局部 dict 全族、模块级实例全局（GLOBAL_TY 注册表 + 方法调用
