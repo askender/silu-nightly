@@ -1035,7 +1035,7 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
             }
             let stored: String;
             if val_ty == "str" {
-                if op.as_str() != "+=" { bail("dict aug str op"); }
+                if op.as_str() == "+=" {
                 // the get returns i64 slot bits - inttoptr before the
                 // concat (llvmlite's verifier rejects the
                 // bits-as-pointer call; clang's leniency hid it)
@@ -1077,6 +1077,39 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
                 b.line(format!(
                     "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", pi, cp));
                 stored = format!("%\"{}\"", pi);
+                } else if op.as_str() == "-=" {
+                    // py emits bytes ONLY for the pyobj-domain rhs (a
+                    // const str): box the current value and call
+                    // pyobj_sub - a runtime TypeError for str-str (u21);
+                    // a raw-domain rhs bails in the py twin ("cannot
+                    // coerce rawstr to i64", u32) and str *= int bails
+                    // too (u31) - bail likewise
+                    let robj = match &rhs_tv {
+                        Typed::PStr(r) | Typed::Pyo(r) => r.clone(),
+                        _ => bail("dict aug str op"),
+                    };
+                    let cur = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", cur, g));
+                    let cb = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call {{i32, i8*}}* @\"rawstr_to_pystr\"(i8* %\"{}\")",
+                        cb, cur));
+                    let sub = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_sub\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* {})",
+                        sub, cb, robj));
+                    let rr = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* %\"{}\")",
+                        rr, sub));
+                    let pi = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", pi, rr));
+                    stored = format!("%\"{}\"", pi);
+                } else {
+                    bail("dict aug str op");
+                }
             } else {
                 let Typed::I64(r) = &rhs_tv else { bail("dict aug int rhs") };
                 let which = match op.as_str() {
