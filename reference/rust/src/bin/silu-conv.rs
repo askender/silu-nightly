@@ -1036,6 +1036,12 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
             let stored: String;
             if val_ty == "str" {
                 if op.as_str() != "+=" { bail("dict aug str op"); }
+                // the get returns i64 slot bits - inttoptr before the
+                // concat (llvmlite's verifier rejects the
+                // bits-as-pointer call; clang's leniency hid it)
+                let cur = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", cur, g));
                 let rr: String;
                 let temp: Option<String>;
                 match &rhs_tv {
@@ -1055,8 +1061,8 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
                 }
                 let cc = b.nx();
                 b.line(format!(
-                    "  %\"{}\" = call i8* @\"rawstr_concat\"(i64 %\"{}\", i8* {})",
-                    cc, g, rr));
+                    "  %\"{}\" = call i8* @\"rawstr_concat\"(i8* %\"{}\", i8* {})",
+                    cc, cur, rr));
                 if let Some(t) = &temp {
                     b.silent();
                     b.line(format!(
@@ -1065,7 +1071,12 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
                 let cp = b.nx();
                 b.line(format!(
                     "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp, cc));
-                stored = format!("%\"{}\"", cp);
+                // the set takes i64 slot bits - ptrtoint the buffer
+                // (plain-store convention)
+                let pi = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", pi, cp));
+                stored = format!("%\"{}\"", pi);
             } else {
                 let Typed::I64(r) = &rhs_tv else { bail("dict aug int rhs") };
                 let which = match op.as_str() {
@@ -1081,15 +1092,9 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
             let karg2 = dict_key_view(b, &kv, key_str);
             b.silent();
             if key_str {
-                if val_ty == "str" {
-                    b.line(format!(
-                        "  call void @\"rawdict_str_set\"(i8* %\"{}\", i8* {}, i8* {})",
-                        l, karg2, stored));
-                } else {
-                    b.line(format!(
-                        "  call void @\"rawdict_str_set\"(i8* %\"{}\", i8* {}, i64 {})",
-                        l, karg2, stored));
-                }
+                b.line(format!(
+                    "  call void @\"rawdict_str_set\"(i8* %\"{}\", i8* {}, i64 {})",
+                    l, karg2, stored));
             } else {
                 b.line(format!(
                     "  call void @\"rawdict_set\"(i8* %\"{}\", i64 {}, i64 {})",
@@ -8803,9 +8808,10 @@ fn dict_key_view(b: &mut FnB, kv: &Typed, key_str: bool) -> String {
 
 // one dict-literal entry: py order is VALUE convert -> key convert ->
 // view -> set (const int values emit nothing, so t9 looks key-only).
-// str values ride the raw POINTER as the set arg (i8*, NOT ptrtoint
-// bits - t2/u26): PStr/Pyo unbox fresh via pystr_to_rawstr, raw Str
-// copies (u26); int values ride i64 bits
+// str values ptrtoint to i64 slot bits for the set (the plain-store
+// convention - llvmlite's verifier rejects the raw pointer arg):
+// PStr/Pyo unbox fresh via pystr_to_rawstr, raw Str copies (u26); int
+// values ride i64 bits
 fn emit_dict_literal_entry(b: &mut FnB, pair: &Val, c: &str, key_str: bool,
                            val_ty: &str, use_mod: bool,
                            slot_i: &dyn Fn(&str) -> String,
@@ -8818,7 +8824,7 @@ fn emit_dict_literal_entry(b: &mut FnB, pair: &Val, c: &str, key_str: bool,
         eval_expr(b, &vnode, slot_i, slot_f, fslots)
     };
     let vref = if val_ty == "str" {
-        match &vt {
+        let ptr = match &vt {
             Typed::Str(r) => {
                 let cp = b.nx();
                 b.line(format!(
@@ -8848,7 +8854,11 @@ fn emit_dict_literal_entry(b: &mut FnB, pair: &Val, c: &str, key_str: bool,
                 format!("%\"{}\"", t)
             }
             _ => bail("dict literal value"),
-        }
+        };
+        let pi = b.nx();
+        b.line(format!(
+            "  %\"{}\" = ptrtoint i8* {} to i64", pi, ptr));
+        format!("%\"{}\"", pi)
     } else {
         match &vt {
             Typed::I64(r) => r.clone(),
@@ -8860,15 +8870,9 @@ fn emit_dict_literal_entry(b: &mut FnB, pair: &Val, c: &str, key_str: bool,
     let karg = dict_key_view(b, &kv, key_str);
     b.silent();
     if key_str {
-        if val_ty == "str" {
-            b.line(format!(
-                "  call void @\"rawdict_str_set\"(i8* {}, i8* {}, i8* {})",
-                c, karg, vref));
-        } else {
-            b.line(format!(
-                "  call void @\"rawdict_str_set\"(i8* {}, i8* {}, i64 {})",
-                c, karg, vref));
-        }
+        b.line(format!(
+            "  call void @\"rawdict_str_set\"(i8* {}, i8* {}, i64 {})",
+            c, karg, vref));
     } else {
         b.line(format!(
             "  call void @\"rawdict_set\"(i8* {}, i64 {}, i64 {})",

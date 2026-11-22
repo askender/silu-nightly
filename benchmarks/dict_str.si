@@ -15,3 +15,35 @@ print(w)
 print(len(d))
 d.clear()
 print(len(d))
+# oracle shape round (2026-11-22): membership + the 2-arg family + aug +
+# non-empty literal + read concat. The miss-None boundary (1-arg get/pop
+# miss) stays out by design: the interpreter yields None where the
+# compiled planes panic/return "".
+d["k1"] = "v1"
+d["k2"] = "v2"
+print("a" in d)
+print("zz" in d)
+print("zz" not in d)
+q2: str = d.get("k1", "df")
+print(q2)
+q3: str = d.get("gone", "df")
+print(q3)
+kv: str = "k2"
+q4: str = d.get(kv, "df")
+print(q4)
+p2: str = d.pop("gone", "pd")
+print(p2)
+p3: str = d.pop("k1", "pd")
+print(p3)
+s2: str = d.setdefault("k2", "new")
+print(s2)
+s3: str = d.setdefault("fresh", "made")
+print(s3)
+print(d["fresh"])
+d["k2"] += "!"
+print(d["k2"])
+lit: dict[str, str] = {"x": "1", "y": "2"}
+print(lit["x"] + lit["y"])
+cc: str = d["k2"] + d["fresh"]
+print(cc)
+print(len(d))

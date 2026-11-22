@@ -8540,7 +8540,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     val_bits = self.current_builder.bitcast(
                         val_tv[1], ir.IntType(64)
                     )
-                if value_kind == JSON:
+                if value_kind == JSON or value_kind == RAWSTR:
+                    # the set takes i64 slot bits - ptrtoint the buffer
+                    # (llvmlite's verifier rejects the raw pointer arg)
                     val_bits = self.current_builder.ptrtoint(
                         val_tv[1], ir.IntType(64)
                     )
@@ -10566,7 +10568,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     val_bits = self.current_builder.bitcast(
                         val_tv[1], ir.IntType(64)
                     )
-                if value_kind == JSON:
+                if value_kind == JSON or value_kind == RAWSTR:
+                    # the set takes i64 slot bits - ptrtoint the buffer
+                    # (llvmlite's verifier rejects the raw pointer arg)
                     val_bits = self.current_builder.ptrtoint(
                         val_tv[1], ir.IntType(64)
                     )
@@ -10799,6 +10803,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                             current_bits, ir.DoubleType()
                         ),
                     )
+                elif value_kind == RAWSTR:
+                    # the get returns i64 slot bits - inttoptr before the
+                    # binop: rawstr_concat takes pointers, and llvmlite's
+                    # verifier rejects the bits-as-pointer call (the text
+                    # layer renders it silently and clang's leniency made
+                    # it look fine until the corpus pinned the shape)
+                    i8p = ir.PointerType(ir.IntType(8))
+                    current_tv = (
+                        RAWSTR,
+                        self.current_builder.inttoptr(current_bits, i8p),
+                    )
                 else:
                     current_tv = (value_kind, current_bits)
                 result = self._typed_binop(bin_op, current_tv, right_tv)
@@ -10806,6 +10821,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 stored_bits = coerced[1]
                 if value_kind == F64:
                     stored_bits = self.current_builder.bitcast(
+                        coerced[1], ir.IntType(64)
+                    )
+                elif value_kind == RAWSTR:
+                    # the set takes i64 slot bits - ptrtoint the buffer
+                    # (the plain-store convention, _dict_value_bits)
+                    stored_bits = self.current_builder.ptrtoint(
                         coerced[1], ir.IntType(64)
                     )
                 self._rawdict_key_call_tv(

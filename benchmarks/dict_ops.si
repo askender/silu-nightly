@@ -12,3 +12,11 @@ di.setdefault(2, 20)
 print(di[2])
 di.clear()
 print(len(di))
+# oracle shape round (2026-11-22): non-empty literals (dsi + dii) and
+# value-context membership.
+dl: dict[str, int] = {"p": 1, "q": 2}
+print(dl["p"] + dl["q"])
+print("p" in dl)
+print("z" in dl)
+di2: dict[int, int] = {5: 10, 7: 20}
+print(di2[7])
