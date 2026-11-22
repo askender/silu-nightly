@@ -1758,36 +1758,6 @@ class PyobjRuntimeMixin:
         builder.position_at_end(pc_done)
         builder.ret(builder.load(pc_n))
 
-        self.pyobj_utf8_cp_offset = ir.func_(
-            self.module, ir.FunctionType(i64, [i8p, i64], False),
-            'pyobj_utf8_cp_offset',
-        )
-        po = self.pyobj_utf8_cp_offset
-        builder = ir.builder_(po.append_basic_block("puoc_entry"))
-        po_cond = po.append_basic_block("puoc_cond")
-        po_body = po.append_basic_block("puoc_body")
-        po_done = po.append_basic_block("puoc_done")
-        po_data, po_idx = po.args
-        po_off = builder.alloca(i64, None, 'puoc_off')
-        po_seen = builder.alloca(i64, None, 'puoc_seen')
-        builder.store(ir.const_(i64, 0), po_off)
-        builder.store(ir.const_(i64, 0), po_seen)
-        builder.branch(po_cond)
-        builder.position_at_end(po_cond)
-        pov_seen = builder.load(po_seen)
-        builder.cbranch(
-            builder.icmp_signed("<", pov_seen, po_idx), po_body, po_done
-        )
-        builder.position_at_end(po_body)
-        pov_off = builder.load(po_off)
-        pov_lead = builder.load(builder.gep(po_data, [pov_off]))
-        pov_seq = self._seq_len_inline(builder, pov_lead)
-        builder.store(builder.add(pov_off, pov_seq), po_off)
-        builder.store(builder.add(pov_seen, one64), po_seen)
-        builder.branch(po_cond)
-        builder.position_at_end(po_done)
-        builder.ret(builder.load(po_off))
-
         # ---- pystr code point side cache --------------------------
         # pyobj_str boxes are {i32 bytes, i8* data} with no cp field;
         # code-point semantics (len / s[i] / s[a:b:c]) would otherwise

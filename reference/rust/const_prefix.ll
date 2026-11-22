@@ -1642,41 +1642,6 @@ pucc_done:
   ret i64 %".22"
 }
 
-define i64 @"pyobj_utf8_cp_offset"(i8* %".1", i64 %".2")
-{
-puoc_entry:
-  %"puoc_off" = alloca i64
-  %"puoc_seen" = alloca i64
-  store i64 0, i64* %"puoc_off"
-  store i64 0, i64* %"puoc_seen"
-  br label %"puoc_cond"
-puoc_cond:
-  %".7" = load i64, i64* %"puoc_seen"
-  %".8" = icmp slt i64 %".7", %".2"
-  br i1 %".8", label %"puoc_body", label %"puoc_done"
-puoc_body:
-  %".10" = load i64, i64* %"puoc_off"
-  %".11" = getelementptr i8, i8* %".1", i64 %".10"
-  %".12" = load i8, i8* %".11"
-  %".13" = and i8 %".12", 224
-  %".14" = icmp eq i8 %".13", 192
-  %".15" = and i8 %".12", 240
-  %".16" = icmp eq i8 %".15", 224
-  %".17" = and i8 %".12", 248
-  %".18" = icmp eq i8 %".17", 240
-  %".19" = select  i1 %".14", i64 2, i64 1
-  %".20" = select  i1 %".16", i64 3, i64 %".19"
-  %".21" = select  i1 %".18", i64 4, i64 %".20"
-  %".22" = add i64 %".10", %".21"
-  store i64 %".22", i64* %"puoc_off"
-  %".24" = add i64 %".7", 1
-  store i64 %".24", i64* %"puoc_seen"
-  br label %"puoc_cond"
-puoc_done:
-  %".27" = load i64, i64* %"puoc_off"
-  ret i64 %".27"
-}
-
 @"pyoff_tab" = global [1024 x {i8*, i64, i64, i8*}] zeroinitializer
 define {i8*, i64} @"pystr_cp_entry"(i8* %".1", i64 %".2")
 {
