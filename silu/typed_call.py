@@ -658,7 +658,50 @@ class TypedCallMixin:
                     return (BUF, self.current_builder.call(
                         self.rawstr_copy, [src_tv[1]]
                     ))
-                data, length, temp = self._rawstr_append_operand(args_node[0])
+                if (isinstance(args_node[0], list) and len(args_node[0]) >= 2
+                        and args_node[0][0] == "const"
+                        and isinstance(args_node[0][1], str)):
+                    # the const operand keeps the pinned shape: the
+                    # conversion above is a dead gep+create_str and the
+                    # append-operand rebuilds a fresh gep (probe make
+                    # evidence); the dead conversion allocates without
+                    # side effects so the bytes stay as pinned
+                    data, length, temp = self._rawstr_append_operand(
+                        args_node[0]
+                    )
+                    result = self.current_builder.call(
+                        self.rawstr_new_copy, [data, length]
+                    )
+                    if temp is not None:
+                        self.current_builder.call(self.rawstr_free, [temp])
+                    return (BUF, result)
+                # a non-const arg unpacks from the ALREADY-converted
+                # value: re-converting the node would double side
+                # effects (a pop in the ctor arg executed twice turned
+                # the hit into a KeyError - x2 probe)
+                if src_tv[0] == RAWSTR:
+                    raw_ptr = src_tv[1]
+                    temp = None
+                else:
+                    raw_ptr = self._coerce(src_tv, RAWSTR)[1]
+                    temp = raw_ptr
+                struct_ptr = self.current_builder.bitcast(
+                    raw_ptr, llvmlite.PointerType(self.rawstr_struct_type), ''
+                )
+                length = self.current_builder.load(
+                    self.current_builder.gep(
+                        struct_ptr,
+                        [llvmlite.const_(llvmlite.IntType(32), 0),
+                         llvmlite.const_(llvmlite.IntType(32), 0)], '',
+                    ), ''
+                )
+                data = self.current_builder.load(
+                    self.current_builder.gep(
+                        struct_ptr,
+                        [llvmlite.const_(llvmlite.IntType(32), 0),
+                         llvmlite.const_(llvmlite.IntType(32), 2)], '',
+                    ), ''
+                )
                 result = self.current_builder.call(
                     self.rawstr_new_copy, [data, length]
                 )

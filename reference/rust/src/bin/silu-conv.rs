@@ -2148,12 +2148,15 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
         let t = st.get(3).get(1).str_of();
         if t == "strbuf" {
             // strbuf local: plain alloca (NO null store, no silence),
-            // reference semantics - the pointer is shared as-is.
-            FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "buf".into())));
+            // reference semantics - the pointer is shared as-is. The
+            // alloca RECORD registers after the RHS eval (the u10
+            // convention: view-producing inits allocate their views
+            // first, then the target slot - x2 prologue)
             FN_SBUF.with(|y| y.borrow_mut().push(name.clone()));
             let fs2 = F_SLOTS.with(|f| f.borrow().clone());
             let v = eval_mod(b, &init, &fs2);
             let r = to_raw(b, v);
+            FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "buf".into())));
             // every buf declaration closes with ONE silent before
             // the store (probe make .7 and user_main .5)
             b.silent();
@@ -5573,16 +5576,68 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             bail("strbuf ctor const");
         }
         if arg.len() == 1 {
+            // BUF-domain args (a buf local or a strbuf(...) call) take a
+            // single rawstr_copy - py: src_tv[0] == BUF -> copy, no
+            // unpack. Non-const args convert ONCE and unpack from the
+            // converted value (the old dead kind-check re-conversion
+            // double-executed side-effecting args - x2's second pop
+            // turned a hit into a KeyError)
+            let is_buf_arg = (arg[0].head() == "name"
+                && is_local_buf(&arg[0].get(1).str_of()))
+                || (arg[0].head() == "call"
+                    && arg[0].get(1).head() == "name"
+                    && arg[0].get(1).get(1).str_of() == "strbuf");
             let av = eval_mod(b, &arg[0], fslots);
-            match av {
-                Typed::Str(r) | Typed::Inst(r) => {
-                    let c = b.nx();
+            if is_buf_arg {
+                match av {
+                    Typed::Str(r) | Typed::Inst(r) => {
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", c, r));
+                        return Typed::Str(format!("%\"{}\"", c));
+                    }
+                    _ => bail("strbuf ctor arg"),
+                }
+            }
+            // unpack from the converted value: a pystr-domain arg
+            // coerces first and its temp frees after the copy; a raw
+            // buffer unpacks directly
+            let (raw, temp) = match &av {
+                Typed::Str(r) | Typed::Inst(r) => (r.clone(), None),
+                Typed::PStr(r) | Typed::Pyo(r) => {
+                    let t = b.nx();
                     b.line(format!(
-                        "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", c, r));
-                    return Typed::Str(format!("%\"{}\"", c));
+                        "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* {})",
+                        t, r));
+                    (format!("%\"{}\"", t), Some(format!("%\"{}\"", t)))
                 }
                 _ => bail("strbuf ctor arg"),
+            };
+            let st = b.nx();
+            b.line(format!(
+                "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*", st, raw));
+            let lp = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 0",
+                lp, st));
+            let lv = b.nx();
+            b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", lv, lp));
+            let dp = b.nx();
+            b.line(format!(
+                "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+                dp, st));
+            let dv = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** %\"{}\"", dv, dp));
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i8* @\"rawstr_new_copy\"(i8* %\"{}\", i64 %\"{}\")",
+                c, dv, lv));
+            if let Some(t) = &temp {
+                b.silent();
+                b.line(format!(
+                    "  call void @\"rawstr_free\"(i8* {})", t));
             }
+            return Typed::Str(format!("%\"{}\"", c));
         }
         bail("strbuf args");
     }
