@@ -75,6 +75,20 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 
 ## 当前状态锚点（2026-11-18）
 
+- **⚠️ WIP 进行中轮（2026-11-22，先读这里）**：**oracle 形状补齐轮**
+  进行到一半——membership 值上下文已落地（8f6a4d8，m1/m2 字节一致
+  ll 30/30）；**剩余五项按序见 `reference/STATUS.md` §3.32**：
+  ①rs dss 2 参族 tail PStr 臂（bail "dict method value"/"to_raw on
+  non-str"）②rs dss aug（bail "expr_i64 type"）③rs 非空 dict 字面量
+  （bail "dict init"，2141 行）④扩钉板 dict_str.si ⑤动态 dict pop
+  语义缺口（pyobj_pop_dispatch 无默认值参数）→ 版本重钉决策。
+  探针重建清单在 §3.32 尾部。**换客户端第一站 = STATUS.md §3.32**。
+- **dss 收敛轮全绿（2026-11-21/22，53a0942/27b074c/dde4097/9baa855/
+  bdb35e7）**：dict[str,str] 四平面表示统一 RAWDICT_SS（py 从动态
+  dict 切换），语料 29 文件（第 8 枚能力钉板 dict_str.si，406,041B
+  双平面逐字节）；rs 三处被接受但错误的字节（int 装箱 phi/裸指针
+  十进制/bits 当指针 free）执行探针抓获并修复（dde4097，铁律）；
+  ir2c dss 臂（27b074c）；门禁 ll 30/30、ir 31/31、pytest 1398/3。
 - **P9 收口：ll 22/22 全绿（2026-11-18，34c2a61，STATUS.md P9 第七轮）**：
   codegen 层 concat/临时值所有权追踪跨 ll 全语料逐字节一致（silu_fe
   首次）。残差全归因（形状序列法——槽号多重集比对被 free 占槽漂移污染，

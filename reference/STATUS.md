@@ -1221,6 +1221,63 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
 - **门禁**：ll **30/30**、ir **31/31**、corpus 29 断言更新、
   pytest **1398/3**。
 
+## 三点三十二、WIP 进行中轮：oracle 形状补齐（membership ✅ → 2 参族/aug/字面量 → 动态 pop 语义）+ 交接锚点（2026-11-22）
+
+**已落地（8f6a4d8）**：值上下文 membership——臂此前只在 eval_i1
+（bool 上下文，list_ops 钉证）；print 实参/赋值走 eval_mod→eval_expr
+bail（语料零 `in` 使用者，从未暴露）。eval_expr 新增 in/not-in 臂
+（返回 Typed::Bool，str-in-str/pyobj/list 逐字节镜像 eval_i1 已钉证
+形状；dict 臂用 checked-view 键= get/store 键形状，非 to_raw）；
+eval_i1 dict 兜底臂同修（未钉形状的潜伏字节分歧）。**研磨教训**：
+首版 dict 臂在容器名求值（dv 已载入）后又 b.nx() 重复载入——多一条
+指令使全部槽位后移（py .35 vs rs .36 load 的差一签名）——复用 dv 的
+Inst 值闭合，m1/m2（dsi+dss membership）字节一致，双平面执行 True/
+False = CPython，ll 30/30 不动。
+
+**本轮剩余 TODO（按序，探针在 /tmp/gprobes/，compact 后按描述重建）**：
+
+1. **rs dss 2 参族 tail PStr 臂**：`d.get(k, "dflt")`/`d.pop(k, "d")`
+   ——rs bail "dict method value"（tail match 只收 Typed::I64，缺
+   Str/PStr 臂——镜像 store 臂的 to_raw+ptrtoint）；setdefault
+   bail "to_raw on non-str: I64"（~7899 行，值强转走 to_raw）。
+   py 侧发射已存在（探针 t6/t4b：siluc1 rc=0），rs 侧是缺口。
+   **先验 py 发射形状再写 rs 臂**（字节目标 = py）。
+2. **rs dss aug**（`d[k] += v`）：bail "expr_i64 type"（t3 探针）。
+   py 形状 = rawdict_str_entry 读槽 + str_add + 回写？先 cmp py。
+3. **rs 非空 dict 字面量**：bail "dict init"（2141 行，模块级声明区
+   只收空 dict）。py 支持（t9 dsi + t2 dss，rc=0）：rawdict_new() +
+   逐条目 rawdict_str_set(checked-view 键, bits) + store 到槽。
+   函数局部字面量 py 是否支持未探——先探后写。dsi 与 dss 两款。
+4. **扩钉板 dict_str.si**：上述形状闭合后，把 membership/2 参 get/
+   2 参 pop/setdefault/aug 加入钉板（miss 路径仍不入——解释器
+   None vs 编译 ""/panic 的边界族）；重跑四平面 + 全门禁。
+5. **动态 dict pop 语义缺口**（pyobj_pop_dispatch 无默认值参数）：
+   1 参 pop miss 静默 None（应 KeyError）、2 参 miss 丢默认值。
+   修法：dict_pop 加 def 参数（null → panic KeyError，非 null →
+   返回默认）+ pyobj_pop_dispatch 3 参透传 + typed_call.py 方法表
+   pop 条目 arg_count 1→2（get 条目已是 2 参带 null 补位的先例）。
+   **改运行时文本 → const_prefix.ll 重生成（快照约定）→ ensure_siluc
+   → ll 门禁复验（既有语料应不变——dss 已不走该路径，dsi 走
+   rawdict_str_del/pop_or）**。执行探针：`d: dict = {}` 动态 dict
+   的 pop miss/2 参（rs 对动态 dict 整体 bail——纯 py 平面语义修复）。
+6. **版本重钉决策**：本会话语料 28→29（+dict_str 能力钉板）+
+   oracle 行为面扩展（dss 全族 + membership）——按先例（1.22.0=
+   语料轮）重钉 1.24.0 或以 v1.23.1 补丁发布；用户裁决。
+
+**探针清单（/tmp/gprobes/，compact 后重建用）**：s1-s8（dss 最小
+集形状）、t1-t9（miss 读/字面量/aug/pop 作值/2 参 pop/dsi miss/
+dsi 字面量）、m1-m2（membership dsi+dss）、dss/dss_wide/pin_min
+（宽探针）。钉板 = benchmarks/dict_str.si（store×3/get/读/
+print-read/len/pop×2/clear，406,041B 双平面逐字节）。
+
+**本会话教训（补入下方六节）**：①siluc1 读 stdin——文件参数静默
+空转（rc=0 零字节），差分前核尺寸；②conv rc=0 ≠ 语义正确——rs
+产物必须 clang+执行验证（本轮三处错误字节全由执行暴露）；③转换器
+py 源编辑后必须 `python3 -c "import sys; sys.path.insert(0,'tools');
+import selfhost_build as sb; sb.ensure_siluc()"` 重建（driver 不自动
+重建参考平面二进制）；④eval_expr 臂的容器复用 dv——重复载入差一
+槽的研磨签名（py .N vs rs .N+1 load）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
@@ -1315,3 +1372,13 @@ git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
    "宁报 ERROR"铁律的静默错误字节：步进切片丢步进）。
 5. （补充）**"偶发竞态"结论要复现验证**：本失败两次被误判为竞态，
    standalone 复现后才确认真回归——全量跑失败先定向重跑一次再下结论。
+6. （2026-11-21/22 dss 三轮）**siluc1 读 stdin 不读文件参数**——文件
+   参数调用静默空转（rc=0 零字节输出）；差分前必须核输出尺寸。
+   **conv rc=0 ≠ 语义正确**——rs 产物必须 clang+执行验证（三处被
+   接受的错误字节全由执行暴露：int 装箱 phi 喂 pystr_to_rawstr、
+   裸指针十进制打印、bits 当指针 free）。**转换器 py 源编辑后必须
+   ensure_siluc 重建**（driver 不自动重建参考平面二进制；fingerprint
+   只管运行时缓存）。**eval_expr 臂复用 dv**——重复载入差一槽的
+   研磨签名（py .N vs rs .N+1 的同形 load）。**陈旧窗口教训第三次
+   命中**（v1.23.0 的 29/29 跑在 e96ce39 吞臂前的旧二进制上）——
+   提交前门禁必须用刚重建的平面二进制。
