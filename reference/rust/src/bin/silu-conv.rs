@@ -1110,6 +1110,25 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
                 } else {
                     bail("dict aug str op");
                 }
+            } else if val_ty == "float" {
+                // get bits -> bitcast current to double -> fop (no
+                // overflow checks on the float plane) -> bitcast store
+                // (v3/v6 probes)
+                let Typed::F64(r) = &rhs_tv else { bail("dict aug float rhs") };
+                let cur = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i64 %\"{}\" to double", cur, g));
+                let instr = match op.as_str() {
+                    "+=" => "fadd", "-=" => "fsub", "*=" => "fmul",
+                    _ => bail("dict aug float op"),
+                };
+                let res = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = {} double %\"{}\", {}", res, instr, cur, r));
+                let ib = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast double %\"{}\" to i64", ib, res));
+                stored = format!("%\"{}\"", ib);
             } else {
                 let Typed::I64(r) = &rhs_tv else { bail("dict aug int rhs") };
                 let which = match op.as_str() {
@@ -2270,7 +2289,7 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
         let tv = tp.items().get(1).cloned().unwrap_or(Val::Null);
         let ok_types = tp.head() == "tuple"
             && matches!(&tv, Val::List(vs) if vs.len() == 2
-                && vs.iter().all(|v| ["int", "str", "Json"].contains(&v.get(1).str_of().as_str())));
+                && vs.iter().all(|v| ["int", "str", "float", "Json"].contains(&v.get(1).str_of().as_str())));
         if !ok_types { bail("dict elem types"); }
         let vty = tv_valtype(&tv);
         // dict[str,Json]: the VALUE annotation (second tuple member)
@@ -2476,25 +2495,17 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             tail_push(format!("@\"{}\" = global i8* null", name));
         } else if anno == "float" {
             F_SLOTS.with(|f| f.borrow_mut().push(name.clone()));
-            let const_f = match &init.items()[1] {
-                Val::Float(v) => Some(*v), _ => None };
-            if let Some(f) = const_f {
-                tail_push(format!("@\"{}\" = global double {}",
-                                  name, double_bits(f)));
-                b.silent();
-                b.line(format!("  store double {}, double* @\"{}\"",
-                               double_bits(f), name));
-            } else {
-                // expression init: eval FIRST, then slot + store
-                let fs = F_SLOTS.with(|f| f.borrow().clone());
-                let v = eval_mod(b, &init, &fs);
-                let r = to_f64(b, v);
-                tail_push(format!("@\"{}\" = global double {}",
-                                  name, double_bits(0.0)));
-                b.silent();
-                b.line(format!("  store double {}, double* @\"{}\"",
-                               r, name));
-            }
+            // the global ALWAYS declares 0x0 and the value stores in
+            // main (SOLAR_MASS convention; the const-folded decl was
+            // accepted-but-divergent bytes - v7 probe)
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &init, &fs);
+            let r = to_f64(b, v);
+            tail_push(format!("@\"{}\" = global double {}",
+                              name, double_bits(0.0)));
+            b.silent();
+            b.line(format!("  store double {}, double* @\"{}\"",
+                           r, name));
         } else if is_class(&anno) {
             // module-level instance global: the ctor evals to an Inst
             // pointer (malloc + field stores inside the ctor arm); the
@@ -3286,6 +3297,12 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val) {
                     format!("%\"{}\"", pt)
                 }
                 Typed::I64(r) => r,
+                Typed::F64(r) => {
+                    let bt = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = bitcast double {} to i64", bt, r));
+                    format!("%\"{}\"", bt)
+                }
                 _ => bail("dict str value"),
             };
             let kr = {
@@ -3309,7 +3326,24 @@ fn conv_subscript_assign(b: &mut FnB, st: &Val) {
         }
         let l = b.nx();
         b.line(format!("  %\"{}\" = load i8*, i8** @\"{}\"", l, obj));
-        let v = b.expr_i64_raw(&st.get(3), &global_slot);
+        let v = if DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &obj))
+            && dct_val_ty(&obj) == "float" {
+            // float values bitcast into the slot's i64 bits (v4)
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let vv = eval_mod(b, &st.get(3), &fs);
+            match vv {
+                Typed::F64(r) => {
+                    let bt = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = bitcast double {} to i64", bt, r));
+                    format!("%\"{}\"", bt)
+                }
+                Typed::I64(r) => r,
+                _ => bail("dict int-key value"),
+            }
+        } else {
+            b.expr_i64_raw(&st.get(3), &global_slot)
+        };
         let k = b.expr_i64_raw(&st.get(2), &global_slot);
         b.silent();
         b.line(format!(
@@ -6442,6 +6476,13 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                                 rp, r));
                             return Typed::Str(format!("%\"{}\"", rp));
                         }
+                        if dct_val_ty(&n) == "float" {
+                            let rp = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = bitcast i64 {} to double",
+                                rp, r));
+                            return Typed::F64(format!("%\"{}\"", rp));
+                        }
                         return Typed::I64(r);
                     }
                     let kr = if let Some((bname, sl)) = as_slice_sub(&e.get(2)) {
@@ -6465,6 +6506,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                             "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", r, c));
                         return Typed::Str(format!("%\"{}\"", r));
                     }
+                    if dct_val_ty(&n) == "float" {
+                        let r = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i64 %\"{}\" to double", r, c));
+                        return Typed::F64(format!("%\"{}\"", r));
+                    }
                     return Typed::I64(format!("%\"{}\"", c));
                 }
                 let k = eval_expr(b, &e.get(2), slot_i, slot_f, fslots);
@@ -6472,7 +6519,13 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 let c = b.nx();
                 b.line(format!(
                         "  %\"{}\" = call i64 @\"rawdict_get\"(i8* %\"{}\", i64 {})", c, l, kr));
-                    return Typed::I64(format!("%\"{}\"", c));
+                if dct_val_ty(&n) == "float" {
+                    let r = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = bitcast i64 %\"{}\" to double", r, c));
+                    return Typed::F64(format!("%\"{}\"", r));
+                }
+                return Typed::I64(format!("%\"{}\"", c));
             } else if LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n))
                 || FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &n)) {
                 // list read: load obj, key, bounds-checked get_ok
@@ -7216,6 +7269,14 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                                     "  %\"{}\" = inttoptr i64 %\"{}\" to i8*",
                                     r, c));
                                 Typed::Str(format!("%\"{}\"", r))
+                            }
+                            "float" => {
+                                // float bits bitcast to double (v2/v5)
+                                let r = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = bitcast i64 %\"{}\" to double",
+                                    r, c));
+                                Typed::F64(format!("%\"{}\"", r))
                             }
                             _ => Typed::I64(format!("%\"{}\"", c)),
                         };
@@ -8781,6 +8842,17 @@ fn dict_value_bits(b: &mut FnB, node: &Val, val_ty: &str, msg: &str,
             }
             _ => bail(msg),
         }
+    } else if val_ty == "float" {
+        match &dv {
+            Typed::F64(r) => {
+                let bt = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast double {} to i64", bt, r));
+                format!(", i64 %\"{}\"", bt)
+            }
+            Typed::I64(r) => format!(", i64 {}", r),
+            _ => bail(msg),
+        }
     } else {
         match &dv {
             Typed::I64(r) => format!(", i64 {}", r),
@@ -8892,6 +8964,17 @@ fn emit_dict_literal_entry(b: &mut FnB, pair: &Val, c: &str, key_str: bool,
         b.line(format!(
             "  %\"{}\" = ptrtoint i8* {} to i64", pi, ptr));
         format!("%\"{}\"", pi)
+    } else if val_ty == "float" {
+        match &vt {
+            Typed::F64(r) => {
+                let bt = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast double {} to i64", bt, r));
+                format!("%\"{}\"", bt)
+            }
+            Typed::I64(r) => r.clone(),
+            _ => bail("dict literal value"),
+        }
     } else {
         match &vt {
             Typed::I64(r) => r.clone(),
@@ -9727,10 +9810,24 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
             b.line(format!(
                 "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* %\"{}\", i8* {})",
                 g, dl, karg));
-            let bi = b.nx();
-            b.line(format!(
-                "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 %\"{}\")",
-                bi, g));
+            // float values ride the same boxed phi - the bits bitcast
+            // to double BEFORE create_float's register (v5 order)
+            let (bi, freg) = if dct_val_ty(&d) == "float" {
+                let bt = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = bitcast i64 %\"{}\" to double", bt, g));
+                let cf = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"create_float\"(double %\"{}\")",
+                    cf, bt));
+                (cf, true)
+            } else {
+                let ci = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 %\"{}\")",
+                    ci, g));
+                (ci, false)
+            };
             b.silent();
             b.line(format!("  br label %\"{}\"", "get_merge"));
             let mb = b.add_block(&miss_lbl);
@@ -9781,6 +9878,12 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
             b.line(format!(
                 "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", r, c));
             return Typed::Str(format!("%\"{}\"", r));
+        }
+        if val_ty == "float" {
+            let r = b.nx();
+            b.line(format!(
+                "  %\"{}\" = bitcast i64 %\"{}\" to double", r, c));
+            return Typed::F64(format!("%\"{}\"", r));
         }
         return Typed::I64(format!("%\"{}\"", c));
     }
