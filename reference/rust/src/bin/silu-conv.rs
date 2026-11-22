@@ -2057,15 +2057,14 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
     }
     if IN_FN.with(|v| *v.borrow()) && st.get(3).head() == "subscript"
         && st.get(3).get(1).get(1).str_of() == "dict" {
-        // function-local dict[str,Json]: alloca + rawdict_new + store
-        // (jsonparse_json parse_object o evidence). Only literal {} inits:
-        // a dict-typed ann_assign bound to an existing dict expression is
-        // a REFERENCE bind (pointer share, python-plane semantics) and
-        // falls through to the generic path.
+        // function-local dict: alloca + rawdict_new + per-entry sets off
+        // the fresh dict + store (jsonparse_json parse_object o evidence
+        // for the empty init; u23/u24 for the entries). The alloca RECORD
+        // registers after the entries - a literal's key views allocate
+        // first, then the target slot (u23 prologue order)
         let tp = st.get(3).get(2);
         let tv = tp.items().get(1).cloned().unwrap_or(Val::Null);
         let vty = tv_valtype(&tv);
-        FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "list".into())));
         DCT_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
         DCT_KEYS.with(|m| m.borrow_mut().push((name.clone(), vty)));
         let va = match &tv { Val::List(vs) if vs.len() == 2 =>
@@ -2074,6 +2073,15 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
         FN_D.with(|f| f.borrow_mut().push(name.clone()));
         let c = b.nx();
         b.line(format!("  %\"{}\" = call i8* @\"rawdict_new\"()", c));
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let n_at = |n: &str| format!("%\"{}\"", n);
+        let c_ref = format!("%\"{}\"", c);
+        for pair in init.get(1).items() {
+            emit_dict_literal_entry(b, &pair, &c_ref,
+                dct_key_ty(&name) == "str", &dct_val_ty(&name),
+                true, &n_at, &n_at, &fs);
+        }
+        FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "list".into())));
         b.silent();
         b.line(format!("  store i8* %\"{}\", i8** %\"{}\"", c, name));
         return;
@@ -2247,8 +2255,7 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             tail_push(format!("@\"{}\" = global i8* null", name));
             return;
         }
-        if init.head() != "dict"
-            || !matches!(init.items().get(1), Some(Val::List(v)) if v.is_empty()) {
+        if init.head() != "dict" {
             bail("dict init");
         }
         DCT_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
@@ -2259,6 +2266,17 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
         DCT_VALS.with(|m| m.borrow_mut().push((name.clone(), va2)));
         let c = b.nx();
         b.line(format!("  %\"{}\" = call i8* @\"rawdict_new\"()", c));
+        // non-empty literals: per-entry value-convert -> key -> view ->
+        // set off the fresh dict (t2/t9/u25-u27); the store lands after
+        // the last entry
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let n_at = |n: &str| format!("@\"{}\"", n);
+        let c_ref = format!("%\"{}\"", c);
+        for pair in init.get(1).items() {
+            emit_dict_literal_entry(b, &pair, &c_ref,
+                dct_key_ty(&name) == "str", &dct_val_ty(&name),
+                true, &n_at, &n_at, &fs);
+        }
         b.silent();
         b.line(format!("  store i8* %\"{}\", i8** @\"{}\"", c, name));
         tail_push(format!("@\"{}\" = global i8* null", name));
@@ -5370,7 +5388,19 @@ fn is_str_expr(e: &Val) -> bool {
                 .and_then(|fs| fs.into_iter().find(|(f, _)| f == &fld))
                 .map(|(_, t)| t == "str").unwrap_or(false)
         }
-        "subscript" => is_str_expr(&e.get(1)),
+        "subscript" => {
+            // a str-valued dict's read IS a str expr (d["k"] + ... rides
+            // the concat arm - u30; the char-pair pause machinery no-ops
+            // on it: the dict read never registers a pending pair)
+            if e.get(1).head() == "name" {
+                let bn = e.get(1).get(1).str_of();
+                if DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &bn))
+                    && dct_val_ty(&bn) == "str" {
+                    return true;
+                }
+            }
+            is_str_expr(&e.get(1))
+        }
         "+" => is_str_expr(&e.get(1)) || is_str_expr(&e.get(2)),
         "call" => {
             if e.get(1).head() == "attribute" && e.get(1).get(2).str_of() == "join" {
@@ -8768,6 +8798,81 @@ fn dict_key_view(b: &mut FnB, kv: &Typed, key_str: bool) -> String {
             Typed::I64(r) => r.clone(),
             _ => bail("dict key type"),
         }
+    }
+}
+
+// one dict-literal entry: py order is VALUE convert -> key convert ->
+// view -> set (const int values emit nothing, so t9 looks key-only).
+// str values ride the raw POINTER as the set arg (i8*, NOT ptrtoint
+// bits - t2/u26): PStr/Pyo unbox fresh via pystr_to_rawstr, raw Str
+// copies (u26); int values ride i64 bits
+fn emit_dict_literal_entry(b: &mut FnB, pair: &Val, c: &str, key_str: bool,
+                           val_ty: &str, use_mod: bool,
+                           slot_i: &dyn Fn(&str) -> String,
+                           slot_f: &dyn Fn(&str) -> String,
+                           fslots: &[String]) {
+    let vnode = pair.get(1);
+    let vt = if use_mod {
+        eval_mod(b, &vnode, fslots)
+    } else {
+        eval_expr(b, &vnode, slot_i, slot_f, fslots)
+    };
+    let vref = if val_ty == "str" {
+        match &vt {
+            Typed::Str(r) => {
+                let cp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                format!("%\"{}\"", cp)
+            }
+            Typed::Inst(r) => {
+                let is_str_call = vnode.head() == "call"
+                    && vnode.get(1).head() == "name"
+                    && FN_SIGS.with(|m| m.borrow().iter()
+                        .find(|(k, _, rty)| {
+                            k == &vnode.get(1).get(1).str_of()
+                        })
+                        .map(|(_, _, rty)| rty == "str")
+                        .unwrap_or(false));
+                if !is_str_call { bail("dict literal value"); }
+                let cp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                format!("%\"{}\"", cp)
+            }
+            Typed::PStr(r) | Typed::Pyo(r) => {
+                let t = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* {})",
+                    t, r));
+                format!("%\"{}\"", t)
+            }
+            _ => bail("dict literal value"),
+        }
+    } else {
+        match &vt {
+            Typed::I64(r) => r.clone(),
+            _ => bail("dict literal value"),
+        }
+    };
+    let kv = dict_key_convert(b, &pair.get(0), key_str, use_mod,
+        slot_i, slot_f, fslots);
+    let karg = dict_key_view(b, &kv, key_str);
+    b.silent();
+    if key_str {
+        if val_ty == "str" {
+            b.line(format!(
+                "  call void @\"rawdict_str_set\"(i8* {}, i8* {}, i8* {})",
+                c, karg, vref));
+        } else {
+            b.line(format!(
+                "  call void @\"rawdict_str_set\"(i8* {}, i8* {}, i64 {})",
+                c, karg, vref));
+        }
+    } else {
+        b.line(format!(
+            "  call void @\"rawdict_set\"(i8* {}, i64 {}, i64 {})",
+            c, karg, vref));
     }
 }
 
