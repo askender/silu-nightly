@@ -2521,6 +2521,19 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             tail_push(format!("@\"{}\" = global i8* null", name));
             b.silent();
             b.line(format!("  store i8* {}, i8** @\"{}\"", ptr, name));
+        } else if is_obj_annotation(&anno) {
+            // the object global holds the pyobj DIRECTLY ({i32,i8*}*):
+            // the init converts through the dynamic layer - a const str
+            // is create_str (no pystr_to_rawstr), an int create_int
+            // (w1/w2 probes); the global decl lands in the tail
+            PY_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let v = eval_mod(b, &init, &fs);
+            let r = to_pyobj(b, v);
+            b.silent();
+            b.line(format!(
+                "  store {{i32, i8*}}* {}, {{i32, i8*}}** @\"{}\"", r, name));
+            tail_push(format!("@\"{}\" = global {{i32, i8*}}* null", name));
         } else {
             // int binding: rhs eval first, then slot + global + store
             // (spectral: rhs-created strings number before the slot)
@@ -3189,6 +3202,17 @@ fn conv_assign(b: &mut FnB, st: &Val) {
         }
         let fs = F_SLOTS.with(|f| f.borrow().clone());
         let v = eval_mod(b, &rhs, &fs);
+        if PY_SLOTS.with(|t| t.borrow().iter().any(|x| x == &name)) {
+            // an object-annotated slot rides the pyobj domain: the rhs
+            // boxes via to_pyobj (const str -> create_str identity, an
+            // int -> create_int - w2's re-assignment)
+            let r = to_pyobj(b, v);
+            b.silent();
+            b.line(format!(
+                "  store {{i32, i8*}}* {}, {{i32, i8*}}** {}",
+                r, py_slot(&name)));
+            return;
+        }
         if let Typed::F64(_) = v {
             // float rhs auto-declares a float global (SOLAR_MASS evidence)
             if !is_declared(&name) {
