@@ -75,14 +75,22 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 
 ## 当前状态锚点（2026-11-18）
 
-- **⚠️ WIP 进行中轮（2026-11-22，先读这里）**：**oracle 形状补齐轮**
-  进行到一半——membership 值上下文已落地（8f6a4d8，m1/m2 字节一致
-  ll 30/30）；**剩余五项按序见 `reference/STATUS.md` §3.32**：
-  ①rs dss 2 参族 tail PStr 臂（bail "dict method value"/"to_raw on
-  non-str"）②rs dss aug（bail "expr_i64 type"）③rs 非空 dict 字面量
-  （bail "dict init"，2141 行）④扩钉板 dict_str.si ⑤动态 dict pop
-  语义缺口（pyobj_pop_dispatch 无默认值参数）→ 版本重钉决策。
-  探针重建清单在 §3.32 尾部。**换客户端第一站 = STATUS.md §3.32**。
+- **oracle 形状补齐轮全收口（2026-11-22 深夜，e74c38a→6ce0680）**：
+  §3.32 五项全部落地——①rs dss 2 参族（get/pop/setdefault tail PStr
+  臂 + py 求值顺序对齐：pop/get 键先、setdefault 默认值元组先）②rs
+  dss/dii aug（dict 门修复 dii 静默走 list 形状的错误字节）③rs 非空
+  dict 字面量（dsi/dss/dii × 全局/局部；局部字面量曾静默变空 dict）
+  ④钉板扩容（dict_str.si membership/2 参族/aug/字面量/读拼接 +
+  dict_ops.si dsi/dii 字面量）并**当场抓获三平面共有无效 IR bug**
+  （aug concat i64 位传 i8* 形参、str 值 set 传裸指针——clang 宽容/
+  text 层不校验，真 llvmlite verifier 拒绝；py 参考+flat 孪生+rs 三处
+  同步修复）⑤动态 dict pop 语义（1 参 miss KeyError panic、2 参 miss
+  返回默认含 None；dict_pop+dict_pop_def 双域 ABI + 双 dispatch +
+  方法表按参选函数；const_prefix.ll 重生成 391,059B + rs 快照同步；
+  前缀快照必须止于 `}\n`）。全门禁绿：ll 30/30、ir 31/31、pytest
+  1398+4/3、wasm corpus 16/16、backend 18/18、wat2wasm 43/43、探针
+  28 枚双平面字节+执行一致。**剩余：版本重钉决策（用户裁决）**。
+  换客户端第一站 = STATUS.md §3.33。
 - **dss 收敛轮全绿（2026-11-21/22，53a0942/27b074c/dde4097/9baa855/
   bdb35e7）**：dict[str,str] 四平面表示统一 RAWDICT_SS（py 从动态
   dict 切换），语料 29 文件（第 8 枚能力钉板 dict_str.si，406,041B

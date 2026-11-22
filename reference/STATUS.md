@@ -2,6 +2,10 @@
 
 > 交接快照：当前状态、未决事项、调查现场、关键教训。
 > 规约细节锚点仍是 `reference/PROGRESS.md`；本文负责"接下来做什么"。
+>
+> **换客户端第一站 = §3.33（2026-11-22 深夜）**：oracle 形状补齐轮
+> 全收口（2 参族/aug/字面量/无效 IR/动态 pop 语义），全门禁绿；
+> 唯余版本重钉决策待用户裁决（§3.33 尾 + §四.6）。
 
 ## 一、已提交状态
 
@@ -1221,7 +1225,7 @@ fork 后全三 fd 接 /dev/null；S4 客户端 16KB 缓冲截掉 verdict（成�
 - **门禁**：ll **30/30**、ir **31/31**、corpus 29 断言更新、
   pytest **1398/3**。
 
-## 三点三十二、WIP 进行中轮：oracle 形状补齐（membership ✅ → 2 参族/aug/字面量 → 动态 pop 语义）+ 交接锚点（2026-11-22）
+## 三点三十二、oracle 形状补齐轮规划（2026-11-22，本轮 §3.33 已全部落地）
 
 **已落地（8f6a4d8）**：值上下文 membership——臂此前只在 eval_i1
 （bool 上下文，list_ops 钉证）；print 实参/赋值走 eval_mod→eval_expr
@@ -1234,35 +1238,9 @@ eval_i1 dict 兜底臂同修（未钉形状的潜伏字节分歧）。**研磨�
 Inst 值闭合，m1/m2（dsi+dss membership）字节一致，双平面执行 True/
 False = CPython，ll 30/30 不动。
 
-**本轮剩余 TODO（按序，探针在 /tmp/gprobes/，compact 后按描述重建）**：
-
-1. **rs dss 2 参族 tail PStr 臂**：`d.get(k, "dflt")`/`d.pop(k, "d")`
-   ——rs bail "dict method value"（tail match 只收 Typed::I64，缺
-   Str/PStr 臂——镜像 store 臂的 to_raw+ptrtoint）；setdefault
-   bail "to_raw on non-str: I64"（~7899 行，值强转走 to_raw）。
-   py 侧发射已存在（探针 t6/t4b：siluc1 rc=0），rs 侧是缺口。
-   **先验 py 发射形状再写 rs 臂**（字节目标 = py）。
-2. **rs dss aug**（`d[k] += v`）：bail "expr_i64 type"（t3 探针）。
-   py 形状 = rawdict_str_entry 读槽 + str_add + 回写？先 cmp py。
-3. **rs 非空 dict 字面量**：bail "dict init"（2141 行，模块级声明区
-   只收空 dict）。py 支持（t9 dsi + t2 dss，rc=0）：rawdict_new() +
-   逐条目 rawdict_str_set(checked-view 键, bits) + store 到槽。
-   函数局部字面量 py 是否支持未探——先探后写。dsi 与 dss 两款。
-4. **扩钉板 dict_str.si**：上述形状闭合后，把 membership/2 参 get/
-   2 参 pop/setdefault/aug 加入钉板（miss 路径仍不入——解释器
-   None vs 编译 ""/panic 的边界族）；重跑四平面 + 全门禁。
-5. **动态 dict pop 语义缺口**（pyobj_pop_dispatch 无默认值参数）：
-   1 参 pop miss 静默 None（应 KeyError）、2 参 miss 丢默认值。
-   修法：dict_pop 加 def 参数（null → panic KeyError，非 null →
-   返回默认）+ pyobj_pop_dispatch 3 参透传 + typed_call.py 方法表
-   pop 条目 arg_count 1→2（get 条目已是 2 参带 null 补位的先例）。
-   **改运行时文本 → const_prefix.ll 重生成（快照约定）→ ensure_siluc
-   → ll 门禁复验（既有语料应不变——dss 已不走该路径，dsi 走
-   rawdict_str_del/pop_or）**。执行探针：`d: dict = {}` 动态 dict
-   的 pop miss/2 参（rs 对动态 dict 整体 bail——纯 py 平面语义修复）。
-6. **版本重钉决策**：本会话语料 28→29（+dict_str 能力钉板）+
-   oracle 行为面扩展（dss 全族 + membership）——按先例（1.22.0=
-   语料轮）重钉 1.24.0 或以 v1.23.1 补丁发布；用户裁决。
+**本轮 TODO 1-5 已全部落地——见上方 §3.33（e74c38a/a914a3f/
+c3546ff/915e2a6/6ce0680）；探针 28 枚在 /tmp/gprobes/（u 系 30 枚含
+skip）。剩余仅第 6 项（版本重钉决策，用户裁决中）。**
 
 **探针清单（/tmp/gprobes/，compact 后重建用）**：s1-s8（dss 最小
 集形状）、t1-t9（miss 读/字面量/aug/pop 作值/2 参 pop/dsi miss/
@@ -1277,6 +1255,69 @@ py 源编辑后必须 `python3 -c "import sys; sys.path.insert(0,'tools');
 import selfhost_build as sb; sb.ensure_siluc()"` 重建（driver 不自动
 重建参考平面二进制）；④eval_expr 臂的容器复用 dv——重复载入差一
 槽的研磨签名（py .N vs rs .N+1 load）。
+
+## 三点三十三、oracle 形状补齐轮全收口：2 参族/aug/字面量/无效 IR/动态 pop（2026-11-22）
+
+**五项 TODO 全部落地（e74c38a → 6ce0680），全门禁绿**：ll 30/30、
+ir 31/31、pytest 1398+4/3、wasm corpus 16/16、backend 18/18、run
+4+14、wat2wasm 43/43。探针 28 枚（t6/u1-u30）双平面逐字节 + clang
+执行对拍全一致。
+
+1. **rs dss 2 参族 tail PStr 臂（e74c38a）**：get/pop/setdefault 的
+   str 默认值臂 + 求值顺序对齐（py 顺序：pop/get 键先转换、
+   setdefault **默认值元组先构建**（u2 实证——py 源码 tail_args 在
+   键转换前求值）、checked 视图一律在默认值之后物化）；RAWSTR 默认
+   值 copy（别名铁律）、PStr/Pyo 走 pystr_to_rawstr（新缓冲）；str
+   返回的用户调用 ride copy（Inst 域必须节点级查 FN_SIGS 才接受）。
+   **连带修复**：①eval_mod get-2 的 entry+bitcast+load 形状是"被接受
+   的错误字节"且 entry 会插入默认键（get_or 只读）——u12/u14 抓获；
+   ②slice 键误用 aug-idiom 的 str_view 形状（py 用通用 rawstr_slice
+   直读，u15）；③**str 局部变量 alloca 记录须在 RHS 求值后注册**
+   （u10 prologue 序——视图产出型初始化先分配视图再分配槽位）。
+2. **rs dss/dii aug（a914a3f）**：conv_aug_assign 下标臂加 dict 门
+   （此前 dii aug 静默走 list 数据 gep——错误字节，u20 抓获）。形状：
+   rhs 先转换 → 键只转换一次（get/set 两次 checked 视图）→ get
+   （rawdict_str_get miss 即 KeyError panic）→  checked binop → set。
+3. **rs 非空 dict 字面量（c3546ff）**：全局 + 函数局部，dsi/dss/dii
+   三族（t2/t9/u23-u27）。entry 顺序 = **值转换 → 键 → 视图 → set**
+   （const int 值零指令所以 t9 看似键先）；str 值 ride 指针。局部
+   字面量此前**静默变空 dict**（init 被忽略）；alloca 记录在 entry
+   后注册（u23）。**连带闭合**：`d["x"] + d["y"]` 读拼接（is_str_expr
+   认 dss 下标读；char-pair 暂停机制空 pair 纯透传）——STATUS 清单外
+   的新发现缺口。
+4. **扩钉板 + 无效 IR 修复（915e2a6）**：dict_str.si += membership/
+   2 参族/aug/字面量/读拼接（miss-None 边界不入钉）；dict_ops.si +=
+   dsi+dii 字面量 + membership。**钉板当场抓获三平面共有既有 bug**：
+   aug concat 把 i64 位直传 i8* 形参、str 值 set 直传 i8*（rawdict_
+   str_set 收 i64 位）——clang ABI 宽容让它运行时碰巧对、text 层
+   渲染无校验，**真 llvmlite 的 verifier 拒绝**（test_text_layer_
+   matches_llvmlite 响亮失败=门禁在干活）。修 py 参考（aug 臂
+   inttoptr 后 concat、set 前 ptrtoint；字面量臂 ptrtoint——对齐
+   下标 store 约定）+ flat 孪生再生成 + rs 镜像。
+5. **动态 dict pop 语义（6ce0680，纯 py 平面——rs 对动态 dict 整体
+   bail）**：1 参 pop miss 静默 None → **KeyError panic**；2 参 miss
+   丢默认值 → 返回默认。ABI：dict_pop(d,key,def)（null def = 1 参域，
+   miss panic）+ dict_pop_def（miss 恒返回默认——含 None；CPython
+   2 参 pop 从不 raise；**转换器自身 .pop(k,None) 惯用法依赖它**——
+   首版只做 panic 版让 siluc1 编译期自爆 KeyError，行为级实证）+
+   双 dispatch 3 参透传 + 方法表 pop arg_count 1→2 按参选函数 + del
+   直调去掉死检查。const_prefix.ll 重生成（391,059B）+ rs 快照同步。
+   tests/test_dynamic_dict_pop.py 四测（子进程级：编译 == 解释器）。
+   **前缀重生成约定**：快照必须终止于 `}\n`（闭括号新行）——多带一个
+   空行会与渲染器的 inter-function 空行翻倍（ll 0/30 → 修 snap 后
+   30/30）。
+
+**新发现待办**：①str `-=`/`*=`（泛型 pyobj binop 域）rs bail——py
+发射 panic 字节，缓议（u21）；②dsf（dict[str,float]）rs 整族未注册
+（bail "dict elem types"，u8）；③object 注解局部 rs 不支持（bail
+"ann_assign type"，u9）；④str 局部 buf 惯用法 alloca 记录时序同 u10
+问题（未验证，动前先探）。
+
+**本会话教训（并入 §六）**：⑤**"conv rc=0 ≠ 语义正确"的第三形态**：
+clang 接受 + 执行正确 ≠ IR 合法——真 llvmlite verifier 是第三个执行
+比对平面，aug/字面量的 i8*/i64 位混传全靠它抓获；⑥**前缀快照边界**：
+公共前缀提取必须 snap 到闭括号新行；⑦**手写期望再次被真参照纠正**
+（dp 测试 len 期望）——教训 1 的第四次命中。
 
 ## 四、其余 TODO（优先级序）
 
@@ -1382,3 +1423,15 @@ git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
    研磨签名（py .N vs rs .N+1 的同形 load）。**陈旧窗口教训第三次
    命中**（v1.23.0 的 29/29 跑在 e96ce39 吞臂前的旧二进制上）——
    提交前门禁必须用刚重建的平面二进制。
+7. （2026-11-22 形状补齐轮）**"conv rc=0 ≠ 语义正确"的第三形态**：
+   clang 接受且执行正确 ≠ IR 合法——aug concat 的 i64 位直传 i8*
+   形参、str 值 set 传裸指针，clang 的 ABI 宽容让它们运行时碰巧
+   正确、text 层渲染无校验，真 llvmlite 的 verifier 当场拒绝
+   （test_text_layer_matches_llvmlite 响亮失败）——**llvmlite
+   verifier 是第三执行比对平面**，钉板扩容是它的触发器。
+8. （同轮）**前缀快照边界**：const_prefix.ll 重生成的公共前缀必须
+   snap 到闭括号新行（`}\n`）——多带的空行与渲染器自身的
+   inter-function 空行翻倍，ll 门禁 0/30 当场暴露。
+9. （同轮）**手写期望第四次被真参照纠正**：dp 测试的 len 期望
+   （pop "gone" 后 len=1 非 0）、解释器 panic 走 stderr 且消息是
+   键 repr 非 "KeyError" 字样——先跑参照再写断言。
