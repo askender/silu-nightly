@@ -1006,6 +1006,97 @@ fn conv_aug_assign(b: &mut FnB, st: &Val,
         let base = st.get(1).get(1);
         if base.head() != "name" { bail("aug subscript base"); }
         let n = base.get(1).str_of();
+        if DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &n)) {
+            // d[k] op= v on a raw dict: rhs, then obj/key (key converted
+            // ONCE), get (KeyError on miss), checked op, set; the checked
+            // view materializes for the get and again for the set. str
+            // values concat (rhs coerced per domain, temp freed after the
+            // concat) and the copy stores as a POINTER; int values ride
+            // the checked overflow machinery and store as i64 bits
+            // (u5/u6/u18-u21 probes)
+            let val_ty = dct_val_ty(&n);
+            let key_str = dct_key_ty(&n) == "str";
+            let fs = F_SLOTS.with(|f| f.borrow().clone());
+            let rhs_tv = eval_expr(b, &rhs_e, slot_ref, slot_ref, &fs);
+            let l = b.nx();
+            b.line(format!("  %\"{}\" = load i8*, i8** {}", l, dct_slot(&n)));
+            let kv = dict_key_convert(b, &st.get(1).get(2), key_str,
+                false, slot_ref, slot_ref, &fs);
+            let karg1 = dict_key_view(b, &kv, key_str);
+            let g = b.nx();
+            if key_str {
+                b.line(format!(
+                    "  %\"{}\" = call i64 @\"rawdict_str_get\"(i8* %\"{}\", i8* {})",
+                    g, l, karg1));
+            } else {
+                b.line(format!(
+                    "  %\"{}\" = call i64 @\"rawdict_get\"(i8* %\"{}\", i64 {})",
+                    g, l, karg1));
+            }
+            let stored: String;
+            if val_ty == "str" {
+                if op.as_str() != "+=" { bail("dict aug str op"); }
+                let rr: String;
+                let temp: Option<String>;
+                match &rhs_tv {
+                    Typed::Str(r) => {
+                        rr = r.clone();
+                        temp = None;
+                    }
+                    Typed::PStr(r) | Typed::Pyo(r) => {
+                        let t = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* {})",
+                            t, r));
+                        rr = format!("%\"{}\"", t);
+                        temp = Some(format!("%\"{}\"", t));
+                    }
+                    _ => bail("dict aug str rhs"),
+                }
+                let cc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_concat\"(i64 %\"{}\", i8* {})",
+                    cc, g, rr));
+                if let Some(t) = &temp {
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"rawstr_free\"(i8* {})", t));
+                }
+                let cp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* %\"{}\")", cp, cc));
+                stored = format!("%\"{}\"", cp);
+            } else {
+                let Typed::I64(r) = &rhs_tv else { bail("dict aug int rhs") };
+                let which = match op.as_str() {
+                    "+=" => "+", "-=" => "-", "*=" => "*",
+                    _ => bail("dict aug int op"),
+                };
+                stored = if which == "*" {
+                    b.checked_mul(&format!("%\"{}\"", g), r)
+                } else {
+                    b.checked_raw(&format!("%\"{}\"", g), r, which)
+                };
+            }
+            let karg2 = dict_key_view(b, &kv, key_str);
+            b.silent();
+            if key_str {
+                if val_ty == "str" {
+                    b.line(format!(
+                        "  call void @\"rawdict_str_set\"(i8* %\"{}\", i8* {}, i8* {})",
+                        l, karg2, stored));
+                } else {
+                    b.line(format!(
+                        "  call void @\"rawdict_str_set\"(i8* %\"{}\", i8* {}, i64 {})",
+                        l, karg2, stored));
+                }
+            } else {
+                b.line(format!(
+                    "  call void @\"rawdict_set\"(i8* %\"{}\", i64 {}, i64 {})",
+                    l, karg2, stored));
+            }
+            return;
+        }
         let elem = lst_elem_ty(&n);
         let fs = F_SLOTS.with(|f| f.borrow().clone());
         let rhs_v = eval_expr(b, &rhs_e, slot_ref, slot_ref, &fs);
