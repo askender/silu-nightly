@@ -1326,11 +1326,25 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
                 _ => bail(&format!("membership container in {}: {:?}",
                     CUR_FN.with(|f| f.borrow().clone()), e)),
             };
-            let kv = eval_mod(b, &e.get(1), &fs);
-            let k = to_raw(b, kv);
+            // dict keys ride the checked view (const key view or the
+            // pyobj key view) - the get/store key shape, not to_raw
+            let karg = if e.get(1).head() == "const"
+                && matches!(e.get(1).get(1), Val::Str(_)) {
+                emit_const_key_view(b, &e.get(1).get(1).str_of())
+            } else {
+                let kv = eval_mod(b, &e.get(1), &fs);
+                match &kv {
+                    Typed::Str(r) => r.clone(),
+                    Typed::PStr(_) | Typed::Pyo(_) => {
+                        let py = to_pyobj(b, kv);
+                        emit_pyobj_key_view(b, &py)
+                    }
+                    _ => bail("dict key type"),
+                }
+            };
             let c = b.nx();
             b.line(format!(
-                "  %\"{}\" = call i1 @\"rawdict_str_has\"(i8* {}, i8* {})", c, d, k));
+                "  %\"{}\" = call i1 @\"rawdict_str_has\"(i8* {}, i8* {})", c, d, karg));
             if e.head() == "not in" {
                 let x = b.nx();
                 b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
@@ -7402,6 +7416,144 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 return Typed::Pyo(format!("%\"{}\"", c));
             }
             Typed::I64(format!("%\"{}\"", c))
+        }
+        "in" | "not in" => {
+            // value-context membership (print args, assignments): the
+            // eval_i1 family shapes byte-for-byte, returning Bool; the
+            // dict keys ride the checked view (the get/store key shape)
+            let dv = eval_expr(b, &e.get(2), slot_i, slot_f, fslots);
+            if !matches!(dv, Typed::Pyo(_) | Typed::PStr(_))
+                && is_str_expr(&e.get(2)) {
+                let d = to_raw(b, dv);
+                let kv = eval_expr(b, &e.get(1), slot_i, slot_f, fslots);
+                let owned = matches!(kv, Typed::PStr(_) | Typed::Pyo(_));
+                let k = to_raw(b, kv);
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i1 @\"rawstr_contains\"(i8* {}, i8* {})", c, d, k));
+                if owned {
+                    b.silent();
+                    b.line(format!("  call void @\"rawstr_free\"(i8* {})", k));
+                }
+                if e.head() == "not in" {
+                    let x = b.nx();
+                    b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                    return Typed::Bool(format!("%\"{}\"", x));
+                }
+                return Typed::Bool(format!("%\"{}\"", c));
+            }
+            if matches!(dv, Typed::Pyo(_) | Typed::PStr(_)) {
+                let d = to_pyobj(b, dv);
+                let iv = eval_expr(b, &e.get(1), slot_i, slot_f, fslots);
+                let item = to_pyobj(b, iv);
+                let c = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i1 @\"pyobj_contains\"({{i32, i8*}}* {}, {{i32, i8*}}* {})",
+                    c, d, item));
+                if e.head() == "not in" {
+                    let x = b.nx();
+                    b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                    return Typed::Bool(format!("%\"{}\"", x));
+                }
+                return Typed::Bool(format!("%\"{}\"", c));
+            }
+            if e.get(2).head() == "name" {
+                let cn = e.get(2).get(1).str_of();
+                let is_list_slot =
+                    FN_L.with(|t| t.borrow().iter().any(|(k, _)| k == &cn))
+                    || LST_SLOTS.with(|t| t.borrow().iter().any(|f| f == &cn));
+                if is_list_slot {
+                    let d = match &dv {
+                        Typed::Inst(r) | Typed::Str(r) => r.clone(),
+                        _ => bail("list membership container"),
+                    };
+                    let elem = lst_elem_ty(&cn);
+                    let kv = eval_expr(b, &e.get(1), slot_i, slot_f, fslots);
+                    let arg = if elem == "str" {
+                        to_raw(b, kv)
+                    } else {
+                        match &kv {
+                            Typed::I64(r) => r.clone(),
+                            Typed::Bool(r) => {
+                                let z = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = zext i1 {} to i64", z, r));
+                                format!("%\"{}\"", z)
+                            }
+                            Typed::F64(r) => {
+                                let bt = b.nx();
+                                b.line(format!(
+                                    "  %\"{}\" = bitcast double {} to i64", bt, r));
+                                format!("%\"{}\"", bt)
+                            }
+                            _ => bail("list membership item"),
+                        }
+                    };
+                    let c = b.nx();
+                    if elem == "str" {
+                        b.line(format!(
+                            "  %\"{}\" = call i1 @\"rawlist_str_contains\"(i8* {}, i8* {})",
+                            c, d, arg));
+                    } else {
+                        b.line(format!(
+                            "  %\"{}\" = call i1 @\"rawlist_contains_bits\"(i8* {}, i64 {})",
+                            c, d, arg));
+                    }
+                    if e.head() == "not in" {
+                        let x = b.nx();
+                        b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                        return Typed::Bool(format!("%\"{}\"", x));
+                    }
+                    return Typed::Bool(format!("%\"{}\"", c));
+                }
+                if DCT_SLOTS.with(|t| t.borrow().iter().any(|f| f == &cn)) {
+                    // the container name eval already loaded the slot
+                    // (dv) - reuse it; a second load shifted every slot
+                    let l = match &dv {
+                        Typed::Inst(r) | Typed::Str(r) => r.clone(),
+                        _ => bail("dict membership container"),
+                    };
+                    let karg = if e.get(1).head() == "const"
+                        && matches!(e.get(1).get(1), Val::Str(_)) {
+                        emit_const_key_view(b, &e.get(1).get(1).str_of())
+                    } else {
+                        let kv = eval_expr(b, &e.get(1), slot_i, slot_f, fslots);
+                        match &kv {
+                            Typed::Str(r) => r.clone(),
+                            Typed::PStr(_) | Typed::Pyo(_) => {
+                                let py = to_pyobj(b, kv);
+                                emit_pyobj_key_view(b, &py)
+                            }
+                            _ => bail("dict key type"),
+                        }
+                    };
+                    let c = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = call i1 @\"rawdict_str_has\"(i8* {}, i8* {})",
+                        c, l, karg));
+                    if e.head() == "not in" {
+                        let x = b.nx();
+                        b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                        return Typed::Bool(format!("%\"{}\"", x));
+                    }
+                    return Typed::Bool(format!("%\"{}\"", c));
+                }
+            }
+            let d = match dv {
+                Typed::Inst(r) | Typed::Str(r) => r,
+                _ => bail("membership container"),
+            };
+            let kv = eval_expr(b, &e.get(1), slot_i, slot_f, fslots);
+            let k = to_raw(b, kv);
+            let c = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i1 @\"rawdict_str_has\"(i8* {}, i8* {})", c, d, k));
+            if e.head() == "not in" {
+                let x = b.nx();
+                b.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", x, c));
+                return Typed::Bool(format!("%\"{}\"", x));
+            }
+            Typed::Bool(format!("%\"{}\"", c))
         }
         "+" if is_str_expr(&e.get(1)) || is_str_expr(&e.get(2)) => {
             // str concat: eval both sides (pystr domain), to_rawstr each
