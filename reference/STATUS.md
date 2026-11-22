@@ -7,9 +7,9 @@
 > 扩容 + 动态 pop 语义 + pyobj_utf8_cp_offset 死函数退役（前缀
 > 390,013B）。版本四件套（__init__/setup.py/AGENTS 钉行/本行）。
 >
-> **换客户端第一站 = §3.33（2026-11-22 深夜）**：oracle 形状补齐轮
-> 全收口（2 参族/aug/字面量/无效 IR/动态 pop 语义），全门禁绿；
-> 唯余版本重钉决策待用户裁决（§3.33 尾 + §四.6）。
+> **换客户端第一站 = §3.34（2026-11-22 深夜）**：v1.24.0 已发布
+> （tag 推 nightly）+ §3.33 四项后续全部闭合（str -=/dsf/object/
+> strbuf 语义修复），39 探针 + 全门禁绿。§四.3/4/5 按触发条件待办。
 
 ## 一、已提交状态
 
@@ -1322,6 +1322,46 @@ clang 接受 + 执行正确 ≠ IR 合法——真 llvmlite verifier 是第三�
 比对平面，aug/字面量的 i8*/i64 位混传全靠它抓获；⑥**前缀快照边界**：
 公共前缀提取必须 snap 到闭括号新行；⑦**手写期望再次被真参照纠正**
 （dp 测试 len 期望）——教训 1 的第四次命中。
+
+## 三点三十四、v1.24.0 发布 + 4 项后续 TODO 收口（2026-11-22 深夜续）
+
+**v1.24.0 已重钉并打 tag 推 nightly**（d83c3bb）：oracle 形状补齐轮
++ 钉板扩容 + 动态 pop 语义 + **pyobj_utf8_cp_offset 死函数退役**
+（§四.6 的"下次动前缀时顺手"——前缀 390,013B，rs 快照锁步）。版本
+四件套（__init__/setup.py/AGENTS 钉行/本文件）。
+
+**§3.33 尾的四项新发现全部闭合（d12739b→343bc93），39 探针双平面
+字节+执行一致，全门禁绿**（ll 30/30、ir 31/31、pytest 1402/3、wasm
+corpus 16/16、backend 18/18、run 4+14、wat2wasm 43/43）：
+
+1. **rs str `-=`（d12739b）**：py 仅对 pyobj 域 rhs（const str）发射
+   字节——inttoptr get 位 → rawstr_to_pystr 装箱 → pyobj_sub（str-str
+   运行时 TypeError = CPython 语义）→ pystr_to_rawstr → ptrtoint →
+   set。raw 域 rhs（var）与 str `*=` py 平面自身 bail（u31/u32：
+   "cannot coerce rawstr to i64"）——rs 同步 bail，双平面响亮一致。
+2. **rs dsf/df 整族（bec359e）**：注册门放行 float 值；float 值 ride
+   槽位 i64 位、边缘 bitcast（读 get/pop/字面量/2 参族默认值与返回、
+   aug = bitcast→fadd/fsub/fmul→bitcast 无溢出检查、store str 键/int
+   键两路、get-1 装箱 phi 的 hit 臂 bitcast 先于 create_float 分配）。
+   **连带修复既有分歧**：float ann_assign 全局常量折叠进声明（v7）——
+   py 恒 0x0 声明 + main 内 store（SOLAR_MASS 约定）。
+3. **rs object 注解全局 + 重赋值（d611b26）**：object 全局直持 pyobj
+   （{i32,i8*}* null 尾声明；const str → create_str 无
+   pystr_to_rawstr）；PY_SLOTS 重赋值 to_pyobj 后 store；局部 object
+   已有 FN_PY 机制（w4 本就一致）；object 值作 dict 键 ride checked
+   view（w3）。
+4. **strbuf ctor 语义修复（343bc93）**：py 双重转换构造参数（BUF
+   kind 检查死值 + append-operand 重转换）——副作用参数死转换不死：
+   `strbuf(d.pop("a"))` **执行两次 pop，hit 变 KeyError**（x2，双平面
+   字节一致且同错；解释器无 strbuf——CPython 推理语义为准）。修 py
+   参考（非 const 单次转换 + 从已转换值解包 len/data；const 钉住形状
+   保留——死转换无副作用）+ flat 孪生 + rs 镜像；buf 局部 alloca
+   记录移到 RHS 后（u10 惯例，x2 prologue）。x2: KeyError → alpha。
+
+**教训**：①**字节一致 ≠ 语义正确（第四形态）**——x2 双平面字节一致
+且同错，探针的执行对拍（对 CPython 推理语义）是最后一道闸；副作用
+参数的死转换是 compile-visible 行为。②转换器自身的 `.pop(k, None)`
+惯用法依赖 dict_pop_def——运行时语义改动先扫转换器自用面。
 
 ## 四、其余 TODO（优先级序）
 

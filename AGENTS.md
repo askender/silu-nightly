@@ -89,8 +89,14 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   方法表按参选函数；const_prefix.ll 重生成 391,059B + rs 快照同步；
   前缀快照必须止于 `}\n`）。全门禁绿：ll 30/30、ir 31/31、pytest
   1398+4/3、wasm corpus 16/16、backend 18/18、wat2wasm 43/43、探针
-  28 枚双平面字节+执行一致。**剩余：版本重钉决策（用户裁决）**。
-  换客户端第一站 = STATUS.md §3.33。
+  28 枚双平面字节+执行一致。
+- **v1.24.0 已发布 + §3.33 四项后续收口（2026-11-22 深夜，d83c3bb→
+  343bc93）**：cp_offset 死函数退役（前缀 390,013B）、rs str `-=`、
+  rs dsf/df 整族（+float 全局声明 SOLAR_MASS 约定修复）、rs object
+  全局/重赋值、**strbuf ctor 单次转换语义修复**（双 pop 副作用 bug：
+  `strbuf(d.pop("a"))` hit 曾变 KeyError——x2 探针，双平面字节一致
+  且同错的第四形态）。39 探针 + 全门禁绿（pytest 1402/3）。换客户端
+  第一站 = STATUS.md §3.34。
 - **dss 收敛轮全绿（2026-11-21/22，53a0942/27b074c/dde4097/9baa855/
   bdb35e7）**：dict[str,str] 四平面表示统一 RAWDICT_SS（py 从动态
   dict 切换），语料 29 文件（第 8 枚能力钉板 dict_str.si，406,041B
