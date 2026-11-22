@@ -2005,14 +2005,18 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             return;
         }
         if t == "str" {
-            // str local: alloca (null in splice), free-old + store
-            FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "str".into())));
+            // str local: alloca (null in splice), free-old + store.
+            // The alloca RECORD registers after the RHS eval: a
+            // view-producing init (d.pop/get/setdefault key views) makes
+            // the py twin allocate the view first, then the target slot
+            // (u10 prologue order)
             FN_S.with(|y| y.borrow_mut().push(name.clone()));
             let fs = F_SLOTS.with(|f| f.borrow().clone());
             SLICE_NO_COPY.with(|c| *c.borrow_mut() = true);
             let v = eval_mod(b, &init, &fs);
             SLICE_NO_COPY.with(|c| *c.borrow_mut() = false);
             let r = to_raw_alias(b, v, init.head() == "name");
+            FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "str".into())));
             b.silent(); // value conversion slot (calc: .4 -> .6)
             TEMP_STRS.with(|t| t.borrow_mut().retain(|x| x != &r));
             let oldr = b.nx();
@@ -6921,7 +6925,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 // slots carry no key/val type registrations yet
                 if base.head() == "name"
                     && (mname == "pop" || mname == "clear"
-                        || mname == "setdefault") {
+                        || mname == "setdefault" || mname == "get") {
                     let bn = base.get(1).str_of();
                     let is_dict_slot = DCT_SLOTS.with(|t| t.borrow()
                         .iter().any(|f| f == &bn));
@@ -6932,6 +6936,9 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                         let key_str = dct_key_ty(&bn) == "str";
                         let val_ty = dct_val_ty(&bn);
                         if mname == "clear" {
+                            if !e.get(2).items().is_empty() {
+                                bail("dict method arity");
+                            }
                             if key_str {
                                 b.silent();
                                 b.line(format!(
@@ -7001,40 +7008,34 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                             (false, "pop", 2) => "rawdict_pop_or",
                             (true, "setdefault", 2) => "rawdict_str_setdefault",
                             (false, "setdefault", 2) => "rawdict_setdefault",
+                            (true, "get", 2) => "rawdict_str_get_or",
+                            (false, "get", 2) => "rawdict_get_or",
                             _ => bail("dict method arity"),
                         };
-                        let tail = if args.len() == 2 {
-                            let dv = eval_expr(b, &args[1], slot_i, slot_f, fslots);
-                            match &dv {
-                                Typed::I64(r) => format!(", i64 {}", r),
-                                _ => bail("dict method value"),
-                            }
+                        // py evaluation order (u1/u2/u3/u10 probes):
+                        // receiver -> [pop/get: key convert -> default
+                        // convert+coerce | setdefault: default tuple
+                        // builds FIRST, then the key] -> key view -> call.
+                        // The checked view materializes after the default
+                        // so slot numbers match the Python twin
+                        let kv;
+                        let tail;
+                        if mname == "setdefault" {
+                            tail = dict_value_bits(b, &args[1], &val_ty,
+                                "dict method value", false, slot_i, slot_f, fslots);
+                            kv = dict_key_convert(b, &args[0], key_str,
+                                false, slot_i, slot_f, fslots);
                         } else {
-                            String::new()
-                        };
-                        let karg = if key_str {
-                            if args[0].head() == "const"
-                                && matches!(args[0].get(1), Val::Str(_)) {
-                                emit_const_key_view(b,
-                                    &args[0].get(1).str_of())
+                            kv = dict_key_convert(b, &args[0], key_str,
+                                false, slot_i, slot_f, fslots);
+                            tail = if args.len() == 2 {
+                                dict_value_bits(b, &args[1], &val_ty,
+                                    "dict method value", false, slot_i, slot_f, fslots)
                             } else {
-                                let kv = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                                match &kv {
-                                    Typed::Str(r) => r.clone(),
-                                    Typed::PStr(_) | Typed::Pyo(_) => {
-                                        let py = to_pyobj(b, kv);
-                                        emit_pyobj_key_view(b, &py)
-                                    }
-                                    _ => bail("dict key type"),
-                                }
-                            }
-                        } else {
-                            let kv = eval_expr(b, &args[0], slot_i, slot_f, fslots);
-                            match &kv {
-                                Typed::I64(r) => r.clone(),
-                                _ => bail("dict key type"),
-                            }
-                        };
+                                String::new()
+                            };
+                        }
+                        let karg = dict_key_view(b, &kv, key_str);
                         let c = b.nx();
                         if key_str {
                             b.line(format!(
@@ -8563,6 +8564,122 @@ fn emit_const_key_get(b: &mut FnB, dl: &str, text: &str, def: i64) -> String {
     emit_const_key_get_mode(b, dl, text, Some(def))
 }
 
+// py _dict_value_bits: convert the node in the dispatcher's own domain,
+// then coerce to the dict's value kind - str values ride as i64 bits
+// (PStr/Pyo unbox via pystr_to_rawstr, fresh buffer; an already-raw Str
+// copies - the alias rule, u3/u10), int values pass through
+fn dict_value_bits(b: &mut FnB, node: &Val, val_ty: &str, msg: &str,
+                   use_mod: bool,
+                   slot_i: &dyn Fn(&str) -> String,
+                   slot_f: &dyn Fn(&str) -> String,
+                   fslots: &[String]) -> String {
+    let dv = if use_mod {
+        eval_mod(b, node, fslots)
+    } else {
+        eval_expr(b, node, slot_i, slot_f, fslots)
+    };
+    if val_ty == "str" {
+        match &dv {
+            Typed::Inst(r) => {
+                // only a str-returning user call rides as a raw buffer
+                // (py treats the call result as RAWSTR and copies - u17);
+                // other Inst producers (lists, instances) bail
+                let is_str_call = node.head() == "call"
+                    && node.get(1).head() == "name"
+                    && FN_SIGS.with(|m| m.borrow().iter()
+                        .find(|(k, _, rty)| {
+                            k == &node.get(1).get(1).str_of()
+                        })
+                        .map(|(_, _, rty)| rty == "str")
+                        .unwrap_or(false));
+                if !is_str_call { bail(msg); }
+                let cp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                let pi = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", pi, cp));
+                format!(", i64 %\"{}\"", pi)
+            }
+            Typed::Str(r) => {
+                let cp = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp, r));
+                let pi = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", pi, cp));
+                format!(", i64 %\"{}\"", pi)
+            }
+            Typed::PStr(r) | Typed::Pyo(r) => {
+                let rr = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i8* @\"pystr_to_rawstr\"({{i32, i8*}}* {})",
+                    rr, r));
+                let pi = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = ptrtoint i8* %\"{}\" to i64", pi, rr));
+                format!(", i64 %\"{}\"", pi)
+            }
+            _ => bail(msg),
+        }
+    } else {
+        match &dv {
+            Typed::I64(r) => format!(", i64 {}", r),
+            _ => bail(msg),
+        }
+    }
+}
+
+// py key conversion for the rawdict method family: const str keys build
+// their pystr here (gep + create_str); everything else rides the
+// dispatcher's own eval (checked view materializes later, after the
+// default's convert+coerce - the py statement order)
+fn dict_key_convert(b: &mut FnB, node: &Val, key_str: bool,
+                    use_mod: bool,
+                    slot_i: &dyn Fn(&str) -> String,
+                    slot_f: &dyn Fn(&str) -> String,
+                    fslots: &[String]) -> Typed {
+    if key_str && node.head() == "const"
+        && matches!(node.get(1), Val::Str(_)) {
+        let text = node.get(1).str_of();
+        let gname = add_str(&text);
+        let blen = text.len();
+        let g = b.nx();
+        b.line(format!(
+            "  %\"{}\" = getelementptr [{} x i8], [{} x i8]* @\"{}\", i32 0, i32 0",
+            g, blen + 1, blen + 1, gname));
+        let cs = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call {{i32, i8*}}* @\"create_str\"(i8* %\"{}\", i32 {})",
+            cs, g, blen));
+        Typed::PStr(format!("%\"{}\"", cs))
+    } else if use_mod {
+        eval_mod(b, node, fslots)
+    } else {
+        eval_expr(b, node, slot_i, slot_f, fslots)
+    }
+}
+
+// the key view shared by both dispatchers' 2-arg arms: raw str rides
+// direct; pystr-domain keys take the checked tag+view shape
+fn dict_key_view(b: &mut FnB, kv: &Typed, key_str: bool) -> String {
+    if key_str {
+        match kv {
+            Typed::Str(r) => r.clone(),
+            Typed::PStr(_) | Typed::Pyo(_) => {
+                let py = to_pyobj(b, kv.clone());
+                emit_pyobj_key_view(b, &py)
+            }
+            _ => bail("dict key type"),
+        }
+    } else {
+        match kv {
+            Typed::I64(r) => r.clone(),
+            _ => bail("dict key type"),
+        }
+    }
+}
+
 // direct subscript (o["id"]): rawdict_str_get, no default; the key
 // type-check + str_view unpack shape is shared with d.get(key, def)
 // the Python twin's _rawstr_append_operand: a const str arg passes its
@@ -9396,30 +9513,43 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
                 phi, bi, hit_lbl, miss_lbl));
             return Typed::Pyo(format!("%\"{}\"", phi));
         }
-        if args[0].head() == "const" && matches!(args[0].get(1), Val::Str(_)) {
+        // 2-arg get (py _rawdict_key_call_tv + _dict_bits_to_value):
+        // (const str key, const int default, int values) keeps the pinned
+        // emit_const_key_get fast path; every other shape takes the
+        // general key-convert -> default-coerce -> key-view -> get_or
+        // order (u12/u14/u15 probes - the old entry+bitcast+load shape
+        // was accepted-but-wrong bytes AND inserts the default key on
+        // miss, silently diverging from get_or's read-only miss). Slice
+        // keys ride the dispatcher's own generic slice conversion (the
+        // rawstr_slice direct shape, NOT the aug-idiom's str_view alloca)
+        if args[0].head() == "const" && matches!(args[0].get(1), Val::Str(_))
+            && matches!(args[1].get(1), Val::Int(_)) && dct_val_ty(&d) == "int" {
             let text = args[0].get(1).str_of();
             let def = args[1].get(1).int_of();
             let r = emit_const_key_get(b, &format!("%\"{}\"", dl), &text, def);
             return Typed::I64(r);
         }
-        let kr = if let Some((bname, sl)) = as_slice_sub(&args[0]) {
-            emit_slice_view(b, &bname, &sl)
-        } else {
-            let kv = eval_mod(b, &args[0], &fs);
-            to_raw(b, kv)
-        };
-        if !matches!(args[1].get(1), Val::Int(_)) { bail("get default"); }
-        let en = b.nx();
+        let val_ty = dct_val_ty(&d);
+        let key_str = dct_key_ty(&d) == "str";
+        let n_at = |n: &str| format!("@\"{}\"", n);
+        let kv = dict_key_convert(b, &args[0], key_str,
+            true, &n_at, &n_at, &fs);
+        let tail = dict_value_bits(b, &args[1], &val_ty, "get default",
+            true, &n_at, &n_at, &fs);
+        let karg = dict_key_view(b, &kv, key_str);
+        let c = b.nx();
+        let gfn = if key_str { "rawdict_str_get_or" } else { "rawdict_get_or" };
+        let arg_ty = if key_str { "i8*" } else { "i64" };
         b.line(format!(
-            "  %\"{}\" = call i8* @\"rawdict_str_entry\"(i8* %\"{}\", i8* {}, i64 {})",
-            en, dl, kr, args[1].get(1).int_of()));
-        let bc = b.nx();
-        b.line(format!(
-            "  %\"{}\" = bitcast i8* %\"{}\" to i64*", bc, en));
-        let ld = b.nx();
-        b.line(format!(
-            "  %\"{}\" = load i64, i64* %\"{}\"", ld, bc));
-        return Typed::I64(format!("%\"{}\"", ld));
+            "  %\"{}\" = call i64 @\"{}\"(i8* %\"{}\", {} {}{})",
+            c, gfn, dl, arg_ty, karg, tail));
+        if val_ty == "str" {
+            let r = b.nx();
+            b.line(format!(
+                "  %\"{}\" = inttoptr i64 %\"{}\" to i8*", r, c));
+            return Typed::Str(format!("%\"{}\"", r));
+        }
+        return Typed::I64(format!("%\"{}\"", c));
     }
     if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() != "len" {
