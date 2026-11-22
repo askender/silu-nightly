@@ -3066,17 +3066,22 @@ class PyobjRuntimeMixin:
         builder.store(builder.add(count, one64), _dict_field(builder, struct_ptr, 0))
         builder.ret_void()
 
-        # PyObject* dict_pop(PyObject* d, PyObject* key)
+        # PyObject* dict_pop(PyObject* d, PyObject* key, PyObject* def)
+        # A null def is the 1-arg pop: a miss panics KeyError. A
+        # non-null def returns it on a miss (CPython's 2-arg pop).
         self.dict_pop = ir.func_(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False), 'dict_pop',
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr],
+                            False), 'dict_pop',
 
         )
         entry = self.dict_pop.append_basic_block("entry")
         found_block = self.dict_pop.append_basic_block("found")
         missing_block = self.dict_pop.append_basic_block("missing")
+        keyerr_block = self.dict_pop.append_basic_block("pop_keyerr")
+        defret_block = self.dict_pop.append_basic_block("pop_defret")
         builder = ir.builder_(entry)
-        dict_arg, key_arg = self.dict_pop.args
+        dict_arg, key_arg, def_arg = self.dict_pop.args
         struct_ptr, count, used, mask, itable, entries = self._load_dict_parts(
             builder, dict_arg, zero32, one32
         )
@@ -3098,7 +3103,56 @@ class PyobjRuntimeMixin:
         builder.ret(removed_value)
 
         builder.position_at_end(missing_block)
-        builder.ret(pyobj_null)
+        has_def = builder.icmp_unsigned(
+            "!=", def_arg, ir.const_(pyobj_ptr, None)
+        )
+        builder.cbranch(has_def, defret_block, keyerr_block)
+
+        builder.position_at_end(keyerr_block)
+        err_msg = self._create_global_string_with_builder(
+            "KeyError: key not found", builder
+        )
+        self._emit_panic(builder, err_msg)
+
+        builder.position_at_end(defret_block)
+        builder.ret(def_arg)
+
+        # PyObject* dict_pop_def(PyObject* d, PyObject* key, PyObject* def)
+        # The 2-arg pop domain: a miss ALWAYS returns the default (any
+        # value, including null = None). CPython's 2-arg pop never raises.
+        self.dict_pop_def = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr],
+                            False), 'dict_pop_def',
+
+        )
+        entry = self.dict_pop_def.append_basic_block("entry")
+        found_block = self.dict_pop_def.append_basic_block("found")
+        missing_block = self.dict_pop_def.append_basic_block("missing")
+        builder = ir.builder_(entry)
+        dict_arg, key_arg, def_arg = self.dict_pop_def.args
+        struct_ptr, count, used, mask, itable, entries = self._load_dict_parts(
+            builder, dict_arg, zero32, one32
+        )
+        out_slot = builder.alloca(i64, None, 'popd_slot')
+        found = builder.call(self.dict_find_probe, [dict_arg, key_arg, out_slot])
+        hit = builder.icmp_signed(">=", found, zero64)
+        builder.cbranch(hit, found_block, missing_block)
+
+        builder.position_at_end(found_block)
+        entry_ptr = builder.gep(entries, [zero32, found])
+        removed_value = builder.load(builder.gep(entry_ptr, [zero32, one32]))
+        # mark the entry dead and its table slot as a tombstone
+        builder.store(pyobj_null, builder.gep(entry_ptr, [zero32, zero32]))
+        builder.store(
+            ir.const_(i64, -1),
+            builder.gep(itable, [builder.load(out_slot)]),
+        )
+        builder.store(builder.sub(count, one64), _dict_field(builder, struct_ptr, 0))
+        builder.ret(removed_value)
+
+        builder.position_at_end(missing_block)
+        builder.ret(def_arg)
 
     def _emit_contains_and_set(self):
         i32 = ir.IntType(32)

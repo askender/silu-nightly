@@ -363,7 +363,7 @@ class TypedCallMixin:
             "endswith": (self.boxed_affix["str_ends_with"], 1, False),
             "rfind": (self.str_rfind, 1, True),
             "get": (self.dict_get_or, 2, True),
-            "pop": (self.pyobj_pop_dispatch, 1, True),
+            "pop": (self.pyobj_pop_dispatch, 2, True),
             "__getitem__": (self.dict_get_or, 2, True),
             "__setitem__": (self.dict_set, 2, False),
             "__delitem__": (self.dict_pop, 2, False),
@@ -373,6 +373,12 @@ class TypedCallMixin:
         user_method = self._dyn_member_classes(method_name, True)
         if obj is not None and entry and not user_method:
             func, arg_count, has_result = entry
+            if method_name == 'pop':
+                # the 2-arg pop never raises (CPython): route to the
+                # def-domain dispatch, whose dict arm returns the default
+                # on a miss; the 1-arg pop panics KeyError there
+                func = (self.pyobj_pop_def_dispatch
+                        if len(args_node) >= 2 else func)
             arg_vals = []
             for arg in args_node[:arg_count]:
                 arg_tv = self._convert_node(arg)

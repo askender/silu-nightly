@@ -833,14 +833,17 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
                     # dict methods
                     "get": (self.dict_get_or, 2, True),
                     "setdefault": (self.dict_setdefault, 2, True),
-                    "pop": (self.dict_pop, 1, True),
+                    "pop": (self.dict_pop, 2, True),
                     "__getitem__": (self.dict_get_or, 2, True),
                     "__setitem__": (self.dict_set, 2, False),
-                    "__delitem__": (self.dict_pop, 1, False),
+                    "__delitem__": (self.dict_pop, 2, False),
                 }
                 entry = method_map.get(method_name)
                 if obj_val and entry:
                     func, arg_count, has_result = entry
+                    if method_name == 'pop':
+                        func = (self.dict_pop_def
+                                if len(args_node) >= 2 else func)
                     arg_vals = []
                     for arg_node in args_node[:arg_count]:
                         arg_vals.append(self._convert_node(arg_node, False))
@@ -1347,32 +1350,23 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
             return None
 
         elif op == "delete":
-            # del obj[key]: dict_pop tombstones the entry; Python's del
-            # raises KeyError when the key is missing
+            # del obj[key]: dict_pop tombstones the entry and panics
+            # KeyError itself on a miss (null default = the 1-arg pop
+            # domain), so the caller-side null check is gone
             if len(node) >= 3:
                 obj_val = self._convert_node(node[1], False)
                 key_val = self._convert_node(node[2], False)
                 if obj_val and key_val:
-                    popped = self.current_builder.call(
-                        self.dict_pop, [obj_val, key_val]
+                    self.current_builder.call(
+                        self.dict_pop,
+                        [
+                            obj_val,
+                            key_val,
+                            ir.const_(
+                                ir.PointerType(self.pyobj.pyobj_type), None
+                            ),
+                        ],
                     )
-                    is_null = self.current_builder.icmp_unsigned(
-                        "==",
-                        popped,
-                        ir.const_(
-                            ir.PointerType(self.pyobj.pyobj_type), None
-                        ),
-                    )
-                    func = self.current_builder.function
-                    ok_block = func.append_basic_block("del_ok")
-                    err_block = func.append_basic_block("del_keyerr")
-                    self.current_builder.cbranch(is_null, err_block, ok_block)
-                    self.current_builder.position_at_end(err_block)
-                    err_msg = self._create_global_string_with_builder(
-                        "KeyError: key not found", self.current_builder
-                    )
-                    self._emit_panic(self.current_builder, err_msg)
-                    self.current_builder.position_at_end(ok_block)
             return None
 
         elif op == "dict":

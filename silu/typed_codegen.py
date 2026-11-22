@@ -186,6 +186,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self._create_unbox_runtime()
         self._create_identity_eq_runtime()
         self._create_pop_dispatch_runtime()
+        self._create_pop_def_dispatch_runtime()
         self._create_copy_dispatch_runtime()
         self._create_raw_list_runtime()
 
@@ -284,24 +285,26 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self.pyobj_identity_eq = fn
 
     def _create_pop_dispatch_runtime(self):
-        """PObj* pyobj_pop_dispatch(PObj* obj, PObj* key) - `pop` with
-        one uniform ABI across containers: a list receiver pops by
-        index (null key = the last element), anything else forwards to
-        dict_pop. The method map's single signature cannot know the
-        receiver's tag at compile time."""
+        """PObj* pyobj_pop_dispatch(PObj* obj, PObj* key, PObj* def) -
+        `pop` with one uniform ABI across containers: a list receiver
+        pops by index (null key = the last element; the default arg is
+        list.pop's no-default domain and is ignored), anything else
+        forwards to dict_pop. The method map's single signature cannot
+        know the receiver's tag at compile time."""
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
         fn = ir.func_(
             self.module,
-            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr],
+                            False),
             'pyobj_pop_dispatch',
         )
         entry = fn.append_basic_block("entry")
         list_blk = fn.append_basic_block("list_case")
         dict_blk = fn.append_basic_block("dict_case")
         b = ir.builder_(entry)
-        obj_arg, key_arg = fn.args
+        obj_arg, key_arg, def_arg = fn.args
         zero32 = ir.const_(i32, 0)
         null_obj = ir.const_(pyobj_ptr, None)
         tag = b.load(b.gep(obj_arg, [zero32, zero32]))
@@ -310,7 +313,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
 
         b.position_at_end(dict_blk)
-        b.ret(b.call(self.dict_pop, [obj_arg, key_arg]))
+        b.ret(b.call(self.dict_pop, [obj_arg, key_arg, def_arg]))
 
         # list: resolve the index (null key -> last), bounds-check,
         # read the element, shift the tail left, shrink
@@ -394,6 +397,115 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         b.position_at_end(done_blk)
         b.ret(value)
         self.pyobj_pop_dispatch = fn
+
+    def _create_pop_def_dispatch_runtime(self):
+        """PObj* pyobj_pop_def_dispatch(PObj* obj, PObj* key, PObj* def) -
+        the 2-arg pop domain: dict receivers go to dict_pop_def (a miss
+        ALWAYS returns the default, CPython's 2-arg pop never raises);
+        list receivers ignore the default (list.pop takes no default).
+        Same index machinery as pyobj_pop_dispatch."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        fn = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr, pyobj_ptr],
+                            False),
+            'pyobj_pop_def_dispatch',
+        )
+        entry = fn.append_basic_block("entry")
+        list_blk = fn.append_basic_block("list_case")
+        dict_blk = fn.append_basic_block("dict_case")
+        b = ir.builder_(entry)
+        obj_arg, key_arg, def_arg = fn.args
+        zero32 = ir.const_(i32, 0)
+        null_obj = ir.const_(pyobj_ptr, None)
+        tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 4)), list_blk, dict_blk
+        )
+
+        b.position_at_end(dict_blk)
+        b.ret(b.call(self.dict_pop_def, [obj_arg, key_arg, def_arg]))
+
+        b.position_at_end(list_blk)
+        empty_blk = fn.append_basic_block("popd_empty")
+        idx_blk = fn.append_basic_block("popd_idx")
+        bounds_blk = fn.append_basic_block("popd_bounds")
+        bad_blk = fn.append_basic_block("popd_bad")
+        ok_blk = fn.append_basic_block("popd_ok")
+        shift_cond = fn.append_basic_block("popd_shift_cond")
+        shift_blk = fn.append_basic_block("popd_shift")
+        done_blk = fn.append_basic_block("popd_done")
+        struct_ptr = b.bitcast(
+            b.load(b.gep(obj_arg, [zero32, ir.const_(i32, 1)])),
+            ir.PointerType(self.list_struct_type),
+        )
+        length = b.load(b.gep(struct_ptr, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", key_arg, null_obj), idx_blk, bounds_blk
+        )
+
+        b.position_at_end(idx_blk)
+        last = b.sub(length, ir.const_(i64, 1))
+        b.branch(bad_blk)
+
+        b.position_at_end(bounds_blk)
+        raw = b.call(self.unbox_int, [key_arg])
+        adjusted = b.select(
+            b.icmp_signed("<", raw, ir.const_(i64, 0)),
+            b.add(raw, length),
+            raw,
+        )
+        b.branch(bad_blk)
+
+        b.position_at_end(bad_blk)
+        idx = b.phi(i64)
+        idx.add_incoming(last, idx_blk)
+        idx.add_incoming(adjusted, bounds_blk)
+        in_range = b.and_(
+            b.icmp_signed(">=", idx, ir.const_(i64, 0)),
+            b.icmp_signed("<", idx, length),
+        )
+        empty = b.icmp_signed("==", length, ir.const_(i64, 0))
+        b.cbranch(
+            b.or_(empty, b.not_(in_range)), empty_blk, ok_blk
+        )
+
+        b.position_at_end(empty_blk)
+        msg = self._create_global_string_with_builder(
+            "IndexError: pop from empty list", b
+        )
+        self._emit_panic(b, msg)
+
+        b.position_at_end(ok_blk)
+        items = b.load(b.gep(struct_ptr, [zero32, ir.const_(i32, 2)]))
+        value = b.load(b.gep(items, [idx]))
+        b.store(
+            b.sub(length, ir.const_(i64, 1)), b.gep(struct_ptr, [zero32, zero32])
+        )
+        i_ptr = b.alloca(i64, None, "popd_i")
+        b.store(idx, i_ptr)
+        b.branch(shift_cond)
+
+        b.position_at_end(shift_cond)
+        cur = b.load(i_ptr)
+        b.cbranch(
+            b.icmp_signed("<", cur, b.sub(length, ir.const_(i64, 1))),
+            shift_blk,
+            done_blk,
+        )
+
+        b.position_at_end(shift_blk)
+        cur2 = b.load(i_ptr)
+        moved = b.load(b.gep(items, [b.add(cur2, ir.const_(i64, 1))]))
+        b.store(moved, b.gep(items, [cur2]))
+        b.store(b.add(cur2, ir.const_(i64, 1)), i_ptr)
+        b.branch(shift_cond)
+
+        b.position_at_end(done_blk)
+        b.ret(value)
+        self.pyobj_pop_def_dispatch = fn
 
     def _create_copy_dispatch_runtime(self):
         """PObj* pyobj_copy_dispatch(PObj* obj) - `.copy()` with one
@@ -10122,23 +10234,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     return (OBJ, null_obj)
                 obj = self._box(obj_tv)
                 key = self._box(self._convert_node(node[2]))
-                popped = self.current_builder.call(self.dict_pop, [obj, key])
-                is_null = self.current_builder.icmp_signed(
-                    "==",
-                    self.current_builder.ptrtoint(popped, ir.IntType(64)),
-                    ir.const_(ir.IntType(64), 0),
+                # null default = the 1-arg pop domain: dict_pop panics
+                # KeyError itself on a miss, so the caller-side null
+                # check is gone
+                self.current_builder.call(
+                    self.dict_pop,
+                    [obj, key, null_obj],
                 )
-                ok_block = self.current_builder.function.append_basic_block(
-                    "del_ok"
-                )
-                err_block = self.current_builder.function.append_basic_block(
-                    "del_keyerr"
-                )
-                self.current_builder.cbranch(is_null, err_block, ok_block)
-                self.current_builder.position_at_end(err_block)
-                err_msg = self._create_global_string("KeyError: key not found")
-                self._emit_panic(self.current_builder, err_msg)
-                self.current_builder.position_at_end(ok_block)
             return (OBJ, null_obj)
 
         if op == "match":

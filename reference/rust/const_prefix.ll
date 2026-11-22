@@ -4197,41 +4197,86 @@ insert:
   ret void
 }
 
-define {i32, i8*}* @"dict_pop"({i32, i8*}* %".1", {i32, i8*}* %".2")
+define {i32, i8*}* @"dict_pop"({i32, i8*}* %".1", {i32, i8*}* %".2", {i32, i8*}* %".3")
 {
 entry:
-  %".4" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
-  %".5" = load i8*, i8** %".4"
-  %".6" = bitcast i8* %".5" to {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}*
-  %".7" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".6", i32 0, i32 0
-  %".8" = load i64, i64* %".7"
-  %".9" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".6", i32 0, i32 1
-  %".10" = load i64, i64* %".9"
-  %".11" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".6", i32 0, i32 2
-  %".12" = load i64, i64* %".11"
-  %".13" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".6", i32 0, i32 3
-  %".14" = load i64*, i64** %".13"
-  %".15" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".6", i32 0, i32 4
-  %".16" = load [0 x {{i32, i8*}*, {i32, i8*}*}]*, [0 x {{i32, i8*}*, {i32, i8*}*}]** %".15"
+  %".5" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
+  %".6" = load i8*, i8** %".5"
+  %".7" = bitcast i8* %".6" to {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}*
+  %".8" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 0
+  %".9" = load i64, i64* %".8"
+  %".10" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 1
+  %".11" = load i64, i64* %".10"
+  %".12" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 2
+  %".13" = load i64, i64* %".12"
+  %".14" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 3
+  %".15" = load i64*, i64** %".14"
+  %".16" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 4
+  %".17" = load [0 x {{i32, i8*}*, {i32, i8*}*}]*, [0 x {{i32, i8*}*, {i32, i8*}*}]** %".16"
   %"pop_slot" = alloca i64
-  %".17" = call i64 @"dict_find_probe"({i32, i8*}* %".1", {i32, i8*}* %".2", i64* %"pop_slot")
-  %".18" = icmp sge i64 %".17", 0
-  br i1 %".18", label %"found", label %"missing"
+  %".18" = call i64 @"dict_find_probe"({i32, i8*}* %".1", {i32, i8*}* %".2", i64* %"pop_slot")
+  %".19" = icmp sge i64 %".18", 0
+  br i1 %".19", label %"found", label %"missing"
 found:
-  %".20" = getelementptr [0 x {{i32, i8*}*, {i32, i8*}*}], [0 x {{i32, i8*}*, {i32, i8*}*}]* %".16", i32 0, i64 %".17"
-  %".21" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".20", i32 0, i32 1
-  %".22" = load {i32, i8*}*, {i32, i8*}** %".21"
-  %".23" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".20", i32 0, i32 0
-  store {i32, i8*}* null, {i32, i8*}** %".23"
-  %".25" = load i64, i64* %"pop_slot"
-  %".26" = getelementptr i64, i64* %".14", i64 %".25"
-  store i64 -1, i64* %".26"
-  %".28" = sub i64 %".8", 1
-  %".29" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".6", i32 0, i32 0
-  store i64 %".28", i64* %".29"
-  ret {i32, i8*}* %".22"
+  %".21" = getelementptr [0 x {{i32, i8*}*, {i32, i8*}*}], [0 x {{i32, i8*}*, {i32, i8*}*}]* %".17", i32 0, i64 %".18"
+  %".22" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".21", i32 0, i32 1
+  %".23" = load {i32, i8*}*, {i32, i8*}** %".22"
+  %".24" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".21", i32 0, i32 0
+  store {i32, i8*}* null, {i32, i8*}** %".24"
+  %".26" = load i64, i64* %"pop_slot"
+  %".27" = getelementptr i64, i64* %".15", i64 %".26"
+  store i64 -1, i64* %".27"
+  %".29" = sub i64 %".9", 1
+  %".30" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 0
+  store i64 %".29", i64* %".30"
+  ret {i32, i8*}* %".23"
 missing:
-  ret {i32, i8*}* null
+  %".33" = icmp ne {i32, i8*}* %".3", null
+  br i1 %".33", label %"pop_defret", label %"pop_keyerr"
+pop_keyerr:
+  %".35" = getelementptr [24 x i8], [24 x i8]* @"str.KeyError_3a_20key_20not_20found", i32 0, i32 0
+  call void @"silu_panic"(i8* %".35")
+  unreachable
+pop_defret:
+  ret {i32, i8*}* %".3"
+}
+
+@"str.KeyError_3a_20key_20not_20found" = constant [24 x i8] c"KeyError: key not found\00"
+define {i32, i8*}* @"dict_pop_def"({i32, i8*}* %".1", {i32, i8*}* %".2", {i32, i8*}* %".3")
+{
+entry:
+  %".5" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
+  %".6" = load i8*, i8** %".5"
+  %".7" = bitcast i8* %".6" to {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}*
+  %".8" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 0
+  %".9" = load i64, i64* %".8"
+  %".10" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 1
+  %".11" = load i64, i64* %".10"
+  %".12" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 2
+  %".13" = load i64, i64* %".12"
+  %".14" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 3
+  %".15" = load i64*, i64** %".14"
+  %".16" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 4
+  %".17" = load [0 x {{i32, i8*}*, {i32, i8*}*}]*, [0 x {{i32, i8*}*, {i32, i8*}*}]** %".16"
+  %"popd_slot" = alloca i64
+  %".18" = call i64 @"dict_find_probe"({i32, i8*}* %".1", {i32, i8*}* %".2", i64* %"popd_slot")
+  %".19" = icmp sge i64 %".18", 0
+  br i1 %".19", label %"found", label %"missing"
+found:
+  %".21" = getelementptr [0 x {{i32, i8*}*, {i32, i8*}*}], [0 x {{i32, i8*}*, {i32, i8*}*}]* %".17", i32 0, i64 %".18"
+  %".22" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".21", i32 0, i32 1
+  %".23" = load {i32, i8*}*, {i32, i8*}** %".22"
+  %".24" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".21", i32 0, i32 0
+  store {i32, i8*}* null, {i32, i8*}** %".24"
+  %".26" = load i64, i64* %"popd_slot"
+  %".27" = getelementptr i64, i64* %".15", i64 %".26"
+  store i64 -1, i64* %".27"
+  %".29" = sub i64 %".9", 1
+  %".30" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".7", i32 0, i32 0
+  store i64 %".29", i64* %".30"
+  ret {i32, i8*}* %".23"
+missing:
+  ret {i32, i8*}* %".3"
 }
 
 define i1 @"pyobj_contains"({i32, i8*}* %".1", {i32, i8*}* %".2")
@@ -5246,7 +5291,6 @@ sub_key_error:
   unreachable
 }
 
-@"str.KeyError_3a_20key_20not_20found" = constant [24 x i8] c"KeyError: key not found\00"
 @"str.TypeError_3a_20object_20is_20not_20subscriptable" = constant [39 x i8] c"TypeError: object is not subscriptable\00"
 define void @"pyobj_subscript_set"({i32, i8*}* %".1", {i32, i8*}* %".2", {i32, i8*}* %".3")
 {
@@ -5391,77 +5435,147 @@ merge:
   ret i1 %".21"
 }
 
-define {i32, i8*}* @"pyobj_pop_dispatch"({i32, i8*}* %".1", {i32, i8*}* %".2")
+define {i32, i8*}* @"pyobj_pop_dispatch"({i32, i8*}* %".1", {i32, i8*}* %".2", {i32, i8*}* %".3")
 {
 entry:
-  %".4" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 0
-  %".5" = load i32, i32* %".4"
-  %".6" = icmp eq i32 %".5", 4
-  br i1 %".6", label %"list_case", label %"dict_case"
+  %".5" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 0
+  %".6" = load i32, i32* %".5"
+  %".7" = icmp eq i32 %".6", 4
+  br i1 %".7", label %"list_case", label %"dict_case"
 list_case:
-  %".10" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
-  %".11" = load i8*, i8** %".10"
-  %".12" = bitcast i8* %".11" to {i64, i64, {i32, i8*}**}*
-  %".13" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".12", i32 0, i32 0
-  %".14" = load i64, i64* %".13"
-  %".15" = icmp eq {i32, i8*}* %".2", null
-  br i1 %".15", label %"pop_idx", label %"pop_bounds"
+  %".11" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
+  %".12" = load i8*, i8** %".11"
+  %".13" = bitcast i8* %".12" to {i64, i64, {i32, i8*}**}*
+  %".14" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".13", i32 0, i32 0
+  %".15" = load i64, i64* %".14"
+  %".16" = icmp eq {i32, i8*}* %".2", null
+  br i1 %".16", label %"pop_idx", label %"pop_bounds"
 dict_case:
-  %".8" = call {i32, i8*}* @"dict_pop"({i32, i8*}* %".1", {i32, i8*}* %".2")
-  ret {i32, i8*}* %".8"
+  %".9" = call {i32, i8*}* @"dict_pop"({i32, i8*}* %".1", {i32, i8*}* %".2", {i32, i8*}* %".3")
+  ret {i32, i8*}* %".9"
 pop_empty:
-  %".32" = getelementptr [32 x i8], [32 x i8]* @"str.IndexError_3a_20pop_20from_20empty_20list", i32 0, i32 0
-  call void @"silu_panic"(i8* %".32")
+  %".33" = getelementptr [32 x i8], [32 x i8]* @"str.IndexError_3a_20pop_20from_20empty_20list", i32 0, i32 0
+  call void @"silu_panic"(i8* %".33")
   unreachable
 pop_idx:
-  %".17" = sub i64 %".14", 1
+  %".18" = sub i64 %".15", 1
   br label %"pop_bad"
 pop_bounds:
-  %".19" = call i64 @"unbox_int"({i32, i8*}* %".2")
-  %".20" = icmp slt i64 %".19", 0
-  %".21" = add i64 %".19", %".14"
-  %".22" = select  i1 %".20", i64 %".21", i64 %".19"
+  %".20" = call i64 @"unbox_int"({i32, i8*}* %".2")
+  %".21" = icmp slt i64 %".20", 0
+  %".22" = add i64 %".20", %".15"
+  %".23" = select  i1 %".21", i64 %".22", i64 %".20"
   br label %"pop_bad"
 pop_bad:
-  %".24" = phi  i64 [%".17", %"pop_idx"], [%".22", %"pop_bounds"]
-  %".25" = icmp sge i64 %".24", 0
-  %".26" = icmp slt i64 %".24", %".14"
-  %".27" = and i1 %".25", %".26"
-  %".28" = icmp eq i64 %".14", 0
-  %".29" = xor i1 %".27", -1
-  %".30" = or i1 %".28", %".29"
-  br i1 %".30", label %"pop_empty", label %"pop_ok"
+  %".25" = phi  i64 [%".18", %"pop_idx"], [%".23", %"pop_bounds"]
+  %".26" = icmp sge i64 %".25", 0
+  %".27" = icmp slt i64 %".25", %".15"
+  %".28" = and i1 %".26", %".27"
+  %".29" = icmp eq i64 %".15", 0
+  %".30" = xor i1 %".28", -1
+  %".31" = or i1 %".29", %".30"
+  br i1 %".31", label %"pop_empty", label %"pop_ok"
 pop_ok:
-  %".35" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".12", i32 0, i32 2
-  %".36" = load {i32, i8*}**, {i32, i8*}*** %".35"
-  %".37" = getelementptr {i32, i8*}*, {i32, i8*}** %".36", i64 %".24"
-  %".38" = load {i32, i8*}*, {i32, i8*}** %".37"
-  %".39" = sub i64 %".14", 1
-  %".40" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".12", i32 0, i32 0
-  store i64 %".39", i64* %".40"
+  %".36" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".13", i32 0, i32 2
+  %".37" = load {i32, i8*}**, {i32, i8*}*** %".36"
+  %".38" = getelementptr {i32, i8*}*, {i32, i8*}** %".37", i64 %".25"
+  %".39" = load {i32, i8*}*, {i32, i8*}** %".38"
+  %".40" = sub i64 %".15", 1
+  %".41" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".13", i32 0, i32 0
+  store i64 %".40", i64* %".41"
   %"pop_i" = alloca i64
-  store i64 %".24", i64* %"pop_i"
+  store i64 %".25", i64* %"pop_i"
   br label %"pop_shift_cond"
 pop_shift_cond:
-  %".44" = load i64, i64* %"pop_i"
-  %".45" = sub i64 %".14", 1
-  %".46" = icmp slt i64 %".44", %".45"
-  br i1 %".46", label %"pop_shift", label %"pop_done"
+  %".45" = load i64, i64* %"pop_i"
+  %".46" = sub i64 %".15", 1
+  %".47" = icmp slt i64 %".45", %".46"
+  br i1 %".47", label %"pop_shift", label %"pop_done"
 pop_shift:
-  %".48" = load i64, i64* %"pop_i"
-  %".49" = add i64 %".48", 1
-  %".50" = getelementptr {i32, i8*}*, {i32, i8*}** %".36", i64 %".49"
-  %".51" = load {i32, i8*}*, {i32, i8*}** %".50"
-  %".52" = getelementptr {i32, i8*}*, {i32, i8*}** %".36", i64 %".48"
-  store {i32, i8*}* %".51", {i32, i8*}** %".52"
-  %".54" = add i64 %".48", 1
-  store i64 %".54", i64* %"pop_i"
+  %".49" = load i64, i64* %"pop_i"
+  %".50" = add i64 %".49", 1
+  %".51" = getelementptr {i32, i8*}*, {i32, i8*}** %".37", i64 %".50"
+  %".52" = load {i32, i8*}*, {i32, i8*}** %".51"
+  %".53" = getelementptr {i32, i8*}*, {i32, i8*}** %".37", i64 %".49"
+  store {i32, i8*}* %".52", {i32, i8*}** %".53"
+  %".55" = add i64 %".49", 1
+  store i64 %".55", i64* %"pop_i"
   br label %"pop_shift_cond"
 pop_done:
-  ret {i32, i8*}* %".38"
+  ret {i32, i8*}* %".39"
 }
 
 @"str.IndexError_3a_20pop_20from_20empty_20list" = constant [32 x i8] c"IndexError: pop from empty list\00"
+define {i32, i8*}* @"pyobj_pop_def_dispatch"({i32, i8*}* %".1", {i32, i8*}* %".2", {i32, i8*}* %".3")
+{
+entry:
+  %".5" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 0
+  %".6" = load i32, i32* %".5"
+  %".7" = icmp eq i32 %".6", 4
+  br i1 %".7", label %"list_case", label %"dict_case"
+list_case:
+  %".11" = getelementptr {i32, i8*}, {i32, i8*}* %".1", i32 0, i32 1
+  %".12" = load i8*, i8** %".11"
+  %".13" = bitcast i8* %".12" to {i64, i64, {i32, i8*}**}*
+  %".14" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".13", i32 0, i32 0
+  %".15" = load i64, i64* %".14"
+  %".16" = icmp eq {i32, i8*}* %".2", null
+  br i1 %".16", label %"popd_idx", label %"popd_bounds"
+dict_case:
+  %".9" = call {i32, i8*}* @"dict_pop_def"({i32, i8*}* %".1", {i32, i8*}* %".2", {i32, i8*}* %".3")
+  ret {i32, i8*}* %".9"
+popd_empty:
+  %".33" = getelementptr [32 x i8], [32 x i8]* @"str.IndexError_3a_20pop_20from_20empty_20list", i32 0, i32 0
+  call void @"silu_panic"(i8* %".33")
+  unreachable
+popd_idx:
+  %".18" = sub i64 %".15", 1
+  br label %"popd_bad"
+popd_bounds:
+  %".20" = call i64 @"unbox_int"({i32, i8*}* %".2")
+  %".21" = icmp slt i64 %".20", 0
+  %".22" = add i64 %".20", %".15"
+  %".23" = select  i1 %".21", i64 %".22", i64 %".20"
+  br label %"popd_bad"
+popd_bad:
+  %".25" = phi  i64 [%".18", %"popd_idx"], [%".23", %"popd_bounds"]
+  %".26" = icmp sge i64 %".25", 0
+  %".27" = icmp slt i64 %".25", %".15"
+  %".28" = and i1 %".26", %".27"
+  %".29" = icmp eq i64 %".15", 0
+  %".30" = xor i1 %".28", -1
+  %".31" = or i1 %".29", %".30"
+  br i1 %".31", label %"popd_empty", label %"popd_ok"
+popd_ok:
+  %".36" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".13", i32 0, i32 2
+  %".37" = load {i32, i8*}**, {i32, i8*}*** %".36"
+  %".38" = getelementptr {i32, i8*}*, {i32, i8*}** %".37", i64 %".25"
+  %".39" = load {i32, i8*}*, {i32, i8*}** %".38"
+  %".40" = sub i64 %".15", 1
+  %".41" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".13", i32 0, i32 0
+  store i64 %".40", i64* %".41"
+  %"popd_i" = alloca i64
+  store i64 %".25", i64* %"popd_i"
+  br label %"popd_shift_cond"
+popd_shift_cond:
+  %".45" = load i64, i64* %"popd_i"
+  %".46" = sub i64 %".15", 1
+  %".47" = icmp slt i64 %".45", %".46"
+  br i1 %".47", label %"popd_shift", label %"popd_done"
+popd_shift:
+  %".49" = load i64, i64* %"popd_i"
+  %".50" = add i64 %".49", 1
+  %".51" = getelementptr {i32, i8*}*, {i32, i8*}** %".37", i64 %".50"
+  %".52" = load {i32, i8*}*, {i32, i8*}** %".51"
+  %".53" = getelementptr {i32, i8*}*, {i32, i8*}** %".37", i64 %".49"
+  store {i32, i8*}* %".52", {i32, i8*}** %".53"
+  %".55" = add i64 %".49", 1
+  store i64 %".55", i64* %"popd_i"
+  br label %"popd_shift_cond"
+popd_done:
+  ret {i32, i8*}* %".39"
+}
+
 define {i32, i8*}* @"pyobj_copy_dispatch"({i32, i8*}* %".1")
 {
 entry:
