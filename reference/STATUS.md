@@ -7,9 +7,9 @@
 > 扩容 + 动态 pop 语义 + pyobj_utf8_cp_offset 死函数退役（前缀
 > 390,013B）。版本四件套（__init__/setup.py/AGENTS 钉行/本行）。
 >
-> **换客户端第一站 = §3.34（2026-11-22 深夜）**：v1.24.0 已发布
-> （tag 推 nightly）+ §3.33 四项后续全部闭合（str -=/dsf/object/
-> strbuf 语义修复），39 探针 + 全门禁绿。§四.3/4/5 按触发条件待办。
+> **换客户端第一站 = §3.35（2026-11-24）**：STATUS §四 可行动 TODO
+> 全部关闭（g-#10 推断分歧闭合收尾）。钉住版本 v1.24.0。剩余全部
+> 用户门控：P7 立项（T1/T3 未触发）、PROPOSALS 六提案（硬约束 4）。
 
 ## 一、已提交状态
 
@@ -1363,6 +1363,36 @@ corpus 16/16、backend 18/18、run 4+14、wat2wasm 43/43）：
 参数的死转换是 compile-visible 行为。②转换器自身的 `.pop(k, None)`
 惯用法依赖 dict_pop_def——运行时语义改动先扫转换器自用面。
 
+## 三点三十五、§四 TODO 全收口：g-#10 推断分歧闭合（2026-11-24）
+
+**STATUS §四 全部可行动项关闭（c5ebb98）**。g-清单 #10 的三重分歧
+实证与修复：
+
+- **y/z 电池 8 探针**：`x = chr(65)`（py 装箱 vs rs str 槽）、
+  `y = s + "d"`（同，y2）、`zs = "lit"`（py 全局 vs rs main 局部——
+  既有）、join（z2）、to_str（z3）、object 注解（y3，§3.33 已闭合）、
+  函数域 chr（y4）、混合电池（z1）。
+- **修复三点**：①py `_resolve_kind` 加 str 返回 builtin 表（chr/str/
+  unescape/json_quote/read_file/read_stdin/read_line/input）与
+  to_str/join 方法——**孪生可表达的 or-链**（frozenset 形式让自举
+  构建炸 'call to unknown function'，教训⑩）；②rs str auto-decl 补
+  模块上下文分支（IN_FN=false → 真全局 + free-old，int/float 先例——
+  无条件局部 alloca 破坏跨函数引用）；③rs 无模块级名文件的 EOF 悬空
+  空行（y4：main 尾空行在空尾上悬挂）。
+- **两个测试前提过时**（input() 静态 str 化后不再动态）：动态值源换
+  1 参 dict get 装箱 phi，拒绝契约保留。
+- **验证**：8 探针字节+执行一致 == 解释器；51 探针清扫净；ll 30/30、
+  ir 31/31、corpus 16/16、backend 18/18、run 4+14、wat2wasm 43/43、
+  pytest **1403/2**（第 3 个原跳过被推断修复解锁可运行）。
+- **既知残差**：read_line 为 rs 独有（py 响亮 'unknown function'——
+  既有平面能力不对称，非本轮回归）。
+
+**§四 终态**：1✅（str 生命周期）2✅（部署/发布）3✅（本轮）4✅
+（g-list 终态，PROGRESS.md 在档）5=**用户门控**（P7 T1/T3 未触发——
+升格产品/维护瓶颈/语料压力三者满足其一才立项，反触发条款明确）6✅
+（cp_offset 已随 v1.24.0 退役）。**无遗留可行动项**；PROPOSALS.md
+六提案与 P7 立项均须用户裁决（硬约束 4）。
+
 ## 四、其余 TODO（优先级序）
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
@@ -1479,3 +1509,7 @@ git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
 9. （同轮）**手写期望第四次被真参照纠正**：dp 测试的 len 期望
    （pop "gone" 后 len=1 非 0）、解释器 panic 走 stderr 且消息是
    键 repr 非 "KeyError" 字样——先跑参照再写断言。
+10. （2026-11-24 推断轮）**孪生子集无 frozenset**——推断表用 or-链
+   表达集合成员（自举构建 'call to unknown function' 当场暴露）；
+   追踪转换器行为要在**真实 JSON 流**上打点（IRGenerator 的 tuple
+   形状是 FE 内部表示，convert 吃 list JSON——打错层全程无命中）。
