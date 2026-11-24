@@ -7314,6 +7314,35 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 # a user function with a declared return annotation is
                 # authoritative (Json-sum constructors especially)
                 return func_ret[callee[1]]
+            if (
+                isinstance(callee, list)
+                and len(callee) >= 2
+                and callee[0] == "name"
+                and (
+                    callee[1] == "chr"
+                    or callee[1] == "str"
+                    or callee[1] == "unescape"
+                    or callee[1] == "json_quote"
+                    or callee[1] == "read_file"
+                    or callee[1] == "read_stdin"
+                    or callee[1] == "read_line"
+                    or callee[1] == "input"
+                )
+            ):
+                # str-returning builtins: the rs twin's auto-decl fires
+                # on the converted type (rawstr), so the inference must
+                # see them too (g-#10: x = chr(65) boxed while the rs
+                # plane used a str slot)
+                return RAWSTR
+            if (
+                isinstance(callee, list)
+                and len(callee) >= 3
+                and callee[0] == "attribute"
+                and callee[2] in ("to_str", "join")
+            ):
+                # str-returning methods on any receiver (b.to_str(),
+                # sep.join(xs)) - same rs-parity reasoning
+                return RAWSTR
             return None
         if op == "subscript" and len(node) >= 3:
             # element/value kind of an annotated container is

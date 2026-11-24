@@ -2887,23 +2887,42 @@ fn conv_assign(b: &mut FnB, st: &Val) {
                     }
                     return;
                 }
-                FN_ALLOCAS.with(|f| f.borrow_mut()
-                    .push((name.clone(), "str".into())));
-                FN_S.with(|y| y.borrow_mut().push(name.clone()));
                 let r = to_raw_alias(b, v, rhs.head() == "name");
                 // _declare_var null-stores every new RAWSTR local: one
                 // silent slot between the rhs conversion and the old-value
-                // load (probe lit / jsonparse out evidence)
-                b.silent();
-                TEMP_STRS.with(|t| t.borrow_mut().retain(|x| x != &r));
-                let old = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = load i8*, i8** %\"{}\"", old, name));
-                b.silent();
-                b.line(format!(
-                    "  call void @\"rawstr_free\"(i8* %\"{}\")", old));
-                b.silent();
-                b.line(format!("  store i8* {}, i8** %\"{}\"", r, name));
+                // load (probe lit / jsonparse out evidence). Module
+                // context (main, IN_FN=false) declares a true global -
+                // the int/float auto-decl precedent, so functions can
+                // see the name (g-#10: the unconditional local broke
+                // cross-function references and diverged from py)
+                if IN_FN.with(|v| *v.borrow()) {
+                    FN_ALLOCAS.with(|f| f.borrow_mut()
+                        .push((name.clone(), "str".into())));
+                    FN_S.with(|y| y.borrow_mut().push(name.clone()));
+                    b.silent();
+                    TEMP_STRS.with(|t| t.borrow_mut().retain(|x| x != &r));
+                    let old = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** %\"{}\"", old, name));
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"rawstr_free\"(i8* %\"{}\")", old));
+                    b.silent();
+                    b.line(format!("  store i8* {}, i8** %\"{}\"", r, name));
+                } else {
+                    tail_push(format!(
+                        "@\"{}\" = global i8* null", name));
+                    STR_SLOTS.with(|t| t.borrow_mut().push(name.clone()));
+                    TEMP_STRS.with(|t| t.borrow_mut().retain(|x| x != &r));
+                    let old = b.nx();
+                    b.line(format!(
+                        "  %\"{}\" = load i8*, i8** @\"{}\"", old, name));
+                    b.silent();
+                    b.line(format!(
+                        "  call void @\"rawstr_free\"(i8* %\"{}\")", old));
+                    b.silent();
+                    b.line(format!("  store i8* {}, i8** @\"{}\"", r, name));
+                }
             }
             Typed::F64(_) => {
                 // float rhs auto-declares a float slot (mandelbrot/nbody)
@@ -5517,7 +5536,7 @@ fn is_str_expr(e: &Val) -> bool {
             } else { return false; };
             if matches!(target.as_str(),
                 "chr" | "str" | "unescape" | "json_quote" | "read_file"
-                | "read_stdin" | "input") {
+                | "read_stdin" | "read_line" | "input") {
                 return true;
             }
             FN_SIGS.with(|s| s.borrow().iter()
@@ -10261,6 +10280,7 @@ fn main() {
     let mo = MAIN_OUT.with(|m| m.borrow().clone()).unwrap();
     out.push_str(&mo);
     // tail globals: strict creation order (strings and vars interleaved)
+    let tail_len = TAIL.with(|t| t.borrow().len());
     TAIL.with(|t| {
         let all = t.borrow();
         let last = all.len();
@@ -10269,6 +10289,14 @@ fn main() {
             if i + 1 < last { out.push('\n'); }
         }
     });
+    if tail_len == 0 {
+        // main's trailing blank covers the main->tail boundary only
+        // when the tail exists; an empty tail would leave a dangling
+        // EOF blank (y4 - a file with no module-level names)
+        if out.ends_with("\n\n") {
+            out.pop();
+        }
+    }
     let so = std::io::stdout();
     let mut lock = so.lock();
     let _ = lock.write_all(out.as_bytes());

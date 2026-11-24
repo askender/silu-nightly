@@ -214,8 +214,12 @@ class TestCompiledMatchUnsupported:
         # and wildcards; matching VALUES against it still requires a
         # statically typed subject
         with pytest.raises(NotImplementedError, match="annotate"):
+            # a genuinely dynamic subject: the 1-arg dict get's boxed
+            # phi (input() is statically str since the g-#10 inference
+            # round, so it no longer exercises this path)
             self._convert(
-                "x = input()\n"
+                "d = {}\n"
+                "x = d.get(\"k\")\n"
                 "match x:\n"
                 "    case 1:\n"
                 '        print("one")\n'

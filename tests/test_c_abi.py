@@ -215,9 +215,13 @@ def test_extern_strlen():
 
 
 def test_extern_rejects_dynamic_args():
+    # a genuinely dynamic value: the 1-arg dict get's boxed phi
+    # (input() is statically str since the g-#10 inference round, so
+    # it no longer exercises the dynamic rejection)
     src = (
         "from c import sqrt\n\n"
-        "x = input()\n"
+        "d = {}\n"
+        "x = d.get(\"k\")\n"
         "print(sqrt(x))\n"
     )
     with tempfile.TemporaryDirectory() as td:
