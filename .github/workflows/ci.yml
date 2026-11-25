@@ -49,6 +49,7 @@ jobs:
           --ignore=tests/test_selfhost_m2.py
           --ignore=tests/test_selfhost_m3.py
           --ignore=tests/test_selfhost_m4.py
+          --ignore=tests/test_asan_compiler.py
 
   gates:
     # The slow layer: the byte-identity self-hosting gates. Requires
@@ -76,7 +77,8 @@ jobs:
           tests/test_selfhost_m1.py
           tests/test_selfhost_m2.py
           tests/test_selfhost_m3.py
-          tests/test_selfhost_m4.py -q --cov=silu --cov-report=term
+          tests/test_selfhost_m4.py
+          tests/test_asan_compiler.py -q --cov=silu --cov-report=term
 
   wasm:
     # The WASM layer: shim + run + backend + corpus + wat2wasm gates.

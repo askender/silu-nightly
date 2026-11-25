@@ -1711,46 +1711,47 @@ pce_build:
   store i64 0, i64* %"pce_wo"
   br label %"pce_wcond"
 pce_wcond:
-  %".49" = load i64, i64* %"pce_wi"
-  %".50" = icmp sle i64 %".49", %".41"
+  %".49" = load i64, i64* %"pce_wo"
+  %".50" = icmp slt i64 %".49", %".2"
   br i1 %".50", label %"pce_wbody", label %"pce_wdone"
 pce_wbody:
-  %".52" = load i64, i64* %"pce_wo"
-  %".53" = getelementptr i64, i64* %".45", i64 %".49"
-  store i64 %".52", i64* %".53"
-  %".55" = getelementptr i8, i8* %".1", i64 %".52"
-  %".56" = load i8, i8* %".55"
-  %".57" = and i8 %".56", 224
-  %".58" = icmp eq i8 %".57", 192
-  %".59" = and i8 %".56", 240
-  %".60" = icmp eq i8 %".59", 224
-  %".61" = and i8 %".56", 248
-  %".62" = icmp eq i8 %".61", 240
-  %".63" = select  i1 %".58", i64 2, i64 1
-  %".64" = select  i1 %".60", i64 3, i64 %".63"
-  %".65" = select  i1 %".62", i64 4, i64 %".64"
-  %".66" = add i64 %".52", %".65"
-  store i64 %".66", i64* %"pce_wo"
-  %".68" = add i64 %".49", 1
-  store i64 %".68", i64* %"pce_wi"
+  %".52" = getelementptr i8, i8* %".1", i64 %".49"
+  %".53" = load i8, i8* %".52"
+  %".54" = and i8 %".53", 192
+  %".55" = icmp ne i8 %".54", 128
+  br i1 %".55", label %"pce_wstore", label %"pce_wadv"
+pce_wstore:
+  %".57" = load i64, i64* %"pce_wi"
+  %".58" = getelementptr i64, i64* %".45", i64 %".57"
+  store i64 %".49", i64* %".58"
+  %".60" = load i64, i64* %"pce_wi"
+  %".61" = add i64 %".60", 1
+  store i64 %".61", i64* %"pce_wi"
+  br label %"pce_wadv"
+pce_wadv:
+  %".64" = add i64 %".49", 1
+  store i64 %".64", i64* %"pce_wo"
   br label %"pce_wcond"
 pce_wdone:
+  %".67" = load i64, i64* %"pce_wi"
+  %".68" = getelementptr i64, i64* %".45", i64 %".67"
+  store i64 %".49", i64* %".68"
   br label %"pce_insert"
 pce_insert:
-  %".72" = load i64, i64* %"pce_base"
-  %".73" = trunc i64 %".72" to i32
-  %".74" = getelementptr [1024 x {i8*, i64, i64, i8*}], [1024 x {i8*, i64, i64, i8*}]* @"pyoff_tab", i32 0, i32 %".73"
-  %".75" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 0
-  store i8* %".1", i8** %".75"
-  %".77" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 1
-  store i64 %".2", i64* %".77"
-  %".79" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 2
-  store i64 %".41", i64* %".79"
-  %".81" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".74", i32 0, i32 3
-  store i8* %".44", i8** %".81"
-  %".83" = insertvalue {i8*, i64} undef, i8* %".44", 0
-  %".84" = insertvalue {i8*, i64} %".83", i64 %".41", 1
-  ret {i8*, i64} %".84"
+  %".71" = load i64, i64* %"pce_base"
+  %".72" = trunc i64 %".71" to i32
+  %".73" = getelementptr [1024 x {i8*, i64, i64, i8*}], [1024 x {i8*, i64, i64, i8*}]* @"pyoff_tab", i32 0, i32 %".72"
+  %".74" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".73", i32 0, i32 0
+  store i8* %".1", i8** %".74"
+  %".76" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".73", i32 0, i32 1
+  store i64 %".2", i64* %".76"
+  %".78" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".73", i32 0, i32 2
+  store i64 %".41", i64* %".78"
+  %".80" = getelementptr {i8*, i64, i64, i8*}, {i8*, i64, i64, i8*}* %".73", i32 0, i32 3
+  store i8* %".44", i8** %".80"
+  %".82" = insertvalue {i8*, i64} undef, i8* %".44", 0
+  %".83" = insertvalue {i8*, i64} %".82", i64 %".41", 1
+  ret {i8*, i64} %".83"
 }
 
 define i64 @"pyobj_len_raw"({i32, i8*}* %".1")
@@ -2742,14 +2743,15 @@ search_body:
   %".34" = icmp eq i32 %".33", 0
   br i1 %".34", label %"search_hit", label %"search_step"
 search_after:
-  %".41" = call {i32, i8*}* @"create_int"(i64 -1)
-  ret {i32, i8*}* %".41"
+  %".42" = call {i32, i8*}* @"create_int"(i64 -1)
+  ret {i32, i8*}* %".42"
 search_hit:
-  %".36" = call {i32, i8*}* @"create_int"(i64 %".31")
-  ret {i32, i8*}* %".36"
+  %".36" = call i64 @"pyobj_utf8_cp_count"(i8* %".10", i64 %".31")
+  %".37" = call {i32, i8*}* @"create_int"(i64 %".36")
+  ret {i32, i8*}* %".37"
 search_step:
-  %".38" = add i64 %".31", 1
-  store i64 %".38", i64* %"search_i"
+  %".39" = add i64 %".31", 1
+  store i64 %".39", i64* %"search_i"
   br label %"search_cond"
 }
 
@@ -2795,14 +2797,15 @@ search_body:
   %".35" = icmp eq i32 %".34", 0
   br i1 %".35", label %"search_hit", label %"search_step"
 search_after:
-  %".42" = call {i32, i8*}* @"create_int"(i64 -1)
-  ret {i32, i8*}* %".42"
+  %".43" = call {i32, i8*}* @"create_int"(i64 -1)
+  ret {i32, i8*}* %".43"
 search_hit:
-  %".37" = call {i32, i8*}* @"create_int"(i64 %".32")
-  ret {i32, i8*}* %".37"
+  %".37" = call i64 @"pyobj_utf8_cp_count"(i8* %".10", i64 %".32")
+  %".38" = call {i32, i8*}* @"create_int"(i64 %".37")
+  ret {i32, i8*}* %".38"
 search_step:
-  %".39" = sub i64 %".32", 1
-  store i64 %".39", i64* %"search_i"
+  %".40" = sub i64 %".32", 1
+  store i64 %".40", i64* %"search_i"
   br label %"search_cond"
 }
 
@@ -6882,31 +6885,33 @@ cpo_build:
   %".57" = load i8*, i8** %".56"
   br label %"cpo_wcond"
 cpo_wcond:
-  %".59" = load i64, i64* %"cpo_wi"
-  %".60" = icmp sle i64 %".59", %".8"
+  %".59" = load i64, i64* %"cpo_wo"
+  %".60" = icmp slt i64 %".59", %".6"
   br i1 %".60", label %"cpo_wbody", label %"cpo_wdone"
 cpo_wbody:
-  %".62" = load i64, i64* %"cpo_wo"
-  %".63" = bitcast i8* %".53" to i64*
-  %".64" = getelementptr i64, i64* %".63", i64 %".59"
-  store i64 %".62", i64* %".64"
-  %".66" = getelementptr i8, i8* %".57", i64 %".62"
-  %".67" = load i8, i8* %".66"
-  %".68" = and i8 %".67", 224
-  %".69" = icmp eq i8 %".68", 192
-  %".70" = and i8 %".67", 240
-  %".71" = icmp eq i8 %".70", 224
-  %".72" = and i8 %".67", 248
-  %".73" = icmp eq i8 %".72", 240
-  %".74" = select  i1 %".73", i64 4, i64 1
-  %".75" = select  i1 %".71", i64 3, i64 %".74"
-  %".76" = select  i1 %".69", i64 2, i64 %".75"
-  %".77" = add i64 %".62", %".76"
-  store i64 %".77", i64* %"cpo_wo"
-  %".79" = add i64 %".59", 1
-  store i64 %".79", i64* %"cpo_wi"
+  %".62" = getelementptr i8, i8* %".57", i64 %".59"
+  %".63" = load i8, i8* %".62"
+  %".64" = and i8 %".63", 192
+  %".65" = icmp ne i8 %".64", 128
+  br i1 %".65", label %"cpo_wstore", label %"cpo_wadv"
+cpo_wstore:
+  %".67" = bitcast i8* %".53" to i64*
+  %".68" = load i64, i64* %"cpo_wi"
+  %".69" = getelementptr i64, i64* %".67", i64 %".68"
+  store i64 %".59", i64* %".69"
+  %".71" = load i64, i64* %"cpo_wi"
+  %".72" = add i64 %".71", 1
+  store i64 %".72", i64* %"cpo_wi"
+  br label %"cpo_wadv"
+cpo_wadv:
+  %".75" = add i64 %".59", 1
+  store i64 %".75", i64* %"cpo_wo"
   br label %"cpo_wcond"
 cpo_wdone:
+  %".78" = bitcast i8* %".53" to i64*
+  %".79" = load i64, i64* %"cpo_wi"
+  %".80" = getelementptr i64, i64* %".78", i64 %".79"
+  store i64 %".59", i64* %".80"
   br label %"cpo_insert"
 cpo_insert:
   %".83" = load i64, i64* %"cpo_base"
@@ -7029,40 +7034,66 @@ define void @"rawstr_append"(i8* %".1", i8* %".2", i64 %".3")
 {
 entry:
   %".5" = bitcast i8* %".1" to {i64, i64, i8*, i64}*
-  %".6" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 0
-  %".7" = load i64, i64* %".6"
-  %".8" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 1
-  %".9" = load i64, i64* %".8"
-  %".10" = add i64 %".7", %".3"
-  %".11" = icmp sgt i64 %".10", %".9"
-  br i1 %".11", label %"grow", label %"do_append"
+  %"app_stale" = alloca i8*
+  store i8* null, i8** %"app_stale"
+  %".7" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 0
+  %".8" = load i64, i64* %".7"
+  %".9" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 1
+  %".10" = load i64, i64* %".9"
+  %".11" = add i64 %".8", %".3"
+  %".12" = icmp sgt i64 %".11", %".10"
+  br i1 %".12", label %"grow", label %"do_append"
 grow:
-  %".13" = mul i64 %".9", 2
-  %".14" = icmp sge i64 %".13", %".10"
-  %".15" = select  i1 %".14", i64 %".13", i64 %".10"
-  %".16" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 2
-  %".17" = load i8*, i8** %".16"
-  %".18" = call i8* @"realloc"(i8* %".17", i64 %".15")
-  %".19" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 1
-  store i64 %".15", i64* %".19"
-  %".21" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 2
-  store i8* %".18", i8** %".21"
+  %".14" = mul i64 %".10", 2
+  %".15" = icmp sge i64 %".14", %".11"
+  %".16" = select  i1 %".15", i64 %".14", i64 %".11"
+  %".17" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 2
+  %".18" = load i8*, i8** %".17"
+  %".19" = ptrtoint i8* %".18" to i64
+  %".20" = ptrtoint i8* %".2" to i64
+  %".21" = icmp sge i64 %".20", %".19"
+  %".22" = add i64 %".19", %".10"
+  %".23" = icmp slt i64 %".20", %".22"
+  %".24" = and i1 %".21", %".23"
+  br i1 %".24", label %"grow_move", label %"grow_realloc"
+grow_move:
+  %".26" = call i8* @"malloc"(i64 %".16")
+  call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".26", i8* %".18", i64 %".8", i1 0)
+  %".28" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 1
+  store i64 %".16", i64* %".28"
+  %".30" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 2
+  store i8* %".26", i8** %".30"
+  store i8* %".18", i8** %"app_stale"
+  br label %"do_append"
+grow_realloc:
+  %".34" = call i8* @"realloc"(i8* %".18", i64 %".16")
+  %".35" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 1
+  store i64 %".16", i64* %".35"
+  %".37" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 2
+  store i8* %".34", i8** %".37"
   br label %"do_append"
 do_append:
-  %".24" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 2
-  %".25" = load i8*, i8** %".24"
-  %".26" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 0
-  %".27" = load i64, i64* %".26"
-  %".28" = getelementptr i8, i8* %".25", i64 %".27"
-  call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".28", i8* %".2", i64 %".3", i1 0)
-  %".30" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 0
-  store i64 %".10", i64* %".30"
-  %".32" = call i64 @"rawutf8_cp_count"(i8* %".2", i64 %".3")
-  %".33" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 3
-  %".34" = load i64, i64* %".33"
-  %".35" = add i64 %".34", %".32"
-  %".36" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 3
-  store i64 %".35", i64* %".36"
+  %".40" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 2
+  %".41" = load i8*, i8** %".40"
+  %".42" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 0
+  %".43" = load i64, i64* %".42"
+  %".44" = getelementptr i8, i8* %".41", i64 %".43"
+  call void @"llvm.memcpy.p0i8.p0i8.i64"(i8* %".44", i8* %".2", i64 %".3", i1 0)
+  %".46" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 0
+  store i64 %".11", i64* %".46"
+  %".48" = call i64 @"rawutf8_cp_count"(i8* %".2", i64 %".3")
+  %".49" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 3
+  %".50" = load i64, i64* %".49"
+  %".51" = add i64 %".50", %".48"
+  %".52" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".5", i32 0, i32 3
+  store i64 %".51", i64* %".52"
+  %".54" = load i8*, i8** %"app_stale"
+  %".55" = icmp eq i8* %".54", null
+  br i1 %".55", label %"append_done", label %"free_moved"
+free_moved:
+  call void @"free"(i8* %".54")
+  br label %"append_done"
+append_done:
   ret void
 }
 

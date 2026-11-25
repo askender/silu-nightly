@@ -13,7 +13,8 @@ from silu.ir_iface import ir
 from silu.typed_helpers import (
     BUF, F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, RAWLIST_JSON, RAWDICT_SJ, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
     _RANGE_AS_VALUE, _is_range_call, _range_const_span, _range_len,
-    _range_values, _STR_REJECTED_METHODS, _BUILTIN_ARITY,
+    _range_values, _STR_REJECTED_METHODS, _NONE_RESULT_METHODS,
+    _BUILTIN_ARITY,
 )
 
 
@@ -170,7 +171,11 @@ class TypedCallMixin:
                             ),
                         ],
                     )
-                    return (raw_kind, list_ptr)
+                    # append answers None in Python (it used to
+                    # hand back the list itself)
+                    return (OBJ, ir.const_(
+                        ir.PointerType(self.pyobj.pyobj_type), None
+                    ))
                 elem = self._coerce(arg_tv, elem_kind)
                 if raw_kind == RAWLIST_S:
                     # the list stores its own copy of the string
@@ -219,7 +224,11 @@ class TypedCallMixin:
                         self.rawlist_push,
                         [list_ptr, elem_bits],
                     )
-                return (raw_kind, list_ptr)
+                # append answers None in Python (it used to hand
+                # back the list itself)
+                return (OBJ, ir.const_(
+                    ir.PointerType(self.pyobj.pyobj_type), None
+                ))
             if method_name == "len":
                 return (
                     I64,
@@ -498,7 +507,16 @@ class TypedCallMixin:
                         result = self.current_builder.call(
                             self.create_float, [result]
                         )
-                return (OBJ, result) if has_result else (OBJ, result)
+                if method_name in _NONE_RESULT_METHODS:
+                    # a mutating method answers None in Python. The void
+                    # call behind clear() used to be handed on as the
+                    # value, and `r = d.clear()` stored it: invalid IR
+                    # (store void) that clang rejected with an internal
+                    # message; append() answered the list itself
+                    return (OBJ, ir.const_(
+                        ir.PointerType(self.pyobj.pyobj_type), None
+                    ))
+                return (OBJ, result)
         # boxed instance receiver with user-class methods: class-id
         # dispatch into the compiled methods; a same-named builtin
         # shim is the fallback arm for non-instance receivers

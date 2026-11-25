@@ -18,3 +18,11 @@ i: int = s.index("W")
 print(i)
 print(s.isdigit())
 print("123".isdigit())
+# a str position is a code point index on multi-byte text too: find
+# and index used to answer the BYTE offset (3 for "中" here), so
+# s[s.find(x)] read the wrong character
+m: str = "aé中bñc"
+k: int = m.find("中")
+j: int = m.find("é")
+print(k, ord(m[k]), m.index("b"), m.find("zz"))
+print(m.find("ñc"), m.find(""), len(m[j:k]), ord(m[j]))

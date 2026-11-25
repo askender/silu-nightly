@@ -27,6 +27,13 @@
   CPython 逐字节对拍验证。代价是 `s[i]` 为 O(n) 走查（与 Rust 的
   `chars().nth(i)` 相同）；`for` 迭代整体仍为 O(字节数)。
 - **等值/比较/成员判断**：按 UTF-8 字节序，与码点序等价（memcmp 语义）。
+- **`find` / `rfind` / `index` 返回码点下标**：与 `len(s)`、`s[i]`
+  同一坐标系，多字节文本上可直接用作下标（`s[s.find("中")]`、
+  `s[i:]`）。未命中时 `find`/`rfind` 为 -1，`index` 抛 ValueError。
+- **`upper()` / `lower()` 只映射 ASCII 字母**：非 ASCII 字母原样保留
+  （`"é".upper()` 仍是 `"é"`，CPython 得 `"É"`，`"ß".upper()` 的
+  多字符展开也没有）。这是当前的语言边界，**不是** CPython 语义；
+  需要 Unicode 大小写的程序应注意。
 - **可变性的幻觉**：Python 的 str 不可变，Silu 的 rawstr 槽用
   Rust String 式所有权模拟：`s = s + x` 摊销 O(1) 原地追加，但
   `t = s` 是**拷贝**——之后改 `t` 不影响 `s`，与 Python 一致。
@@ -114,6 +121,24 @@
 - **编译路径第一版的边界**：嵌套实例字段（字段是另一个 class）暂
   不支持（明确报错）；实例不可装箱——`print(p)` 是编译错误，
   打印字段（`print(p.x)`）即可。
+- **从 typed 容器取出的实例再赋值字段**（`it: Rec = items[i]` 之后
+  `it.ret = v`）：实例在列表里以 i64 字承载，赋值前转回指针。自举
+  编译器曾对这整个形状段错误（2026-10-25 起），现已修复并有门禁。
+
+## 3.6 输出时机：`print` 逐个求值并立即输出
+
+`print(a, b, c)` 在编译后的程序里**逐个**求值参数、输出一个再求值
+下一个（流式，无中间缓冲）。CPython 先求值全部参数、最后统一格式
+化，所以后面的参数若修改了前面的可变参数，两边输出不同：
+
+```python
+d = {"b": 2}
+print(d, d.pop("b"))      # CPython: {} 2   Silu（编译）: {'b': 2} 2
+```
+
+求值顺序本身与 CPython 相同（从左到右）；不同的只是容器参数被
+格式化的时刻。`silu interpret` 与 CPython 一致。需要与 CPython 一致
+的输出时，把变更与打印分开写。
 
 ## 4. 标量光标提升（SILU_SCALARS=1，默认开）
 
@@ -171,3 +196,11 @@
   CPython 现场产生，每个用例在 Python 平面（`silu build`）和自举
   平面（`siluc1` → clang）各跑一遍；另有"必须编译失败"（不支持的
   构造）与"必须响亮 panic"（文档化差异）两张表。
+- **内存安全门禁** `tests/test_asan_runtime.py`：上述用例源码、一组
+  内存形状（精确大小缓冲上的装箱 str、`s = s + s`、码点偏移缓存、
+  `input()`、strbuf、`list[str]`）和若干语料文件，在真
+  AddressSanitizer 下运行，两个转换器平面各一遍；任何报告即红。
+  **对 `.ll` 直接 `clang -fsanitize=address` 什么都不检查**——clang
+  只插桩带 `sanitize_address` 属性的函数，IR 输入没有这个属性。
+  `tools/asan_run.py` 先给每个 `define` 加属性，并在任何程序计为
+  干净之前，用一个已知的越界读证明本工具链确实会报告。

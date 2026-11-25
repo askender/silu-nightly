@@ -4,14 +4,18 @@
 > 规约细节锚点仍是 `reference/PROGRESS.md`；本文负责"接下来做什么"。
 >
 > **v1.25.0 已重钉（2026-11-26）**：语义轮——容器边迭代边改、
-> 推导式作用域、dss 借用语义、ll 门禁 verifier（前缀 421,380B）。
-> 版本四件套（__init__/setup.py/AGENTS 钉行/本行）；**tag 未打**
-> （发布动作留给用户）。
+> 推导式作用域、dss 借用语义、ll 门禁 verifier；同日续**内存安全轮**
+> （§3.37：码点偏移越界读、`s = s + s` 用后释放、`str.find` 字节
+> 偏移、自举转换器对 i64 槽实例属性赋值必崩、真 ASan 门禁）。前缀
+> 422,537B。版本四件套（__init__/setup.py/AGENTS 钉行/本行）；**tag
+> 未打**（发布动作留给用户）。
 >
-> **换客户端第一站 = §3.36（2026-11-26）**：语义轮收口，全门禁绿
-> （ir 33/33、ll 32/32×2 含 verifier、pytest 1636/2）。§四 顶部新增
-> 四条可行动项（rs 字母表缺口、ir2c str 所有权、一参 get 未命中
-> 语义裁决、解释器边角），其余仍用户门控（P7、PROPOSALS）。
+> **换客户端第一站 = §3.37（2026-11-26 续）**：内存安全轮，全门禁绿
+> （ir 33/33、ll 32/32×2 含 verifier、语义门禁 231、ASan 门禁 124 +
+> 编译器 ASan 门禁 34）。
+> §3.36 的"70 探针 ASan 零报告"**作废**（当时没有插桩，见 §3.37）。
+> §四 顶部：`upper/lower` 的 Unicode 边界裁决、rs 字母表缺口、ir2c
+> str 所有权、一参 get 未命中语义裁决，其余仍用户门控。
 
 ## 一、已提交状态
 
@@ -1447,7 +1451,9 @@ generic `conv_dyn_for` 与推导式的 dict 监视 + 活动长度、动态 for �
 setdefault 读交出 `str_copy`。
 
 **验证**：全门禁绿——ir 33/33×2、ll 32/32×2（含 verifier）、pytest
-**1636/2**、m5 C 后端 benchmark 全量对拍。70 探针 ASan 零报告。
+**1636/2**、m5 C 后端 benchmark 全量对拍。~~70 探针 ASan 零报告~~
+——**作废**：当时对 `.ll` 直接 `clang -fsanitize=address`，没有任何
+插桩（§3.37）。
 
 **既知残差（未修，入 §四）**：rs 字母表缺口（typed dict 参数/循环、
 typed 槽推导式遮蔽、模块级 str `+=`、整只 dss print——均 bail）；
@@ -1462,13 +1468,92 @@ docs/semantics.md，解释器仍回 None——平面分歧，待裁决）；set/
 `name 'e' is not defined`；`bool()/all()/sorted()/zip()` 重写成不
 存在的 `_builtin_*`。**教训 11-13 见 §六。**
 
+## 三点三十七、内存安全轮：真 ASan 与编译器自身的崩溃（2026-11-26 续）
+
+**起因**：语义轮收口后 `gates-last-failure.log` 里留着一条
+`regen_rust_prefix: siluc1 failed on jsonparse_json.si: b''`，当时
+归为"与重建竞态、重跑即绿"。复核时去查
+`~/Library/Logs/DiagnosticReports/`——**5 份 `siluc1` 段错误报告**
+（01:49、02:06×3 在 `_typed`，02:35 在 `pystr_cp_entry`）。不是竞态：
+编译器二进制自己在崩，崩不崩取决于堆布局。
+
+**先修验证工具**：对 `.ll` 直接 `clang -fsanitize=address` **一个函数
+都不插桩**。对照实验：同一段越界读，C 源码输入报
+heap-buffer-overflow，`.ll` 输入静默通过（-O0/-O1/-O2 皆然，二进制
+里零个 `__asan_report` 符号）。机制：clang 只插桩带 `sanitize_address`
+属性的函数，C 输入由前端自动加，IR 输入没有。手工给 `define` 加上
+属性后立刻报错。`tools/asan_run.py` 把这件事做成工具（加属性 +
+`malloc(2)` 读第三字节的对照）。
+
+**修复清单**（每条都是真 ASan 先复现、修后干净、CPython 对拍）：
+
+| 根因 | 现象 | 修法 |
+|---|---|---|
+| `pystr_cp_entry` 构表循环为写哨兵多转一轮，`load data[bytes]` | 装箱 str 的 `len`/下标/切片在精确大小缓冲（`s[i]`、切片结果）末尾后读 1 字节；02:35 那次编译器崩溃 | 与计数同一谓词的一次有界逐字节扫描（`o < bytes`），哨兵 `offs[cp] = len` |
+| `rawstr_cp_off_at` 同一模式（按首字节长度跳跃 + 多一轮） | typed str 码点缓存：`utf8_probe.si` 200 字节缓冲末尾后读 1 字节 | 同上；顺带消除畸形字节下与表头 cp 的失配 |
+| `rawstr_append` 的 realloc 可能在拷贝之下释放源 | `s = s + s`（窄窗原地追加把 s 自己的缓冲当源）：use-after-free，12 次加倍后 `s[-1]` 为空 | 源在目标缓冲内时不 realloc，分配-拷贝，旧缓冲在追加拷贝之后才释放（第一版在拷贝前就 free，门禁探针当场抓回） |
+| `_emit_sub_search` 命中后直接返回字节偏移 | `find/rfind/index` 在非 ASCII 串上返回字节偏移：`"aé中bñc".find("中")` 得 3，`t[t.find("中")]` 取到 `b` | 返回 `pyobj_utf8_cp_count(s, at)`；ir2c 的 C 版同修 |
+| `_field_slot` 用 `str(inst_ptr.type) == "i64"` 判 i64 槽 | **自举转换器**对 `it: Rec = items[i]; it.ret = v` 必崩（10-25 起）；`selfhost/ir2c.si` 因此从未被 siluc1 编过 | 缓存类型比较 `inst_ptr.type == ir.IntType(64)` |
+| 文本渲染器对空操作数直接解引用 | 上面那条崩在 `_instr_body`，无任何信息 | `_instr_body` 响亮 `ValueError`（两份锁定孪生同步） |
+| 动态方法表把 void 调用结果当值返回；typed/dynamic `append` 返回列表自身 | `r = d.clear()` 生成 `store void`（clang 报内部错误）；`xs.append(x)` 的值是列表 | 按方法名绑定 None（`_NONE_RESULT_METHODS`）。**不能读表里的 `has_result`**：那一列从未被读取（return 的两个分支原本相同），对 startswith/endswith 也是 False——读了之后 `startswith` 返回 None，转换器自己的 `_is_inst` 失效，6 个语料文件在自举平面 `KeyError` |
+
+**为什么实例属性赋值那条一个多月没人发现**：`_field_slot` 的写法
+本意是双平面通用（注释写明 isinstance 不可用），但孪生里
+`str(类型记录)` 恒为 `"None"`；语料里没有这个形状，而唯一含它的
+`selfhost/ir2c.si` 不在 ll 语料里（第 36 项是 `ir_interp.si`）——
+ir2c 一直只由 Python 平面构建。现在：语义门禁
+`instance_word_local_field_store`（双平面 + 解释器）；修后 siluc1 编
+ir2c.si 与 Python 平面逐字节一致（2.68MB）。rs 神谕对它是响亮 bail
+（`attribute assign base`），故不进跨平面语料。
+
+**门禁**：`tests/test_asan_runtime.py`（124 项，本地 53s，fast 层）=
+语义用例源码 × 两平面 + 11 个内存形状 + 9 个语料文件（conv 平面）。
+**对修复前的编译器与源码实测**：三个代表性程序在两平面上全部被标
+（2× heap-buffer-overflow、1× heap-use-after-free）。
+`tests/test_asan_compiler.py`（34 项，约 3 分钟，慢层——ci.yml 的
+gates 作业；fast 作业 ignore）：**编译器二进制自身**跑真 ASan 编全部
+语料 + `selfhost/ir2c.si` + 自己的转换器（`silu_conv_main.si`，12K 行
+→ 19.7MB IR，31s），无报告、rc=0、与普通二进制逐字节一致。这也是
+唯一一道让自举转换器去编 ir2c.si 的门禁（教训 17 的盲区由它闭合）。
+
+**语料**：`benchmarks/str_methods.si` 追加非 ASCII 的 find/index
+（四实现：两转换器平面、rs、ir2c + m5 对拍 CPython）。`print(s[i])`
+与 `rfind` 未入板：rs 对前者的打印分派本就与 Python 平面不同
+（装箱 `pyobj_print` vs `printf`），对后者 bail。
+
+**电池**（真 ASan，/tmp/silu_audit/asan/battery.py，一次性脚本）：
+语义 63×2、语料 32×2、探针 867×2（CLEAN 678/680，189/187 个被
+正确拒绝）——**零报告**。全量 pytest **1810/2**（隔离 worktree
+wtI，含两道 ASan 门禁）。注意直接 `siluc1 <
+selfhost/typed_codegen_flat.si` 会报 `NameError: name 'llvmlite' is
+not defined`（stdin 源没有目录，前端解析不了 import），不是回归；
+要编转换器请从 selfhost/ 目录喂包装源 `silu_conv_main.si`。
+
+**既知残差（未修，入 §四）**：`upper()/lower()` 只映射 ASCII（已记入
+docs/semantics.md §2，Unicode 大小写表需裁决）；`print(a, b)` 逐个
+求值并立即输出——后面的参数改了前面的可变参数时与 CPython 不同
+（解释器同 CPython；已记入 semantics.md §3.6，属设计取舍）；rs 字母表
+缺口扩至函数内实例属性赋值、`str.rfind`、`print(s[i])`；ir2c 的
+`d[k] = v` 存储别名；`strip(chars)` 的拒绝消息对 typed str 误称
+"dynamic values"；typed dict 的 `update`、动态 list 的
+`extend/insert/remove/reverse/sort` 不支持（响亮）。
+
 ## 四、其余 TODO（优先级序）
 
-- [ ] **rs 神谕字母表**（§3.36 残差）：typed dict 作函数参数
+- [ ] **`upper()` / `lower()` 的 Unicode 边界需裁决**（§3.37）：现在只
+  映射 ASCII 字母，非 ASCII 字母原样保留（`"é".upper()` 仍是 `"é"`；
+  已记入 docs/semantics.md §2）。三条路：维持文档化边界；引入
+  Unicode 简单大小小写映射表（约 1,400 对，运行时体积 + 每 str
+  方法族四平面/rs 前缀重钉）；或在遇到有大小写映射的非 ASCII 码点
+  时响亮 panic。`"ß".upper()` 的多字符展开 CPython 也与简单映射不同。
+- [ ] **rs 神谕字母表**（§3.36/§3.37 残差）：typed dict 作函数参数
   （`param type in f` bail）、typed dict 循环（按 entry 走 + 监视）、
-  typed 槽的推导式遮蔽、模块级 str `+=`、整只 dss dict 的 print。
-  每项先拿 `silu-conv` 单跑最小探针看 bail 位置；补齐后把对应形状
-  入钉板（否则这些能力只受语义门禁保护、rs 不参与）。
+  typed 槽的推导式遮蔽、模块级 str `+=`、整只 dss dict 的 print；
+  §3.37 新增：**函数内实例属性赋值**（`attribute assign base` bail）、
+  `str.rfind`（`method base type` bail）、`print(s[i])`（rs 直接
+  `printf`，Python 平面装箱 `pyobj_print`——不是 bail，是未被语料钉住
+  的字节分歧）。每项先拿 `silu-conv` 单跑最小探针看 bail 位置；补齐后
+  把对应形状入钉板（否则这些能力只受语义门禁保护、rs 不参与）。
 - [ ] **ir2c 的 str 所有权**：`d[k] = v` 存的是 v 的指针（应拷贝）；
   `str_concat` 对 `f() + "x"` 类左操作数每次新拷贝（调用结果是
   独占的，可原地）。正确性优先于性能，前者是真别名 bug。
@@ -1611,3 +1696,36 @@ git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
    文件过 ir2c；语料里每个形状 rs 都要能镜像；语义测试的源码字符串
    写错缩进就是死循环（`i += 1` 顶格，三平面一起"超时"，差点当成
    编译器死循环 bug）。先用多平面探针脚本过一遍再入表。
+14. （2026-11-26 内存安全轮）**验证工具本身要先被验证**：对 `.ll`
+   直接 `clang -fsanitize=address` 零插桩、零提示——"ASan 零报告"
+   写进 STATUS 之前没有任何一步证明过探针真的被检查。任何"干净"
+   结论都要配一个**已知会脏的对照**（`asan_run.control()`）。
+15. （同轮）**"重跑即绿的瞬态失败"先查崩溃报告**：
+   `~/Library/Logs/DiagnosticReports/siluc1-*.ips` 直接给出信号、
+   地址与出错函数。一条 `b''` 的空输出失败被当成门禁竞态埋掉，
+   背后是编译器二进制 5 次段错误。
+16. （同轮）**孪生里没有 Python 的反射**：`str()`/`type()`/
+   `isinstance(x, 某工厂函数)` 在自举平面上的含义与 CPython 不同。
+   类型判断一律走两平面都成立的比较（`x.type == ir.IntType(64)`，
+   类型对象两边都有缓存）。`_field_slot` 的 `str(inst_ptr.type)`
+   在 Python 平面正确、在孪生里恒假，对一类程序必崩了一个月。
+17. （同轮）**门禁的盲区 = 只由 Python 平面构建的文件**：
+   `selfhost/ir2c.si`、`ir_interp.si` 等从不经过 `siluc1`；"自举
+   编译器编不了自己的 C 后端"没有任何门禁看得见。新形状入了
+   语义门禁（双平面）；是否把 ir2c.si 纳入 ll 语料待定（rs 会 bail）。
+18. （同轮）**`silu/llvmlite_text.py` 与 `selfhost/llvmlite.si` 是锁定
+   孪生**：只改一侧等于没改，且 `.py` 不在 siluc1 依赖表里连重建都
+   不触发。我加的空操作数守卫两轮"无效"就是这个原因。
+19. （同轮）**闲置的标志位不要顺手赋予含义**：方法表的 `has_result`
+   两分支原本相同、从未被读取；我读它来决定"返回 None"，结果
+   `startswith` 也变成 None，而转换器自己的 `_is_inst` 靠
+   `startswith` 判实例——6 个语料文件在自举平面 `KeyError`，Python
+   平面却正常。改一个分派条件前先列出它的全部取值与使用者。
+20. （同轮）**新门禁自身的 bug 会伪装成编译器回归**：ASan 编译器对
+   转换器包装源报 `unknown function 'conv_convert'`，实测是测试没把
+   `cwd=selfhost` 传给被测进程（stdin 源解析不了 import）。先用同样
+   的输入在 shell 里手工复现、对齐 cwd/环境，再怀疑被测对象。
+21. （同轮）**语义用例也是程序**（教训 13 的又一形态，两次）：
+   `clear()` 之后又去 `pop("a")`（CPython 自己 KeyError）；
+   `print(d.setdefault(..), d, d.pop(..), d)` 踩到 print 逐个输出的
+   设计边界。用例先在四平面脚本里过一遍再入表——这条已经写过。

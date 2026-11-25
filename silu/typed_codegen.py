@@ -1750,6 +1750,8 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         fb_build = f.append_basic_block("cpo_build")
         fb_wcond = f.append_basic_block("cpo_wcond")
         fb_wbody = f.append_basic_block("cpo_wbody")
+        fb_wstore = f.append_basic_block("cpo_wstore")
+        fb_wadv = f.append_basic_block("cpo_wadv")
         fb_wdone = f.append_basic_block("cpo_wdone")
         fb_ins = f.append_basic_block("cpo_insert")
         builder = ir.builder_(fb_entry)
@@ -1824,6 +1826,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         offs_buf = builder.call(
             self.malloc, [builder.mul(builder.add(s_cp, one64), ir.const_(i64, 8))]
         )
+        # One bounded byte walk with the count's own predicate (the
+        # header's cp is the number of bytes that are not continuation
+        # bytes): exactly cp entries for ANY content, the sentinel is
+        # offs[cp], and no byte past data[len) is read. The previous
+        # walk jumped by each lead byte's advertised length and came
+        # round once more for the sentinel, loading data[len] - one
+        # byte past the exact-size buffer rawstr_new_copy hands out.
         wi_ptr = builder.alloca(i64, None, 'cpo_wi')
         wo_ptr = builder.alloca(i64, None, 'cpo_wo')
         builder.store(zero64, wi_ptr)
@@ -1832,22 +1841,37 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.branch(fb_wcond)
 
         builder.position_at_end(fb_wcond)
-        wi = builder.load(wi_ptr)
+        wo = builder.load(wo_ptr)
         builder.cbranch(
-            builder.icmp_signed("<=", wi, s_cp), fb_wbody, fb_wdone
+            builder.icmp_signed("<", wo, s_len), fb_wbody, fb_wdone
         )
 
         builder.position_at_end(fb_wbody)
-        wo = builder.load(wo_ptr)
-        builder.store(wo, builder.gep(builder.bitcast(offs_buf, i64p), [wi]))
-        lead_b = builder.load(builder.gep(s_data_b, [wo]))
-        builder.store(
-            builder.add(wo, self._emit_seq_len(builder, lead_b)), wo_ptr
+        is_lead = builder.icmp_signed(
+            "!=",
+            builder.and_(
+                builder.load(builder.gep(s_data_b, [wo])),
+                ir.const_(ir.IntType(8), 0xC0),
+            ),
+            ir.const_(ir.IntType(8), 0x80),
         )
-        builder.store(builder.add(wi, one64), wi_ptr)
+        builder.cbranch(is_lead, fb_wstore, fb_wadv)
+
+        builder.position_at_end(fb_wstore)
+        builder.store(
+            wo, builder.gep(builder.bitcast(offs_buf, i64p), [builder.load(wi_ptr)])
+        )
+        builder.store(builder.add(builder.load(wi_ptr), one64), wi_ptr)
+        builder.branch(fb_wadv)
+
+        builder.position_at_end(fb_wadv)
+        builder.store(builder.add(wo, one64), wo_ptr)
         builder.branch(fb_wcond)
 
         builder.position_at_end(fb_wdone)
+        builder.store(
+            wo, builder.gep(builder.bitcast(offs_buf, i64p), [builder.load(wi_ptr)])
+        )
         builder.branch(fb_ins)
 
         builder.position_at_end(fb_ins)
@@ -1996,8 +2020,12 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.ret(builder.bitcast(struct_ptr, i8p))
 
         # void rawstr_append(i8* s, i8* data, i64 len)
-        # Grow in place with doubling; caller guarantees `data` does not
-        # point into s's buffer (self-append goes through rawstr_concat).
+        # Grow in place with doubling. `data` may point into s's own
+        # buffer (`s = s + s` appends s to itself) and realloc is then
+        # free to release the buffer the copy below reads from, so that
+        # case grows by allocate + copy instead and releases the old
+        # buffer only after the appended bytes are in. Correct for any
+        # arguments, the way memmove is against memcpy.
         self.rawstr_append = ir.func_(
             self.module,
             ir.FunctionType(ir.VoidType(), [i8p, i8p, i64], False), 'rawstr_append',
@@ -2005,10 +2033,20 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
         entry = self.rawstr_append.append_basic_block("entry")
         grow_block = self.rawstr_append.append_basic_block("grow")
+        move_block = self.rawstr_append.append_basic_block("grow_move")
+        realloc_block = self.rawstr_append.append_basic_block("grow_realloc")
         copy_block = self.rawstr_append.append_basic_block("do_append")
+        free_block = self.rawstr_append.append_basic_block("free_moved")
+        done_block = self.rawstr_append.append_basic_block("append_done")
         builder = ir.builder_(entry)
         s_arg, data_arg, add_len_arg = self.rawstr_append.args
         struct_ptr = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        # the buffer left behind when a self-append grows by copy: it is
+        # still the source of the copy below, so it is released only
+        # after that copy (null on every other path)
+        null_i8p = ir.const_(i8p, None)
+        stale_ptr = builder.alloca(i8p, None, 'app_stale')
+        builder.store(null_i8p, stale_ptr)
         old_len = _rawstr_load_len(builder, struct_ptr)
         old_cap = builder.load(_struct_gep(builder, struct_ptr, 1))
         new_len = builder.add(old_len, add_len_arg)
@@ -2020,6 +2058,29 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         enough = builder.icmp_signed(">=", doubled, new_len)
         new_cap = builder.select(enough, doubled, new_len)
         old_data = _rawstr_load_data(builder, struct_ptr)
+        # integer arithmetic, not gep: an immortal block's cap is -1
+        old_base = builder.ptrtoint(old_data, i64)
+        src_base = builder.ptrtoint(data_arg, i64)
+        inside = builder.and_(
+            builder.icmp_signed(">=", src_base, old_base),
+            builder.icmp_signed(
+                "<", src_base, builder.add(old_base, old_cap)
+            ),
+        )
+        builder.cbranch(inside, move_block, realloc_block)
+
+        builder.position_at_end(move_block)
+        moved = builder.call(self.malloc, [new_cap])
+        builder.call(
+            self.memcpy,
+            [moved, old_data, old_len, ir.const_(ir.IntType(1), 0)],
+        )
+        builder.store(new_cap, _struct_gep(builder, struct_ptr, 1))
+        builder.store(moved, _struct_gep(builder, struct_ptr, 2))
+        builder.store(old_data, stale_ptr)
+        builder.branch(copy_block)
+
+        builder.position_at_end(realloc_block)
         grown = builder.call(
             self.realloc,
             [old_data, new_cap],
@@ -2044,6 +2105,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.store(
             builder.add(old_cp, add_cp), _struct_gep(builder, struct_ptr, 3)
         )
+        stale = builder.load(stale_ptr)
+        builder.cbranch(
+            builder.icmp_signed("==", stale, null_i8p), done_block, free_block
+        )
+
+        builder.position_at_end(free_block)
+        builder.call(self.free, [stale])
+        builder.branch(done_block)
+
+        builder.position_at_end(done_block)
         builder.ret_void()
 
         # i1 rawstr_eq(i8* a, i8* b)
@@ -8512,10 +8583,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             kind = OBJ
         if kind not in LLVM_KIND_TYPES:
             kind = OBJ
-        if str(inst_ptr.type) == "i64":
-            # instance-list elements ride as i64 words (string compare:
-            # isinstance's type argument must stay a builtin name for
-            # the flattened converter)
+        # instance-list elements ride as i64 words: the word is the
+        # pointer. The cached-type compare of _extract_i64_const, not
+        # str(type): the twin's type records have no __str__, so
+        # `str(inst_ptr.type) == "i64"` was always False on the native
+        # plane, which gep'd the bare i64 - a segfault on every
+        # `it: Rec = items[i]` followed by `it.ret = v` (selfhost/ir2c.si
+        # among them), never seen because no corpus file had the shape.
+        if inst_ptr.type == ir.IntType(64):
             inst_ptr = self.current_builder.inttoptr(
                 inst_ptr, LLVM_KIND_TYPES[INSTANCE]
             )
@@ -11212,9 +11287,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         ):
             # s = s + rhs: the slot owns its buffer and the old value
             # dies here, so append in place (amortized O(1)) instead
-            # of a fresh quadratic copy. A rhs naming s itself goes
-            # through rawstr_concat: append's realloc could move the
-            # buffer out from under its own source.
+            # of a fresh quadratic copy. A rhs naming s itself
+            # (`s = s + s`) appends from s's own buffer: rawstr_append
+            # grows that case by copy, never realloc.
             data_ptr, byte_len, temp = self._rawstr_append_operand(value_node[2])
             slot_value = self._load_var(target)[1]
             self.current_builder.call(

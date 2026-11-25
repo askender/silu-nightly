@@ -80,6 +80,7 @@ __all__ = [
     "_range_len",
     "_range_values",
     "_STR_REJECTED_METHODS",
+    "_NONE_RESULT_METHODS",
     "_BUILTIN_ARITY",
 ]
 
@@ -304,6 +305,18 @@ _BUILTIN_ARITY = {
 # operations (list / dict / set): a STRING receiver that the typed rawstr
 # arms did not handle must never reach them - `count` on a str went to
 # list_count, which read the string box as a list and segfaulted.
+# Boxed methods that mutate and answer None in Python. The boxed
+# dispatch must hand back the None box for them, not the call's result:
+# clear() is void (a stored void was invalid IR) and append() returned
+# the list itself. Decided BY NAME: the table's `has_result` column is
+# False for startswith/endswith too (they answer a raw i1 that gets
+# boxed afterwards), so reading it as "no result" turned those into
+# None and took the converter's own _is_inst (a startswith) down.
+_NONE_RESULT_METHODS = (
+    "clear", "add", "discard", "update", "append",
+    "__setitem__", "__delitem__",
+)
+
 _STR_REJECTED_METHODS = (
     "append", "reverse", "insert", "add", "discard", "items", "keys",
     "values", "update", "setdefault", "copy", "clear", "get", "pop",

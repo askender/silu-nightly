@@ -33,7 +33,7 @@
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
 2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
-**silu 1.25.0（语义轮重钉：容器边迭代边改、推导式作用域、dss 借用语义 + ll 门禁 verifier；1.24.0=oracle 形状补齐/dss 2 参族，1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
+**silu 1.25.0（语义轮重钉：容器边迭代边改、推导式作用域、dss 借用语义 + ll 门禁 verifier；同版追加内存安全轮——码点偏移越界读、`s = s + s` 用后释放、`str.find` 字节偏移、自举转换器对 i64 槽实例属性赋值必崩、真 ASan 门禁；1.24.0=oracle 形状补齐/dss 2 参族，1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
@@ -61,10 +61,12 @@ tools/gates.sh                               # 全门禁一条命令：ruff + IR
 tools/gates.sh --no-pytest                   # 只跑平面门禁（秒~分钟级）
 python3 tools/regen_rust_prefix.py            # 改运行时发射器后重生成 rs 前缀快照（--check 只校验）
 export PATH="$HOME/.cargo/bin:$PATH"        # cargo 常不在默认 PATH
-$PY312 reference/diff_harness.py ir fe rustfe    # 前端 IR 平面，31/31
-$PY312 reference/diff_harness.py ir fe pyir      # 自举前端 vs Python 前端，31/31
-$PY312 reference/diff_harness.py ll conv rustconv # 完整 .ll 平面，30/30
-$PY312 reference/diff_harness.py ll conv pyll     # 自举转换器 vs Python 转换器，30/30
+$PY312 reference/diff_harness.py ir fe rustfe    # 前端 IR 平面，33/33
+$PY312 reference/diff_harness.py ir fe pyir      # 自举前端 vs Python 前端，33/33
+$PY312 reference/diff_harness.py ll conv rustconv # 完整 .ll 平面，32/32
+$PY312 reference/diff_harness.py ll conv pyll     # 自举转换器 vs Python 转换器，32/32
+$PY312 -m pytest tests/test_asan_runtime.py -q   # 内存安全门禁（真 ASan，约 1 分钟）
+$PY312 -m pytest tests/test_asan_compiler.py -q  # 编译器自身跑真 ASan（慢层，约 3 分钟）
 ./siluc1 < benchmarks/fib.si > /tmp/ref.ll                  # Python 平面参考输出
 reference/rust/target/debug/silu-conv benchmarks/fib.si > /tmp/rust.ll
 cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
@@ -82,6 +84,38 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 
 ## 当前状态锚点（2026-11-26）
 
+- **内存安全轮（2026-11-26 续，STATUS §3.37）**：追查
+  `gates-last-failure.log` 里一条被我当成"门禁竞态"的瞬态失败，
+  发现 macOS 崩溃报告目录里有 **5 份 `siluc1` 段错误**。真 ASan
+  （`tools/asan_run.py`）逐个定位，全部修到根因——
+  ①`pystr_cp_entry`/`rawstr_cp_off_at` 的码点偏移表为写哨兵多转一轮，
+  读 `data[len]` 越界 1 字节（缓冲恰在分配区末尾时段错误）→ 改成
+  与计数同一谓词的一次有界逐字节扫描；②`rawstr_append` 的 realloc
+  可能在拷贝之下释放源缓冲（`s = s + s`：use-after-free + 错误
+  尾部）→ 源在自身缓冲内时走"分配-拷贝-追加完再释放"；③`str.find/
+  rfind/index` 返回**字节偏移**而非码点下标（非 ASCII 串上
+  `s[s.find(x)]` 取错字符；四处实现同修：两转换器平面、rs 经前缀、
+  ir2c）；④**自举转换器对"typed 实例列表元素 + 属性赋值"必崩**
+  （10-25 起）：`_field_slot` 的 `str(inst_ptr.type) == "i64"` 在孪生
+  里恒假（孪生的类型记录没有 `__str__`），裸 i64 字被当指针用；
+  `selfhost/ir2c.si` 正是这形状，从未被 siluc1 编过而无门禁覆盖
+  → 改缓存类型比较；文本渲染器遇空操作数响亮报错；⑤变更方法的
+  返回值：`r = d.clear()` 的 void store（非法 IR）、`xs.append(x)`
+  返回列表自身 → 绑定 None（按方法名判定 `_NONE_RESULT_METHODS`；
+  方法表的 `has_result` 列从未被读取，对 startswith/endswith 也是
+  False，读它会把转换器自己的 `_is_inst` 拖垮）。
+  **此前所有"ASan 零报告"都是空泛的**：clang 只插桩带
+  `sanitize_address` 属性的函数，`.ll` 输入没有这个属性——`clang
+  -fsanitize=address x.ll` 链接了运行时却什么都不检查。新门禁
+  `tests/test_asan_runtime.py`（124 项：语义用例 × 双平面 + 内存形状
+  + 语料，约 1 分钟，fast 层）与 `tests/test_asan_compiler.py`（34 项：
+  **编译器二进制自身**跑真 ASan 编全部语料 + ir2c.si + 自己的转换器，
+  无报告、rc=0、与普通二进制逐字节一致；慢层，约 3 分钟，CI 的
+  gates 作业）——都先给每个 `define` 加属性，再用一个已知越界读证明
+  工具链有效；对修复前的代码实测会红。前缀 422,537B。
+  **已文档化的边界**：`upper()/lower()` 只映射 ASCII（非 ASCII 字母
+  原样），Unicode 大小写表待裁决；`print(a, b)` 逐个求值并立即输出
+  （后面的参数改了前面的可变参数时与 CPython 不同，解释器同 CPython）。
 - **语义轮（2026-11-26，STATUS §3.36）**：304 探针扫出的"门禁全绿
   但答案错/崩"的一批根因修复，全部先 CPython 对拍再动手——
   ①**容器边迭代边改**：typed dict 循环改按 entry 数组走（插入序，
@@ -104,10 +138,11 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   ⑥自举前端 `hoist_module` 漏了 nested_hoist 的 isinstance 守卫，
   模块级 `h.n = 5` 直接崩（已钉 record_global.si）。
   语料 33 文件（selfhost/comp_unpack.si）；门禁 ir 33/33、ll 32/32
-  （含 verifier）、语义门禁 217（tests/test_semantics_vs_cpython.py，
-  Python 平面 + 自举平面各跑一遍）。**rs 神谕的字母表缺口**（一律
-  bail，不是错误字节）：typed dict 作函数参数、typed dict 循环、
-  typed 槽的推导式遮蔽、模块级 str `+=`、整只 dss dict 的 print。
+  （含 verifier）、语义门禁 tests/test_semantics_vs_cpython.py
+  （Python 平面 + 自举平面各跑一遍，现 231 项）。**rs 神谕的字母表
+  缺口**（一律 bail，不是错误字节）：typed dict 作函数参数、typed
+  dict 循环、typed 槽的推导式遮蔽、模块级 str `+=`、整只 dss dict
+  的 print、函数内实例属性赋值、`str.rfind`、`print(s[i])`。
 - **oracle 形状补齐轮全收口（2026-11-22 深夜，e74c38a→6ce0680）**：
   §3.32 五项全部落地——①rs dss 2 参族（get/pop/setdefault tail PStr
   臂 + py 求值顺序对齐：pop/get 键先、setdefault 默认值元组先）②rs
@@ -409,6 +444,19 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 - **borrowed rawstr**：`_mark_borrowed_str` 登记的结果不被语句释放、
   赋值时拷贝；每个语句开头清表。所有其余 RAWSTR 表达式结果都视为
   "新鲜临时"——新增返回容器内部指针的读路径必须登记。
+- **码点偏移表 = 一次有界逐字节扫描**：谓词与计数函数相同
+  (`(b & 0xC0) != 0x80`)，循环条件是字节下标 `< len`，哨兵自然落在
+  `offs[cp]`。不要按首字节声明的长度跳跃（畸形字节下与计数失配），
+  更不要为写哨兵多转一轮（读 `data[len]` 越界）。
+- **`rawstr_append` 对任意参数正确**：源字节可以落在目标自己的缓冲
+  里（`s = s + s`），此时不 realloc 而是分配-拷贝，旧缓冲在追加拷贝
+  完成之后才释放。调用方不需要再为自追加绕道 concat。
+- **SSA 值的类型判断用缓存类型比较**：`x.type == ir.IntType(64)`。
+  **不要** `str(x.type)`（孪生的类型记录没有 `__str__`，恒为
+  `"None"`），**不要** `x.type.kind`（真实 llvmlite 的 PointerType
+  没有这个属性），**不要** `isinstance(x.type, ir.IntType)`（文本层的
+  IntType 是工厂函数）。`_field_slot` 曾因第一种写法在自举平面上
+  把裸 i64 当指针用了一个月。
 
 ## 已知坑
 
@@ -439,3 +487,16 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   脚本里过一遍再入表。
 - gates.sh 失败时把完整 pytest 输出留在 `gates-last-failure.log`
   （*.log 已忽略）；屏幕上只有最后 25 行，大面失败时要看这个文件。
+  **日志里的一条瞬态失败不要靠重跑放过去**：先看
+  `~/Library/Logs/DiagnosticReports/` 有没有 `siluc1-*.ips`——那是对
+  "竞态"的证伪，5 份崩溃报告就是这么被当成重跑即绿埋掉的。
+- **`clang -fsanitize=address x.ll` 不检查任何东西**：clang 只插桩带
+  `sanitize_address` 属性的函数，IR 输入没有。要用
+  `tools/asan_run.py`（加属性 + 已知越界读对照）。报告时 macOS 的
+  atos 符号化会挂几分钟——先 `symbolize=0` 跑，再事后 `atos -o`。
+- **`silu/llvmlite_text.py` 与 `selfhost/llvmlite.si` 是手工保持逐
+  字节相同的锁定孪生**（`tests/test_llvmlite_text.py` 锁）。只改
+  Python 一侧对 `siluc1` 毫无作用——它编的是 `.si`，而且 `.py` 不在
+  siluc1 的依赖表里，连重建都不会触发。改完 `cp` 过去再 regen。
+- **`str(记录实例)` 在 Silu 里是 `"None"`**（装箱后非标量走
+  `pyobj_str_conv` 的空盒），不是类名或地址。

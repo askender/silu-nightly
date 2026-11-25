@@ -579,6 +579,8 @@ def _rstrip(s):
 
 
 def instr_str(i):
+    if i is None:
+        raise ValueError("llvmlite text: a block holds a null instruction")
     body = _instr_body(i)
     if i.has_result:
         return _rstrip(_quote_ref("%", i.name) + " = " + body)
@@ -603,6 +605,32 @@ def _typed(v):
 
 def _instr_body(i):
     s = i.style
+    # a null operand is a converter bug: name it instead of dereferencing
+    # null (the native twin segfaulted with no hint of which instruction
+    # it was rendering). br/cbr/switch operands are blocks, not values.
+    for _o in i.operands:
+        if _o is None:
+            raise ValueError(
+                "llvmlite text: null operand in " + i.opname + " (" + s + ")")
+    if (s == "plain" or s == "icmp" or s == "fcmp" or s == "cast"
+            or s == "load" or s == "store" or s == "call" or s == "select"
+            or s == "ev" or s == "iv" or s == "alloca"):
+        for _o in i.operands:
+            if _o.type is None:
+                raise ValueError(
+                    "llvmlite text: operand without a type in " + i.opname)
+        if i.type is None:
+            raise ValueError(
+                "llvmlite text: no result type in " + i.opname)
+    if s == "call" and (i.callee is None or i.callee.ftype is None
+                        or i.callee.ftype.ret is None):
+        raise ValueError("llvmlite text: null callee in a call")
+    if (s == "gep" or s == "alloca") and i.target_ty is None:
+        raise ValueError("llvmlite text: null target type in " + i.opname)
+    if s == "gep" and (i.pointer is None or i.pointer.type is None):
+        raise ValueError("llvmlite text: null pointer in a getelementptr")
+    if s == "ret" and i.value is not None and i.value.type is None:
+        raise ValueError("llvmlite text: null type in a ret value")
     if s == "plain":
         parts = []
         for op in i.operands:

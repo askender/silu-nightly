@@ -790,7 +790,12 @@ class PyobjRuntimeMixin:
         builder.cbranch(same, hit_block, step_block)
 
         builder.position_at_end(hit_block)
-        builder.ret(builder.call(self.create_int, [at]))
+        # the scan is over BYTES, but a str position is a code point
+        # index like len(s) and s[i]: the byte offset came back as the
+        # answer, so `s[s.find(x)]` read the wrong character on any
+        # string with a multi-byte character before the match
+        cp_at = builder.call(self.pyobj_utf8_cp_count, [s_chars, at])
+        builder.ret(builder.call(self.create_int, [cp_at]))
 
         builder.position_at_end(step_block)
         if from_right:
@@ -1989,6 +1994,8 @@ class PyobjRuntimeMixin:
         qg = pf2.append_basic_block("pce_build")
         qw_c = pf2.append_basic_block("pce_wcond")
         qw_b = pf2.append_basic_block("pce_wbody")
+        qw_s = pf2.append_basic_block("pce_wstore")
+        qw_a = pf2.append_basic_block("pce_wadv")
         qw_d = pf2.append_basic_block("pce_wdone")
         qi = pf2.append_basic_block("pce_insert")
         builder = ir.builder_(qe)
@@ -2058,6 +2065,15 @@ class PyobjRuntimeMixin:
             [builder.mul(builder.add(q_cp2, one64), ir.const_(i64, 8))],
         )
         q_offs64 = builder.bitcast(q_offs2, ir.PointerType(i64))
+        # One bounded byte walk with the count's own predicate (a code
+        # point starts at a byte that is not a continuation byte): it
+        # lands on exactly cp entries for ANY content, the sentinel is
+        # offs[cp], and no byte past data[bytes) is ever read. The
+        # previous walk jumped by each lead byte's advertised length
+        # and came round once more for the sentinel, loading
+        # data[bytes] - one byte past an exact-size buffer (boxed s[i]
+        # and slice results). Harmless until the buffer ended a malloc
+        # region: SIGSEGV in the compiler binary itself.
         q_wi = builder.alloca(i64, None, 'pce_wi')
         q_wo = builder.alloca(i64, None, 'pce_wo')
         builder.store(zero64, q_wi)
@@ -2065,22 +2081,33 @@ class PyobjRuntimeMixin:
         builder.branch(qw_c)
 
         builder.position_at_end(qw_c)
-        q_w = builder.load(q_wi)
+        q_o = builder.load(q_wo)
         builder.cbranch(
-            builder.icmp_signed("<=", q_w, q_cp2), qw_b, qw_d
+            builder.icmp_signed("<", q_o, q_bytes), qw_b, qw_d
         )
 
         builder.position_at_end(qw_b)
-        q_o = builder.load(q_wo)
-        builder.store(q_o, builder.gep(q_offs64, [q_w]))
-        q_lead = builder.load(builder.gep(q_data, [q_o]))
-        builder.store(
-            builder.add(q_o, self._seq_len_inline(builder, q_lead)), q_wo
+        q_lead = builder.icmp_signed(
+            "!=",
+            builder.and_(
+                builder.load(builder.gep(q_data, [q_o])),
+                ir.const_(ir.IntType(8), 0xC0),
+            ),
+            ir.const_(ir.IntType(8), 0x80),
         )
-        builder.store(builder.add(q_w, one64), q_wi)
+        builder.cbranch(q_lead, qw_s, qw_a)
+
+        builder.position_at_end(qw_s)
+        builder.store(q_o, builder.gep(q_offs64, [builder.load(q_wi)]))
+        builder.store(builder.add(builder.load(q_wi), one64), q_wi)
+        builder.branch(qw_a)
+
+        builder.position_at_end(qw_a)
+        builder.store(builder.add(q_o, one64), q_wo)
         builder.branch(qw_c)
 
         builder.position_at_end(qw_d)
+        builder.store(q_o, builder.gep(q_offs64, [builder.load(q_wi)]))
         builder.branch(qi)
 
         builder.position_at_end(qi)

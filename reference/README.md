@@ -19,19 +19,25 @@ language's behavior. It exists to answer three questions with data:
 
 - **Pinned version**: silu 1.25.0 (the semantics round: containers that
   change under their own loop, comprehension scope, the borrowed entries
-  of a str-valued dict; re-pins before it were 1.24.0 the oracle shape
-  round, 1.18.0 strbuf, and the original 1.16.2 at commit 87df40f - the
-  calibration report CALIBRATION.md documents that first pin). The Rust
-  code implements THIS behavior, not whatever main does later. No
-  tracking obligation: divergences from future Silu are expected and
-  fine.
+  of a str-valued dict; plus the memory-safety round of the same day -
+  code point offsets read one byte past the buffer, `s = s + s` read
+  freed memory, `find`/`index` answered byte offsets; re-pins before it
+  were 1.24.0 the oracle shape round, 1.18.0 strbuf, and the original
+  1.16.2 at commit 87df40f - the calibration report CALIBRATION.md
+  documents that first pin). The Rust code implements THIS behavior, not
+  whatever main does later. No tracking obligation: divergences from
+  future Silu are expected and fine.
 - **Corpus**: the 33-file parity corpus (25 benchmarks + calc,
   strbuf_probe, utf8_probe, float_edge, comp_unpack, ir_interp, silu_fe
   and the flat converter under selfhost/) for IR comparison; the same
   minus the flat converter for .ll comparison (python plane too slow on
   it). Every shape in the corpus has a Rust mirror; shapes outside it
   bail loudly (typed dict parameters and loops, typed comprehension
-  shadows, a module-level str `+=`, printing a whole str-valued dict).
+  shadows, a module-level str `+=`, printing a whole str-valued dict, an
+  attribute store on an instance read out of a typed list, `str.rfind`).
+  One known byte divergence outside the corpus: `print(s[i])` prints
+  through `printf` here and through a boxed `pyobj_print` on the python
+  planes.
 - **Prefix snapshots**: `const_prefix.ll` / `tagged_prefix.ll` are
   verbatim copies of the runtime part of the .ll. Regenerate with
   `python3 tools/regen_rust_prefix.py` after any runtime emitter change

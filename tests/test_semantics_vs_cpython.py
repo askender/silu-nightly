@@ -288,6 +288,36 @@ MATCH_CPYTHON = [
      "    return 0\n\nd: dict[str, str] = {'a': 'xx'}\nr = get(d, 'a')\n"
      'r += "!"\nput(d, "b", "yy")\nw = "zz"\nput(d, "c", w)\nw += "!!"\n'
      'print(r, d["a"], d["b"], d["c"], w)\n'),
+    # --- a str position is a code point index: find/rfind/index answered
+    # the BYTE offset, so `t[t.find(x)]` read the wrong character on any
+    # string with a multi-byte character before the match
+    ("find_index_codepoint_positions",
+     't: str = "aé中bñc"\nprint(t.find("中"), t.rfind("c"), t.index("b"), t.find("zz"))\n'
+     'k: int = t.find("中")\nprint(t[k], t[t.find("é"):t.rfind("c")], len(t))\n'
+     'print(t.find("ñc"), t.rfind(""), t.find(""), "é".find("é"))\n'),
+    ("find_positions_untyped_and_boxed",
+     'u = "aé中bñc"\nprint(u.find("中"), u[u.rfind("b"):])\n'
+     'def pos(o: object) -> int:\n    return o.find("中")\n'
+     'print(pos("aé中bñc"), "aé中bñc".rfind("中"))\n'),
+    # --- `s = s + s` appends the buffer to itself: rawstr_append's
+    # realloc could release the source under the copy (use-after-free,
+    # a corrupted tail)
+    ("string_doubles_in_place",
+     's: str = "ab"\nfor i in range(12):\n    s = s + s\nprint(len(s), s[0], s[-1], s[1000])\n'
+     'def f() -> str:\n    v = "ab"\n    return v\n'
+     'a = f()\nb = a\na += "c"\nprint(a, b)\n'
+     'c = f()\nd = c\nc = c + c\nprint(c, d)\n'
+     'e: str = "q"\nfor i in range(10):\n    e = e + e[0:1] + e\nprint(len(e), e)\n'),
+    # --- a mutating method answers None in Python: append handed back
+    # the list itself, and the void call behind clear() was stored as a
+    # value (invalid IR that clang rejected with an internal message)
+    ("mutating_methods_return_none",
+     'xs = [1, 2]\nprint(xs.append(3), xs)\n'
+     'xs2: list[int] = [1]\nprint(xs2.append(2), xs2)\n'
+     'xs3: list[str] = ["a"]\nprint(xs3.append("b"), xs3)\n'
+     'd = {"a": 1}\nr = d.clear()\nprint(r, d)\n'
+     'print(d.update({"b": 2}), d)\n'
+     'print(d.setdefault("c", 3), d)\nprint(d.pop("b"), d)\n'),
 ]
 
 # CPython has no implicit record constructor, so these Silu programs are
@@ -304,6 +334,18 @@ MATCH_INTERPRETER = [
      "class H:\n    n: int\n\nh = H(1)\nh.n = 5\nprint(h.n)\n"
      "class P:\n    x: int\n    name: str\n\np = P(1, 'a')\np.x = 7\n"
      "p.name = 'bee'\nprint(p.x, p.name)\n"),
+    # an instance read out of a typed list rides as an i64 word: the
+    # self-hosted converter gep'd that bare word (segfault on every such
+    # program since 2026-10-25 - no corpus file had the shape)
+    ("instance_word_local_field_store",
+     "class Rec:\n    name: str\n    ret: str\n\n"
+     "def update(items: list[Rec]) -> int:\n    changed: int = 0\n    i: int = 0\n"
+     "    while i < len(items):\n        it: Rec = items[i]\n"
+     '        if it.name != "":\n            it.ret = "obj:" + it.name\n'
+     "            changed += 1\n        i += 1\n    return changed\n\n"
+     "xs: list[Rec] = []\nxs.append(Rec('a', ''))\n"
+     "xs.append(Rec('', 'x'))\nxs.append(Rec('c', ''))\n"
+     "print(update(xs))\nfor r in xs:\n    print(r.name, r.ret)\n"),
 ]
 
 # (id, source, stdout before the failure, message fragment). CPython
