@@ -130,12 +130,46 @@ def _canonical_ll(raw):
     return b"\n".join(out).rstrip(b"\n")
 
 
+def _ensure_planes(names):
+    """Never gate on a stale plane binary.
+
+    siluc1 / silu_fe are gitignored build artifacts. Three times a gate
+    ran green on a binary older than its sources: a converter edit the
+    old binary had never seen, so the DIFF it should have raised never
+    showed. Refresh the planes here so the harness is self-contained -
+    sources newer than the binary means rebuild (cargo is a no-op when
+    fresh). Returns False if a rebuild failed.
+    """
+    if names & {"fe", "conv"}:
+        sys.path.insert(0, os.path.join(REPO, "tools"))
+        import selfhost_build as sb
+
+        if "fe" in names:
+            sb.ensure_frontend()
+        if "conv" in names:
+            sb.ensure_siluc()
+    if names & {"rustfe", "rustconv"}:
+        env = dict(os.environ)
+        cargo_bin = os.path.expanduser("~/.cargo/bin")
+        env["PATH"] = cargo_bin + os.pathsep + env.get("PATH", "")
+        r = subprocess.run(["cargo", "build", "-q"],
+                           cwd=os.path.join(REPO, "reference", "rust"),
+                           env=env, capture_output=True, text=True)
+        if r.returncode != 0:
+            print("ERROR: cargo build failed:\n" + r.stderr[-2000:],
+                  file=sys.stderr)
+            return False
+    return True
+
+
 def main():
     if len(sys.argv) != 4 or sys.argv[1] not in ("ir", "ll"):
         print(__doc__)
         return 2
     mode, a_name, b_name = sys.argv[1], sys.argv[2], sys.argv[3]
     a, b = PLANES[a_name], PLANES[b_name]
+    if not _ensure_planes({a_name, b_name}):
+        return 1
     corpus = CORPUS_IR if mode == "ir" else CORPUS_LL
     fails = 0
     for rel in corpus:

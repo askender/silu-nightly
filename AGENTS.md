@@ -55,15 +55,18 @@
 **常用命令**：
 
 ```bash
-export PATH="$HOME/.cargo/bin:$PATH"        # cargo 常不在默认 PATH
-cd reference/rust && cargo build            # 产出 target/debug/{silu-fe,silu-conv}
 cd <仓库根>                                  # 以下命令都必须在仓库根执行
-$PY312 reference/diff_harness.py ir fe rustfe    # 前端 IR 平面，应 21/21
-$PY312 reference/diff_harness.py ll conv rustconv # 完整 .ll 平面，应 20/20
+tools/gates.sh                               # 全门禁一条命令：ruff + IR/ll 四个平面 + 全量 pytest
+                                             #   + GitHub 上 HEAD 的 CI 结论；退出 0 才能称"全门禁绿"
+tools/gates.sh --no-pytest                   # 只跑平面门禁（秒~分钟级）
+export PATH="$HOME/.cargo/bin:$PATH"        # cargo 常不在默认 PATH
+$PY312 reference/diff_harness.py ir fe rustfe    # 前端 IR 平面，31/31
+$PY312 reference/diff_harness.py ir fe pyir      # 自举前端 vs Python 前端，31/31
+$PY312 reference/diff_harness.py ll conv rustconv # 完整 .ll 平面，30/30
+$PY312 reference/diff_harness.py ll conv pyll     # 自举转换器 vs Python 转换器，30/30
 ./siluc1 < benchmarks/fib.si > /tmp/ref.ll                  # Python 平面参考输出
 reference/rust/target/debug/silu-conv benchmarks/fib.si > /tmp/rust.ll
 cmp /tmp/ref.ll /tmp/rust.ll                # 前缀恒定，可整文件比
-./target/debug/silu-fe selfhost/silu_fe.si  # 单独跑 Rust 前端（相对路径）
 SILUC_DAEMON=1 ./siluc prog.si -o prog     # 经 daemon 编译（重复编译 ~0ms）
 ./siluc --serve                            # 常驻编译服务（空闲 300s 自退）
 ```
@@ -72,6 +75,9 @@ SILUC_DAEMON=1 ./siluc prog.si -o prog     # 经 daemon 编译（重复编译 ~0
 目录解析，**一律从仓库根运行**。命令里的 `python3` 一律指
 `/opt/homebrew/Caskroom/miniforge/base/envs/py312/bin/python3`（裸
 homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令）。
+**harness 开跑前按源码 mtime 自动重建 `siluc1`/`silu_fe` 并 `cargo build`**
+——门禁不会再跑在陈旧二进制上。**lint 属于门禁**：`tests/test_lint.py`
+跑的就是 CI 的那条 ruff 命令，pytest 全绿即蕴含 ruff 干净。
 
 ## 当前状态锚点（2026-11-18）
 

@@ -686,20 +686,20 @@ class TypedCallMixin:
                     raw_ptr = self._coerce(src_tv, RAWSTR)[1]
                     temp = raw_ptr
                 struct_ptr = self.current_builder.bitcast(
-                    raw_ptr, llvmlite.PointerType(self.rawstr_struct_type), ''
+                    raw_ptr, ir.PointerType(self.rawstr_struct_type), ''
                 )
                 length = self.current_builder.load(
                     self.current_builder.gep(
                         struct_ptr,
-                        [llvmlite.const_(llvmlite.IntType(32), 0),
-                         llvmlite.const_(llvmlite.IntType(32), 0)], '',
+                        [ir.const_(ir.IntType(32), 0),
+                         ir.const_(ir.IntType(32), 0)], '',
                     ), ''
                 )
                 data = self.current_builder.load(
                     self.current_builder.gep(
                         struct_ptr,
-                        [llvmlite.const_(llvmlite.IntType(32), 0),
-                         llvmlite.const_(llvmlite.IntType(32), 2)], '',
+                        [ir.const_(ir.IntType(32), 0),
+                         ir.const_(ir.IntType(32), 2)], '',
                     ), ''
                 )
                 result = self.current_builder.call(

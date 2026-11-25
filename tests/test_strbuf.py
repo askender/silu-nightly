@@ -99,6 +99,57 @@ def test_buf_ctor_from_buf_copies():
     assert out == "x xy\n"
 
 
+def test_ctor_from_non_const_str_source():
+    # the non-const operand path unpacks len/data from the ALREADY
+    # converted value: one conversion, on the python plane as well as
+    # the self-hosted one (the first cut named the binding module and
+    # only the flat twin resolved it)
+    out = _run_prog(
+        'def get() -> str:\n'
+        '    return "abc"\n'
+        'def main() -> int:\n'
+        '    b: strbuf = strbuf(get())\n'
+        '    b.push("d")\n'
+        '    print(b.to_str())\n'
+        '    return 0\n')
+    assert out == "abcd\n"
+
+
+def test_ctor_from_boxed_str_source():
+    out = _run_prog(
+        'def get() -> object:\n'
+        '    return "abc"\n'
+        'def main() -> int:\n'
+        '    b: strbuf = strbuf(get())\n'
+        '    b.push("d")\n'
+        '    print(b.to_str())\n'
+        '    return 0\n')
+    assert out == "abcd\n"
+
+
+def test_ctor_converts_side_effecting_arg_once():
+    out = _run_prog(
+        'def main() -> int:\n'
+        '    d: dict[str, str] = {"a": "alpha"}\n'
+        '    b: strbuf = strbuf(d.pop("a"))\n'
+        '    b.push("!")\n'
+        '    print(b.to_str(), len(d))\n'
+        '    return 0\n')
+    assert out == "alpha! 0\n"
+
+
+def test_ctor_from_str_parameter():
+    out = _run_prog(
+        'def fill(s: str) -> str:\n'
+        '    b: strbuf = strbuf(s)\n'
+        '    b.push("!")\n'
+        '    return b.to_str()\n'
+        'def main() -> int:\n'
+        '    print(fill("hi"), fill("yo"))\n'
+        '    return 0\n')
+    assert out == "hi! yo!\n"
+
+
 def test_strbuf_plus_string_fails_loudly():
     ll = _convert_safe('def main() -> int:\n'
                        '    b: strbuf = strbuf()\n'
