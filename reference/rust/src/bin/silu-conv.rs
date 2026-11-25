@@ -219,6 +219,18 @@ fn lst_slot(n: &str) -> String {
 }
 
 // pyobj locals ({i32,i8*}* alloca) vs module pyobj globals
+// a fresh pyobj name: a function-local alloca, or - at module level,
+// where names are true globals - a null-initialized module global
+fn reg_py(name: &str) {
+    if IN_FN.with(|v| *v.borrow()) {
+        FN_ALLOCAS.with(|f| f.borrow_mut().push((name.to_string(), "pyobj".into())));
+        FN_PY.with(|f| f.borrow_mut().push(name.to_string()));
+    } else {
+        tail_push(format!("@\"{}\" = global {{i32, i8*}}* null", name));
+    }
+    PY_SLOTS.with(|t| t.borrow_mut().push(name.to_string()));
+}
+
 fn py_slot(n: &str) -> String {
     if FN_PY.with(|m| m.borrow().iter().any(|k| k == n)) {
         format!("%\"{}\"", n)
@@ -465,6 +477,30 @@ impl FnB {
         self.overflow_check(&format!("%\"{}\"", v1),
             "OverflowError: integer overflow in mul");
         format!("%\"{}\"", v0)
+    }
+
+    // mirror of the Python _float_to_int_checked: fptosi is POISON for
+    // NaN, infinity and out-of-range operands (int(1e30) printed
+    // whatever was in the register). NaN first, then the i64 range.
+    fn float_to_int_checks(&mut self, v: &str) {
+        let same = self.nx();
+        self.line(format!("  %\"{}\" = fcmp oeq double {}, {}", same, v, v));
+        let is_nan = self.nx();
+        self.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", is_nan, same));
+        self.overflow_check(&format!("%\"{}\"", is_nan),
+            "ValueError: cannot convert float NaN to integer");
+        let lo = self.nx();
+        self.line(format!(
+            "  %\"{}\" = fcmp oge double {}, 0xc3e0000000000000", lo, v));
+        let hi = self.nx();
+        self.line(format!(
+            "  %\"{}\" = fcmp olt double {}, 0x43e0000000000000", hi, v));
+        let both = self.nx();
+        self.line(format!("  %\"{}\" = and i1 %\"{}\", %\"{}\"", both, lo, hi));
+        let outside = self.nx();
+        self.line(format!("  %\"{}\" = xor i1 %\"{}\", -1", outside, both));
+        self.overflow_check(&format!("%\"{}\"", outside),
+            "OverflowError: cannot convert float to int (out of i64 range)");
     }
 
     // float zero check: fcmp oeq against +0.0 (llvmlite pads hex)
@@ -2177,7 +2213,7 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
             SLICE_NO_COPY.with(|c| *c.borrow_mut() = true);
             let v = eval_mod(b, &init, &fs);
             SLICE_NO_COPY.with(|c| *c.borrow_mut() = false);
-            let r = to_raw_alias(b, v, init.head() == "name");
+            let r = to_raw_alias(b, v, init.head() == "name" || borrows_dict_entry(&init));
             FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "str".into())));
             b.silent(); // value conversion slot (calc: .4 -> .6)
             TEMP_STRS.with(|t| t.borrow_mut().retain(|x| x != &r));
@@ -2464,7 +2500,7 @@ fn conv_ann_assign(b: &mut FnB, st: &Val) {
                 let fsx = F_SLOTS.with(|f| f.borrow().clone());
                 let v = eval_mod(b, &init, &fsx);
                 tail_push(format!("@\"{}\" = global i8* null", name));
-                let r = to_raw_alias(b, v, init.head() == "name");
+                let r = to_raw_alias(b, v, init.head() == "name" || borrows_dict_entry(&init));
                 let oldr = b.nx();
                 b.line(format!(
                     "  %\"{}\" = load i8*, i8** @\"{}\"", oldr, name));
@@ -2609,10 +2645,35 @@ fn conv_str_list_decl(b: &mut FnB, name: &str, rhs: &Val) {
 // plain assign: float/str paths keep their shapes; int target stores the
 // evaluated rhs; an UNDECLARED name auto-registers a global + slot AFTER
 // the rhs eval (fannkuch k/tmp/j evidence)
+// the i8* of an attribute store's base. A module-level instance global
+// (class in GLOBAL_TY) is loaded straight from its slot: eval_mod has no
+// arm for such a name and answered an int load of its own. Emitted AFTER
+// the value conversion, as the Python twin orders it.
+fn module_inst_base(b: &mut FnB, node: &Val, base_global: bool) -> Option<String> {
+    if base_global {
+        let l = b.nx();
+        b.line(format!(
+            "  %\"{}\" = load i8*, i8** @\"{}\"", l, node.get(1).str_of()));
+        return Some(format!("%\"{}\"", l));
+    }
+    match eval_mod(b, node, &F_SLOTS.with(|f| f.borrow().clone())) {
+        Typed::Inst(r) | Typed::Str(r) => Some(r),
+        _ => None,
+    }
+}
+
 fn conv_assign(b: &mut FnB, st: &Val) {
     if st.get(1).head() == "attribute" {
         let target = st.get(1);
-        let cls = expr_class(&target.get(1))
+        // a module-level instance global carries its class in GLOBAL_TY
+        // (a function-local one in FN_TY): `c.x = 5` at module level
+        let base_node = target.get(1);
+        let base_global = base_node.head() == "name"
+            && global_ty_of(&base_node.get(1).str_of()).is_some();
+        let cls = expr_class(&base_node)
+            .or_else(|| if base_global {
+                global_ty_of(&base_node.get(1).str_of())
+            } else { None })
             .unwrap_or_else(|| bail("attribute assign class"));
         let fields = class_fields(&cls)
             .unwrap_or_else(|| bail("attribute assign fields"));
@@ -2628,11 +2689,8 @@ fn conv_assign(b: &mut FnB, st: &Val) {
             // plane's _coerce). The old shape copied twice (copy 1
             // leaked; selfhost/ir_interp.si's err stores exposed it).
             let r = to_raw(b, v);
-            let bv = eval_mod(b, &target.get(1), &fs);
-            let base = match bv {
-                Typed::Inst(r) | Typed::Str(r) => r,
-                _ => bail("attribute assign base"),
-            };
+            let base = module_inst_base(b, &base_node, base_global)
+                .unwrap_or_else(|| bail("attribute assign base"));
             let cp2 = b.nx();
             b.line(format!(
                 "  %\"{}\" = call i8* @\"rawstr_copy\"(i8* {})", cp2, r));
@@ -2661,11 +2719,8 @@ fn conv_assign(b: &mut FnB, st: &Val) {
             }
             _ => bail("attribute assign value"),
         };
-        let bv = eval_mod(b, &target.get(1), &fs);
-        let base = match bv {
-            Typed::Inst(r) | Typed::Str(r) => r,
-            _ => bail("attribute assign base"),
-        };
+        let base = module_inst_base(b, &base_node, base_global)
+            .unwrap_or_else(|| bail("attribute assign base"));
         let gp = b.nx();
         b.line(format!(
             "  %\"{}\" = getelementptr i8, i8* {}, i64 {}", gp, base, off));
@@ -2890,7 +2945,7 @@ fn conv_assign(b: &mut FnB, st: &Val) {
                     }
                     return;
                 }
-                let r = to_raw_alias(b, v, rhs.head() == "name");
+                let r = to_raw_alias(b, v, rhs.head() == "name" || borrows_dict_entry(&rhs));
                 // _declare_var null-stores every new RAWSTR local: one
                 // silent slot between the rhs conversion and the old-value
                 // load (probe lit / jsonparse out evidence). Module
@@ -3128,7 +3183,7 @@ fn conv_assign(b: &mut FnB, st: &Val) {
             let fs = F_SLOTS.with(|f| f.borrow().clone());
             let was_char1 = rhs.head() == "subscript" && rhs.get(2).head() != "slice";
             let v = eval_mod(b, &rhs, &fs);
-            let r = to_raw_alias(b, v, rhs.head() == "name");
+            let r = to_raw_alias(b, v, rhs.head() == "name" || borrows_dict_entry(&rhs));
             if was_char1 { b.silent(); }
             TEMP_STRS.with(|t| t.borrow_mut().retain(|x| x != &r));
             let slot = if is_local_s(&name) { format!("%\"{}\"", name) }
@@ -3804,9 +3859,15 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                 // drop (the assignment family aliases slot storage and is
                 // dispatched by its own arms, never here)
                 if let Typed::Str(r) = rv {
-                    b.silent();
-                    b.line(format!(
-                        "  call void @\"rawstr_free\"(i8* {})", r));
+                    // ... unless it borrows a str-valued dict's entry
+                    // (d.get(k) / d.setdefault(k, v) as a statement):
+                    // the dict keeps that buffer (mirror of
+                    // _mark_borrowed_str)
+                    if !borrows_dict_entry(&st) {
+                        b.silent();
+                        b.line(format!(
+                            "  call void @\"rawstr_free\"(i8* {})", r));
+                    }
                 }
             }
             "while" => {
@@ -3890,11 +3951,8 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                 b.line(format!("  %\"{}\" = alloca i64", idxn));
                 b.silent();
                 b.line(format!("  store i64 0, i64* %\"{}\"", idxn));
-                let lenc = b.nx();
-                b.line(format!(
-                    "  %\"{}\" = call i64 @\"rawlist_len\"(i8* %\"{}\")", lenc, l));
-                b.silent();
                 let rc_lbl = b.uniq_label("riter_cond");
+                b.silent();
                 b.line(format!("  br label %\"{}\"", rc_lbl));
                 let cond_b = b.add_block(&rc_lbl);
                 let rb_lbl = b.uniq_label("riter_body");
@@ -3906,6 +3964,11 @@ fn conv_block(b: &mut FnB, stmts: &[Val], loops: &mut Vec<String>) -> bool {
                 b.pos(cond_b);
                 let idx = b.nx();
                 b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", idx, idxn));
+                // an index walk over the LIVE length (CPython's list
+                // iterator): the length is read every iteration
+                let lenc = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call i64 @\"rawlist_len\"(i8* %\"{}\")", lenc, l));
                 let ic = b.nx();
                 b.line(format!(
                     "  %\"{}\" = icmp slt i64 %\"{}\", %\"{}\"", ic, idx, lenc));
@@ -4748,9 +4811,9 @@ fn conv_rawlist_enum_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
     b.line(format!("  %\"{}\" = alloca i64", idxn));
     b.silent();
     b.line(format!("  store i64 0, i64* %\"{}\"", idxn));
-    let len = b.nx();
-    b.line(format!("  %\"{}\" = call i64 @\"rawlist_len\"(i8* {})", len, list));
     let cond_lbl = b.uniq_label("riter_cond");
+    b.silent();
+    b.line(format!("  br label %\"{}\"", cond_lbl));
     let cond_b = b.add_block(&cond_lbl);
     let body_lbl = b.uniq_label("riter_body");
     let body_b = b.add_block(&body_lbl);
@@ -4758,11 +4821,12 @@ fn conv_rawlist_enum_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
     let incr_b = b.add_block(&incr_lbl);
     let end_lbl = b.uniq_label("riter_end");
     let end_b = b.add_block(&end_lbl);
-    b.silent();
-    b.line(format!("  br label %\"{}\"", cond_lbl));
     b.pos(cond_b);
     let idx = b.nx();
     b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", idx, idxn));
+    // live length, read every iteration (CPython's list iterator)
+    let len = b.nx();
+    b.line(format!("  %\"{}\" = call i64 @\"rawlist_len\"(i8* {})", len, list));
     let more = b.nx();
     b.line(format!("  %\"{}\" = icmp slt i64 %\"{}\", %\"{}\"", more, idx, len));
     b.silent();
@@ -4861,15 +4925,18 @@ fn conv_dyn_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
     let is_enumerate = st.get(2).head() == "call"
         && st.get(2).get(1).head() == "name"
         && st.get(2).get(1).get(1).str_of() == "enumerate";
+    // `for a, b in seq`: each name takes one field of the boxed element
+    let is_unpack = st.get(1).head() == "tuple_unpack" && !is_enumerate;
     let targets: Vec<String> = if st.get(1).head() == "name" {
         vec![st.get(1).get(1).str_of()]
-    } else if st.get(1).head() == "tuple_unpack" && is_enumerate {
+    } else if st.get(1).head() == "tuple_unpack" {
         st.get(1).get(1).items().iter().map(|v| v.str_of()).collect()
     } else {
         bail(&format!("dynamic for target in {}: {:?}",
             CUR_FN.with(|f| f.borrow().clone()), st));
     };
-    if targets.len() != 1 && !(is_enumerate && targets.len() == 2) {
+    if targets.len() != 1 && !(is_enumerate && targets.len() == 2)
+        && !is_unpack {
         bail("dynamic for target arity");
     }
     if !st.get(4).items().is_empty() { bail("dynamic for orelse"); }
@@ -4905,14 +4972,22 @@ fn conv_dyn_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
     b.line(format!(
         "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_iter_keys\"({{i32, i8*}}* {})",
         keys, iter));
+    // mirror of _capture_dict_shape: the key list is a snapshot, a dict
+    // is watched through its own shape (count, slots in use, entries)
+    let dc = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i64 @\"pyobj_dict_count\"({{i32, i8*}}* {})", dc, iter));
+    let du = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i64 @\"pyobj_dict_used\"({{i32, i8*}}* {})", du, iter));
+    let de = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i64 @\"pyobj_dict_entries_bits\"({{i32, i8*}}* {})", de, iter));
     let idxn = b.uniq_label("iter_idx");
     b.reg_names.push(idxn.clone());
     b.line(format!("  %\"{}\" = alloca i64", idxn));
     b.silent();
     b.line(format!("  store i64 0, i64* %\"{}\"", idxn));
-    let len = b.nx();
-    b.line(format!(
-        "  %\"{}\" = call i64 @\"list_length\"({{i32, i8*}}* %\"{}\")", len, keys));
     let cond_lbl = b.uniq_label("iter_cond");
     let cond_b = b.add_block(&cond_lbl);
     let body_lbl = b.uniq_label("iter_body");
@@ -4924,6 +4999,25 @@ fn conv_dyn_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
     b.silent();
     b.line(format!("  br label %\"{}\"", cond_lbl));
     b.pos(cond_b);
+    // mirror of _watch_dict_shape at the loop head, before the bound
+    // test (a mutation in the LAST body still raises, as in CPython)
+    let dw = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i64 @\"pyobj_dict_watch\"({{i32, i8*}}* {}, i64 %\"{}\", i64 %\"{}\", i64 %\"{}\")",
+        dw, iter, dc, du, de));
+    let w_size = b.nx();
+    b.line(format!("  %\"{}\" = icmp eq i64 %\"{}\", 1", w_size, dw));
+    b.overflow_check(&format!("%\"{}\"", w_size),
+        "RuntimeError: dictionary changed size during iteration");
+    let w_churn = b.nx();
+    b.line(format!("  %\"{}\" = icmp eq i64 %\"{}\", 2", w_churn, dw));
+    b.overflow_check(&format!("%\"{}\"", w_churn),
+        "RuntimeError: dictionary modified during iteration");
+    // the length is read every iteration (CPython's list iterator): a
+    // list grows into its own loop
+    let len = b.nx();
+    b.line(format!(
+        "  %\"{}\" = call i64 @\"list_length\"({{i32, i8*}}* %\"{}\")", len, keys));
     let idx = b.nx();
     b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", idx, idxn));
     let more = b.nx();
@@ -4940,16 +5034,32 @@ fn conv_dyn_for(b: &mut FnB, st: &Val, loops: &mut Vec<String>) {
         "  %\"{}\" = call {{i32, i8*}}* @\"list_get\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\")",
         val, keys, key));
     for name in targets.iter().rev() {
-        if !is_py(name) {
-            FN_ALLOCAS.with(|f| f.borrow_mut().push((name.clone(), "pyobj".into())));
-            FN_PY.with(|f| f.borrow_mut().push(name.clone()));
-            PY_SLOTS.with(|f| f.borrow_mut().push(name.clone()));
+        if !is_py(name) && !is_unpack {
+            reg_py(name);
         }
     }
+    if is_unpack {
+        for (t_idx, tname) in targets.iter().enumerate() {
+            let idx_obj = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 {})", idx_obj, t_idx));
+            let part = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_subscript\"({{i32, i8*}}* %\"{}\", {{i32, i8*}}* %\"{}\")",
+                part, val, idx_obj));
+            if !is_py(tname) {
+                reg_py(tname);
+            }
+            b.silent();
+            b.line(format!(
+                "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** {}", part, py_slot(tname)));
+        }
+    } else {
     let value_target = targets.last().unwrap();
     b.silent();
     b.line(format!(
         "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** %\"{}\"", val, value_target));
+    }
     if let Some(counter) = ctr {
         let cl = b.nx();
         b.line(format!(
@@ -5016,6 +5126,44 @@ fn maybe_free_owned(b: &mut FnB, r: &str) {
 }
 
 // module-level walk (main body). Returns fn_defs; globals land in TAIL.
+fn reject_unbound_calls(v: &Val) {
+    if v.head() == "call" {
+        let kwargs = v.get(3).items();
+        if !kwargs.is_empty() {
+            let name = if v.get(1).head() == "name" {
+                v.get(1).get(1).str_of()
+            } else { String::new() };
+            // constructors and dict() bind their own keyword
+            // arguments; print() accepts `end` only
+            let bound = name == "dict"
+                || (!name.is_empty() && is_class(&name))
+                || (name == "print"
+                    && kwargs.iter().all(|k| k.get(0).str_of() == "end"));
+            if !bound {
+                bail(&format!(
+                    "keyword arguments on a call to '{}'", name));
+            }
+        }
+        if v.get(1).head() == "name" {
+            let fname = v.get(1).get(1).str_of();
+            let nargs = v.get(2).items().len();
+            let known = FN_SIGS.with(|s| s.borrow().iter()
+                .find(|(k, _, _)| k == &fname)
+                .map(|(_, a, _)| a.len()));
+            if let Some(want) = known {
+                if nargs != want {
+                    bail(&format!(
+                        "call to '{}' with {} args (expected {})",
+                        fname, nargs, want));
+                }
+            }
+        }
+    }
+    if let Val::List(items) = v {
+        for it in items.iter() { reject_unbound_calls(it); }
+    }
+}
+
 fn walk_module(stmts: &[Val]) -> Vec<Val> {
     let mut b = FnB::new(1); // .1 = main ret slot
     let mut loops: Vec<String> = Vec::new();
@@ -5869,6 +6017,7 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 Typed::F64(r) => {
                     let c = b.nx();
                     b.line(format!("  %\"{}\" = fptosi double {} to i64", c, r));
+                    b.float_to_int_checks(&r);
                     return Typed::I64(format!("%\"{}\"", c));
                 }
                 _ => {}
@@ -8081,10 +8230,30 @@ fn eval_list_comp(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                   fslots: &[String]) -> Typed {
     let out = b.nx();
     b.line(format!("  %\"{}\" = call {{i32, i8*}}* @\"create_list\"()", out));
+    // mirror of _push_comprehension_scope: a target shadowing a dynamic
+    // slot keeps the enclosing value (loaded here, stored back below)
+    let mut scope: Vec<(String, String)> = Vec::new();
+    for gen in e.get(2).items() {
+        for tname in comp_targets(&gen.get(0)) {
+            if scope.iter().any(|(n, _)| n == &tname) { continue; }
+            if is_py(&tname) {
+                let sv = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = load {{i32, i8*}}*, {{i32, i8*}}** {}", sv, py_slot(&tname)));
+                scope.push((tname, sv));
+            } else if is_local_i(&tname) || is_local_s(&tname) || is_local_f(&tname)
+                || is_local_b(&tname) || fn_ty_of(&tname).is_some()
+                || global_ty_of(&tname).is_some() {
+                bail(&format!("comprehension target {} shadows a typed variable", tname));
+            }
+        }
+    }
     for gen in e.get(2).items() {
         let target = gen.get(0);
-        if target.head() != "name" { bail("list comp target"); }
-        let tname = target.get(1).str_of();
+        // one name, or a tuple target (`[n for n, s in rows]`): mirror
+        // of _bind_comprehension_target, which binds each name from the
+        // boxed element's fields
+        let targets: Vec<String> = comp_targets(&target);
         let iter_node = gen.get(1);
         let conds = gen.get(2).items();
         let is_range = iter_node.head() == "call"
@@ -8095,13 +8264,18 @@ fn eval_list_comp(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         b.line(format!("  %\"{}\" = alloca i64", idxn));
         b.silent();
         b.line(format!("  store i64 0, i64* %\"{}\"", idxn));
-        let (keys, total) = if is_range {
+        // (keys ref, fixed bound, dict shape, iterated object). A range
+        // iterates a fixed bound; anything else walks a key list whose
+        // length is read every iteration under the dict shape watch
+        // (mirror of _capture_dict_shape / _watch_dict_shape).
+        let (keys, fixed_total, dc, du, de, src) = if is_range {
             let rargs = iter_node.get(2).items();
             let stop = rargs.last().cloned().unwrap_or_else(|| Val::List(vec![
                 Val::Str("const".into()), Val::Int(0)]));
             let sv = eval_expr(b, &stop, slot_i, slot_f, fslots);
             let Typed::I64(total) = sv else { bail("list comp range") };
-            (String::new(), total)
+            (String::new(), total, String::new(), String::new(), String::new(),
+             String::new())
         } else {
             let iv = eval_expr(b, &iter_node, slot_i, slot_f, fslots);
             let iter = to_pyobj(b, iv);
@@ -8109,11 +8283,16 @@ fn eval_list_comp(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             b.line(format!(
                 "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_iter_keys\"({{i32, i8*}}* {})",
                 keys, iter));
-            let total = b.nx();
+            let dc = b.nx();
             b.line(format!(
-                "  %\"{}\" = call i64 @\"list_length\"({{i32, i8*}}* %\"{}\")",
-                total, keys));
-            (format!("%\"{}\"", keys), format!("%\"{}\"", total))
+                "  %\"{}\" = call i64 @\"pyobj_dict_count\"({{i32, i8*}}* {})", dc, iter));
+            let du = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"pyobj_dict_used\"({{i32, i8*}}* {})", du, iter));
+            let de = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"pyobj_dict_entries_bits\"({{i32, i8*}}* {})", de, iter));
+            (format!("%\"{}\"", keys), String::new(), dc, du, de, iter)
         };
         let cond_lbl = b.uniq_label("lc_cond");
         let cond_b = b.add_block(&cond_lbl);
@@ -8124,6 +8303,24 @@ fn eval_list_comp(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         b.silent();
         b.line(format!("  br label %\"{}\"", cond_lbl));
         b.pos(cond_b);
+        let total = if fixed_total.is_empty() {
+            let dw = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"pyobj_dict_watch\"({{i32, i8*}}* {}, i64 %\"{}\", i64 %\"{}\", i64 %\"{}\")",
+                dw, src, dc, du, de));
+            let w_size = b.nx();
+            b.line(format!("  %\"{}\" = icmp eq i64 %\"{}\", 1", w_size, dw));
+            b.overflow_check(&format!("%\"{}\"", w_size),
+                "RuntimeError: dictionary changed size during iteration");
+            let w_churn = b.nx();
+            b.line(format!("  %\"{}\" = icmp eq i64 %\"{}\", 2", w_churn, dw));
+            b.overflow_check(&format!("%\"{}\"", w_churn),
+                "RuntimeError: dictionary modified during iteration");
+            let len = b.nx();
+            b.line(format!(
+                "  %\"{}\" = call i64 @\"list_length\"({{i32, i8*}}* {})", len, keys));
+            format!("%\"{}\"", len)
+        } else { fixed_total };
         let cur = b.nx();
         b.line(format!("  %\"{}\" = load i64, i64* %\"{}\"", cur, idxn));
         let more = b.nx();
@@ -8147,14 +8344,31 @@ fn eval_list_comp(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 el, keys, key));
             format!("%\"{}\"", el)
         };
-        if !is_py(&tname) {
-            FN_ALLOCAS.with(|f| f.borrow_mut().push((tname.clone(), "pyobj".into())));
-            FN_PY.with(|f| f.borrow_mut().push(tname.clone()));
-            PY_SLOTS.with(|f| f.borrow_mut().push(tname.clone()));
+        if targets.len() == 1 {
+            let tname = &targets[0];
+            if !is_py(tname) {
+                reg_py(tname);
+            }
+            b.silent();
+            b.line(format!(
+                "  store {{i32, i8*}}* {}, {{i32, i8*}}** {}", elem, py_slot(tname)));
+        } else {
+            for (t_idx, tname) in targets.iter().enumerate() {
+                let idx_obj = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"create_int\"(i64 {})", idx_obj, t_idx));
+                let field = b.nx();
+                b.line(format!(
+                    "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_subscript\"({{i32, i8*}}* {}, {{i32, i8*}}* %\"{}\")",
+                    field, elem, idx_obj));
+                if !is_py(tname) {
+                    reg_py(tname);
+                }
+                b.silent();
+                b.line(format!(
+                    "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** {}", field, py_slot(tname)));
+            }
         }
-        b.silent();
-        b.line(format!(
-            "  store {{i32, i8*}}* {}, {{i32, i8*}}** {}", elem, py_slot(&tname)));
         let keep_b = b.cur;
         let skip_lbl = b.uniq_label("lc_skip");
         let skip_b = b.add_block(&skip_lbl);
@@ -8196,7 +8410,23 @@ fn eval_list_comp(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         b.line(format!("  br label %\"{}\"", cond_lbl));
         b.pos(done_b);
     }
+    // mirror of _pop_comprehension_scope
+    for (tname, sv) in scope.iter() {
+        b.silent();
+        b.line(format!(
+            "  store {{i32, i8*}}* %\"{}\", {{i32, i8*}}** {}", sv, py_slot(tname)));
+    }
     Typed::Pyo(format!("%\"{}\"", out))
+}
+
+// names bound by a comprehension generator: one, or the parts of a tuple
+// target (mirror of _comp_target_names for one generator)
+fn comp_targets(target: &Val) -> Vec<String> {
+    if target.head() == "name" {
+        vec![target.get(1).str_of()]
+    } else if target.head() == "tuple" {
+        target.get(1).items().iter().map(|v| v.get(1).str_of()).collect()
+    } else { bail("list comp target"); }
 }
 
 fn eval_isinstance(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
@@ -8394,6 +8624,25 @@ fn to_pyobj(b: &mut FnB, t: Typed) -> String {
             format!("%\"{}\"", c)
         }
     }
+}
+
+// mirror of _mark_borrowed_str: these expression shapes hand back the
+// DICT'S own entry of a str-valued dict - d[k], d.get(k, ...),
+// d.setdefault(k, v). The dict keeps the buffer, so an assignment copies
+// it (like a name) and a discarded statement result is never freed. Pop
+// is not here: it hands over ownership of the removed entry.
+fn borrows_dict_entry(e: &Val) -> bool {
+    if e.head() == "subscript" && e.get(1).head() == "name" {
+        return dct_val_ty(&e.get(1).get(1).str_of()) == "str";
+    }
+    if e.head() == "call" && e.get(1).head() == "attribute"
+        && e.get(1).get(1).head() == "name" {
+        let m = e.get(1).get(2).str_of();
+        if m == "get" || m == "setdefault" {
+            return dct_val_ty(&e.get(1).get(1).get(1).str_of()) == "str";
+        }
+    }
+    false
 }
 
 fn to_raw_alias(b: &mut FnB, t: Typed, alias: bool) -> String {
@@ -8908,7 +9157,7 @@ fn dict_value_bits(b: &mut FnB, node: &Val, val_ty: &str, msg: &str,
                 let is_str_call = node.head() == "call"
                     && node.get(1).head() == "name"
                     && FN_SIGS.with(|m| m.borrow().iter()
-                        .find(|(k, _, rty)| {
+                        .find(|(k, _, _rty)| {
                             k == &node.get(1).get(1).str_of()
                         })
                         .map(|(_, _, rty)| rty == "str")
@@ -9041,7 +9290,7 @@ fn emit_dict_literal_entry(b: &mut FnB, pair: &Val, c: &str, key_str: bool,
                 let is_str_call = vnode.head() == "call"
                     && vnode.get(1).head() == "name"
                     && FN_SIGS.with(|m| m.borrow().iter()
-                        .find(|(k, _, rty)| {
+                        .find(|(k, _, _rty)| {
                             k == &vnode.get(1).get(1).str_of()
                         })
                         .map(|(_, _, rty)| rty == "str")
@@ -9913,7 +10162,7 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
                 g, dl, karg));
             // float values ride the same boxed phi - the bits bitcast
             // to double BEFORE create_float's register (v5 order)
-            let (bi, freg) = if dct_val_ty(&d) == "float" {
+            let (bi, _freg) = if dct_val_ty(&d) == "float" {
                 let bt = b.nx();
                 b.line(format!(
                     "  %\"{}\" = bitcast i64 %\"{}\" to double", bt, g));
@@ -10256,6 +10505,11 @@ fn main() {
             }
         }
     }
+    // keyword arguments and call arity: shapes the python plane now
+    // binds by name / rejects, outside the pinned subset. Refuse them
+    // instead of emitting the old silent drop (f(b=3, a=4) became a
+    // zero-argument call). After sig_of so FN_SIGS is complete.
+    for st in stmts.iter() { reject_unbound_calls(st); }
     let func_defs = walk_module(&stmts);
 
     let mut out = String::new();
@@ -10271,7 +10525,6 @@ fn main() {
         // the first user function (jsonparse evidence)
         out.push('\n');
     }
-    let mut first_user_fn = true;
     for fd in &func_defs {
         // the tagged runtime's tail ends without a blank: the first
         // user fn's preceding blank is ours (the jsonparse probe)

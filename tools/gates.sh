@@ -50,6 +50,16 @@ step() {
         echo "FAIL"
         printf '%s\n' "$out" | tail -25
         fail=1
+        # the tail hides most of a large failure list (164 red tests
+        # showed 24): keep the whole run and name the files
+        log="$REPO/gates-last-failure.log"
+        printf '%s\n' "$out" > "$log"
+        n=$(printf '%s\n' "$out" | grep -c '^FAILED ')
+        if [ "$n" -gt 25 ]; then
+            echo "  $n failures in full - $log; per file:"
+            printf '%s\n' "$out" | grep '^FAILED ' \
+                | awk -F'::' '{print $1}' | sort | uniq -c | sort -rn
+        fi
     fi
 }
 
@@ -58,6 +68,7 @@ step "ir  fe vs rustfe"         "$PY" reference/diff_harness.py ir fe rustfe
 step "ir  fe vs pyir"           "$PY" reference/diff_harness.py ir fe pyir
 step "ll  conv vs rustconv"     "$PY" reference/diff_harness.py ll conv rustconv
 step "ll  conv vs pyll"         "$PY" reference/diff_harness.py ll conv pyll
+step "rust prefix snapshot"     "$PY" tools/regen_rust_prefix.py --check
 if [ "$RUN_PYTEST" = 1 ]; then
     step "pytest (full)"        "$PY" -m pytest tests/ -q -p no:cacheprovider
 fi

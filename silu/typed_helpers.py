@@ -11,6 +11,10 @@ from silu.ir_iface import ir
 
 __all__ = [
     "_dict_loop_names",
+    "_target_mentions",
+    "_node_rebinds",
+    "_body_rebinds",
+    "_comp_target_names",
     "_const_int_of",
     "_rawlist_elem_size",
     "_rawdict_call_fn",
@@ -70,6 +74,13 @@ __all__ = [
     "_kind_cls",
     "_kind_llvm_key",
     "_twin_utf8_len",
+    "_RANGE_AS_VALUE",
+    "_is_range_call",
+    "_range_const_span",
+    "_range_len",
+    "_range_values",
+    "_STR_REJECTED_METHODS",
+    "_BUILTIN_ARITY",
 ]
 
 
@@ -104,6 +115,74 @@ def _dict_loop_names(target_node: Any, mode: str) -> Tuple[Any, Any]:
     return name, None
 
 
+def _target_mentions(target: Any, name: str) -> bool:
+    """Does a binding target (a bare name, ["name", n], or a nested
+    tuple_unpack of them) rebind `name`?"""
+    if isinstance(target, str):
+        return target == name
+    if not isinstance(target, (list, tuple)):
+        return False
+    if len(target) >= 2 and target[0] == "name":
+        return target[1] == name
+    for part in target:
+        if _target_mentions(part, name):
+            return True
+    return False
+
+
+def _node_rebinds(node: Any, name: str) -> bool:
+    if not isinstance(node, (list, tuple)) or not node:
+        return False
+    head = node[0]
+    if head in ("assign", "ann_assign", "tuple_assign", "multi_assign"):
+        if _target_mentions(node[1], name):
+            return True
+    elif head in ("aug_assign", "delete", "for", "with"):
+        if _target_mentions(node[1], name):
+            return True
+    for child in node:
+        if _node_rebinds(child, name):
+            return True
+    return False
+
+
+def _body_rebinds(stmts: Any, name: str) -> bool:
+    """True when anything in a loop body (nested statements included)
+    rebinds `name`: plain, annotated, augmented or multiple assignment,
+    tuple unpacking, a for/with target, or del. Conservative by design -
+    a same-named local inside a nested def counts too. It decides
+    whether a loop over the str bound to `name` must walk a snapshot:
+    the rebind drops or grows the buffer under the walked pointer."""
+    if not isinstance(stmts, (list, tuple)):
+        return False
+    for stmt in stmts:
+        if _node_rebinds(stmt, name):
+            return True
+    return False
+
+
+def _comp_target_names(generators: Any) -> list:
+    """The names a comprehension's generators bind (a plain name or a
+    tuple of names per generator), each once, in order."""
+    names = []
+    for gen in generators:
+        if not isinstance(gen, (list, tuple)) or not gen:
+            continue
+        target = gen[0]
+        if not isinstance(target, (list, tuple)) or not target:
+            continue
+        parts = target[1] if target[0] == "tuple" else (target,)
+        for part in parts:
+            if (
+                isinstance(part, (list, tuple))
+                and len(part) >= 2
+                and part[0] == "name"
+                and part[1] not in names
+            ):
+                names.append(part[1])
+    return names
+
+
 def _const_int_of(node: Any) -> Optional[int]:
     """Compile-time int for ('const', n) and unary minus thereof."""
     if (
@@ -128,6 +207,110 @@ def _const_int_of(node: Any) -> Optional[int]:
     return None
 
 
+# range(...) OUTSIDE a for header. The old handler "degraded to the
+# dynamic view" - it handed back the STOP VALUE as a boxed int - so
+# len(range(10)) answered 0, list(range(3)) built [] and any other use
+# silently meant something else. Two value forms are exact (folded from
+# literal arguments, see _range_const_span); everything else is this.
+_RANGE_AS_VALUE = (
+    "range(...) as a value is only supported with literal arguments, as "
+    "len(range(...)) or list(range(...)); use range(...) as the iterable "
+    "of a for loop"
+)
+
+
+def _is_range_call(node: Any) -> bool:
+    return (
+        isinstance(node, list)
+        and len(node) >= 3
+        and node[0] == "call"
+        and isinstance(node[1], list)
+        and len(node[1]) >= 2
+        and node[1][0] == "name"
+        and node[1][1] == "range"
+    )
+
+
+def _range_const_span(call_node: Any):
+    """[start, stop, step] of a range(...) call whose arguments are all
+    compile-time ints, else None. Arity and step errors raise exactly as
+    the for-loop form does."""
+    args = call_node[2] if len(call_node) > 2 else []
+    vals = []
+    for a in args:
+        v = _const_int_of(a)
+        if v is None:
+            return None
+        vals.append(v)
+    start = 0
+    stop = 0
+    step = 1
+    if len(vals) == 1:
+        stop = vals[0]
+    elif len(vals) == 2:
+        start = vals[0]
+        stop = vals[1]
+    elif len(vals) == 3:
+        start = vals[0]
+        stop = vals[1]
+        step = vals[2]
+    else:
+        raise NotImplementedError(
+            "range() takes 1 to 3 arguments, got " + str(len(vals)))
+    if step == 0:
+        raise ValueError("range() arg 3 must not be zero")
+    return [start, stop, step]
+
+
+def _range_len(start: int, stop: int, step: int) -> int:
+    # number of values the span yields; ceil division per sign
+    diff = stop - start
+    if step > 0:
+        n = (diff + step - 1) // step
+    else:
+        n = (diff + step + 1) // step
+    if n < 0:
+        n = 0
+    return n
+
+
+def _range_values(start: int, stop: int, step: int) -> list:
+    out = []
+    v = start
+    if step > 0:
+        while v < stop:
+            out.append(v)
+            v += step
+    else:
+        while v > stop:
+            out.append(v)
+            v += step
+    return out
+
+
+# Builtins the converter accepts with ANY number of arguments and then
+# reads only the ones its emitter happens to use: len(1, 2) printed 0.
+# name -> (least, most) positional arguments. Supported builtins only:
+# an arity error for an unknown builtin would wrongly suggest it works.
+_BUILTIN_ARITY = {
+    "len": (1, 1), "chr": (1, 1), "ord": (1, 1),
+    "input": (0, 0), "repr": (1, 1), "isinstance": (2, 2),
+    "float": (1, 1), "str": (0, 1),
+    "list": (0, 1), "tuple": (0, 1), "set": (0, 1),
+    "sum": (1, 2),
+}
+
+# The boxed method map dispatches BY NAME ONLY. These are its container
+# operations (list / dict / set): a STRING receiver that the typed rawstr
+# arms did not handle must never reach them - `count` on a str went to
+# list_count, which read the string box as a list and segfaulted.
+_STR_REJECTED_METHODS = (
+    "append", "reverse", "insert", "add", "discard", "items", "keys",
+    "values", "update", "setdefault", "copy", "clear", "get", "pop",
+    "index", "__getitem__", "__setitem__", "__delitem__",
+)
+
+
 def _rawlist_elem_size(kind: str) -> int:
     return 8  # both i64 and double elements are 8 bytes
 
@@ -137,9 +320,13 @@ def _rawdict_call_fn(kind: str, int_fn: Any, str_fn: Any):
 
 
 def _extract_i64_const(value: Any) -> Optional[int]:
-    if isinstance(value, ir.Constant) and isinstance(
-        value.type, ir.IntType
-    ) and value.type.width == 64:
+    # NOT `isinstance(value.type, ir.IntType)`: the text layer's
+    # IntType is a factory function, not a class, so that check raised
+    # TypeError under SILU_LLVM_IR=text and took every `**` and every
+    # `s * n` down with it. Both layers cache their type objects, so
+    # the i64 type compares equal to itself (no getattr either: this
+    # helper is compiled into the self-hosted converter).
+    if isinstance(value, ir.Constant) and value.type == ir.IntType(64):
         return int(value.constant)
     return None
 
@@ -387,6 +574,7 @@ LLVM_KIND_TYPES = {
     RAWDICT_IF: ir.PointerType(ir.IntType(8)),
     RAWDICT_SI: ir.PointerType(ir.IntType(8)),
     RAWDICT_SF: ir.PointerType(ir.IntType(8)),
+    RAWDICT_SS: ir.PointerType(ir.IntType(8)),  # dict[str, str] as a param
     INSTANCE: ir.PointerType(ir.IntType(8)),
 }
 

@@ -17,15 +17,25 @@ language's behavior. It exists to answer three questions with data:
 
 ## Contract
 
-- **Pinned version**: silu 1.18.0 (strbuf feature re-pin; the original oracle was
-  1.16.2, commit 87df40f - the calibration report CALIBRATION.md
-  documents that pin). The Rust code
-  implements THIS behavior, not whatever main does later. No tracking
-  obligation: divergences from future Silu are expected and fine.
-- **Corpus**: the 19-file parity corpus (15 benchmarks + calc +
-  ir_interp + silu_fe + typed_codegen_flat) for IR comparison; the
-  same minus the flat converter for .ll comparison (python plane too
-  slow on it).
+- **Pinned version**: silu 1.25.0 (the semantics round: containers that
+  change under their own loop, comprehension scope, the borrowed entries
+  of a str-valued dict; re-pins before it were 1.24.0 the oracle shape
+  round, 1.18.0 strbuf, and the original 1.16.2 at commit 87df40f - the
+  calibration report CALIBRATION.md documents that first pin). The Rust
+  code implements THIS behavior, not whatever main does later. No
+  tracking obligation: divergences from future Silu are expected and
+  fine.
+- **Corpus**: the 33-file parity corpus (25 benchmarks + calc,
+  strbuf_probe, utf8_probe, float_edge, comp_unpack, ir_interp, silu_fe
+  and the flat converter under selfhost/) for IR comparison; the same
+  minus the flat converter for .ll comparison (python plane too slow on
+  it). Every shape in the corpus has a Rust mirror; shapes outside it
+  bail loudly (typed dict parameters and loops, typed comprehension
+  shadows, a module-level str `+=`, printing a whole str-valued dict).
+- **Prefix snapshots**: `const_prefix.ll` / `tagged_prefix.ll` are
+  verbatim copies of the runtime part of the .ll. Regenerate with
+  `python3 tools/regen_rust_prefix.py` after any runtime emitter change
+  (`--check` is a gate).
 - **Comparison discipline**: IR JSON must be BYTE-identical; .ll must
   be byte-identical on the corpus (the existing gates already hold the
   two current planes to this bar - the Rust plane joins the same bar).

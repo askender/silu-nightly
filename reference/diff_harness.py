@@ -32,6 +32,7 @@ CORPUS_IR = [
     "selfhost/strbuf_probe.si",
     "selfhost/utf8_probe.si",
     "selfhost/float_edge.si",
+    "selfhost/comp_unpack.si",
     "selfhost/ir_interp.si",
     "selfhost/silu_fe.si",
     "selfhost/typed_codegen_flat.si",
@@ -131,7 +132,7 @@ def _canonical_ll(raw):
     return b"\n".join(out).rstrip(b"\n")
 
 
-def _ensure_planes(names):
+def _ensure_planes(names, corpus):
     """Never gate on a stale plane binary.
 
     siluc1 / silu_fe are gitignored build artifacts. Three times a gate
@@ -140,15 +141,34 @@ def _ensure_planes(names):
     showed. Refresh the planes here so the harness is self-contained -
     sources newer than the binary means rebuild (cargo is a no-op when
     fresh). Returns False if a rebuild failed.
+
+    The corpus itself contains a generated file (the flat converter
+    twin): in a fresh checkout the IR gate failed until something else
+    happened to regenerate it. Materialize it here, and name any other
+    missing corpus file instead of reporting it as a plane error.
     """
-    if names & {"fe", "conv"}:
+    flat = os.path.join(REPO, "selfhost", "typed_codegen_flat.si")
+    missing = [rel for rel in corpus if not os.path.exists(
+        os.path.join(REPO, rel))]
+    generated = [rel for rel in missing
+                 if os.path.join(REPO, rel) == os.path.realpath(flat)
+                 or rel == "selfhost/typed_codegen_flat.si"]
+    if names & {"fe", "conv"} or generated:
         sys.path.insert(0, os.path.join(REPO, "tools"))
         import selfhost_build as sb
 
+        if generated:
+            sb.ensure_converter()  # regenerates the flat twin
         if "fe" in names:
             sb.ensure_frontend()
         if "conv" in names:
             sb.ensure_siluc()
+    still = [rel for rel in corpus
+             if not os.path.exists(os.path.join(REPO, rel))]
+    if still:
+        print("ERROR: corpus file(s) missing: " + ", ".join(still),
+              file=sys.stderr)
+        return False
     if names & {"rustfe", "rustconv"}:
         env = dict(os.environ)
         cargo_bin = os.path.expanduser("~/.cargo/bin")
@@ -163,20 +183,39 @@ def _ensure_planes(names):
     return True
 
 
+def _verifier_error(ll_text):
+    """llvmlite's verdict on a .ll module, or None when it verifies.
+
+    Parity is blind to an invalid module that every plane emits alike:
+    a phi fed from a block its value did not dominate sat in the runtime
+    prefix for a whole session - clang assembled it, the planes agreed,
+    and only the verifier-backed pytest run went red (164 failures)."""
+    from llvmlite import binding as llvm
+
+    if isinstance(ll_text, bytes):
+        ll_text = ll_text.decode("utf-8", "replace")
+    try:
+        llvm.parse_assembly(ll_text).verify()
+        return None
+    except RuntimeError as exc:
+        return str(exc)
+
+
 def main():
     if len(sys.argv) != 4 or sys.argv[1] not in ("ir", "ll"):
         print(__doc__)
         return 2
     mode, a_name, b_name = sys.argv[1], sys.argv[2], sys.argv[3]
     a, b = PLANES[a_name], PLANES[b_name]
-    if not _ensure_planes({a_name, b_name}):
-        return 1
     corpus = CORPUS_IR if mode == "ir" else CORPUS_LL
+    if not _ensure_planes({a_name, b_name}, corpus):
+        return 1
     fails = 0
     for rel in corpus:
         t0 = time.time()
         arc, aout, aerr = a(rel)
         brc, bout, berr = b(rel)
+        raw_a = aout
         if mode == "ir" and arc == 0 and brc == 0:
             aout, bout = _canonical_ir(aout), _canonical_ir(bout)
         if mode == "ll" and arc == 0 and brc == 0:
@@ -192,7 +231,14 @@ def main():
             print(f"  {b_name} stderr: {berr[:150]!r}")
             fails += 1
         elif aout == bout:
-            print(f"PASS  {rel} ({dt:.1f}s, {len(aout)} bytes)")
+            # identical bytes can still be invalid IR: verify what the
+            # planes agreed on (once - the module is the same in both)
+            bad = _verifier_error(raw_a) if mode == "ll" else None
+            if bad is not None:
+                print(f"INVALID {rel} ({dt:.1f}s): {bad[:300]!r}")
+                fails += 1
+            else:
+                print(f"PASS  {rel} ({dt:.1f}s, {len(aout)} bytes)")
         else:
             print(f"DIFF  {rel} ({dt:.1f}s): {len(aout)} vs "
                   f"{len(bout)} bytes")

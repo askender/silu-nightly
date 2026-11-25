@@ -7,3 +7,8 @@ class C:
 c: C = C(21, [1, 2, 3])
 print(c.val())
 print(c.cps[1])
+# module-level attribute store (2026-11-26): the self-hosted FRONT END
+# crashed on it - "TypeError: expected str": the attribute node of
+# `c.x = 5` was appended to the module's list[str] of global names
+c.x = 5
+print(c.x, c.val())

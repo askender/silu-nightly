@@ -388,6 +388,10 @@ class Gen:
     g_types: list[str]
     litlists: list[str]
     cur_ret: str
+    # name of the str slot whose buffer the expression being converted
+    # may grow in place (`s = s + x`): any other left operand of a
+    # concat is someone else's buffer and gets a fresh result
+    str_inplace_ok: str
 
     def emit(self, line: str) -> int:
         pad: str = "    "
@@ -661,7 +665,10 @@ class Gen:
             if base.ty == "dict:S:str":
                 # str-valued dict: the value rides raw in the int64 slot;
                 # a miss is the loud KeyError (CPython d[k] semantics)
-                return te("dict_get_str(" + base.text + ", " + idx.text + ")", "str")
+                # the entry belongs to the dict: hand out a COPY (a
+                # borrowed Str* grew in place under the reader's next
+                # append or concat, corrupting the stored value)
+                return te("str_copy(dict_get_str(" + base.text + ", " + idx.text + "))", "str")
             if base.ty.startswith("dict:I"):
                 vt: str = "int"
                 if base.ty.endswith(":float"):
@@ -696,7 +703,13 @@ class Gen:
             a: TE = self.expr(node.arr[1])
             b: TE = self.expr(node.arr[2])
             if t == "+" and a.ty == "str" and b.ty == "str":
-                return te("str_add(" + a.text + ", " + b.text + ")", "str")
+                # in place ONLY into the slot being reassigned. Any
+                # other left operand (another variable, a dict entry, a
+                # list element, a boxed str) is a borrowed buffer:
+                # `t = s + "d"` used to grow s itself and alias t to it
+                if a.text == "v_" + self.str_inplace_ok:
+                    return te("str_add(" + a.text + ", " + b.text + ")", "str")
+                return te("str_concat(" + a.text + ", " + b.text + ")", "str")
             if t == "%" and a.ty == "str":
                 return te("str_mod(" + a.text + ", " + b.text + ")", "str")
             if t == "|" or t == "&" or t == "^" or t == "<<" or t == ">>":
@@ -1176,7 +1189,7 @@ class Gen:
                 fout: str = parts[0]
                 fk2: int = 1
                 while fk2 < len(parts):
-                    fout = "str_add(" + fout + ", " + parts[fk2] + ")"
+                    fout = "str_concat(" + fout + ", " + parts[fk2] + ")"
                     fk2 += 1
                 return te(fout, "str")
             if nm == "input":
@@ -1235,7 +1248,7 @@ class Gen:
                 if recv2.ty == "dict:S:str":
                     # the 1-arg get on a str-valued dict: a miss merges to
                     # the empty str (the Python None via the raw boundary)
-                    return te("((Str*)(intptr_t)dict_get_or(" + recv2.text + ", " + kg.text + ", (int64_t)(intptr_t)str_of(\"\")))", "str")
+                    return te("str_copy((Str*)(intptr_t)dict_get_or(" + recv2.text + ", " + kg.text + ", (int64_t)(intptr_t)str_of(\"\")))", "str")
                 if recv2.ty.startswith("dict:I"):
                     return te("(dicti_has(" + recv2.text + ", " + kg.text + ") ? pint(dicti_get(" + recv2.text + ", " + kg.text + ")) : pnil())", "obj")
                 return te("(dict_has(" + recv2.text + ", " + kg.text + ") ? pint(dict_get(" + recv2.text + ", " + kg.text + ")) : pnil())", "obj")
@@ -1243,7 +1256,7 @@ class Gen:
                 if recv2.ty == "dict:S:str":
                     kd2: TE = self.expr(elem(args, 0))
                     dd2: TE = self.expr(elem(args, 1))
-                    return te("((Str*)(intptr_t)dict_get_or(" + recv2.text + ", " + kd2.text + ", (int64_t)(intptr_t)" + dd2.text + "))", "str")
+                    return te("str_copy((Str*)(intptr_t)dict_get_or(" + recv2.text + ", " + kd2.text + ", (int64_t)(intptr_t)" + dd2.text + "))", "str")
                 if recv2.ty.startswith("dict:I"):
                     return te("dicti_get_or(" + recv2.text + ", " + self.expr(elem(args, 0)).text + ", " + self.expr(elem(args, 1)).text + ")", "int")
                 if recv2.ty.startswith("dict:") or recv2.ty == "dict":
@@ -1272,7 +1285,7 @@ class Gen:
                 if recv2.ty.startswith("dict:I"):
                     return te("dicti_setdefault(" + recv2.text + ", " + arg0.text + ", " + a1s.text + ")", "int")
                 if recv2.ty == "dict:S:str":
-                    return te("((Str*)(intptr_t)dict_setdefault(" + recv2.text + ", " + arg0.text + ", (int64_t)(intptr_t)" + a1s.text + "))", "str")
+                    return te("str_copy((Str*)(intptr_t)dict_setdefault(" + recv2.text + ", " + arg0.text + ", (int64_t)(intptr_t)" + a1s.text + "))", "str")
                 return te("dict_setdefault(" + recv2.text + ", " + arg0.text + ", " + a1s.text + ")", "int")
             if mname == "clear" and len(args.arr) == 0 and is_dict_recv:
                 if recv2.ty.startswith("dict:I"):
@@ -1431,7 +1444,9 @@ class Gen:
                         self.decls.append("DictI* v_" + elem_str(stmt, 1) + ";")
                         self.emit("v_" + elem_str(stmt, 1) + " = dicti_new();")
                         return 0
+                self.str_inplace_ok = elem_str(stmt, 1)
                 val_a: TE = self.expr(elem(stmt, 2))
+                self.str_inplace_ok = ""
                 if aty == "obj" and val_a.ty != "obj":
                     # x: object = <scalar/None> - box into a PObj so the
                     # slot is never a raw int/NULL (a None const is
@@ -1451,7 +1466,9 @@ class Gen:
                 return 0
             if stmt.arr[1].kind == JKind.STR:
                 # plain assign target is a bare string, not a node
+                self.str_inplace_ok = elem_str(stmt, 1)
                 val: TE = self.expr(elem(stmt, 2))
+                self.str_inplace_ok = ""
                 self.declare_or_assign(elem_str(stmt, 1), val)
                 return 0
             if stmt.arr[1].kind == JKind.ARR and tag(stmt.arr[1]) == "attribute":
@@ -1520,6 +1537,12 @@ class Gen:
             if tag(tgt) == "name":
                 nm2: str = tgt.arr[1].s
                 val3: TE = self.expr(elem(stmt, 3))
+                if cop == "+" and self.var_type(nm2) == "str":
+                    # strings have no C `+` (a str aug on a module-level
+                    # name used to emit `Str* + Str*` and fail in clang):
+                    # str_add grows the slot's own buffer in place
+                    self.emit("v_" + nm2 + " = str_add(v_" + nm2 + ", " + val3.text + ");")
+                    return 0
                 self.emit("v_" + nm2 + " = v_" + nm2 + " " + cop + " " + val3.text + ";")
                 return 0
             if tag(tgt) == "subscript":
@@ -2568,6 +2591,8 @@ RUNTIME: list[str] = [
     "static int64_t bits_i(double d) { int64_t b; memcpy(&b, &d, 8); return b; }",
     "static int64_t ipow_i(int64_t b, int64_t e) { int64_t r = 1; while (e > 0) { if (e & 1) r *= b; b *= b; e >>= 1; } return r; }",
     "static Str* read_line(void) { char buf[4096]; if (!fgets(buf, 4096, stdin)) return str_of(\"\"); int64_t n = (int64_t)strlen(buf); if (n && buf[n-1] == '\\n') n--; return str_new(buf, n); }",
+    "static Str* str_concat(Str* a, Str* b) { Str* r = str_new(\"\", 0); int64_t nc = a->len + b->len; nc = nc * 2 < 16 ? 16 : nc * 2; r->data = silu_malloc(nc); memcpy(r->data, a->data, a->len); memcpy(r->data + a->len, b->data, b->len); r->len = a->len + b->len; r->cap = nc; r->cp = a->cp + b->cp; return r; }",
+    "static Str* str_copy(Str* s) { Str* r = str_new(\"\", 0); r->data = silu_malloc(s->len + 1); memcpy(r->data, s->data, s->len); r->len = s->len; r->cap = s->len; r->cp = s->cp; return r; }",
     "static Str* silu_read_file(Str* p) { char* b = silu_malloc(p->len + 1); memcpy(b, p->data, p->len); b[p->len] = 0; FILE* f = fopen(b, \"r\"); if (!f) { return str_new(\"\", 0); } int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, f)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } fclose(f); return str_new(buf, len); }",
     "static Str* read_stdin_all(void) { int64_t cap = 65536, len = 0; char* buf = silu_malloc(cap); int64_t k; while ((k = (int64_t)fread(buf + len, 1, cap - len, stdin)) > 0) { len += k; if (len == cap) { cap *= 2; char* nb = silu_malloc(cap); memcpy(nb, buf, len); buf = nb; } } return str_new(buf, len); }",
     "static void silu_sep(void) { putchar(' '); }",
@@ -2597,7 +2622,7 @@ def main() -> int:
     infer_rets()
     infer_rets()
     # module-level variable types (functions reference them)
-    gen0: Gen = Gen("", 0, [], [], [], [], [], [], [], [], "none")
+    gen0: Gen = Gen("", 0, [], [], [], [], [], [], [], [], "none", "")
     mv: int = 0
     while mv < len(elem(root, 1).arr):
         mst: JValue = elem(elem(root, 1), mv)
@@ -2605,7 +2630,7 @@ def main() -> int:
             gen0.g_names.append(elem_str(mst, 1))
             gen0.g_types.append(anno_type(mst.arr[3]))
         mv += 1
-    gen: Gen = Gen("", 0, [], [], [], [], [], gen0.g_names, gen0.g_types, [], "none")
+    gen: Gen = Gen("", 0, [], [], [], [], [], gen0.g_names, gen0.g_types, [], "none", "")
     i: int = 0
     while i < len(RUNTIME):
         gen.emit(RUNTIME[i])

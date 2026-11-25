@@ -851,6 +851,22 @@ impl Parser {
         Val::node("for", vec![target, iter_expr, body, Val::List(vec![])])
     }
 
+    // comprehension target: one name, or `a, b` / `(a, b)` - the two-name
+    // forms emit ["tuple", [names]], like the Python frontend (this
+    // parser used to reject them with "expected 'in', got ','")
+    fn parse_comp_target(&mut self) -> Val {
+        let paren = self.cur().kind == TokKind::Op && self.cur().text == "(";
+        if paren { self.nxt(); }
+        let mut names = vec![ns2("name", Val::s(&self.expect_kind(TokKind::Name).text))];
+        while self.cur().kind == TokKind::Op && self.cur().text == "," {
+            self.nxt();
+            if paren && self.cur().text == ")" { break; }
+            names.push(ns2("name", Val::s(&self.expect_kind(TokKind::Name).text)));
+        }
+        if paren { self.expect(")"); }
+        if names.len() == 1 { names.remove(0) } else { ns2("tuple", Val::List(names)) }
+    }
+
     fn stmt_ends_with_colon(&self) -> bool {
         let mut i = self.pos;
         let mut last = self.toks[self.pos].clone();
@@ -1485,7 +1501,7 @@ impl Parser {
                 let t = self.cur();
                 if t.kind == TokKind::Kw && t.text == "for" {
                     self.nxt();
-                    let target = self.expect_kind(TokKind::Name).text;
+                    let target = self.parse_comp_target();
                     self.expect("in");
                     let iter_expr = self.parse_or();
                     let mut conds: Vec<Val> = Vec::new();
@@ -1500,7 +1516,7 @@ impl Parser {
                     return Val::node("list_comp", vec![
                         items[0].clone(),
                         Val::List(vec![Val::List(vec![
-                            ns2("name", Val::s(&target)), iter_expr, Val::List(conds),
+                            target, iter_expr, Val::List(conds),
                         ])]),
                     ]);
                 }
@@ -1523,7 +1539,7 @@ impl Parser {
                 let v = self.parse_expr_nt();
                 if self.cur().kind == TokKind::Kw && self.cur().text == "for" {
                     self.nxt();
-                    let target = self.expect_kind(TokKind::Name).text;
+                    let target = self.parse_comp_target();
                     self.expect("in");
                     let iter_expr = self.parse_or();
                     let mut conds: Vec<Val> = Vec::new();
@@ -1538,7 +1554,7 @@ impl Parser {
                     return Val::node("dict_comp", vec![
                         Val::List(vec![k, v]),
                         Val::List(vec![Val::List(vec![
-                            ns2("name", Val::s(&target)), iter_expr, Val::List(conds),
+                            target, iter_expr, Val::List(conds),
                         ])]),
                     ]);
                 }
@@ -1555,7 +1571,7 @@ impl Parser {
             }
             if self.cur().kind == TokKind::Kw && self.cur().text == "for" {
                 self.nxt();
-                let target = self.expect_kind(TokKind::Name).text;
+                let target = self.parse_comp_target();
                 self.expect("in");
                 let iter_expr = self.parse_or();
                 let mut conds: Vec<Val> = Vec::new();
@@ -1570,7 +1586,7 @@ impl Parser {
                 return Val::node("set_comp", vec![
                     k,
                     Val::List(vec![Val::List(vec![
-                        ns2("name", Val::s(&target)), iter_expr, Val::List(conds),
+                        target, iter_expr, Val::List(conds),
                     ])]),
                 ]);
             }

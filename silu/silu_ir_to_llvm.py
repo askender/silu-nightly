@@ -14,6 +14,10 @@ from typing import Any, Dict, Optional
 from silu.ir_iface import ir
 import llvmlite.binding as llvm
 from .ir_utils import parse_ir_from_json_string, IRParseError
+from .typed_helpers import (
+    _RANGE_AS_VALUE, _const_int_of, _is_range_call, _range_const_span,
+    _range_len, _range_values,
+)
 
 
 class PyObject:
@@ -193,6 +197,13 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
         # Targets for break/continue inside the innermost active loop
         self.loop_break_blocks = []
         self.loop_continue_blocks = []
+        # (function, snapshot i8*) per active str loop that walks a
+        # snapshot copy: a `return` inside the loop must free it
+        self.loop_str_cleanups = []
+        # SSA names of RAWSTR results that point into storage someone
+        # else owns (a str-valued dict's entry): never freed as a
+        # statement temporary, always copied by an assignment
+        self._borrowed_str_results = {}
 
         # Initialize runtime functions
         self._init_runtime_functions()
@@ -865,6 +876,32 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
             ):
                 func_name = func_node[1]
 
+                # range(...) as a value: the same two exact forms the
+                # typed backend folds, intercepted before the argument
+                # reaches the bare-range handler
+                if (
+                    func_name in ("len", "list")
+                    and len(args_node) == 1
+                    and _is_range_call(args_node[0])
+                ):
+                    span = _range_const_span(args_node[0])
+                    if func_name == "len":
+                        if span is not None:
+                            return self.current_builder.call(
+                                self.create_int,
+                                [ir.const_(ir.IntType(64),
+                                           _range_len(span[0], span[1], span[2]))],
+                            )
+                    elif span is not None and _range_len(
+                        span[0], span[1], span[2]
+                    ) <= 65536:
+                        return self._convert_node(
+                            ["list", [["const", v] for v in _range_values(
+                                span[0], span[1], span[2])]],
+                            False,
+                        )
+                    raise NotImplementedError(_RANGE_AS_VALUE)
+
                 if func_name == "print":
                     # Handle print function
                     if args_node:
@@ -926,24 +963,16 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
                     return dict_obj
 
                 elif func_name == "range":
-                    # Handle range function with start and stop parameters
-                    if len(args_node) == 1:
-                        # range(stop) -> return stop
-                        return self._convert_node(args_node[0], False)
-                    elif len(args_node) >= 2:
-                        # range(start, stop) -> return stop for loop iteration count
-                        # For proper loop implementation, we need the stop value
-                        stop_val = self._convert_node(args_node[1], False)
-                        return (
-                            stop_val
-                            if stop_val
-                            else self.current_builder.call(
-                                self.create_int, [ir.const_(ir.IntType(64), 0)]
-                            )
-                        )
-                    return self.current_builder.call(
-                        self.create_int, [ir.const_(ir.IntType(64), 0)]
-                    )
+                    # a bare range object (stored, indexed, membership-
+                    # tested). This used to hand back the STOP VALUE
+                    # ("range(stop) -> return stop"), so len(range(10))
+                    # answered 0 and list(range(3)) built [] - the typed
+                    # backend inherited the very same degrade. The exact
+                    # value forms are intercepted above the argument
+                    # conversion; the literal walker runs first so arity
+                    # and step errors read the same everywhere.
+                    _range_const_span(node)
+                    raise NotImplementedError(_RANGE_AS_VALUE)
 
                 elif func_name in self.functions:
                     # Handle user-defined function calls
@@ -1114,24 +1143,35 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
                         target_node, iter_node, body_stmts
                     )
 
-                # range() handling: extract start/stop from the call
+                # range() handling: extract start/stop/step from the call.
+                # The third argument used to be dropped silently (the
+                # body stepped by 1; a negative step never ran it) and
+                # range() with no arguments iterated 0..9.
                 args_node = iter_node[2] if len(iter_node) > 2 else []
+                step_const = None
                 if len(args_node) == 1:
                     # range(stop) -> start=0, stop=args[0]
                     start_val = self.current_builder.call(
                         self.create_int, [ir.const_(ir.IntType(64), 0)]
                     )
                     end_val = self._convert_node(args_node[0], False)
-                elif len(args_node) >= 2:
+                elif len(args_node) == 2:
                     # range(start, stop) -> start=args[0], stop=args[1]
                     start_val = self._convert_node(args_node[0], False)
                     end_val = self._convert_node(args_node[1], False)
+                elif len(args_node) == 3:
+                    start_val = self._convert_node(args_node[0], False)
+                    end_val = self._convert_node(args_node[1], False)
+                    step_const = _const_int_of(args_node[2])
+                    if step_const is None:
+                        raise NotImplementedError(
+                            "range() with a non-literal step is not "
+                            "supported by the dynamic backend")
+                    if step_const == 0:
+                        raise ValueError("range() arg 3 must not be zero")
                 else:
-                    start_val = self.current_builder.call(
-                        self.create_int, [ir.const_(ir.IntType(64), 0)]
-                    )
-                    end_val = self.current_builder.call(
-                        self.create_int, [ir.const_(ir.IntType(64), 10)]
+                    raise NotImplementedError(
+                        f"range() takes 1 to 3 arguments, got {len(args_node)}"
                     )
 
                 # Create loop blocks
@@ -1151,12 +1191,18 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
                 self.current_builder.store(start_val, counter_ptr)
                 self.current_builder.branch(loop_cond)
 
-                # Loop condition: counter < end_val (for proper range semantics)
+                # Loop condition: counter < end_val (counter > end_val for
+                # a negative step) - for proper range semantics
                 self.current_builder.position_at_end(loop_cond)
                 current_val = self.current_builder.load(counter_ptr)
 
-                # Use < instead of <= for proper range semantics
-                cond_result = self._create_less_than_comparison(current_val, end_val)
+                if step_const is not None and step_const < 0:
+                    cond_result = self.current_builder.call(
+                        self.pyobj_cmp[">"], [current_val, end_val]
+                    )
+                else:
+                    # Use < instead of <= for proper range semantics
+                    cond_result = self._create_less_than_comparison(current_val, end_val)
 
                 # Extract boolean condition
                 data_ptr = self.current_builder.gep(
@@ -1210,14 +1256,16 @@ class SiluToLLVMConverter(PyobjRuntimeMixin):
                 self.loop_break_blocks.pop()
                 self.loop_continue_blocks.pop()
 
-                # Counter increment step (continue target)
+                # Counter increment step (continue target): +1 unless the
+                # literal step says otherwise
                 self.current_builder.position_at_end(incr_block)
                 current_counter = self.current_builder.load(counter_ptr)
-                one = self.current_builder.call(
-                    self.create_int, [ir.const_(ir.IntType(64), 1)]
+                step_val = self.current_builder.call(
+                    self.create_int,
+                    [ir.const_(ir.IntType(64), 1 if step_const is None else step_const)],
                 )
                 next_val = self.current_builder.call(
-                    self.pyobj_add, [current_counter, one]
+                    self.pyobj_add, [current_counter, step_val]
                 )
                 self.current_builder.store(next_val, counter_ptr)
                 self.current_builder.branch(loop_cond)

@@ -30,6 +30,9 @@ def _corpus():
         os.path.join(REPO, "selfhost", "typed_codegen_flat.si"),
         # IEEE-754 boundary literals (subnormals, -0.0, DBL_MAX)
         os.path.join(REPO, "selfhost", "float_edge.si"),
+        # comprehension tuple targets + the scope of a target that
+        # shadows (three front ends parse it alike)
+        os.path.join(REPO, "selfhost", "comp_unpack.si"),
     ]
     return files
 
@@ -112,6 +115,7 @@ def test_frontend_corpus_parity():
         checked += 1
     # 25 benchmarks (incl. the Json-sum jsonparse twin + match_int +
     # concat_chain + the P9 char-pair pin + list_ops + pop_clear +
-    # dict_ops + record_global + dict_local + str_methods + dict_str)
-    # + calc + ir_interp + silu_fe + flat converter + float_edge
-    assert checked == 30
+    # dict_ops + record_global + dict_local + str_methods + dict_str
+    # ) + calc + ir_interp + silu_fe + flat converter + float_edge
+    # + comp_unpack
+    assert checked == 31

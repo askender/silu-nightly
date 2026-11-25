@@ -21,6 +21,7 @@ PROGRAMS = sorted(glob.glob(f"{REPO}/benchmarks/*.si")) + [
     f"{REPO}/selfhost/calc.si",
     f"{REPO}/selfhost/ir_interp.si",
     f"{REPO}/selfhost/float_edge.si",
+    f"{REPO}/selfhost/comp_unpack.si",
 ]
 
 # IEEE-754 boundary doubles: every special class plus seeded random bit

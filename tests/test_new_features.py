@@ -261,7 +261,9 @@ result2 = triple(4)
         assert interpreter.env.get("result2") == 12
 
     def test_lambda_error_handling(self):
-        """Test lambda error cases."""
+        """Test lambda error cases: the parameter-name binding shared
+        with named functions (a wrong arity used to leave parameters
+        unbound - NameError far from the call - or to be ignored)."""
         code = """
 add = lambda a, b: a + b
 result = add(1)  # Missing second argument
@@ -269,9 +271,31 @@ result = add(1)  # Missing second argument
         interpreter = SiluInterpreter()
         tree = ast.parse(code)
         with pytest.raises(
-            TypeError, match="Lambda takes 2 arguments but 1 were given"
+            TypeError, match=r"Lambda\(\) missing 1 required "
+                              r"argument\(s\): b"
         ):
             interpreter.visit(tree)
+
+        code = """
+sub = lambda a, b: a - b
+result = sub(5, 1, 9)  # One argument too many
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        with pytest.raises(
+            TypeError, match=r"Lambda\(\) takes 2 arguments but 3 were given"
+        ):
+            interpreter.visit(tree)
+
+    def test_lambda_keyword_arguments(self):
+        code = """
+add = lambda a, b: a + b * 10
+result = add(b=3, a=4)
+"""
+        interpreter = SiluInterpreter()
+        tree = ast.parse(code)
+        interpreter.visit(tree)
+        assert interpreter.env.get("result") == 34
 
     def test_lambda_complex_expressions(self):
         """Test lambda with complex body expressions."""

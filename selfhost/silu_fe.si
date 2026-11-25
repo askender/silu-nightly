@@ -633,11 +633,13 @@ class Parser:
         params = []
         annos = []
         while not (self.cur().kind == TokKind.OP and self.cur().text == ")"):
+            self.reject_param_default()
             pname = self.expect_kind(TokKind.NAME).text
             params.append(pname)
             annos.append(None)
             if self.accept(":"):
                 annos[-1] = self.parse_annotation()
+            self.reject_param_default()
             if not self.accept(","):
                 break
         self.expect(")")
@@ -649,6 +651,15 @@ class Parser:
         if exported:
             return ["func_def", name, params, body, annos, ret_anno, "export"]
         return ["func_def", name, params, body, annos, ret_anno]
+
+    def reject_param_default(self) -> None:
+        # `= value`, `*args`, `**kwargs`: every parameter is required.
+        # Silu has no defaults; the reference front end names it the
+        # same way (this parser used to answer "expected ')', got '='"
+        # or "expected token kind 0")
+        t = self.cur()
+        if t.kind == TokKind.OP and (t.text == "=" or t.text == "*" or t.text == "**"):
+            self.error("default parameter values are not part of Silu (every parameter is required)", t)
 
     def parse_annotation(self) -> object:
         # simple annotations: Name / Name[Name] / None
@@ -766,14 +777,25 @@ class Parser:
             orelse = self.parse_block()
         return ["if", test, body, orelse]
 
+    def reject_loop_else(self, head: Token, what: str) -> None:
+        # `else` at the loop's own column belongs to the loop. Silu has
+        # no loop else; the reference front end names it the same way.
+        # (An `else` further left is the partner of an enclosing `if`.)
+        t = self.cur()
+        if t.kind == TokKind.KW and t.text == "else" and t.col == head.col:
+            self.error("'else' on a " + what + " loop is not part of Silu", t)
+
     def parse_while(self) -> object:
+        head_w = self.cur()
         self.expect("while")
         test = self.parse_expr_nt()
         self.expect(":")
         body = self.parse_block()
+        self.reject_loop_else(head_w, "while")
         return ["while", test, body]
 
     def parse_for(self) -> object:
+        head_f = self.cur()
         self.expect("for")
         first = self.expect_kind(TokKind.NAME).text
         target = ["name", first]
@@ -787,7 +809,28 @@ class Parser:
         iter_expr = self.parse_expr()
         self.expect(":")
         body = self.parse_block()
+        self.reject_loop_else(head_f, "for")
         return ["for", target, iter_expr, body, []]
+
+    def parse_comp_target(self) -> object:
+        # comprehension target: one name, or `a, b` / `(a, b)`. The
+        # two-name forms emit ["tuple", [names]] exactly like the
+        # Python frontend - which used to be the only one accepting
+        # them (this parser answered "expected 'in', got ','").
+        paren: bool = self.cur().kind == TokKind.OP and self.cur().text == "("
+        if paren:
+            self.nxt()
+        names = [["name", self.expect_kind(TokKind.NAME).text]]
+        while self.cur().kind == TokKind.OP and self.cur().text == ",":
+            self.nxt()
+            if paren and self.cur().text == ")":
+                break
+            names.append(["name", self.expect_kind(TokKind.NAME).text])
+        if paren:
+            self.expect(")")
+        if len(names) == 1:
+            return names[0]
+        return ["tuple", names]
 
     def stmt_ends_with_colon(self) -> bool:
         # the lexer swallows newlines inside brackets, so the first NL
@@ -1293,10 +1336,13 @@ class Parser:
             if t.text == "lambda":
                 self.nxt()
                 lparams: list[str] = []
+                self.reject_param_default()
                 lparams.append(self.expect_kind(TokKind.NAME).text)
                 while self.cur().kind == TokKind.OP and self.cur().text == ",":
                     self.nxt()
+                    self.reject_param_default()
                     lparams.append(self.expect_kind(TokKind.NAME).text)
+                self.reject_param_default()
                 self.expect(":")
                 lbody = self.parse_expr_nt()
                 return ["lambda", lparams, lbody]
@@ -1334,7 +1380,7 @@ class Parser:
                 t = self.cur()
                 if t.kind == TokKind.KW and t.text == "for":
                     self.nxt()
-                    target = self.expect_kind(TokKind.NAME).text
+                    target = self.parse_comp_target()
                     self.expect("in")
                     # iter and filters stop below the conditional-expression
                     # layer: a bare `if` here belongs to the comprehension
@@ -1349,7 +1395,7 @@ class Parser:
                             break
                     self.expect("]")
                     return ["list_comp", items[0],
-                            [[["name", target], iter_expr, conds]]]
+                            [[target, iter_expr, conds]]]
                 while self.accept(","):
                     if self.cur().text == "]":
                         break
@@ -1369,7 +1415,7 @@ class Parser:
                 # dict comprehension: {k: v for t in iter (if c)*}
                 if self.cur().kind == TokKind.KW and self.cur().text == "for":
                     self.nxt()
-                    target = self.expect_kind(TokKind.NAME).text
+                    target = self.parse_comp_target()
                     self.expect("in")
                     iter_expr = self.parse_or()
                     conds = []
@@ -1382,7 +1428,7 @@ class Parser:
                             break
                     self.expect("}")
                     return ["dict_comp", [k, v],
-                            [[["name", target], iter_expr, conds]]]
+                            [[target, iter_expr, conds]]]
                 items.append((k, v))
                 while self.accept(","):
                     if self.cur().text == "}":
@@ -1396,7 +1442,7 @@ class Parser:
             # set comprehension: {e for t in iter (if c)*}
             if self.cur().kind == TokKind.KW and self.cur().text == "for":
                 self.nxt()
-                target = self.expect_kind(TokKind.NAME).text
+                target = self.parse_comp_target()
                 self.expect("in")
                 iter_expr = self.parse_or()
                 conds = []
@@ -1409,7 +1455,7 @@ class Parser:
                         break
                 self.expect("}")
                 return ["set_comp", k,
-                        [[["name", target], iter_expr, conds]]]
+                        [[target, iter_expr, conds]]]
             # set literal: {e, e, ...}
             items.append(k)
             while self.accept(","):
@@ -2139,7 +2185,14 @@ def hoist_module(mod: object) -> object:
             if dyn_head(st) == "func_def" or dyn_head(st) == "class_def":
                 global_names.append(dyn_get(st, 1))
             elif dyn_head(st) == "assign" or dyn_head(st) == "ann_assign":
-                global_names.append(dyn_get(st, 1))
+                # only a NAME is a global (nested_hoist's isinstance
+                # guard): `h.n = 5` assigns to an attribute NODE, and
+                # the node in the list[str] crashed the front end with
+                # "TypeError: expected str" on every module-level
+                # attribute store
+                tgt = dyn_get(st, 1)
+                if isinstance(tgt, str):
+                    global_names.append(tgt)
 
     out = []
     for j, st in enumerate(stmts):

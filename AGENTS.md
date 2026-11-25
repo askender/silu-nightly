@@ -33,7 +33,7 @@
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
 2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
-**silu 1.24.0（oracle 形状补齐重钉：dss 2 参族/aug/字面量/动态 pop 语义 + cp_offset 死函数退役；1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
+**silu 1.25.0（语义轮重钉：容器边迭代边改、推导式作用域、dss 借用语义 + ll 门禁 verifier；1.24.0=oracle 形状补齐/dss 2 参族，1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
@@ -59,6 +59,7 @@ cd <仓库根>                                  # 以下命令都必须在仓库
 tools/gates.sh                               # 全门禁一条命令：ruff + IR/ll 四个平面 + 全量 pytest
                                              #   + GitHub 上 HEAD 的 CI 结论；退出 0 才能称"全门禁绿"
 tools/gates.sh --no-pytest                   # 只跑平面门禁（秒~分钟级）
+python3 tools/regen_rust_prefix.py            # 改运行时发射器后重生成 rs 前缀快照（--check 只校验）
 export PATH="$HOME/.cargo/bin:$PATH"        # cargo 常不在默认 PATH
 $PY312 reference/diff_harness.py ir fe rustfe    # 前端 IR 平面，31/31
 $PY312 reference/diff_harness.py ir fe pyir      # 自举前端 vs Python 前端，31/31
@@ -79,8 +80,34 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 ——门禁不会再跑在陈旧二进制上。**lint 属于门禁**：`tests/test_lint.py`
 跑的就是 CI 的那条 ruff 命令，pytest 全绿即蕴含 ruff 干净。
 
-## 当前状态锚点（2026-11-18）
+## 当前状态锚点（2026-11-26）
 
+- **语义轮（2026-11-26，STATUS §3.36）**：304 探针扫出的"门禁全绿
+  但答案错/崩"的一批根因修复，全部先 CPython 对拍再动手——
+  ①**容器边迭代边改**：typed dict 循环改按 entry 数组走（插入序，
+  reindex 保序、覆盖写不再 reindex），每步核对 count/filled/keys
+  指针，结构变化即 `RuntimeError`（旧实现一次性抓 table/keys/vals，
+  体内一次扩容就踩释放内存）；动态 dict/set 加 `pyobj_dict_*`
+  监视运行时；list 循环改活动长度（工作表惯用法）；str 循环体内
+  重绑定走快照拷贝（return 路径经 `loop_str_cleanups` 释放）。
+  ②**推导式**：元组目标绑定（三个前端都解析，此前两个拒绝、
+  Python 平台静默给 `[2, 2]`）+ 目标作用域（遮蔽的名字还原，
+  typed 槽仅在可迭代对象声明元素种类时解箱）。
+  ③**dss 借用语义**：`_mark_borrowed_str`——`d[k]`/get/setdefault
+  的结果归 dict 所有，赋值拷贝、语句释放跳过（旧实现语句形式直接
+  free 掉 dict 自己的缓冲）；`dict[str,str]` 可作参数种类。
+  ④其余：`del xs[i]`、dict `==` 内容比较、`s += f()` 单次求值、
+  strbuf 非常量构造、IEEE-754 边界字面量、pow/range/count/kwargs。
+  ⑤**ll 门禁带 verifier**（diff_harness 对逐字节一致的模块跑真
+  llvmlite verify）：del 运行时的 phi 不支配整段会话没人发现——
+  clang 照样汇编、四平面字节一致，只有 pytest 红（164 个）。
+  ⑥自举前端 `hoist_module` 漏了 nested_hoist 的 isinstance 守卫，
+  模块级 `h.n = 5` 直接崩（已钉 record_global.si）。
+  语料 33 文件（selfhost/comp_unpack.si）；门禁 ir 33/33、ll 32/32
+  （含 verifier）、语义门禁 217（tests/test_semantics_vs_cpython.py，
+  Python 平面 + 自举平面各跑一遍）。**rs 神谕的字母表缺口**（一律
+  bail，不是错误字节）：typed dict 作函数参数、typed dict 循环、
+  typed 槽的推导式遮蔽、模块级 str `+=`、整只 dss dict 的 print。
 - **oracle 形状补齐轮全收口（2026-11-22 深夜，e74c38a→6ce0680）**：
   §3.32 五项全部落地——①rs dss 2 参族（get/pop/setdefault tail PStr
   臂 + py 求值顺序对齐：pop/get 键先、setdefault 默认值元组先）②rs
@@ -370,6 +397,18 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   object 返回函数的 and/or 不 create_bool 直接 ret。
 - **迭代器五族**（range/riter/object/dict/str）块名、创建顺序、
   null store 位置各不相同。
+- **raw dict 布局**：`{count, filled, cap, mask, table, keys, vals}`
+  七个 i64；entry 数组按插入序追加，`filled` 是已用 entry 数；
+  reindex 按 entry 序压紧（保序）；int 键的删除不留标记（0 是合法
+  键）——entry 存活要问表（`rawdict_int_entry_of`），str 键的删除把
+  entry 清零。负载检查只在插入路径（覆盖写永不 reindex）。
+- **循环头先核对后判界**：dict 循环每步核对 count/filled/keys
+  指针（`_panic_if`×2），list 每步重读长度，str 的 `siter_*` 块序
+  cond/body/end；generic 循环带 `pyobj_dict_count/used/entries_bits`
+  三个捕获 + `pyobj_dict_watch`。
+- **borrowed rawstr**：`_mark_borrowed_str` 登记的结果不被语句释放、
+  赋值时拷贝；每个语句开头清表。所有其余 RAWSTR 表达式结果都视为
+  "新鲜临时"——新增返回容器内部指针的读路径必须登记。
 
 ## 已知坑
 
@@ -386,3 +425,17 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   逐字符 `+=`/循环内切片。
 - Python 平面跑 `.ll` 全量对拍较慢（typed_codegen_flat 需分钟级），
   IR 平面与 Rust 平面都是毫秒级。
+- **`benchmarks/*.si` 全部要过 ir2c（C 后端）**：`test_m5_benchmarks_
+  match_cpython` 把每个 benchmark 经纯 Silu 的 ir2c 编译执行对拍
+  CPython（record_global/jsonparse 两个在 skip 表里）。新钉板若用到
+  C 后端没有的形状，放 `selfhost/`（float_edge、comp_unpack 的先例）
+  并登记 CORPUS_IR + test_frontend_parity_corpus + test_llvmlite_text
+  PROGRAMS 三处。
+- **新钉板还受 rs 神谕字母表约束**：语料里出现的每个形状 rs 都要
+  能逐字节镜像（否则 ll 门禁红）。先拿 `silu-conv` 单跑新文件看
+  bail 在哪，再决定放 benchmarks/、selfhost/ 还是只进语义门禁。
+- **语义测试的源码字符串也是程序**：写错缩进就是死循环（`i += 1`
+  顶格写在 while 外，三个平面一起"超时"）。用例先在 pb 式四平面
+  脚本里过一遍再入表。
+- gates.sh 失败时把完整 pytest 输出留在 `gates-last-failure.log`
+  （*.log 已忽略）；屏幕上只有最后 25 行，大面失败时要看这个文件。

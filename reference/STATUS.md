@@ -3,13 +3,15 @@
 > 交接快照：当前状态、未决事项、调查现场、关键教训。
 > 规约细节锚点仍是 `reference/PROGRESS.md`；本文负责"接下来做什么"。
 >
-> **v1.24.0 已重钉（2026-11-22 深夜）**：oracle 形状补齐轮 + 钉板
-> 扩容 + 动态 pop 语义 + pyobj_utf8_cp_offset 死函数退役（前缀
-> 390,013B）。版本四件套（__init__/setup.py/AGENTS 钉行/本行）。
+> **v1.25.0 已重钉（2026-11-26）**：语义轮——容器边迭代边改、
+> 推导式作用域、dss 借用语义、ll 门禁 verifier（前缀 421,380B）。
+> 版本四件套（__init__/setup.py/AGENTS 钉行/本行）；**tag 未打**
+> （发布动作留给用户）。
 >
-> **换客户端第一站 = §3.35（2026-11-24）**：STATUS §四 可行动 TODO
-> 全部关闭（g-#10 推断分歧闭合收尾）。钉住版本 v1.24.0。剩余全部
-> 用户门控：P7 立项（T1/T3 未触发）、PROPOSALS 六提案（硬约束 4）。
+> **换客户端第一站 = §3.36（2026-11-26）**：语义轮收口，全门禁绿
+> （ir 33/33、ll 32/32×2 含 verifier、pytest 1636/2）。§四 顶部新增
+> 四条可行动项（rs 字母表缺口、ir2c str 所有权、一参 get 未命中
+> 语义裁决、解释器边角），其余仍用户门控（P7、PROPOSALS）。
 
 ## 一、已提交状态
 
@@ -1393,7 +1395,89 @@ corpus 16/16、backend 18/18、run 4+14、wat2wasm 43/43）：
 （cp_offset 已随 v1.24.0 退役）。**无遗留可行动项**；PROPOSALS.md
 六提案与 P7 立项均须用户裁决（硬约束 4）。
 
+## 三点三十六、语义轮：编译产物对齐 CPython（2026-11-26）
+
+**起因**：304 探针扫描（/tmp 电池，五平面对拍）发现约 20 种
+"每个字节门禁都绿、`silu build` 也接受、答案却错或段错误"的程序。
+本轮按严重度逐个修到根因；每条修复先 `siluc1 < X.si` 留参照、
+CPython 生成期望、多平面执行对拍后才动手。
+
+**修复清单**（全部已提交，详见 CHANGELOG "Unreleased"）：
+
+| 类别 | 根因 | 修法 |
+|---|---|---|
+| typed dict 边迭代边改 | 循环一次性抓 table/keys/vals；按哈希槽走 | 按 entry 数组走（插入序）；reindex 保序；每步核对 count/filled/keys 指针，结构变化 `RuntimeError`；覆盖写不再 reindex（负载检查移到插入路径） |
+| 动态 dict/set | 快照列表，体内改动无感知 | `pyobj_dict_count/used/entries_bits` + `pyobj_dict_watch` 运行时（set 走 tag 8 长度） |
+| list 循环 | 长度快照（items 指针也提升） | 活动长度 + 每步重读 items |
+| str 循环 | 体内重绑定后被迭代的缓冲已释放 | `_body_rebinds` 判定 → `rawstr_copy` 快照；`loop_str_cleanups` 在 return 路径释放 |
+| 推导式 | 元组目标被跳过；目标名泄漏 | 三个前端解析元组目标；`_push/_pop_comprehension_scope`；typed 槽仅在元素种类已知时解箱 |
+| dss 借用 | 读结果被当新鲜临时 | `_mark_borrowed_str`：赋值拷贝、语句释放跳过 |
+| del xs[i] | 装箱后对拷贝做 dict_pop | `rawlist_delete_at`/`rawlist_str_delete_at` + `pyobj_delete_dispatch` |
+| 其余 | pow/range/count/kwargs/arity/defaults/for-else/None 打印/dict ==/s += 双求值/移位与 int(float) 检查/strbuf 非常量构造/IEEE-754 字面量 | 见 CHANGELOG |
+
+**门禁升级**：
+
+- `tests/test_semantics_vs_cpython.py`（217 项）：期望由 CPython 现场
+  产生，**Python 平面与自举平面各跑一遍**（转换器有两份实现，只测
+  一份看不出孪生有没有跟上）；另有 MUST_REJECT / MUST_PANIC 两表。
+- `diff_harness.py` ll 模式对逐字节一致的模块跑真 llvmlite
+  `parse_assembly + verify`——**同轮当场抓获** del 运行时的 phi 不
+  支配（`del_negative` 里引用了 `del_bounds` 才定义的值）：clang
+  照样汇编、四平面字节一致，只有 pytest 红（164 个）。
+- `tools/gates.sh` 失败时完整 pytest 输出留 `gates-last-failure.log`
+  并按文件汇总（屏幕只有最后 25 行，164 红只看得到 24 条）。
+- `tools/regen_rust_prefix.py`（`--check` 入门禁）。
+
+**语料**：33 文件。新钉板 `selfhost/comp_unpack.si`（推导式元组
+目标 + 遮蔽还原，三前端 + rs 逐字节）；`dict_str.si` 扩所有权形状；
+`record_global.si` 扩模块级属性赋值。comp_unpack 最初放
+benchmarks/ 被 ir2c 拦下（m5 要求每个 benchmark 过 C 后端）→ 移到
+selfhost/（float_edge 先例）。
+
+**rs 神谕镜像**：typed list 循环（`riter`/enumerate）长度移入 cond、
+generic `conv_dyn_for` 与推导式的 dict 监视 + 活动长度、动态 for 的
+元组目标、推导式元组目标与作用域、`borrows_dict_entry`（dss 借用）、
+模块级实例属性赋值、`reg_py`（模块级 pyobj 名是全局不是 alloca）。
+前缀 421,380B。
+
+**C 后端 ir2c 顺手修复**（dict_str 扩容后被 m5 暴露）：模块级 str
+`+=` 发出 `Str* + Str*`（clang 编译失败）→ `str_add`；`t = s + "d"`
+的 `str_add` 原地改写左操作数并让 t 别名 s → 只在被重新赋值的槽上
+原地（`str_inplace_ok`），其余 `str_concat`；dss 的下标/get/
+setdefault 读交出 `str_copy`。
+
+**验证**：全门禁绿——ir 33/33×2、ll 32/32×2（含 verifier）、pytest
+**1636/2**、m5 C 后端 benchmark 全量对拍。70 探针 ASan 零报告。
+
+**既知残差（未修，入 §四）**：rs 字母表缺口（typed dict 参数/循环、
+typed 槽推导式遮蔽、模块级 str `+=`、整只 dss print——均 bail）；
+ir2c 的 `d[k] = v` 存储仍别名；wasm 后端的 dict 循环是
+`idx < $ds_len(d)` + `$ds_key(d, idx)` 的活动下标走法——体内插入/
+删除不报错（与原生平面的 RuntimeError、与 CPython 都不一致，
+wasm/test_backend.mjs 未覆盖该形状）；一参 `d.get(k)` 对
+dict[str,str] 未命中返回 `""`（有意设计，已记入
+docs/semantics.md，解释器仍回 None——平面分歧，待裁决）；set/tuple
+的 repr 与 CPython 不同（`{'a'}` 打成 `['a']`）；多生成器推导式
+（`[x for a in b for x in a]`）两个替代前端仍拒绝、Python 平台报
+`name 'e' is not defined`；`bool()/all()/sorted()/zip()` 重写成不
+存在的 `_builtin_*`。**教训 11-13 见 §六。**
+
 ## 四、其余 TODO（优先级序）
+
+- [ ] **rs 神谕字母表**（§3.36 残差）：typed dict 作函数参数
+  （`param type in f` bail）、typed dict 循环（按 entry 走 + 监视）、
+  typed 槽的推导式遮蔽、模块级 str `+=`、整只 dss dict 的 print。
+  每项先拿 `silu-conv` 单跑最小探针看 bail 位置；补齐后把对应形状
+  入钉板（否则这些能力只受语义门禁保护、rs 不参与）。
+- [ ] **ir2c 的 str 所有权**：`d[k] = v` 存的是 v 的指针（应拷贝）；
+  `str_concat` 对 `f() + "x"` 类左操作数每次新拷贝（调用结果是
+  独占的，可原地）。正确性优先于性能，前者是真别名 bug。
+- [ ] **一参 `d.get(k)` 在 dict[str,str] 上的未命中语义**：编译返回
+  `""`、解释器返回 None、CPython 返回 None——需裁决（改编译要动
+  dict_str 钉板 + rs 的 PStr 臂；改解释器则偏离 CPython）。
+- [ ] 解释器 `global` 被接受但被忽略；`sorted(key=, reverse=)` 被
+  忽略；set/tuple repr 与 CPython 不同；多生成器推导式在三个前端
+  的支持面不一致；wasm 后端 dict 循环的体内结构变化不报错。
 
 1. ✅ **str 临时值生命周期（2026-11-14 深夜落地，追平两平面）**：
    单表达式 `SRC[0][n]` / `SRC[0][a:b]` 的内层 rawlist_str_get 拷贝
@@ -1513,3 +1597,17 @@ git push ssh://git@ssh.github.com:443/askender/silu-nightly.git main`
    表达集合成员（自举构建 'call to unknown function' 当场暴露）；
    追踪转换器行为要在**真实 JSON 流**上打点（IRGenerator 的 tuple
    形状是 FE 内部表示，convert 吃 list JSON——打错层全程无命中）。
+11. （2026-11-26 语义轮）**字节一致 ≠ IR 合法**（教训 7 的第四形态，
+   这次整段会话没人发现）：phi 引用了后继块才定义的值，clang 照样
+   汇编、运行时碰巧正确、四平面一致——**ll 门禁现在自带 verifier**；
+   改运行时发射器后若 pytest 大面积变红，先跑
+   `tests/test_typed_codegen.py`（它调真 verifier）。
+12. （同轮）**转换器有两份实现，修复必须两份都验**：模块级辅助函数
+   放 typed_call.py 会被 flatten 丢掉（'call to unknown function'）
+   → 一律放 typed_helpers.py 并加进 `__all__`；`getattr`/`setattr`/
+   frozenset/默认参数/捕获嵌套函数都是孪生雷区。每修一处就
+   `ensure_siluc` 重建后用同一探针跑自举平面。
+13. （同轮）**新钉板有三道隐形门槛**：m5 要求 benchmarks/ 下每个
+   文件过 ir2c；语料里每个形状 rs 都要能镜像；语义测试的源码字符串
+   写错缩进就是死循环（`i += 1` 顶格，三平面一起"超时"，差点当成
+   编译器死循环 bug）。先用多平面探针脚本过一遍再入表。

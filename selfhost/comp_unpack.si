@@ -1,0 +1,17 @@
+# Comprehension targets that unpack: [n for n, s in rows] binds BOTH
+# names from every element, and a target that shadows an enclosing
+# dynamic binding gives it back when the comprehension ends (Python 3
+# scopes targets to the comprehension). The converter used to skip a
+# tuple target silently - after a `for n, s in rows` loop the answer
+# was [2, 2] - and let the last element clobber the enclosing binding.
+rows = [[1, "a"], [2, "b"], [3, "c"]]
+for n, s in rows:
+    m = n
+r = [n for n, s in rows]
+q = [s for n, s in rows]
+t = [n * 10 for n, s in rows if n != 2]
+print(m, r, q, t, n, s)
+
+grid = [[1, 2], [3, 4]]
+sums = [a + b for a, b in grid]
+print(sums)

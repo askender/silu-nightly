@@ -55,9 +55,36 @@
   读取交出**新拷贝**（读出即拥有，改 `l[0]` 不影响已读出的值）——
   因此它可以安全地做逐元素 drop（clear/覆写/作用域退出），与
   rawdict 的 str 键同一套所有权约定。
-- `dict[int, int]` / `dict[int, float]` 的键序不保证与 CPython 一致
-  （开放寻址哈希表，`print(d)` 的顺序是表序而非插入序）；`len`、
-  查找、`del` 语义一致。
+- **dict 的键序是插入序，与 CPython 一致**（typed dict 的五个族与
+  动态 dict 都是）：`for k in d`、`.items()`/`.keys()`/`.values()`、
+  `print(d)`、装箱同一个顺序；删除后的重排（reindex）按 entry 序
+  压紧，`d[k] = v` 覆盖已有键绝不触发重排。（早期版本按哈希表序
+  迭代 typed dict，输出与 CPython 不同。）
+- **在自身的循环里改结构是运行时错误**：循环体对正在迭代的 dict
+  做插入、删除、`pop`、`clear`，或对正在迭代的 set 做 `add`，下一步
+  循环头 panic `RuntimeError: dictionary changed size during iteration`
+  （先检查后判界，所以最后一次迭代里的改动照样报错，与 CPython
+  相同）。`break` 之后的改动不算。只改值（`d[k] = v * 10`）永远合法，
+  后续迭代读到新值。**比 CPython 严格的一点**：先删后插使大小不变
+  时，CPython 继续迭代，Silu 同样 panic（`dictionary modified during
+  iteration`）——CPython 文档本就允许这种程序"漏迭代"。
+- **list 循环按活动长度走**（CPython 的 list 迭代器语义）：循环体里
+  `append` 的元素会被访问到（工作表惯用法 `for x in xs:
+  xs.append(...)`），`pop` 会缩短循环；typed 与动态 list 一致。
+- **str 循环迭代进入循环时的内容**：循环体里对被迭代的名字重绑定
+  或原地追加，都不影响正在进行的循环。
+- **`del xs[i]`**（typed / 动态 list）：尾部左移、长度减一，负下标
+  从末尾数，越界 panic `IndexError`。
+- **dict 相等按内容**：`==` / `!=` 比较键值对（嵌套递归比较），
+  与顺序无关；list 的 `==` 同理。
+- **`dict[str, str]` 的值归 dict 所有，读是借用**：`x = d[k]` 得到
+  拷贝（`x += "!"` 不影响 dict）；`d.get(k)` / `d.setdefault(k, v)`
+  同样交出拷贝；`d.pop(k)` 把所有权交给调用方。已知差异：一参
+  `d.get(k)` 未命中返回**空串**而非 None（typed str 不能为 None），
+  二参形式与 CPython 一致；一参 `pop` 未命中 panic KeyError。
+- **一个名字一种类型**：同一作用域里一个名字只能有一种表示。
+  `for k in int_dict` 之后再 `for k in str_dict` 是编译错误（改个
+  名字）；同理 `x = 5` 之后 `x = "a"`。
 - 边界检查：默认 panic 并报行号；`SILU_CHECKS=0` 时下标越界是
   未定义行为（UB）——只在已验证的程序上关。
 
@@ -114,6 +141,16 @@
 - 跨函数推断同样保守：参数从未在函数体内改绑、且所有调用点传同一
   原始类型才非装箱传递；返回表达式全部解析为同一类型才非装箱返回。
   递归、关键字参数、元数不符、调用点类型冲突一律回落动态 ABI。
+- **推导式的目标名只属于推导式**（Python 3 作用域）：`x = a;
+  y = [x for x in xs]` 之后 `x` 仍是 `a`。目标可以遮蔽一个已有的
+  动态名字，或一个类型与元素种类相同的 typed 槽（`list[str]` 的元素
+  进 str 槽、`list[int]` 进 int 槽）；元素种类对不上（动态可迭代对象
+  进 typed 槽、str 元素进 int 槽）是编译错误。元组目标
+  `[n for n, s in rows]` 的每个名字都绑定。
+- **函数里后赋值的名字是整函数的局部量**（Python 规则）：
+  `def f(): y = x; x = 2` 里读 `x` 是编译错误
+  （`is read before it is assigned ... Python raises UnboundLocalError`），
+  不是回落去读模块全局。
 
 ## 6. 检查开关
 
@@ -130,3 +167,7 @@
   任何分歧都是编译器 bug。
 - 运行时错误带源码行号：`IndexError: list index out of range (line 3)`。
 - `silu symbolic program.si`：Z3 符号执行，枚举路径并生成测试输入。
+- **语义门禁** `tests/test_semantics_vs_cpython.py`：期望值由真
+  CPython 现场产生，每个用例在 Python 平面（`silu build`）和自举
+  平面（`siluc1` → clang）各跑一遍；另有"必须编译失败"（不支持的
+  构造）与"必须响亮 panic"（文档化差异）两张表。

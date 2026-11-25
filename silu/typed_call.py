@@ -11,7 +11,9 @@ from typing import Any, Tuple
 
 from silu.ir_iface import ir
 from silu.typed_helpers import (
-    BUF, F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, RAWLIST_JSON, RAWDICT_SJ, LLVM_KIND_TYPES, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
+    BUF, F64, I1, I64, INSTANCE, JSON, JSON_TAG_STR, JSON_TAG_LIST, JSON_TAG_DICT, RAWLIST_JSON, RAWDICT_SJ, OBJ, RAWCHAR_VIEW, RAWDICT_KINDS, RAWDICT_STR_KINDS, RAWLIST_KINDS, RAWLIST_S, RAWSTR, _inst_kind, _is_inst, _rawdict_call_fn, _rawstr_load_data, _rawstr_load_len, _twin_utf8_len, _type_ret, _type_text,
+    _RANGE_AS_VALUE, _is_range_call, _range_const_span, _range_len,
+    _range_values, _STR_REJECTED_METHODS, _BUILTIN_ARITY,
 )
 
 
@@ -38,6 +40,11 @@ class TypedCallMixin:
             and len(func_node) >= 3
             and func_node[0] == "attribute"
         ):
+            if len(node) > 3 and node[3]:
+                # l.index(1, start=0) used to drop `start` on the floor
+                raise NotImplementedError(
+                    "keyword arguments are not supported for method "
+                    f"calls ('.{func_node[2]}')")
             _r = self._call_method(func_node, args_node)
             if _r is not None:
                 return _r
@@ -78,6 +85,60 @@ class TypedCallMixin:
             else str(func_node)
         )
         raise NotImplementedError(f"call to unknown function '{callee_desc}'")
+
+    def _bind_keyword_args(self, func_name, args_node, kwargs):
+        """Keyword arguments of a call to a function with a known
+        definition are bound by name and the call goes on as positional.
+
+        Every call used to DROP its keyword arguments on the floor:
+        f(b=3, a=4) called f() with no arguments at all and printed 0.
+        Constructors and dict() bind their own keyword arguments (their
+        emitters read the list); anything else is an error. Argument
+        evaluation follows parameter order, not source order."""
+        if not kwargs:
+            return args_node
+        if (
+            func_name == "dict"
+            or func_name == "print"
+            or func_name in self._class_layouts
+        ):
+            return args_node
+        if func_name not in self.function_defs:
+            raise NotImplementedError(
+                f"keyword arguments are not supported for '{func_name}'")
+        params = list(self.function_defs[func_name][2])
+        if len(args_node) > len(params):
+            raise TypeError(
+                f"{func_name}() takes {len(params)} arguments "
+                f"({len(args_node)} given)")
+        slots = list(args_node)
+        filled = []
+        for _ in args_node:
+            filled.append(True)
+        for _ in range(len(params) - len(args_node)):
+            slots.append(None)
+            filled.append(False)
+        for kw_name, kw_node in kwargs:
+            if kw_name not in params:
+                raise TypeError(
+                    f"{func_name}() got an unexpected keyword argument "
+                    f"'{kw_name}'")
+            index = params.index(kw_name)
+            if filled[index]:
+                raise TypeError(
+                    f"{func_name}() got multiple values for argument "
+                    f"'{kw_name}'")
+            slots[index] = kw_node
+            filled[index] = True
+        missing = []
+        for index, ok in enumerate(filled):
+            if not ok:
+                missing.append(params[index])
+        if missing:
+            raise TypeError(
+                f"{func_name}() missing {len(missing)} required "
+                "argument(s): " + ", ".join(missing))
+        return slots
 
     def _call_method(self, func_node, args_node):
         method_name = func_node[2]
@@ -186,6 +247,28 @@ class TypedCallMixin:
                 return (OBJ, ir.const_(
                     ir.PointerType(self.pyobj.pyobj_type), None
                 ))
+            if method_name == "count" and len(args_node) == 1:
+                # typed lists had neither count nor index: both compiled
+                # and raised AttributeError at run time
+                return (
+                    I64,
+                    self._rawlist_elem_call(
+                        raw_kind, list_ptr, args_node[0],
+                        self.rawlist_count_bits, self.rawlist_str_count,
+                    ),
+                )
+            if method_name == "index" and len(args_node) == 1:
+                found = self._rawlist_elem_call(
+                    raw_kind, list_ptr, args_node[0],
+                    self.rawlist_index_bits, self.rawlist_str_index,
+                )
+                self._panic_if(
+                    self.current_builder.icmp_signed(
+                        "<", found, ir.const_(ir.IntType(64), 0)
+                    ),
+                    "ValueError: list.index(x): x not in list",
+                )
+                return (I64, found)
             return self._unsupported_raw_method(raw_kind, method_name)
         if raw_kind in RAWDICT_KINDS:
             value_kind = RAWDICT_KINDS[raw_kind]
@@ -217,7 +300,7 @@ class TypedCallMixin:
                         self.rawdict_get_or, self.rawdict_str_get_or,
                         (self._dict_value_bits(args_node[1], value_kind),),
                     )
-                    return self._dict_bits_to_value(bits, value_kind)
+                    return self._dict_result(bits, value_kind, True)
                 if len(args_node) == 1:
                     # get(k): value when present, None (null)
                     # otherwise. Materialize the key once: the view
@@ -251,7 +334,7 @@ class TypedCallMixin:
                             self.rawdict_str_get_or,
                             [raw_obj_tv[1], key_ptr, epi],
                         )
-                        return self._dict_bits_to_value(bits, value_kind)
+                        return self._dict_result(bits, value_kind, True)
                     present = self.current_builder.call(
                         _rawdict_call_fn(
                             raw_kind, self.rawdict_has,
@@ -305,7 +388,7 @@ class TypedCallMixin:
                     self.rawdict_setdefault, self.rawdict_str_setdefault,
                     (self._dict_value_bits(args_node[1], value_kind),),
                 )
-                return self._dict_bits_to_value(bits, value_kind)
+                return self._dict_result(bits, value_kind, True)
             if method_name == "clear" and not args_node:
                 self.current_builder.call(
                     _rawdict_call_fn(
@@ -330,6 +413,11 @@ class TypedCallMixin:
             )
             if handled is not None:
                 return handled
+            # fail closed: the boxed map below dispatches by name only,
+            # and a container operation would run on a string box
+            if method_name in _STR_REJECTED_METHODS:
+                raise NotImplementedError(
+                    f"method '{method_name}' is not supported on str")
         obj = self._box(raw_obj_tv)
         # built once, then cached: this 28-entry dict was rebuilt on
         # EVERY method call - one fresh pyobj dict (with its rehash
@@ -341,7 +429,9 @@ class TypedCallMixin:
             "append": (self.list_append, 1, True),
             "reverse": (self.list_reverse, 0, True),
             "insert": (self.list_insert, 2, True),
-            "count": (self.list_count, 1, True),
+            # tag-dispatched: str.count(sub) or list.count(item) - bound
+            # to list_count outright it segfaulted on every str receiver
+            "count": (self.pyobj_count_dispatch, 1, True),
             "index": (self.list_index, 1, True),
             "add": (self.pyobj_set_add, 1, False),
             "discard": (self.pyobj_set_discard, 1, False),
@@ -424,6 +514,49 @@ class TypedCallMixin:
     def _call_named(self, func_node, args_node, node):
         func_name = func_node[1]
 
+        args_node = self._bind_keyword_args(
+            func_name, args_node, node[3] if len(node) > 3 else [])
+        if func_name in _BUILTIN_ARITY and not (
+            _BUILTIN_ARITY[func_name][0]
+            <= len(args_node) <= _BUILTIN_ARITY[func_name][1]
+        ):
+            raise TypeError(
+                f"{func_name}() takes "
+                + (
+                    f"{_BUILTIN_ARITY[func_name][0]} argument(s)"
+                    if _BUILTIN_ARITY[func_name][0]
+                    == _BUILTIN_ARITY[func_name][1]
+                    else f"{_BUILTIN_ARITY[func_name][0]}.."
+                    f"{_BUILTIN_ARITY[func_name][1]} arguments"
+                )
+                + f" ({len(args_node)} given)")
+
+        # range(...) as a value: intercepted before the argument is
+        # converted, so the bare-range handler below never runs for it.
+        # len(range(<literals>)) folds to its count, list(range(<literals>))
+        # to the equivalent list literal.
+        if (
+            func_name in ("len", "list")
+            and len(args_node) == 1
+            and _is_range_call(args_node[0])
+        ):
+            span = _range_const_span(args_node[0])
+            if func_name == "len":
+                if span is not None:
+                    return (
+                        I64,
+                        ir.const_(ir.IntType(64),
+                                  _range_len(span[0], span[1], span[2])),
+                    )
+            elif span is not None and _range_len(
+                span[0], span[1], span[2]
+            ) <= 65536:
+                values = _range_values(span[0], span[1], span[2])
+                return self._convert_node(
+                    ["list", [["const", v] for v in values]]
+                )
+            raise NotImplementedError(_RANGE_AS_VALUE)
+
         if func_name in self._c_externs:
             return self._emit_c_extern_call(
                 self._c_externs[func_name], args_node
@@ -467,18 +600,31 @@ class TypedCallMixin:
         if func_name == "print":
             kwargs = node[3] if len(node) > 3 else []
             end_str = "\n"
+            sep_str = " "
             for kw_name, kw_value_node in kwargs or ():
-                if kw_name == "end" and (
-                    isinstance(kw_value_node, list)
+                # only `end` was honoured: print("a", "b", sep="") printed
+                # "a b" and a non-literal end (or file=, flush=) vanished
+                literal = (
+                    isinstance(kw_value_node, (list, tuple))
                     and len(kw_value_node) >= 2
                     and kw_value_node[0] == "const"
                     and isinstance(kw_value_node[1], str)
-                ):
+                )
+                if kw_name not in ("end", "sep"):
+                    raise NotImplementedError(
+                        f"print() does not support the keyword argument "
+                        f"'{kw_name}'")
+                if not literal:
+                    raise NotImplementedError(
+                        f"print({kw_name}=...) takes a string literal")
+                if kw_name == "end":
                     end_str = kw_value_node[1]
+                else:
+                    sep_str = kw_value_node[1]
             if args_node:
                 for index, arg_node in enumerate(args_node):
                     if index > 0:
-                        sep = self._create_global_string(" ")
+                        sep = self._create_global_string(sep_str)
                         self.current_builder.call(self.printf, [sep])
                     # print specialisation: a statically-typed scalar
                     # or string renders straight through printf /
@@ -789,10 +935,9 @@ class TypedCallMixin:
             if arg_tv[0] == I1:
                 return (I64, self._coerce(arg_tv, I64)[1])
             if arg_tv[0] == F64:
-                return (
-                    I64,
-                    self.current_builder.fptosi(arg_tv[1], ir.IntType(64)),
-                )
+                # int(2.5) truncates; NaN / out of range panics instead
+                # of reading the poison fptosi leaves behind
+                return (I64, self._float_to_int_checked(arg_tv[1]))
             if arg_tv[0] == OBJ:
                 return self._convert_obj_number(arg_tv, False)
             if arg_tv[0] in (RAWSTR, RAWCHAR_VIEW):
@@ -1023,18 +1168,11 @@ class TypedCallMixin:
             return (OBJ, dict_obj)
 
         if func_name == "range":
-            # bare range() expression degrades to the dynamic view
-            if len(args_node) >= 2:
-                boxed_stop = self._box(self._convert_node(args_node[1]))
-                return (OBJ, boxed_stop)
-            if len(args_node) == 1:
-                return (OBJ, self._box(self._convert_node(args_node[0])))
-            return (
-                OBJ,
-                self.current_builder.call(
-                    self.create_int, [ir.const_(ir.IntType(64), 0)]
-                ),
-            )
+            # a bare range object (stored, indexed, membership-tested).
+            # The two exact value forms never reach here; the literal
+            # walker runs first so arity and step errors read the same.
+            _range_const_span(node)
+            raise NotImplementedError(_RANGE_AS_VALUE)
 
         if func_name in self.static_funcs:
             param_kinds, ret_kind, func = self.static_funcs[func_name]
@@ -1058,12 +1196,11 @@ class TypedCallMixin:
                     cls = self._call_ret_class.get(func_name)
                     return (_inst_kind(cls) if cls else INSTANCE, call)
                 return (ret_kind, call)
-            return (
-                ret_kind,
-                ir.const_(
-                    LLVM_KIND_TYPES[ret_kind], False if ret_kind == I1 else 0
-                ),
-            )
+            # a wrong number of arguments used to yield a CONSTANT of
+            # the return type: f() on a one-parameter function printed 0
+            raise NotImplementedError(
+                f"call to '{func_name}' with {len(args_node)} args "
+                f"(expected {len(param_kinds)})")
 
         if func_name in self.functions:
             func = self.functions[func_name]
@@ -1125,6 +1262,27 @@ class TypedCallMixin:
                 f"call to '{func_name}' with {len(args_node)} args "
                 f"(expected {len(func.args)})"
             )
+
+    def _rawlist_elem_call(self, raw_kind, list_ptr, item_node, bits_fn, str_fn):
+        """One typed-list scan (count / index) with the element prepared
+        the way the list stores it: machine-word bits for int/float
+        (f64 as its bit pattern), a rawstr pointer for str elements,
+        pointer bits for tagged blocks and instances."""
+        if raw_kind == RAWLIST_S:
+            elem = self._coerce(self._convert_node(item_node), RAWSTR)
+            return self.current_builder.call(str_fn, [list_ptr, elem[1]])
+        elem_kind = RAWLIST_KINDS[raw_kind]
+        elem = self._coerce(self._convert_node(item_node), elem_kind)
+        elem_bits = elem[1]
+        if elem_kind == F64:
+            elem_bits = self.current_builder.bitcast(
+                elem[1], ir.IntType(64)
+            )
+        elif elem_kind == JSON or _is_inst(elem_kind):
+            elem_bits = self.current_builder.ptrtoint(
+                elem[1], ir.IntType(64)
+            )
+        return self.current_builder.call(bits_fn, [list_ptr, elem_bits])
 
     def _call_obj_var(self, func_node, args_node):
         # indirect call through a funcref local: dispatch via the

@@ -802,6 +802,68 @@ class PyobjRuntimeMixin:
         builder.position_at_end(after)
         builder.ret(builder.call(self.create_int, [ir.const_(i64, -1)]))
 
+    def _emit_str_count(self, builder, func, i32, i64, one32, one64, zero32, zero64):
+        """str_count(s, sub): CPython str.count on a boxed string - the
+        non-overlapping occurrences scanning forward from a moving start
+        (the match advances by the whole length, a miss by one). An
+        empty sub matches at every position: codepoint length + 1."""
+        s_arg, sub_arg = func.args
+        s_len_raw, s_chars = self._pyobj_string_parts(builder, s_arg, zero32, one32)
+        s_len = builder.sext(s_len_raw, i64)
+        sub_len_raw, sub_chars = self._pyobj_string_parts(builder, sub_arg, zero32, one32)
+        sub_len = builder.sext(sub_len_raw, i64)
+        sc_empty = func.append_basic_block("sc_empty")
+        sc_init = func.append_basic_block("sc_init")
+        builder.cbranch(
+            builder.icmp_signed("==", sub_len, zero64), sc_empty, sc_init
+        )
+
+        builder.position_at_end(sc_empty)
+        cp_obj = builder.call(self.pyobj_len, [s_arg])
+        cp_len = self._load_number_as_i64(builder, cp_obj)
+        builder.ret(builder.call(self.create_int, [builder.add(cp_len, one64)]))
+
+        builder.position_at_end(sc_init)
+        count_ptr = builder.alloca(i64, None, 'sc_count')
+        pos_ptr = builder.alloca(i64, None, 'sc_pos')
+        builder.store(zero64, count_ptr)
+        builder.store(zero64, pos_ptr)
+        sc_cond = func.append_basic_block("sc_cond")
+        sc_body = func.append_basic_block("sc_body")
+        sc_step = func.append_basic_block("sc_step")
+        sc_hit = func.append_basic_block("sc_hit")
+        sc_end = func.append_basic_block("sc_end")
+        builder.branch(sc_cond)
+
+        builder.position_at_end(sc_cond)
+        pos_now = builder.load(pos_ptr)
+        # positions 0 .. s_len - sub_len (inclusive); a sub longer than
+        # s makes the bound non-positive and the loop never runs
+        last = builder.add(builder.sub(s_len, sub_len), one64)
+        builder.cbranch(
+            builder.icmp_signed("<", pos_now, last), sc_body, sc_end
+        )
+
+        builder.position_at_end(sc_body)
+        needle = builder.gep(s_chars, [pos_now])
+        same = builder.icmp_signed(
+            "==",
+            builder.call(self.memcmp, [needle, sub_chars, sub_len]),
+            ir.const_(i32, 0),
+        )
+        builder.cbranch(same, sc_hit, sc_step)
+
+        builder.position_at_end(sc_step)
+        builder.store(builder.add(builder.load(pos_ptr), one64), pos_ptr)
+        builder.branch(sc_cond)
+
+        builder.position_at_end(sc_hit)
+        builder.store(builder.add(builder.load(count_ptr), one64), count_ptr)
+        builder.store(builder.add(builder.load(pos_ptr), sub_len), pos_ptr)
+        builder.branch(sc_cond)
+
+        builder.position_at_end(sc_end)
+        builder.ret(builder.call(self.create_int, [builder.load(count_ptr)]))
 
     def _load_dict_parts(self, builder, obj, zero32, one32):
         """Return (struct_ptr, count, used, mask, itable, entries)."""
@@ -1123,6 +1185,118 @@ class PyobjRuntimeMixin:
         b.position_at_end(str_done)
         b.ret(str_out)
 
+        # That key list is only a SNAPSHOT: a loop over a dict watches
+        # the dict itself, the way CPython's iterator does. A set rides
+        # the same walk unchanged (pyobj_iter_keys returns it as its own
+        # list) and is held to CPython's rule too: it may not change
+        # size under its own loop.
+        #   i64 pyobj_dict_count(d) / pyobj_dict_used(d) /
+        #      pyobj_dict_entries_bits(d)   its shape as it stands now
+        #   i64 pyobj_dict_watch(d, count0, used0, entries0)
+        #      0 = unchanged, 1 = the live count moved, 2 = same size
+        #      but rebuilt or appended to underneath the cursor
+        # Anything that is neither reads as (-1, -1, 0), never changes.
+        one32 = ir.const_(i32, 1)
+        self.pyobj_dict_count = self._emit_dict_shape_getter(
+            "pyobj_dict_count", 0, ir.const_(i64, -1)
+        )
+        self.pyobj_dict_used = self._emit_dict_shape_getter(
+            "pyobj_dict_used", 1, ir.const_(i64, -1)
+        )
+        self.pyobj_dict_entries_bits = self._emit_dict_shape_getter(
+            "pyobj_dict_entries_bits", 4, ir.const_(i64, 0)
+        )
+
+        self.pyobj_dict_watch = ir.func_(
+            self.module,
+            ir.FunctionType(i64, [pyobj_ptr, i64, i64, i64], False),
+            'pyobj_dict_watch',
+        )
+        entry = self.pyobj_dict_watch.append_basic_block("entry")
+        as_dict = self.pyobj_dict_watch.append_basic_block("as_dict")
+        as_set = self.pyobj_dict_watch.append_basic_block("as_set")
+        not_dict = self.pyobj_dict_watch.append_basic_block("not_dict")
+        size_moved = self.pyobj_dict_watch.append_basic_block("size_moved")
+        shape_moved = self.pyobj_dict_watch.append_basic_block("shape_moved")
+        same_shape = self.pyobj_dict_watch.append_basic_block("same_shape")
+        churned = self.pyobj_dict_watch.append_basic_block("churned")
+        b = ir.builder_(entry)
+        w_obj, w_count, w_used, w_entries = self.pyobj_dict_watch.args
+        w_tag = b.load(b.gep(w_obj, [zero32, zero32]))
+        b.cbranch(b.icmp_signed("==", w_tag, ir.const_(i32, 5)), as_dict, not_dict)
+        b.position_at_end(not_dict)
+        b.cbranch(b.icmp_signed("==", w_tag, ir.const_(i32, 8)), as_set, same_shape)
+        b.position_at_end(as_set)
+        b.cbranch(
+            b.icmp_signed(
+                "!=", b.call(self.list_length, [w_obj]), w_count
+            ),
+            size_moved,
+            same_shape,
+        )
+        b.position_at_end(as_dict)
+        w_parts = self._load_dict_parts(b, w_obj, zero32, one32)
+        # field 0 is the live count, field 1 the slots in use
+        b.cbranch(
+            b.icmp_signed("!=", w_parts[1], w_count), size_moved, shape_moved
+        )
+        b.position_at_end(shape_moved)
+        b.cbranch(
+            b.or_(
+                b.icmp_signed("!=", w_parts[2], w_used),
+                b.icmp_signed(
+                    "!=", b.ptrtoint(w_parts[5], i64), w_entries
+                ),
+            ),
+            churned,
+            same_shape,
+        )
+        b.position_at_end(size_moved)
+        b.ret(ir.const_(i64, 1))
+        b.position_at_end(churned)
+        b.ret(ir.const_(i64, 2))
+        b.position_at_end(same_shape)
+        b.ret(ir.const_(i64, 0))
+
+    def _emit_dict_shape_getter(self, name: str, field_index: int, miss):
+        """i64 name(PyObject* d): one field of a boxed dict's shape
+        (0 live count, 1 slots in use, 4 entries array as its address
+        bits). A set answers with its length for field 0 and `miss`
+        otherwise; `miss` for anything that is neither."""
+        i64 = ir.IntType(64)
+        i32 = ir.IntType(32)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        zero32 = ir.const_(i32, 0)
+        one32 = ir.const_(i32, 1)
+        fn = ir.func_(self.module, ir.FunctionType(i64, [pyobj_ptr], False), name)
+        entry = fn.append_basic_block("entry")
+        as_dict = fn.append_basic_block("as_dict")
+        as_set = fn.append_basic_block("as_set")
+        not_dict = fn.append_basic_block("not_dict")
+        as_other = fn.append_basic_block("as_other")
+        b = ir.builder_(entry)
+        (obj_arg,) = fn.args
+        tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        b.cbranch(b.icmp_signed("==", tag, ir.const_(i32, 5)), as_dict, not_dict)
+        b.position_at_end(not_dict)
+        b.cbranch(b.icmp_signed("==", tag, ir.const_(i32, 8)), as_set, as_other)
+        b.position_at_end(as_other)
+        b.ret(miss)
+        b.position_at_end(as_set)
+        if field_index == 0:
+            b.ret(b.call(self.list_length, [obj_arg]))
+        else:
+            b.ret(miss)
+        b.position_at_end(as_dict)
+        parts = self._load_dict_parts(b, obj_arg, zero32, one32)
+        if field_index == 4:
+            b.ret(b.ptrtoint(parts[5], i64))
+        elif field_index == 1:
+            b.ret(parts[2])
+        else:
+            b.ret(parts[1])
+        return fn
+
     def _create_pyobj_print(self):
         """Create PyObject print function."""
         self._create_instance_runtime()
@@ -1139,10 +1313,23 @@ class PyobjRuntimeMixin:
             self.module, print_ty, 'pyobj_repr_print'
         )
         repr_entry = self.pyobj_repr_print.append_basic_block("entry")
+        repr_tagged = self.pyobj_repr_print.append_basic_block("repr_tagged")
         repr_str_case = self.pyobj_repr_print.append_basic_block("repr_str")
         repr_other = self.pyobj_repr_print.append_basic_block("repr_other")
+        repr_null = self.pyobj_repr_print.append_basic_block("repr_null")
         repr_builder = ir.builder_(repr_entry)
         repr_obj = self.pyobj_repr_print.args[0]
+        # a None element inside a container arrives as a null pointer:
+        # reading its tag segfaulted (print([None]), print({"k": None})).
+        # The scalar printer already has this check; repr did not.
+        repr_is_null = repr_builder.icmp_signed(
+            "==",
+            repr_obj,
+            ir.const_(ir.PointerType(self.pyobj.pyobj_type), None),
+        )
+        repr_builder.cbranch(repr_is_null, repr_null, repr_tagged)
+
+        repr_builder.position_at_end(repr_tagged)
         repr_tag = repr_builder.load(
             repr_builder.gep(
                 repr_obj,
@@ -1168,6 +1355,11 @@ class PyobjRuntimeMixin:
 
         repr_builder.position_at_end(repr_other)
         repr_builder.call(self.pyobj_print, [repr_obj])
+        repr_builder.ret_void()
+
+        repr_builder.position_at_end(repr_null)
+        repr_none = self._create_global_string_with_builder("None", repr_builder)
+        repr_builder.call(self.printf, [repr_none])
         repr_builder.ret_void()
 
         entry_block = self.pyobj_print.append_basic_block("entry")
@@ -2038,9 +2230,20 @@ class PyobjRuntimeMixin:
         builder.position_at_end(false_case)
         builder.ret(ir.const_(ir.IntType(1), 0))
 
+        # i1 pyobj_dict_eq(PyObject* a, PyObject* b) - DECLARED here as
+        # a forward reference from pyobj_deep_eq; its body is emitted in
+        # _emit_dict_ops, where dict_find_probe exists.
+        self.pyobj_dict_eq = ir.func_(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr], False), 'pyobj_dict_eq',
+
+        )
+
         # i1 pyobj_deep_eq(PyObject* a, PyObject* b) - structural equality
         # numeric: value compare (int/bool/float mix); str: memcmp;
-        # list: recursive pairwise compare
+        # list: recursive pairwise compare; dict: pyobj_dict_eq (the
+        # tag-5 pair used to fall through to `false`, so no two dicts
+        # were ever equal - not even d == d)
         self.pyobj_deep_eq = ir.func_(
             self.module,
             ir.FunctionType(ir.IntType(1), [pyobj_ptr, pyobj_ptr], False), 'pyobj_deep_eq',
@@ -2140,7 +2343,16 @@ class PyobjRuntimeMixin:
         builder.cbranch(is_list_tag, list_body_block, inst_gate_block)
 
         builder.position_at_end(inst_gate_block)
-        builder.cbranch(is_inst_tag, inst_body_block, false_block)
+        is_dict_tag = builder.icmp_signed("==", tag_a, ir.const_(i32, 5))
+        dict_gate_block = self.pyobj_deep_eq.append_basic_block("dict_gate")
+        dict_eq_block = self.pyobj_deep_eq.append_basic_block("dict_eq")
+        builder.cbranch(is_inst_tag, inst_body_block, dict_gate_block)
+
+        builder.position_at_end(dict_gate_block)
+        builder.cbranch(is_dict_tag, dict_eq_block, false_block)
+
+        builder.position_at_end(dict_eq_block)
+        builder.ret(builder.call(self.pyobj_dict_eq, [arg_a, arg_b]))
 
         builder.position_at_end(inst_body_block)
         builder.ret(
@@ -2564,6 +2776,53 @@ class PyobjRuntimeMixin:
             True,
             i32, i64, one32, one64, zero32, zero64,
         )
+
+        # PObj* str_count(PObj* s, PObj* sub) - CPython str.count on a
+        # boxed string (see _emit_str_count)
+        self.str_count = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            'str_count',
+        )
+        self._emit_str_count(
+            ir.builder_(self.str_count.append_basic_block("entry")),
+            self.str_count,
+            i32, i64, one32, one64, zero32, zero64,
+        )
+
+        # PObj* pyobj_count_dispatch(PObj* obj, PObj* item) - .count()
+        # with one ABI. The method map bound `count` to list_count
+        # outright: on a str receiver list_count read the string box as
+        # a list and segfaulted.
+        self.pyobj_count_dispatch = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_count_dispatch',
+        )
+        cd_entry = self.pyobj_count_dispatch.append_basic_block("cd_entry")
+        cd_str = self.pyobj_count_dispatch.append_basic_block("cd_str")
+        cd_list = self.pyobj_count_dispatch.append_basic_block("cd_list")
+        cd_ok = self.pyobj_count_dispatch.append_basic_block("cd_list_count")
+        cd_bad = self.pyobj_count_dispatch.append_basic_block("cd_bad")
+        b = ir.builder_(cd_entry)
+        cd_obj, cd_item = self.pyobj_count_dispatch.args
+        cd_tag = b.load(b.gep(cd_obj, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", cd_tag, ir.const_(i32, 2)), cd_str, cd_list
+        )
+        b.position_at_end(cd_str)
+        b.ret(b.call(self.str_count, [cd_obj, cd_item]))
+        b.position_at_end(cd_list)
+        b.cbranch(
+            b.icmp_signed("==", cd_tag, ir.const_(i32, 4)), cd_ok, cd_bad
+        )
+        b.position_at_end(cd_ok)
+        b.ret(b.call(self.list_count, [cd_obj, cd_item]))
+        b.position_at_end(cd_bad)
+        cd_msg = self._create_global_string_with_builder(
+            "TypeError: count() is not supported on this object", b
+        )
+        self._emit_panic(b, cd_msg)
         # PObj* list_index(PObj* list, PObj* item) - first match or -1
         pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
         self.list_index = ir.func_(
@@ -2951,6 +3210,76 @@ class PyobjRuntimeMixin:
             )
         builder.store(dict_ptr, builder.gep(obj, [zero32, one32]))
         builder.ret(obj)
+
+        # Body of pyobj_dict_eq (declared in _create_list_and_str_method_runtime):
+        # same live count, and every live entry of a has its key in b
+        # with a deep-equal value. Entries of a are scanned in table
+        # order and looked up in b through the hash probe, so the cost
+        # stays linear in the size (no cross product of the two tables).
+        de_entry = self.pyobj_dict_eq.append_basic_block("entry")
+        de_len_block = self.pyobj_dict_eq.append_basic_block("de_len_ok")
+        de_cond_block = self.pyobj_dict_eq.append_basic_block("de_cond")
+        de_body_block = self.pyobj_dict_eq.append_basic_block("de_body")
+        de_live_block = self.pyobj_dict_eq.append_basic_block("de_live")
+        de_hit_block = self.pyobj_dict_eq.append_basic_block("de_hit")
+        de_step_block = self.pyobj_dict_eq.append_basic_block("de_step")
+        de_true_block = self.pyobj_dict_eq.append_basic_block("de_true")
+        de_false_block = self.pyobj_dict_eq.append_basic_block("de_false")
+        b = ir.builder_(de_entry)
+        de_a, de_b = self.pyobj_dict_eq.args
+        parts_a = self._load_dict_parts(b, de_a, zero32, one32)
+        parts_b = self._load_dict_parts(b, de_b, zero32, one32)
+        # field 0 is the live count, field 1 the slots in use
+        b.cbranch(
+            b.icmp_signed("==", parts_a[1], parts_b[1]),
+            de_len_block, de_false_block,
+        )
+
+        b.position_at_end(de_len_block)
+        de_i = b.alloca(i64, None, 'de_i')
+        de_slot = b.alloca(i64, None, 'de_slot')
+        b.store(zero64, de_i)
+        b.branch(de_cond_block)
+
+        b.position_at_end(de_cond_block)
+        de_cur = b.load(de_i)
+        b.cbranch(
+            b.icmp_signed("<", de_cur, parts_a[2]), de_body_block, de_true_block
+        )
+
+        b.position_at_end(de_body_block)
+        de_cur = b.load(de_i)
+        de_entry_a = b.gep(parts_a[5], [zero32, de_cur])
+        de_key = b.load(b.gep(de_entry_a, [zero32, zero32]))
+        # a tombstone or empty slot carries a null key
+        b.cbranch(
+            b.icmp_signed("!=", de_key, pyobj_null), de_live_block, de_step_block
+        )
+
+        b.position_at_end(de_live_block)
+        de_found = b.call(self.dict_find_probe, [de_b, de_key, de_slot])
+        b.cbranch(
+            b.icmp_signed(">=", de_found, zero64), de_hit_block, de_false_block
+        )
+
+        b.position_at_end(de_hit_block)
+        de_value_a = b.load(b.gep(de_entry_a, [zero32, one32]))
+        de_entry_b = b.gep(parts_b[5], [zero32, de_found])
+        de_value_b = b.load(b.gep(de_entry_b, [zero32, one32]))
+        b.cbranch(
+            b.call(self.pyobj_deep_eq, [de_value_a, de_value_b]),
+            de_step_block, de_false_block,
+        )
+
+        b.position_at_end(de_step_block)
+        b.store(b.add(b.load(de_i), one64), de_i)
+        b.branch(de_cond_block)
+
+        b.position_at_end(de_true_block)
+        b.ret(ir.const_(ir.IntType(1), 1))
+
+        b.position_at_end(de_false_block)
+        b.ret(ir.const_(ir.IntType(1), 0))
 
         # PyObject* dict_get_or(PyObject* d, PyObject* key, PyObject* default)
         self.dict_get_or = ir.func_(
@@ -4881,6 +5210,8 @@ class PyobjRuntimeMixin:
         list_op_block = func.append_basic_block("list_op")
         set_op_block = func.append_basic_block("set_op")
         after_seq_block = func.append_basic_block("seq_gate")
+        dict_gate_block = func.append_basic_block("dict_gate")
+        dict_op_block = func.append_basic_block("dict_op")
         builder.cbranch(both_list, list_op_block, after_seq_block)
 
         builder.position_at_end(list_op_block)
@@ -4898,7 +5229,27 @@ class PyobjRuntimeMixin:
             builder.ret(builder.call(self.create_bool, [list_result]))
 
         builder.position_at_end(after_seq_block)
-        builder.cbranch(both_set, set_op_block, error_block)
+        # tag-5 pairs: structural equality for ==/!= (order-free, by
+        # lookup). They used to fall through to the mixed-type answer:
+        # no two dicts were ever equal - not even d == d.
+        both_dict = builder.and_(
+            builder.icmp_signed("==", left_tag, ir.const_(i32, 5)),
+            builder.icmp_signed("==", right_tag, ir.const_(i32, 5)),
+        )
+        builder.cbranch(both_set, set_op_block, dict_gate_block)
+
+        builder.position_at_end(dict_gate_block)
+        builder.cbranch(both_dict, dict_op_block, error_block)
+
+        builder.position_at_end(dict_op_block)
+        if pred in ("==", "!="):
+            dict_eq = builder.call(self.pyobj_dict_eq, [left, right])
+            if pred == "!=":
+                dict_eq = builder.not_(dict_eq)
+            builder.ret(builder.call(self.create_bool, [dict_eq]))
+        else:
+            # Python raises on ordering dicts: the shared TypeError
+            builder.branch(error_block)
 
         builder.position_at_end(set_op_block)
         # set semantics: ==/!= by content (order-free, via mutual

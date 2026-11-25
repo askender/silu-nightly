@@ -17,6 +17,7 @@ from typing import Any, Tuple
 from silu.ir_iface import ir
 from silu.typed_helpers import (
     F64, I1, I64, OBJ, RAWSTR, RAWCHAR_VIEW,
+    RAWDICT_KINDS, RAWLIST_KINDS,
     _extract_i64_const,
 )
 
@@ -144,9 +145,9 @@ class TypedExprMixin:
         if op == "^":
             return (I64, self.current_builder.xor(l_val, r_val, ""))
         if op == "<<":
-            return (I64, self.current_builder.shl(l_val, r_val, ""))
+            return self._typed_shift(op, l_val, r_val)
         if op == ">>":
-            return (I64, self.current_builder.ashr(l_val, r_val, ""))
+            return self._typed_shift(op, l_val, r_val)
         if op == "+":
             if not self.checks:
                 return (I64, self.current_builder.add(l_val, r_val))
@@ -210,15 +211,8 @@ class TypedExprMixin:
                 if not self.checks:
                     pass
                 return (I64, result)
-            # general integer pow via libc pow + exactness check
-            lf = self._coerce(left, F64)
-            rf = self._coerce(right, F64)
-            result = builder.call(self.pow_f64, [lf[1], rf[1]])
-            as_i64 = builder.fptosi(result, i64)
-            roundtrip = builder.sitofp(as_i64, ir.DoubleType())
-            exact = builder.fcmp_ordered("==", result, roundtrip)
-            self._panic_if(exact, "TypeError: int pow result not exact")
-            return (I64, as_i64)
+            # runtime exponent (or a constant outside 0..64)
+            return self._int_pow_loop(left[1], right[1])
         lf = self._coerce(left, F64)
         rf = self._coerce(right, F64)
         is_half = isinstance(right[1], ir.Constant) and float(
@@ -228,6 +222,165 @@ class TypedExprMixin:
             return (F64, self.current_builder.call(self.sqrt_f64, [lf[1]]))
         # general pow via libc
         return (F64, self.current_builder.call(self.pow_f64, [lf[1], rf[1]]))
+
+    def _int_pow_loop(self, base: Any, exponent: Any) -> Tuple:
+        """int ** int with a runtime exponent: exponentiation by
+        squaring on i64 in a generated loop, overflow-checked and exact
+        over the whole range. This replaces a detour through libc pow:
+        the double rounded every |result| above 2**53 (3 ** 40 came
+        back as ...59056928000) and its exactness guard was inverted,
+        so exact results raised "int pow result not exact" while
+        truncated ones slipped through. A negative exponent is a
+        fraction in CPython (2 ** -1 is 0.5) - the static result type
+        cannot change at run time, so it is a loud error."""
+        i64 = ir.IntType(64)
+        zero = ir.const_(i64, 0)
+        one = ir.const_(i64, 1)
+        fn = self.current_function
+        builder = self.current_builder
+        self._panic_if(
+            builder.icmp_signed("<", exponent, zero),
+            "TypeError: int pow with negative exponent",
+        )
+        base_ptr = builder.alloca(i64, None, "pow_base")
+        exp_ptr = builder.alloca(i64, None, "pow_exp")
+        res_ptr = builder.alloca(i64, None, "pow_res")
+        builder.store(base, base_ptr)
+        builder.store(exponent, exp_ptr)
+        builder.store(one, res_ptr)
+        loop_block = fn.append_basic_block("pow_loop")
+        body_block = fn.append_basic_block("pow_body")
+        odd_block = fn.append_basic_block("pow_odd")
+        shift_block = fn.append_basic_block("pow_shift")
+        square_block = fn.append_basic_block("pow_square")
+        end_block = fn.append_basic_block("pow_end")
+        builder.branch(loop_block)
+
+        builder.position_at_end(loop_block)
+        e = builder.load(exp_ptr)
+        builder.cbranch(
+            builder.icmp_signed(">", e, zero), body_block, end_block)
+
+        builder.position_at_end(body_block)
+        e = builder.load(exp_ptr)
+        is_odd = builder.icmp_signed("==", builder.and_(e, one, ""), one)
+        builder.cbranch(is_odd, odd_block, shift_block)
+
+        builder.position_at_end(odd_block)
+        pair = builder.call(
+            self.smul_overflow, [builder.load(res_ptr), builder.load(base_ptr)])
+        builder.store(self._overflow_checked(pair, "mul"), res_ptr)
+        builder.branch(shift_block)
+
+        builder.position_at_end(shift_block)
+        e = builder.ashr(builder.load(exp_ptr), one, "")
+        builder.store(e, exp_ptr)
+        # the last squaring would overflow without ever being used
+        builder.cbranch(
+            builder.icmp_signed(">", e, zero), square_block, loop_block)
+
+        builder.position_at_end(square_block)
+        pair = builder.call(
+            self.smul_overflow,
+            [builder.load(base_ptr), builder.load(base_ptr)])
+        builder.store(self._overflow_checked(pair, "mul"), base_ptr)
+        builder.branch(loop_block)
+
+        builder.position_at_end(end_block)
+        return (I64, builder.load(res_ptr))
+
+    def _typed_shift(self, op: str, l_val: Any, r_val: Any) -> Tuple:
+        """x << n / x >> n with CPython's shift-count rules, on i64.
+
+        LLVM makes a shift POISON when the count is negative or at
+        least the bit width: `1 << 64` and `1 << -1` printed whatever
+        happened to be in the register. A constant count in 0..63 keeps
+        the bare historical instruction. Otherwise a negative count
+        panics (ValueError, as in Python), a right shift by 64 or more
+        is 0 / -1 (as in Python), and a left shift whose result leaves
+        the i64 range panics - the language's answer to every integer
+        overflow. Shifts by a runtime count check at run time."""
+        builder = self.current_builder
+        i64 = ir.IntType(64)
+        if op == "<<" and not self.checks:
+            return (I64, builder.shl(l_val, r_val, ""))
+        if op == ">>" and not self.checks:
+            return (I64, builder.ashr(l_val, r_val, ""))
+        count = _extract_i64_const(r_val)
+        if count is not None:
+            if 0 <= count <= 63:
+                # the historical bare instruction
+                if op == "<<":
+                    return (I64, builder.shl(l_val, r_val, ""))
+                return (I64, builder.ashr(l_val, r_val, ""))
+            if count < 0:
+                self._panic_if(
+                    ir.const_(ir.IntType(1), 1),
+                    "ValueError: negative shift count",
+                )
+                return (I64, l_val)
+            if op == ">>":
+                return (I64, builder.ashr(l_val, ir.const_(i64, 63), ""))
+            # x << 64 or more: 0 for x == 0, an overflow otherwise
+            self._panic_if(
+                builder.icmp_signed("!=", l_val, ir.const_(i64, 0)),
+                "OverflowError: integer overflow in shl",
+            )
+            return (I64, ir.const_(i64, 0))
+        zero = ir.const_(i64, 0)
+        self._panic_if(
+            builder.icmp_signed("<", r_val, zero),
+            "ValueError: negative shift count",
+        )
+        big = builder.icmp_signed(">=", r_val, ir.const_(i64, 64))
+        if op == ">>":
+            cnt = builder.select(big, ir.const_(i64, 63), r_val)
+            return (I64, builder.ashr(l_val, cnt, ""))
+        self._panic_if(
+            builder.and_(big, builder.icmp_signed("!=", l_val, zero)),
+            "OverflowError: integer overflow in shl",
+        )
+        cnt = builder.select(big, zero, r_val)
+        shifted = builder.shl(l_val, cnt, "")
+        # bits shifted out must all equal the sign bit; the one case
+        # that rule misjudges is 1 << 63 (exactly i64::MIN)
+        fits = builder.icmp_signed("==", builder.ashr(shifted, cnt, ""), l_val)
+        is_min = builder.and_(
+            builder.icmp_signed("==", cnt, ir.const_(i64, 63)),
+            builder.icmp_signed("==", l_val, ir.const_(i64, 1)),
+        )
+        self._panic_if(
+            builder.not_(builder.or_(fits, is_min)),
+            "OverflowError: integer overflow in shl",
+        )
+        return (I64, shifted)
+
+    def _float_to_int_checked(self, value: Any) -> Any:
+        """fptosi, but only for a finite double whose truncated value
+        fits i64. LLVM makes fptosi POISON for NaN, infinity and
+        out-of-range operands: int(1e30) printed 6, int(nan) printed
+        0. CPython raises for exactly these."""
+        builder = self.current_builder
+        f64 = ir.DoubleType()
+        as_int = builder.fptosi(value, ir.IntType(64))
+        if not self.checks:
+            return as_int
+        not_nan = builder.fcmp_ordered("==", value, value)
+        self._panic_if(
+            builder.not_(not_nan),
+            "ValueError: cannot convert float NaN to integer",
+        )
+        in_range = builder.and_(
+            builder.fcmp_ordered(
+                ">=", value, ir.const_(f64, -9223372036854775808.0)),
+            builder.fcmp_ordered(
+                "<", value, ir.const_(f64, 9223372036854775808.0)),
+        )
+        self._panic_if(
+            builder.not_(in_range),
+            "OverflowError: cannot convert float to int (out of i64 range)",
+        )
+        return as_int
 
     def _overflow_checked(self, pair: Any, op: str) -> Any:
         result = self.current_builder.extract_value(pair, 0)
@@ -398,6 +551,19 @@ class TypedExprMixin:
         def _is_str_const(n):
             return isinstance(n, (list, tuple)) and len(n) >= 2 and \
                 n[0] == "const" and isinstance(n[1], str)
+
+        if op in ("==", "!=") and (
+            left[0] in RAWDICT_KINDS or right[0] in RAWDICT_KINDS
+            or left[0] in RAWLIST_KINDS or right[0] in RAWLIST_KINDS
+        ):
+            # typed containers compare structurally through the boxed
+            # deep comparison. A typed dict fell through to the integer
+            # promote: "cannot coerce rawdict_ii to i64" (and `d == e`
+            # of two equal dict[int,int] values did not compile at all).
+            l_obj = self._box(left)
+            r_obj = self._box(right)
+            eq = self.current_builder.call(self.pyobj_deep_eq, [l_obj, r_obj])
+            return (I1, eq if op == "==" else self.current_builder.not_(eq))
 
         if op in ("==", "!=") and (
             (left[0] == OBJ and _is_str_const(right_node))

@@ -47,3 +47,19 @@ print(lit["x"] + lit["y"])
 cc: str = d["k2"] + d["fresh"]
 print(cc)
 print(len(d))
+# ownership round (2026-11-26): a str-valued dict's entry is BORROWED by
+# its readers. `x = d[k]` copies (x += "!" used to write into the dict),
+# and a get/setdefault left as a statement is not freed (it freed the
+# dict's own buffer). (dict[str, str] as a function parameter works on
+# the Python and self-hosted planes; the rs oracle bails on every typed
+# dict parameter, so that shape is not pinned here.)
+bo: str = d["k2"]
+bo = bo + "?"
+print(bo, d["k2"])
+d.setdefault("k2", "ignored")
+d.get("k2")
+bs: str = d.setdefault("k2", "never")
+bs = bs + "!"
+bg: str = d.get("k2")
+bg = bg + "."
+print(bs, bg, d["k2"])

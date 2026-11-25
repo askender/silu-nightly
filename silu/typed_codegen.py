@@ -187,6 +187,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self._create_identity_eq_runtime()
         self._create_pop_dispatch_runtime()
         self._create_pop_def_dispatch_runtime()
+        self._create_delete_dispatch_runtime()
         self._create_copy_dispatch_runtime()
         self._create_raw_list_runtime()
 
@@ -507,6 +508,111 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         b.ret(value)
         self.pyobj_pop_def_dispatch = fn
 
+    def _create_delete_dispatch_runtime(self):
+        """void pyobj_delete_dispatch(PObj* obj, PObj* key) - `del
+        obj[key]` with one ABI: a list receiver deletes by index
+        (IndexError outside 0..len-1, negative indices count from the
+        end), a dict receiver goes to dict_pop with a null default
+        (KeyError on a miss, CPython's del), anything else is a
+        TypeError. `del l[i]` on a dynamic list used to run dict_pop on
+        the list box - a SIGSEGV."""
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        fn = ir.func_(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [pyobj_ptr, pyobj_ptr], False),
+            'pyobj_delete_dispatch',
+        )
+        entry = fn.append_basic_block("entry")
+        list_blk = fn.append_basic_block("list_case")
+        dict_gate = fn.append_basic_block("dict_gate")
+        dict_blk = fn.append_basic_block("dict_case")
+        other_blk = fn.append_basic_block("unsupported")
+        b = ir.builder_(entry)
+        obj_arg, key_arg = fn.args
+        zero32 = ir.const_(i32, 0)
+        null_obj = ir.const_(pyobj_ptr, None)
+        tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 4)), list_blk, dict_gate
+        )
+
+        b.position_at_end(dict_gate)
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 5)), dict_blk, other_blk
+        )
+
+        b.position_at_end(dict_blk)
+        b.call(self.dict_pop, [obj_arg, key_arg, null_obj])
+        b.ret_void()
+
+        b.position_at_end(other_blk)
+        omsg = self._create_global_string_with_builder(
+            "TypeError: cannot delete an item from this object", b
+        )
+        self._emit_panic(b, omsg)
+
+        # list: resolve the index, bounds-check, shift the tail, shrink
+        b.position_at_end(list_blk)
+        ok_blk = fn.append_basic_block("del_ok")
+        bad_blk = fn.append_basic_block("del_bad")
+        shift_cond = fn.append_basic_block("del_shift_cond")
+        shift_blk = fn.append_basic_block("del_shift")
+        done_blk = fn.append_basic_block("del_done")
+        struct_ptr = b.bitcast(
+            b.load(b.gep(obj_arg, [zero32, ir.const_(i32, 1)])),
+            ir.PointerType(self.list_struct_type),
+        )
+        length = b.load(b.gep(struct_ptr, [zero32, zero32]))
+        raw = b.call(self.unbox_int, [key_arg])
+        adjusted = b.select(
+            b.icmp_signed("<", raw, ir.const_(i64, 0)),
+            b.add(raw, length),
+            raw,
+        )
+        in_range = b.and_(
+            b.icmp_signed(">=", adjusted, ir.const_(i64, 0)),
+            b.icmp_signed("<", adjusted, length),
+        )
+        b.cbranch(in_range, ok_blk, bad_blk)
+
+        b.position_at_end(bad_blk)
+        msg = self._create_global_string_with_builder(
+            "IndexError: list assignment index out of range", b
+        )
+        self._emit_panic(b, msg)
+
+        b.position_at_end(ok_blk)
+        items = b.load(b.gep(struct_ptr, [zero32, ir.const_(i32, 2)]))
+        i_ptr = b.alloca(i64, None, "del_i")
+        b.store(adjusted, i_ptr)
+        b.branch(shift_cond)
+
+        b.position_at_end(shift_cond)
+        cur = b.load(i_ptr)
+        b.cbranch(
+            b.icmp_signed("<", b.add(cur, ir.const_(i64, 1)), length),
+            shift_blk,
+            done_blk,
+        )
+
+        b.position_at_end(shift_blk)
+        cur2 = b.load(i_ptr)
+        b.store(
+            b.load(b.gep(items, [b.add(cur2, ir.const_(i64, 1))])),
+            b.gep(items, [cur2]),
+        )
+        b.store(b.add(cur2, ir.const_(i64, 1)), i_ptr)
+        b.branch(shift_cond)
+
+        b.position_at_end(done_blk)
+        new_len = b.sub(length, ir.const_(i64, 1))
+        b.store(new_len, b.gep(struct_ptr, [zero32, zero32]))
+        b.store(null_obj, b.gep(items, [new_len]))
+        b.ret_void()
+        self.pyobj_delete_dispatch = fn
+
     def _create_copy_dispatch_runtime(self):
         """PObj* pyobj_copy_dispatch(PObj* obj) - `.copy()` with one
         ABI: lists go to list_copy, dicts build a fresh dict and pour
@@ -553,6 +659,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self._emit_rawlist_str_core()
         self._emit_rawstr_text()
         self._emit_rawstr_replace()
+        self._emit_rawstr_count()
         self._emit_rawlist_str_access()
         self._emit_rawstr_convert()
         self._emit_rawdict_str()
@@ -888,11 +995,26 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             "IndexError: string index out of range"
         )
 
+        # i64 rawdict_int_entry_of(i8* d, i64 key) - entry-array index
+        # of a live key, -1 when absent. A deleted int entry keeps its
+        # stale key (0 is a valid key, so there is no null marker): the
+        # entry is live exactly when the table still maps its key back
+        # to that same index.
+        self._entry_of_missing = ir.const_(i64, -1)
+        self.rawdict_int_entry_of = self._emit_rawdict_probe(
+            "rawdict_int_entry_of", i64, [i8p, i64],
+            lambda b, func, entry_index, _slot, _table: b.ret(entry_index),
+            lambda b, func: b.ret(self._entry_of_missing),
+        )
+
         # void rawdict_reindex(i8* d, i64 new_size)
         # Rebuilds the index table at new_size and compacts the entries
-        # arrays: live entries (table slot > 0) are copied to fresh
-        # keys/values arrays, dead (deleted) entries are dropped, and
-        # filled is reset to the live count.
+        # arrays. Entries are walked in entry order (insertion order,
+        # since inserts append) so compaction keeps it: live entries are
+        # copied to fresh keys/values arrays, dead (deleted) entries are
+        # dropped, and filled is reset to the live count. The old table
+        # stays installed until the walk is over - liveness is asked of
+        # it through rawdict_int_entry_of.
         self.rawdict_reindex = ir.func_(
             self.module,
             ir.FunctionType(ir.VoidType(), [i8p, i64], False), 'rawdict_reindex',
@@ -910,11 +1032,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder = ir.builder_(entry)
         dict_arg, new_size_arg = self.rawdict_reindex.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        old_mask = builder.load(_struct_gep(builder, struct_ptr, 3))
-        old_size = builder.add(old_mask, one64)
         old_table = builder.load(_struct_gep(builder, struct_ptr, 4))
         old_keys = builder.load(_struct_gep(builder, struct_ptr, 5))
         old_vals = builder.load(_struct_gep(builder, struct_ptr, 6))
+        old_filled = builder.load(_struct_gep(builder, struct_ptr, 1))
         entries_cap = builder.load(_struct_gep(builder, struct_ptr, 2))
         new_mask = builder.sub(new_size_arg, one64)
         fresh_table = builder.bitcast(
@@ -928,10 +1049,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         fresh_vals = builder.bitcast(
             builder.call(self.malloc, [cap_bytes]), ir.PointerType(i64)
         )
-        builder.store(new_mask, _struct_gep(builder, struct_ptr, 3))
-        builder.store(fresh_table, _struct_gep(builder, struct_ptr, 4))
-        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
-        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         idx_ptr = builder.alloca(i64, None, 're_i')
         live_ptr = builder.alloca(i64, None, 're_live')
         slot_ptr = builder.alloca(i64, None, 're_slot')
@@ -941,18 +1058,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         builder.position_at_end(scan_cond)
         idx = builder.load(idx_ptr)
-        more = builder.icmp_signed("<", idx, old_size)
+        more = builder.icmp_signed("<", idx, old_filled)
         builder.cbranch(more, scan_body, scan_done)
 
         builder.position_at_end(scan_body)
-        slot_entry = builder.load(builder.gep(old_table, [idx]))
-        is_live = builder.icmp_signed(">", slot_entry, zero64)
+        key_val = builder.load(builder.gep(old_keys, [idx]))
+        found_at = builder.call(self.rawdict_int_entry_of, [dict_arg, key_val])
+        is_live = builder.icmp_signed("==", found_at, idx)
         builder.cbranch(is_live, place_start, scan_step)
 
         builder.position_at_end(place_start)
-        entry_index = builder.sub(slot_entry, one64)
-        key_val = builder.load(builder.gep(old_keys, [entry_index]))
-        val_val = builder.load(builder.gep(old_vals, [entry_index]))
+        val_val = builder.load(builder.gep(old_vals, [idx]))
         live = builder.load(live_ptr)
         builder.store(key_val, builder.gep(fresh_keys, [live]))
         builder.store(val_val, builder.gep(fresh_vals, [live]))
@@ -982,6 +1098,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.branch(scan_cond)
 
         builder.position_at_end(scan_done)
+        builder.store(new_mask, _struct_gep(builder, struct_ptr, 3))
+        builder.store(fresh_table, _struct_gep(builder, struct_ptr, 4))
+        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
+        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         builder.store(builder.load(live_ptr), _struct_gep(builder, struct_ptr, 1))
         builder.call(self.free, [builder.bitcast(old_table, i8p)])
         builder.call(self.free, [builder.bitcast(old_keys, i8p)])
@@ -1045,24 +1165,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         match_check = self.rawdict_set.append_basic_block("probe_match")
         overwrite = self.rawdict_set.append_basic_block("overwrite")
         probe_step = self.rawdict_set.append_basic_block("probe_step")
+        insert_check = self.rawdict_set.append_basic_block("insert_check")
         insert = self.rawdict_set.append_basic_block("insert")
         grow_block = self.rawdict_set.append_basic_block("grow")
         do_insert = self.rawdict_set.append_basic_block("do_insert")
         builder = ir.builder_(entry)
         dict_arg, key_arg, val_arg = self.rawdict_set.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        filled = builder.load(_struct_gep(builder, struct_ptr, 1))
-        mask = builder.load(_struct_gep(builder, struct_ptr, 3))
-        index_size = builder.add(mask, one64)
-        load_would_exceed = builder.icmp_signed(
-            ">",
-            builder.mul(builder.add(filled, one64), ir.const_(i64, 3)),
-            builder.mul(index_size, ir.const_(i64, 2)),
-        )
         slot_ptr = builder.alloca(i64, None, 'rd_slot')
         tomb_ptr = builder.alloca(i64, None, 'rd_tomb')
         size_ptr = builder.alloca(i64, None, 'rd_size')
-        builder.cbranch(load_would_exceed, rehash_block, start_block)
+        builder.branch(start_block)
 
         # Resize to the smallest power of two (>= 8) that keeps the live
         # count under the 2/3 load factor. Compaction in reindex drops
@@ -1100,7 +1213,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         slot_now = builder.load(slot_ptr)
         slot_entry = builder.load(builder.gep(table_now, [slot_now]))
         is_empty = builder.icmp_signed("==", slot_entry, zero64)
-        builder.cbranch(is_empty, insert, tomb_or_match)
+        builder.cbranch(is_empty, insert_check, tomb_or_match)
 
         builder.position_at_end(tomb_or_match)
         is_tomb = builder.icmp_signed("==", slot_entry, ir.const_(i64, -1))
@@ -1133,6 +1246,20 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
         )
         builder.branch(probe_test)
+
+        # The load check sits on the insert path only: an overwrite never
+        # reindexes, so the entry array keeps its identity and its
+        # indices across value stores (a for-loop walking the entries
+        # relies on exactly that).
+        builder.position_at_end(insert_check)
+        filled_chk = builder.load(_struct_gep(builder, struct_ptr, 1))
+        mask_chk = builder.load(_struct_gep(builder, struct_ptr, 3))
+        load_would_exceed = builder.icmp_signed(
+            ">",
+            builder.mul(builder.add(filled_chk, one64), ir.const_(i64, 3)),
+            builder.mul(builder.add(mask_chk, one64), ir.const_(i64, 2)),
+        )
+        builder.cbranch(load_would_exceed, rehash_block, insert)
 
         builder.position_at_end(insert)
         # reuse the first tombstone slot seen while probing, if any
@@ -1336,10 +1463,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             struct_ptr = builder.bitcast(
                 dict_arg, ir.PointerType(self.raw_dict_struct_type)
             )
-            # walk the index table: entries arrays hold dead slots after
-            # deletions, live entries are exactly the slots > 0
-            mask = builder.load(_struct_gep(builder, struct_ptr, 3))
-            table_size = builder.add(mask, one64)
+            # walk the entry array (insertion order): deleted entries
+            # keep their slot until the next reindex, so each one is
+            # checked against the table before it is boxed
+            filled = builder.load(_struct_gep(builder, struct_ptr, 1))
             result = builder.call(self.create_dict, [])
             idx_ptr = builder.alloca(i64, None, 'cvt_i')
             builder.store(zero64, idx_ptr)
@@ -1347,24 +1474,21 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
             builder.position_at_end(loop_check)
             idx = builder.load(idx_ptr)
-            more = builder.icmp_signed("<", idx, table_size)
+            more = builder.icmp_signed("<", idx, filled)
             builder.cbranch(more, loop_body, loop_done)
 
             builder.position_at_end(loop_body)
-            table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
-            slot_entry = builder.load(builder.gep(table_now, [idx]))
-            is_live = builder.icmp_signed(">", slot_entry, zero64)
+            keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
+            key_bits = builder.load(builder.gep(keys_now, [idx]))
+            found_at = builder.call(self.rawdict_int_entry_of, [dict_arg, key_bits])
+            is_live = builder.icmp_signed("==", found_at, idx)
             builder.cbranch(is_live, emit_block, loop_step)
 
             builder.position_at_end(emit_block)
-            entry_index = builder.sub(slot_entry, one64)
-            keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
             vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
-            key_box = make_key(
-                builder, builder.load(builder.gep(keys_now, [entry_index]))
-            )
+            key_box = make_key(builder, key_bits)
             val_box = self._pydict_value_box(
-                builder, builder.load(builder.gep(vals_now, [entry_index])),
+                builder, builder.load(builder.gep(vals_now, [idx])),
                 value_is_float,
             )
             builder.call(self.dict_set, [result, key_box, val_box])
@@ -3405,6 +3529,105 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.call(self.rawstr_free, [res_now])
         builder.ret(res2)
 
+    def _emit_rawstr_count(self):
+        # i64 rawstr_count(i8* s, i8* sub, i64 sub_len) - CPython
+        # str.count: the non-overlapping occurrences of sub, scanning
+        # forward from a moving start; an empty sub matches at every
+        # codepoint boundary (codepoint length + 1). UTF-8 is
+        # self-synchronizing, so a byte scan finds exactly the
+        # whole-codepoint matches. (The generic method map's `count` is
+        # list_count: on a str receiver it read the rawstr header as a
+        # list and segfaulted.)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        self.rawstr_count = ir.func_(
+            self.module,
+            ir.FunctionType(i64, [i8p, i8p, i64], False),
+            'rawstr_count',
+        )
+        f = self.rawstr_count
+        entry = f.append_basic_block("entry")
+        rc_empty = f.append_basic_block("rc_empty")
+        rc_init = f.append_basic_block("rc_init")
+        rc_cond = f.append_basic_block("rc_cond")
+        rc_body = f.append_basic_block("rc_body")
+        rc_cmp = f.append_basic_block("rc_cmp")
+        rc_byte = f.append_basic_block("rc_byte")
+        rc_next = f.append_basic_block("rc_next")
+        rc_miss = f.append_basic_block("rc_miss")
+        rc_hit = f.append_basic_block("rc_hit")
+        rc_end = f.append_basic_block("rc_end")
+        builder = ir.builder_(entry)
+        s_arg, sub_data, sub_len = f.args
+        s_struct = builder.bitcast(s_arg, ir.PointerType(self.rawstr_struct_type))
+        s_data = _rawstr_load_data(builder, s_struct)
+        s_len = _rawstr_load_len(builder, s_struct)
+        builder.cbranch(
+            builder.icmp_signed("==", sub_len, zero64), rc_empty, rc_init
+        )
+
+        builder.position_at_end(rc_empty)
+        builder.ret(builder.add(_rawstr_load_cp(builder, s_struct), one64))
+
+        builder.position_at_end(rc_init)
+        count_ptr = builder.alloca(i64, None, 'rc_count')
+        pos_ptr = builder.alloca(i64, None, 'rc_pos')
+        j_ptr = builder.alloca(i64, None, 'rc_j')
+        builder.store(zero64, count_ptr)
+        builder.store(zero64, pos_ptr)
+        builder.branch(rc_cond)
+
+        builder.position_at_end(rc_cond)
+        pos_now = builder.load(pos_ptr)
+        # positions 0 .. s_len - sub_len (inclusive); a sub longer
+        # than s makes the bound non-positive and the loop never runs
+        last = builder.add(builder.sub(s_len, sub_len), one64)
+        builder.cbranch(
+            builder.icmp_signed("<", pos_now, last), rc_body, rc_end
+        )
+
+        builder.position_at_end(rc_body)
+        builder.store(zero64, j_ptr)
+        builder.branch(rc_cmp)
+
+        builder.position_at_end(rc_cmp)
+        j_now = builder.load(j_ptr)
+        # every byte compared: a match; otherwise the next byte
+        builder.cbranch(
+            builder.icmp_signed("<", j_now, sub_len), rc_byte, rc_hit
+        )
+
+        builder.position_at_end(rc_byte)
+        s_byte = builder.load(
+            builder.gep(s_data, [builder.add(builder.load(pos_ptr), j_now)])
+        )
+        sub_byte = builder.load(builder.gep(sub_data, [j_now]))
+        same = builder.icmp_signed("==", s_byte, sub_byte)
+        builder.cbranch(same, rc_next, rc_miss)
+
+        builder.position_at_end(rc_next)
+        builder.store(builder.add(j_now, one64), j_ptr)
+        builder.branch(rc_cmp)
+
+        builder.position_at_end(rc_miss)
+        builder.store(builder.add(builder.load(pos_ptr), one64), pos_ptr)
+        builder.branch(rc_cond)
+
+        builder.position_at_end(rc_hit)
+        builder.store(
+            builder.add(builder.load(count_ptr), one64), count_ptr
+        )
+        # non-overlapping: continue past the whole match
+        builder.store(
+            builder.add(builder.load(pos_ptr), sub_len), pos_ptr
+        )
+        builder.branch(rc_cond)
+
+        builder.position_at_end(rc_end)
+        builder.ret(builder.load(count_ptr))
+
     def _emit_rawlist_str_access(self):
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
@@ -3841,6 +4064,143 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.position_at_end(miss_block)
         builder.ret(ir.const_(ir.IntType(1), 0))
 
+        # Typed lists had neither count nor index: l.count(x) compiled
+        # and only raised AttributeError at run time. Four scans over
+        # the machine-word elements (str elements through rawstr_eq).
+        self.rawlist_count_bits = self._emit_rawlist_count_fn(
+            'rawlist_count_bits', i64, False)
+        self.rawlist_index_bits = self._emit_rawlist_index_fn(
+            'rawlist_index_bits', i64, False)
+        self.rawlist_str_count = self._emit_rawlist_count_fn(
+            'rawlist_str_count', i8p, True)
+        self.rawlist_str_index = self._emit_rawlist_index_fn(
+            'rawlist_str_index', i8p, True)
+
+    def _emit_rawlist_count_fn(self, fn_name, elem_type, str_elems):
+        # i64 <name>(i8* list, <elem_type> elem): occurrences of elem
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        fn = ir.func_(
+            self.module, ir.FunctionType(i64, [i8p, elem_type], False),
+            fn_name,
+        )
+        entry = fn.append_basic_block("entry")
+        scan_cond = fn.append_basic_block("scan_cond")
+        scan_body = fn.append_basic_block("scan_body")
+        hit_step = fn.append_basic_block("hit_step")
+        scan_step = fn.append_basic_block("scan_step")
+        miss_block = fn.append_basic_block("miss")
+        builder = ir.builder_(entry)
+        list_arg, elem_arg = fn.args
+        list_struct = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        list_len = builder.load(
+            builder.gep(list_struct, [zero32, ir.const_(i32, 0)])
+        )
+        items = builder.load(
+            builder.gep(list_struct, [zero32, ir.const_(i32, 2)])
+        )
+        idx_ptr = builder.alloca(i64, None, 'rlsc_i')
+        acc_ptr = builder.alloca(i64, None, 'rlsc_n')
+        builder.store(zero64, idx_ptr)
+        builder.store(zero64, acc_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_cond)
+        idx = builder.load(idx_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, list_len), scan_body, miss_block
+        )
+
+        builder.position_at_end(scan_body)
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        bits = builder.load(builder.gep(items_i64, [idx]))
+        if str_elems:
+            is_match = builder.call(
+                self.rawstr_eq, [builder.inttoptr(bits, i8p), elem_arg],
+            )
+        else:
+            is_match = builder.icmp_signed("==", bits, elem_arg)
+        builder.cbranch(is_match, hit_step, scan_step)
+
+        builder.position_at_end(hit_step)
+        builder.store(builder.add(builder.load(acc_ptr), one64), acc_ptr)
+        builder.branch(scan_step)
+
+        builder.position_at_end(scan_step)
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(miss_block)
+        builder.ret(builder.load(acc_ptr))
+        return fn
+
+    def _emit_rawlist_index_fn(self, fn_name, elem_type, str_elems):
+        # i64 <name>(i8* list, <elem_type> elem): first index, -1 if absent
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero32 = ir.const_(i32, 0)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        fn = ir.func_(
+            self.module, ir.FunctionType(i64, [i8p, elem_type], False),
+            fn_name,
+        )
+        entry = fn.append_basic_block("entry")
+        scan_cond = fn.append_basic_block("scan_cond")
+        scan_body = fn.append_basic_block("scan_body")
+        found_block = fn.append_basic_block("found")
+        scan_step = fn.append_basic_block("scan_step")
+        miss_block = fn.append_basic_block("miss")
+        builder = ir.builder_(entry)
+        list_arg, elem_arg = fn.args
+        list_struct = builder.bitcast(
+            list_arg, ir.PointerType(self.raw_list_struct_type)
+        )
+        list_len = builder.load(
+            builder.gep(list_struct, [zero32, ir.const_(i32, 0)])
+        )
+        items = builder.load(
+            builder.gep(list_struct, [zero32, ir.const_(i32, 2)])
+        )
+        idx_ptr = builder.alloca(i64, None, 'rlsi_i')
+        builder.store(zero64, idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(scan_cond)
+        idx = builder.load(idx_ptr)
+        builder.cbranch(
+            builder.icmp_signed("<", idx, list_len), scan_body, miss_block
+        )
+
+        builder.position_at_end(scan_body)
+        items_i64 = builder.bitcast(items, ir.PointerType(i64))
+        bits = builder.load(builder.gep(items_i64, [idx]))
+        if str_elems:
+            is_match = builder.call(
+                self.rawstr_eq, [builder.inttoptr(bits, i8p), elem_arg],
+            )
+        else:
+            is_match = builder.icmp_signed("==", bits, elem_arg)
+        builder.cbranch(is_match, found_block, scan_step)
+
+        builder.position_at_end(scan_step)
+        builder.store(builder.add(idx, one64), idx_ptr)
+        builder.branch(scan_cond)
+
+        builder.position_at_end(found_block)
+        builder.ret(idx)
+
+        builder.position_at_end(miss_block)
+        builder.ret(ir.const_(i64, -1))
+        return fn
+
     def _emit_rawstr_convert(self):
         i32 = ir.IntType(32)
         i64 = ir.IntType(64)
@@ -4054,8 +4414,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
 
         # void rawdict_str_reindex(i8* d, i64 new_size) - compacting
-        # rebuild; key pointers move to fresh arrays (ownership stays
-        # with the dict, no copies)
+        # rebuild in entry order (insertion order survives); key
+        # pointers move to fresh arrays (ownership stays with the dict,
+        # no copies). A deleted entry was nulled when its key copy was
+        # freed; the old table stays installed until the walk is over.
         self.rawdict_str_reindex = ir.func_(
             self.module,
             ir.FunctionType(ir.VoidType(), [i8p, i64], False), 'rawdict_str_reindex',
@@ -4073,11 +4435,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder = ir.builder_(entry)
         dict_arg, new_size_arg = self.rawdict_str_reindex.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        old_mask = builder.load(_struct_gep(builder, struct_ptr, 3))
-        old_size = builder.add(old_mask, one64)
         old_table = builder.load(_struct_gep(builder, struct_ptr, 4))
         old_keys = builder.load(_struct_gep(builder, struct_ptr, 5))
         old_vals = builder.load(_struct_gep(builder, struct_ptr, 6))
+        old_filled = builder.load(_struct_gep(builder, struct_ptr, 1))
         entries_cap = builder.load(_struct_gep(builder, struct_ptr, 2))
         new_mask = builder.sub(new_size_arg, one64)
         fresh_table = builder.bitcast(
@@ -4091,10 +4452,6 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         fresh_vals = builder.bitcast(
             builder.call(self.malloc, [cap_bytes]), ir.PointerType(i64)
         )
-        builder.store(new_mask, _struct_gep(builder, struct_ptr, 3))
-        builder.store(fresh_table, _struct_gep(builder, struct_ptr, 4))
-        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
-        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         idx_ptr = builder.alloca(i64, None, 'sre_i')
         live_ptr = builder.alloca(i64, None, 'sre_live')
         slot_ptr = builder.alloca(i64, None, 'sre_slot')
@@ -4105,18 +4462,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.position_at_end(scan_cond)
         idx = builder.load(idx_ptr)
         builder.cbranch(
-            builder.icmp_signed("<", idx, old_size), scan_body, scan_done
+            builder.icmp_signed("<", idx, old_filled), scan_body, scan_done
         )
 
         builder.position_at_end(scan_body)
-        slot_entry = builder.load(builder.gep(old_table, [idx]))
-        is_live = builder.icmp_signed(">", slot_entry, zero64)
+        key_bits = builder.load(builder.gep(old_keys, [idx]))
+        is_live = builder.icmp_signed("!=", key_bits, zero64)
         builder.cbranch(is_live, place_start, scan_step)
 
         builder.position_at_end(place_start)
-        entry_index = builder.sub(slot_entry, one64)
-        key_bits = builder.load(builder.gep(old_keys, [entry_index]))
-        val_val = builder.load(builder.gep(old_vals, [entry_index]))
+        val_val = builder.load(builder.gep(old_vals, [idx]))
         live = builder.load(live_ptr)
         builder.store(key_bits, builder.gep(fresh_keys, [live]))
         builder.store(val_val, builder.gep(fresh_vals, [live]))
@@ -4149,6 +4504,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.branch(scan_cond)
 
         builder.position_at_end(scan_done)
+        builder.store(new_mask, _struct_gep(builder, struct_ptr, 3))
+        builder.store(fresh_table, _struct_gep(builder, struct_ptr, 4))
+        builder.store(fresh_keys, _struct_gep(builder, struct_ptr, 5))
+        builder.store(fresh_vals, _struct_gep(builder, struct_ptr, 6))
         builder.store(builder.load(live_ptr), _struct_gep(builder, struct_ptr, 1))
         builder.call(self.free, [builder.bitcast(old_table, i8p)])
         builder.call(self.free, [builder.bitcast(old_keys, i8p)])
@@ -4175,24 +4534,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         match_check = self.rawdict_str_set.append_basic_block("probe_match")
         overwrite = self.rawdict_str_set.append_basic_block("overwrite")
         probe_step = self.rawdict_str_set.append_basic_block("probe_step")
+        insert_check = self.rawdict_str_set.append_basic_block("insert_check")
         insert = self.rawdict_str_set.append_basic_block("insert")
         grow_block = self.rawdict_str_set.append_basic_block("grow")
         do_insert = self.rawdict_str_set.append_basic_block("do_insert")
         builder = ir.builder_(entry)
         dict_arg, key_arg, val_arg = self.rawdict_str_set.args
         struct_ptr = builder.bitcast(dict_arg, ir.PointerType(self.raw_dict_struct_type))
-        filled = builder.load(_struct_gep(builder, struct_ptr, 1))
-        mask = builder.load(_struct_gep(builder, struct_ptr, 3))
-        index_size = builder.add(mask, one64)
-        load_would_exceed = builder.icmp_signed(
-            ">",
-            builder.mul(builder.add(filled, one64), ir.const_(i64, 3)),
-            builder.mul(index_size, ir.const_(i64, 2)),
-        )
         slot_ptr = builder.alloca(i64, None, 'rds_slot')
         tomb_ptr = builder.alloca(i64, None, 'rds_tomb')
         size_ptr = builder.alloca(i64, None, 'rds_size')
-        builder.cbranch(load_would_exceed, rehash_block, start_block)
+        builder.branch(start_block)
 
         builder.position_at_end(rehash_block)
         live_count = builder.load(_struct_gep(builder, struct_ptr, 0))
@@ -4230,7 +4582,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         slot_now = builder.load(slot_ptr)
         slot_entry = builder.load(builder.gep(table_now, [slot_now]))
         is_empty = builder.icmp_signed("==", slot_entry, zero64)
-        builder.cbranch(is_empty, insert, tomb_or_match)
+        builder.cbranch(is_empty, insert_check, tomb_or_match)
 
         builder.position_at_end(tomb_or_match)
         is_tomb = builder.icmp_signed("==", slot_entry, ir.const_(i64, -1))
@@ -4265,6 +4617,20 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             builder.and_(builder.add(slot_now, one64), mask_step), slot_ptr
         )
         builder.branch(probe_test)
+
+        # The load check sits on the insert path only: an overwrite never
+        # reindexes, so the entry array keeps its identity and its
+        # indices across value stores (a for-loop walking the entries
+        # relies on exactly that).
+        builder.position_at_end(insert_check)
+        filled_chk = builder.load(_struct_gep(builder, struct_ptr, 1))
+        mask_chk = builder.load(_struct_gep(builder, struct_ptr, 3))
+        load_would_exceed = builder.icmp_signed(
+            ">",
+            builder.mul(builder.add(filled_chk, one64), ir.const_(i64, 3)),
+            builder.mul(builder.add(mask_chk, one64), ir.const_(i64, 2)),
+        )
+        builder.cbranch(load_would_exceed, rehash_block, insert)
 
         builder.position_at_end(insert)
         tomb_seen = builder.load(tomb_ptr)
@@ -4401,13 +4767,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         builder.call(self.rawdict_clear, [clear_arg])
         builder.ret_void()
 
-        # PyObject* rawdict_to_pydict_{si,sf}(i8* d) - str keys box
+        # PyObject* rawdict_to_pydict_{si,sf,ss}(i8* d) - str keys box
         # through rawstr_to_pystr; built here because it needs the
         # rawstr runtime (forward reference from the dict section).
         # Value boxing goes through _pydict_value_box: nested functions
         # in the flattened .si have Rust no-capture semantics, so the
-        # lambdas may not reference the ir module.
-        for tag, value_is_float in (("si", False), ("sf", True)):
+        # lambdas may not reference the ir module. The str-VALUE family
+        # (dict[str, str], "ss") was missing: boxing one - print(d) is
+        # the common way - died with a bare KeyError('rawdict_ss') in
+        # both converters.
+        for tag, value_kind in (("si", I64), ("sf", F64), ("ss", RAWSTR)):
             func = ir.func_(
                 self.module,
                 ir.FunctionType(
@@ -4426,8 +4795,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             struct_ptr = builder.bitcast(
                 dict_arg, ir.PointerType(self.raw_dict_struct_type)
             )
-            mask = builder.load(_struct_gep(builder, struct_ptr, 3))
-            table_size = builder.add(mask, one64)
+            # walk the entry array (insertion order): a deleted str entry
+            # is nulled when its key copy is freed, so 0 marks it dead
+            filled = builder.load(_struct_gep(builder, struct_ptr, 1))
             result = builder.call(self.create_dict, [])
             idx_ptr = builder.alloca(i64, None, 'cvt_i')
             builder.store(zero64, idx_ptr)
@@ -4435,27 +4805,31 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
             builder.position_at_end(loop_check)
             idx = builder.load(idx_ptr)
-            more = builder.icmp_signed("<", idx, table_size)
+            more = builder.icmp_signed("<", idx, filled)
             builder.cbranch(more, loop_body, loop_done)
 
             builder.position_at_end(loop_body)
-            table_now = builder.load(_struct_gep(builder, struct_ptr, 4))
-            slot_entry = builder.load(builder.gep(table_now, [idx]))
-            is_live = builder.icmp_signed(">", slot_entry, zero64)
+            keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
+            key_bits = builder.load(builder.gep(keys_now, [idx]))
+            is_live = builder.icmp_signed("!=", key_bits, zero64)
             builder.cbranch(is_live, emit_block, loop_step)
 
             builder.position_at_end(emit_block)
-            entry_index = builder.sub(slot_entry, one64)
-            keys_now = builder.load(_struct_gep(builder, struct_ptr, 5))
             vals_now = builder.load(_struct_gep(builder, struct_ptr, 6))
-            key_bits = builder.load(builder.gep(keys_now, [entry_index]))
             key_box = builder.call(
                 self.rawstr_to_pystr, [builder.inttoptr(key_bits, i8p)]
             )
-            val_box = self._pydict_value_box(
-                builder, builder.load(builder.gep(vals_now, [entry_index])),
-                value_is_float,
-            )
+            val_bits_now = builder.load(builder.gep(vals_now, [idx]))
+            if value_kind == RAWSTR:
+                # str values ride the slot as the rawstr pointer
+                val_box = builder.call(
+                    self.rawstr_to_pystr,
+                    [builder.inttoptr(val_bits_now, i8p)],
+                )
+            else:
+                val_box = self._pydict_value_box(
+                    builder, val_bits_now, value_kind == F64,
+                )
             builder.call(self.dict_set, [result, key_box, val_box])
             builder.branch(loop_step)
 
@@ -4659,6 +5033,104 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         elem_bits = builder.load(builder.bitcast(elem_arg, ir.PointerType(i64)))
         builder.store(elem_bits, slot)
         builder.ret_void()
+
+        # void rawlist_delete_at(i8* list, i64 index) and
+        # void rawlist_str_delete_at(i8* list, i64 index) - `del l[i]`
+        # on a typed list: the same bounds check as the accesses, then
+        # the tail shifts left and the length shrinks (the str variant
+        # frees the removed element first). `del` on a typed list used
+        # to box the list and run dict_pop on the copy: a SIGSEGV.
+        for del_name, del_str in (
+            ('rawlist_delete_at', False), ('rawlist_str_delete_at', True),
+        ):
+            del_fn = ir.func_(
+                self.module, ir.FunctionType(ir.VoidType(), [i8p, i64], False),
+                del_name,
+            )
+            d_entry = del_fn.append_basic_block("entry")
+            d_neg = del_fn.append_basic_block("del_negative")
+            d_bounds = del_fn.append_basic_block("del_bounds")
+            d_ok = del_fn.append_basic_block("del_ok")
+            d_error = del_fn.append_basic_block("del_index_error")
+            d_cond = del_fn.append_basic_block("del_cond")
+            d_body = del_fn.append_basic_block("del_body")
+            d_done = del_fn.append_basic_block("del_done")
+            b = ir.builder_(d_entry)
+            d_list, d_index = del_fn.args
+            d_struct = b.bitcast(
+                d_list, ir.PointerType(self.raw_list_struct_type)
+            )
+            d_len = b.load(_struct_gep(b, d_struct, 0))
+            b.cbranch(
+                b.icmp_signed("<", d_index, ir.const_(i64, 0)),
+                d_neg, d_bounds,
+            )
+
+            b.position_at_end(d_neg)
+            # the wrap is computed on its own edge: a phi may only take
+            # a value that dominates that incoming block
+            d_wrapped = b.add(d_index, d_len)
+            b.branch(d_bounds)
+
+            b.position_at_end(d_bounds)
+            d_adj = b.phi(i64)
+            d_adj.add_incoming(d_index, d_entry)
+            d_adj.add_incoming(d_wrapped, d_neg)
+            d_in_range = b.and_(
+                b.icmp_signed(">=", d_adj, ir.const_(i64, 0)),
+                b.icmp_signed("<", d_adj, d_len),
+            )
+            b.cbranch(d_in_range, d_ok, d_error)
+
+            b.position_at_end(d_error)
+            d_msg = self._create_global_string_with_builder(
+                "IndexError: list assignment index out of range", b
+            )
+            self._emit_panic(b, d_msg)
+
+            b.position_at_end(d_ok)
+            d_items = b.load(_struct_gep(b, d_struct, 2))
+            d_items_i64 = b.bitcast(d_items, ir.PointerType(i64))
+            if del_str:
+                # the list owns its element buffers: drop the one removed
+                b.call(self.rawstr_free, [
+                    b.inttoptr(
+                        b.load(b.gep(d_items_i64, [d_adj])),
+                        ir.PointerType(ir.IntType(8)),
+                    )
+                ])
+            d_i = b.alloca(i64, None, "del_i")
+            b.store(d_adj, d_i)
+            b.branch(d_cond)
+
+            b.position_at_end(d_cond)
+            d_cur = b.load(d_i)
+            b.cbranch(
+                b.icmp_signed("<", b.add(d_cur, ir.const_(i64, 1)), d_len),
+                d_body, d_done,
+            )
+
+            b.position_at_end(d_body)
+            d_cur = b.load(d_i)
+            b.store(
+                b.load(b.gep(d_items_i64, [b.add(d_cur, ir.const_(i64, 1))])),
+                b.gep(d_items_i64, [d_cur]),
+            )
+            b.store(b.add(d_cur, ir.const_(i64, 1)), d_i)
+            b.branch(d_cond)
+
+            b.position_at_end(d_done)
+            d_new_len = b.sub(d_len, ir.const_(i64, 1))
+            b.store(d_new_len, _struct_gep(b, d_struct, 0))
+            # the vacated tail slot must not read as a live element
+            b.store(
+                ir.const_(i64, 0), b.gep(d_items_i64, [d_new_len])
+            )
+            b.ret_void()
+            if del_str:
+                self.rawlist_str_delete_at = del_fn
+            else:
+                self.rawlist_delete_at = del_fn
         self._create_boxed_str_join()
 
     def _emit_tagged_core(self):
@@ -5499,6 +5971,16 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             )
         return bits
 
+    def _dict_result(self, bits, value_kind, borrowed):
+        """A typed dict method's result as a TypedValue. get and
+        setdefault hand back the DICT'S entry for a str value (the dict
+        keeps the buffer: borrowed), pop hands over ownership of the
+        removed entry (the caller's to free)."""
+        tv = self._dict_bits_to_value(bits, value_kind)
+        if borrowed and value_kind == RAWSTR:
+            return self._mark_borrowed_str(tv)
+        return tv
+
     def _dict_bits_to_value(self, bits, value_kind):
         if value_kind == F64:
             return (
@@ -5860,10 +6342,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 [value, self.current_builder.call(self.rawlist_len, [value])],
             )
         if kind in RAWDICT_KINDS:
-            converter = self.rawdict_to_pydict[
-                {RAWDICT_II: "ii", RAWDICT_IF: "if",
-                 RAWDICT_SI: "si", RAWDICT_SF: "sf"}[kind]
-            ]
+            tag = {
+                RAWDICT_II: "ii", RAWDICT_IF: "if",
+                RAWDICT_SI: "si", RAWDICT_SF: "sf",
+                RAWDICT_SS: "ss",
+            }.get(kind)
+            if tag is None:
+                # a family with no boundary converter (dict[str, Json]):
+                # this used to be a bare KeyError('rawdict_sj')
+                raise NotImplementedError(
+                    f"cannot box a {kind} into a dynamic value")
+            converter = self.rawdict_to_pydict[tag]
             return self.current_builder.call(converter, [value])
         if kind == RAWSTR:
             return self.current_builder.call(self.rawstr_to_pystr, [value])
@@ -6119,7 +6608,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         if kind == I64 and target == F64:
             return (F64, self.current_builder.sitofp(value, ir.DoubleType()))
         if kind == F64 and target == I64:
-            checked = self.current_builder.fptosi(value, ir.IntType(64))
+            # fptosi only inside the i64 range: LLVM makes it poison
+            # for NaN / infinity / out-of-range values (see
+            # _float_to_int_checked)
+            checked = self._float_to_int_checked(value)
             if self.checks:
                 # lossy truncation panics (Python int(2.5) would silently
                 # truncate; Silu's int() on a non-integral float is an
@@ -6177,6 +6669,34 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         temp = None
         if rhs_tv[0] == RAWSTR:
             raw_ptr = rhs_tv[1]
+        else:
+            raw_ptr = self._coerce(rhs_tv, RAWSTR)[1]
+            temp = raw_ptr
+        struct_ptr = self.current_builder.bitcast(
+            raw_ptr, ir.PointerType(self.rawstr_struct_type)
+        )
+        length = self.current_builder.load(
+            self.current_builder.gep(
+                struct_ptr,
+                [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), 0)],
+            )
+        )
+        data = self.current_builder.load(
+            self.current_builder.gep(
+                struct_ptr,
+                [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), 2)],
+            )
+        )
+        return data, length, temp
+
+    def _rawstr_append_operand_tv(self, rhs_tv: Tuple[str, Any]) -> Tuple[Any, Any, Any]:
+        """(data_ptr, byte_len, temp) for rawstr_append from an ALREADY
+        converted value - the single-evaluation form of
+        _rawstr_append_operand, which re-converts its node (side effects
+        in the operand ran twice: s += l.pop() popped two elements)."""
+        if rhs_tv[0] == RAWSTR:
+            raw_ptr = rhs_tv[1]
+            temp = None
         else:
             raw_ptr = self._coerce(rhs_tv, RAWSTR)[1]
             temp = raw_ptr
@@ -6261,7 +6781,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             as_int = self._load_number_as_i64(b, boxed)
             number = b.select(
                 b.icmp_signed("==", tag, ir.const_(i32, 1)),
-                b.fptosi(as_float, i64),
+                self._float_to_int_checked(as_float),
                 as_int,
             )
         num_pred = b.block
@@ -6579,6 +7099,21 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
     def _load_var(self, name: str) -> Tuple[str, Any]:
         if name in self.var_kinds:
             kind = self.var_kinds[name]
+            if name not in self.variables:
+                # a function-local slot is created at its FIRST
+                # assignment; a read before it has no storage. This is
+                # Python's UnboundLocalError (the name is assigned later
+                # in this function, so it is local throughout) - it used
+                # to surface as a bare KeyError('x') from the converter
+                where = ""
+                if self.current_function is not None:
+                    where = " in function '" + self.current_function.name + "'"
+                raise NameError(
+                    "name '" + name + "' is read before it is assigned"
+                    + where + ": it is assigned later in this scope, which"
+                    " makes it local (Python raises UnboundLocalError"
+                    " here) - pass it in, or use another name"
+                )
             return (kind, self.current_builder.load(self.variables[name]))
         if name in self.variables:
             return (OBJ, self.current_builder.load(self.variables[name]))
@@ -6767,7 +7302,13 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         """Convert one statement; a discarded rawstr expression result
         (e.g. shout("x") as a statement) is a temporary and is dropped
         like Rust's end-of-statement temporary drop. Assignment-family
-        statements return values that alias slot storage - never freed."""
+        statements return values that alias slot storage - never freed,
+        and neither is a result marked borrowed by _mark_borrowed_str
+        (it points into a container: `d.setdefault(k, v)` as a bare
+        statement once freed the dict's own buffer)."""
+        # borrowed marks live for the statement that produced them: the
+        # consuming assignment or the drop below happens in the same one
+        self._borrowed_str_results.clear()
         self._char_alias_invalidate_before(stmt)
         result = self._convert_node_scoped(stmt, skip_func_defs)
         if (
@@ -6777,28 +7318,34 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             and isinstance(stmt, (list, tuple))
             and stmt
             and stmt[0] not in self._STORAGE_ALIASING_STMT_OPS
+            and result[1].name not in self._borrowed_str_results
         ):
             self.current_builder.call(self.rawstr_free, [result[1]])
         return result
 
+    def _mark_borrowed_str(self, tv: Tuple[str, Any]) -> Tuple[str, Any]:
+        """Tag a RAWSTR result that aliases a container's storage - the
+        entry of a str-valued dict (d[k], d.get(k), d.setdefault(k, v)):
+        the dict keeps owning the buffer. Every other RAWSTR expression
+        result is a fresh temporary, which is what the rest of the
+        converter assumes: a discarded one is freed, an assigned one is
+        owned as is. A borrowed one must be neither - the assignment
+        copies it instead of letting `x = d[k]; x += "!"` write into
+        the dict, and the drop leaves it alone."""
+        self._borrowed_str_results[tv[1].name] = True
+        return tv
+
     # ================== arithmetic ==================
 
     def _unsupported_raw_method(self, raw_kind: str, method_name: str):
-        """Fail loudly for a method the raw container does not implement:
-        the old fallback boxed the whole container and mutated the copy,
-        silently discarding the mutation (Rust: no such method)."""
-        func = self.current_builder.function
-        err_block = func.append_basic_block("raw_method_err")
-        cont_block = func.append_basic_block("raw_method_cont")
-        self.current_builder.branch(err_block)
-        self.current_builder.position_at_end(err_block)
-        msg = self._create_global_string_with_builder(
-            f"AttributeError: raw {raw_kind} has no method '{method_name}'",
-            self.current_builder,
-        )
-        self._emit_panic(self.current_builder, msg)
-        self.current_builder.position_at_end(cont_block)
-        return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+        """A method a typed container does not implement is a COMPILE
+        error. History: the first fallback boxed the whole container and
+        mutated the copy, silently discarding the mutation; the second
+        emitted a run-time AttributeError - the program compiled, then
+        died on the first execution of the statement. The receiver's
+        static kind is known here, so the answer is known too."""
+        raise NotImplementedError(
+            f"method '{method_name}' is not supported on {raw_kind}")
 
     def _rawstr_method_call(
         self, obj_tv: Tuple[str, Any], method_name: str, args_node: list
@@ -6916,6 +7463,21 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 "ValueError: substring not found",
             )
             return self._rawstr_finish(temp, (I64, idx))
+        if method_name == "count":
+            # str.count(sub). Falls to the generic method map otherwise,
+            # whose `count` is list_count - on a str receiver it read the
+            # rawstr header as a list and segfaulted.
+            if len(args_node) != 1:
+                raise NotImplementedError(
+                    "str.count() takes exactly one argument "
+                    f"({len(args_node)} given)")
+            data, length, arg_temp = self._rawstr_append_operand(args_node[0])
+            result = self.current_builder.call(
+                self.rawstr_count, [s_ptr, data, length]
+            )
+            if arg_temp is not None:
+                self.current_builder.call(self.rawstr_free, [arg_temp])
+            return self._rawstr_finish(temp, (I64, result))
         if method_name == "join" and len(args_node) == 1:
             # sep.join(parts): one allocation instead of n appends
             parts_tv = self._convert_node(args_node[0])
@@ -10163,6 +10725,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return (OBJ, null_obj)
 
         if op == "return":
+            self._emit_loop_str_cleanups()
             if self.current_ret_kind is not None:
                 value = self._convert_node(node[1]) if len(node) > 1 else None
                 if value is None:
@@ -10261,14 +10824,25 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     (),
                     )
                     return (OBJ, null_obj)
+                if obj_tv[0] in RAWLIST_KINDS:
+                    # del l[i] on a typed list: bounds-checked, the tail
+                    # shifts, a str element is freed. This used to box
+                    # the list and run dict_pop on the copy - a SIGSEGV.
+                    index = self._coerce(self._convert_node(node[2]), I64)[1]
+                    self.current_builder.call(
+                        self.rawlist_str_delete_at
+                        if obj_tv[0] == RAWLIST_S
+                        else self.rawlist_delete_at,
+                        [obj_tv[1], index],
+                    )
+                    return (OBJ, null_obj)
                 obj = self._box(obj_tv)
                 key = self._box(self._convert_node(node[2]))
-                # null default = the 1-arg pop domain: dict_pop panics
-                # KeyError itself on a miss, so the caller-side null
-                # check is gone
+                # one ABI for every dynamic container: dict -> pop with a
+                # null default (KeyError on a miss), list -> index delete
                 self.current_builder.call(
-                    self.dict_pop,
-                    [obj, key, null_obj],
+                    self.pyobj_delete_dispatch,
+                    [obj, key],
                 )
             return (OBJ, null_obj)
 
@@ -10286,14 +10860,48 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     and value_node[0] == "tuple"
                 ):
                     elements = value_node[1] if len(value_node) > 1 else []
+                    # CPython raises on a literal arity mismatch; this
+                    # arm used to skip the surplus side silently
+                    if len(elements) != len(targets):
+                        raise ValueError(
+                            f"unpacking mismatch: {len(elements)} values "
+                            f"into {len(targets)} targets")
                     evaluated = []
-                    for e in elements:
-                        evaluated.append(self._convert_node(e))
+                    owned_copies = set()
+                    for index, e in enumerate(elements):
+                        tv = self._convert_node(e)
+                        if tv[0] == RAWSTR:
+                            # A str element converts to the BORROWED
+                            # pointer of its source slot. The per-target
+                            # stores below free each target's previous
+                            # buffer - which may be the very buffer a
+                            # later element still points at (a, b = b, a
+                            # read freed memory and lost b's content).
+                            # Every string value becomes its own buffer
+                            # BEFORE any store; a RAWSTR target then takes
+                            # that copy directly.
+                            tv = (
+                                RAWSTR,
+                                self.current_builder.call(
+                                    self.rawstr_copy, [tv[1]]
+                                ),
+                            )
+                            owned_copies.add(index)
+                        evaluated.append(tv)
                     for index, target in enumerate(targets):
-                        if index >= len(evaluated) or not isinstance(target, str):
-                            continue
+                        tv = evaluated[index]
                         kind = self.var_kinds.get(target, OBJ)
-                        coerced = self._coerce(evaluated[index], kind)
+                        if kind == RAWSTR and tv[0] == RAWSTR:
+                            self._declare_var(target, kind)
+                            self._store_rawstr(target, tv[1])
+                            continue
+                        coerced = self._coerce(tv, kind)
+                        if index in owned_copies:
+                            # boxed (an independent copy of the bytes) or
+                            # otherwise converted from our private buffer
+                            self.current_builder.call(
+                                self.rawstr_free, [tv[1]]
+                            )
                         self._declare_var(target, kind)
                         if kind == RAWSTR:
                             self._store_rawstr(target, coerced[1])
@@ -10304,9 +10912,22 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 else:
                     # general iterable: box and subscript per target
                     boxed = self._box(self._convert_node(value_node))
+                    # CPython raises ValueError when the lengths differ;
+                    # surplus values used to be dropped silently
+                    actual = self.current_builder.call(
+                        self.pyobj_len, [boxed]
+                    )
+                    actual_n = self._load_number_as_i64(
+                        self.current_builder, actual
+                    )
+                    self._panic_if(
+                        self.current_builder.icmp_signed(
+                            "!=", actual_n,
+                            ir.const_(ir.IntType(64), len(targets)),
+                        ),
+                        "ValueError: unpacking mismatch",
+                    )
                     for index, target in enumerate(targets):
-                        if not isinstance(target, str):
-                            continue
                         idx_obj = self.current_builder.call(
                             self.create_int,
                             [ir.const_(ir.IntType(64), index)],
@@ -10319,9 +10940,14 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                             kind = OBJ
                         coerced = self._coerce((OBJ, elem), kind)
                         self._declare_var(target, kind)
-                        self.current_builder.store(
-                            coerced[1], self.variables[target]
-                        )
+                        if kind == RAWSTR:
+                            # the slot takes the coercion's fresh buffer
+                            # and drops its previous one
+                            self._store_rawstr(target, coerced[1])
+                        else:
+                            self.current_builder.store(
+                                coerced[1], self.variables[target]
+                            )
             return (OBJ, null_obj)
 
         if op in ("list_comp", "dict_comp", "set_comp") and len(node) >= 3:
@@ -10788,12 +11414,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if annotation_kind == RAWSTR and value[0] == RAWSTR:
                 # a name aliases another slot's buffer, so assigning
                 # it must copy (exclusive ownership); an expression
-                # result is a fresh temporary the slot can simply own
+                # result is a fresh temporary the slot can simply own -
+                # unless it was marked borrowed (a str-valued dict's
+                # entry): `x = d[k]` aliased the dict's buffer, and
+                # `x += "!"` then wrote into the dict
                 aliases_slot = (
                     isinstance(value_node, list)
                     and len(value_node) >= 2
                     and value_node[0] == "name"
-                )
+                ) or value[1].name in self._borrowed_str_results
                 coerced = (
                     self._coerce(value, RAWSTR) if aliases_slot else value
                 )
@@ -10835,7 +11464,35 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
     def _conv_aug_assign(self, node, op, null_obj):
         bin_op = node[2][:-1]  # "+=" -> "+"
         target_node = node[1]
-        right_tv = self._convert_node(node[3])
+        rhs_node = node[3]
+        # The RHS is converted AT MOST ONCE. It used to be converted here
+        # unconditionally and then AGAIN by the in-place append arm for
+        # an owned str variable: s += l.pop() popped two elements and any
+        # side effect in the operand ran twice. A string LITERAL appended
+        # to an owned str variable is the one shape that never needs a
+        # value here (the append arm streams it from its global), so
+        # `s += "lit"` keeps its historical byte shape.
+        plain_target = (
+            isinstance(target_node, list)
+            and len(target_node) >= 2
+            and target_node[0] == "name"
+        )
+        stream_literal = (
+            plain_target
+            and self.var_kinds.get(target_node[1]) == RAWSTR
+            and not (
+                target_node[1] in self._borrowed_strs
+                and target_node[1] not in self._owned_strs
+            )
+            and isinstance(rhs_node, list)
+            and len(rhs_node) >= 2
+            and rhs_node[0] == "const"
+            and isinstance(rhs_node[1], str)
+        )
+        if stream_literal:
+            right_tv = None
+        else:
+            right_tv = self._convert_node(rhs_node)
 
         # subscript target: obj[i] <op>= value
         if (
@@ -11007,7 +11664,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 # (a coerce here would copy it and leak the original)
                 self._store_rawstr(target_name, result[1])
                 return result
-            data_ptr, byte_len, temp = self._rawstr_append_operand(node[3])
+            if right_tv is None:
+                # the literal streams straight from its global
+                data_ptr, byte_len, temp = self._rawstr_append_operand(rhs_node)
+            else:
+                data_ptr, byte_len, temp = self._rawstr_append_operand_tv(right_tv)
             slot_value = self._load_var(target_name)[1]
             self.current_builder.call(
                 self.rawstr_append, [slot_value, data_ptr, byte_len]
@@ -11066,6 +11727,8 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     val_bits = self.current_builder.inttoptr(
                         val_bits, ir.PointerType(ir.IntType(8))
                     )
+                    # the dict owns that buffer: the reader only borrows
+                    self._mark_borrowed_str((value_kind, val_bits))
                 return (value_kind, val_bits)
             if (
                 isinstance(node[2], (list, tuple))
@@ -11560,6 +12223,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             out = b.call(self.create_set, [], "")
         else:
             out = b.call(self.create_dict, [], "")
+        scope = self._push_comprehension_scope(node[2])
         for gen in node[2]:
             target, iter_node, conds = gen[0], gen[1], gen[2] or ()
             is_range = (
@@ -11582,15 +12246,39 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 )
                 total = self._coerce(stop_tv, I64)[1]
                 keys = None
+                dict_shape = None
+                # the element IS the index: an int, known statically
+                elem_kind = I64
             else:
-                boxed_iter = self._box(self._convert_node(iter_node))
-                keys = b.call(self.pyobj_iter_keys, [boxed_iter])
-                total = b.call(self.list_length, [keys])
+                src_tv = self._convert_node(iter_node)
+                src_obj = self._box(src_tv)
+                keys = b.call(self.pyobj_iter_keys, [src_obj])
+                dict_shape = self._capture_dict_shape(src_obj)
+                # what the elements ARE, when the iterable says so: a
+                # typed list yields its element kind, anything else is
+                # dynamic. This is the only ground on which a shadowed
+                # typed slot may take an element unboxed (below)
+                elem_kind = OBJ
+                if (
+                    src_tv[0] in RAWLIST_KINDS
+                    and src_tv[0] != RAWLIST_JSON
+                    and not (
+                        isinstance(iter_node, (list, tuple))
+                        and len(iter_node) >= 2
+                        and iter_node[0] == "name"
+                        and iter_node[1] in self._list_elem_class
+                    )
+                ):
+                    elem_kind = RAWLIST_KINDS[src_tv[0]]
             cond_blk = func.append_basic_block("lc_cond")
             body_blk = func.append_basic_block("lc_body")
             done_blk = func.append_basic_block("lc_done")
             b.branch(cond_blk)
             b.position_at_end(cond_blk)
+            if dict_shape is not None:
+                self._watch_dict_shape(src_obj, dict_shape)
+                total = b.call(self.list_length, [keys])
+            # else: a range - its bound is fixed, computed above
             cur = b.load(idx_ptr)
             b.cbranch(
                 b.icmp_signed("<", cur, total), body_blk, done_blk
@@ -11603,15 +12291,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 )
             else:
                 elem = b.call(self.create_int, [cur])
-            # bind the loop target (a plain name per the generator)
-            if (
-                isinstance(target, (list, tuple))
-                and len(target) >= 2
-                and target[0] == "name"
-            ):
-                tname = target[1]
-                self._declare_var(tname, OBJ)
-                b.store(elem, self.variables[tname])
+            self._bind_comprehension_target(target, elem, scope, elem_kind)
             # evaluate conditions; any False skips the append
             keep_blk = b.block
             skip_blk = func.append_basic_block("lc_skip")
@@ -11645,7 +12325,112 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             b.store(b.add(b.load(idx_ptr), ir.const_(ir.IntType(64), 1)), idx_ptr)
             b.branch(cond_blk)
             b.position_at_end(done_blk)
+        self._pop_comprehension_scope(scope)
         return (OBJ, out)
+
+    def _push_comprehension_scope(self, generators: Any) -> list:
+        """Python 3 scopes the targets of a comprehension to the
+        comprehension itself. The loops bind through the ordinary slot
+        of each target name, so a name that already holds a value gets
+        that value saved here and put back by _pop_comprehension_scope
+        (the old converter clobbered it: after `x = 5; y = [x for x in
+        xs]` x was the last element).
+
+        Returns (name, kind, saved value) per shadowed slot: a dynamic
+        slot takes the boxed element as is, a typed one (str, int,
+        float) takes it unboxed into its own kind.
+
+        A str slot's value is saved as a COPY: binding an element drops
+        the slot's previous buffer, which would be the saved one."""
+        b = self.current_builder
+        saved = []
+        for name in _comp_target_names(generators):
+            if name in self.variables:
+                kind = self.var_kinds[name]
+                held = b.load(self.variables[name])
+                if kind == RAWSTR:
+                    held = self._copy_rawstr_or_null(held)
+                    # the copy is the slot's to free from here on, even
+                    # when the slot only borrowed its buffer before
+                    self._owned_strs.add(name)
+                saved.append((name, kind, held))
+        return saved
+
+    def _pop_comprehension_scope(self, saved: list) -> None:
+        """Close the scope _push_comprehension_scope opened: every
+        shadowed name gets its earlier value back. A str slot owns its
+        buffer, so the element bound last dies here - unless nothing was
+        bound and the slot still holds the saved copy itself."""
+        b = self.current_builder
+        for name, kind, old in saved:
+            if kind == RAWSTR:
+                func = self.current_function
+                held = b.load(self.variables[name])
+                do_free = func.append_basic_block("sh_free")
+                keep = func.append_basic_block("sh_keep")
+                b.cbranch(b.icmp_signed("==", held, old), keep, do_free)
+                b.position_at_end(do_free)
+                b.call(self.rawstr_free, [held])
+                b.branch(keep)
+                b.position_at_end(keep)
+            b.store(old, self.variables[name])
+
+    def _copy_rawstr_or_null(self, ptr: Any) -> Any:
+        """rawstr_copy of a str slot's content, or null when the slot is
+        still empty (a declared but unassigned `x: str`)."""
+        b = self.current_builder
+        func = self.current_function
+        null_ptr = ir.const_(ir.PointerType(ir.IntType(8)), None)
+        from_blk = b.block
+        do_copy = func.append_basic_block("sh_copy")
+        done = func.append_basic_block("sh_copied")
+        b.cbranch(b.icmp_signed("==", ptr, null_ptr), done, do_copy)
+        b.position_at_end(do_copy)
+        fresh = b.call(self.rawstr_copy, [ptr])
+        b.branch(done)
+        b.position_at_end(done)
+        merged = b.phi(ir.PointerType(ir.IntType(8)))
+        merged.add_incoming(null_ptr, from_blk)
+        merged.add_incoming(fresh, do_copy)
+        return merged
+
+    def _typed_shadow(self, saved: list, name: str, elem_kind: str):
+        """The (name, kind, ...) entry of a comprehension target that
+        shadows an existing TYPED slot of exactly the elements' kind -
+        the only case where the unboxed element is known to fit it. None
+        for a fresh or dynamic name (or a kind mismatch, which
+        _reject_typed_shadow then reports)."""
+        for entry in saved:
+            if entry[0] == name and entry[1] != OBJ and entry[1] == elem_kind:
+                return entry
+        return None
+
+    def _reject_typed_shadow(self, saved: list, name: str) -> None:
+        """A typed slot shadowed by elements of another (or dynamic)
+        kind: unboxing them into the slot would read the box with the
+        wrong tag - `[x for x in strs]` after `x = 5` answered [1, 1]."""
+        for entry in saved:
+            if entry[0] == name and entry[1] != OBJ:
+                raise ValueError(
+                    "comprehension target '" + name + "' shadows a "
+                    + entry[1] + " variable and the elements are not of "
+                    "that kind - rename the target"
+                )
+
+    def _bind_typed_comprehension_element(self, name: str, kind: str, elem: Any):
+        """Bind one boxed comprehension element into a shadowed TYPED
+        slot, unboxed to the slot's kind. A str arrives as a fresh owned
+        copy through the slot's own drop-on-overwrite discipline (the
+        unbox registered it as a statement temporary - the slot owns it
+        now, so that registration ends here)."""
+        b = self.current_builder
+        coerced = self._coerce((OBJ, elem), kind)
+        if kind == RAWSTR:
+            if coerced[1].name in self._owned_str_fresh:
+                self._owned_fresh_del(self._owned_str_fresh, coerced[1].name)
+            self._store_rawstr(name, coerced[1])
+            return
+        b.store(coerced[1], self.variables[name])
 
     def _convert_bool_chain(self, op: str, operand_nodes: list) -> Tuple[str, Any]:
         """N-ary short-circuit and/or over TypedValues."""
@@ -11686,6 +12471,61 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self.current_builder.position_at_end(end_block)
         result = self.current_builder.load(result_ptr)
         return (I1 if all_i1 else OBJ, result)
+
+    def _bind_comprehension_target(
+        self, target: Any, item: Any, saved: list, elem_kind: str
+    ) -> None:
+        """Bind one comprehension element to the generator's target, as
+        dynamic slots (or unboxed into a typed slot it shadows, when the
+        iterable states the element kind). A tuple target (`[n for n, s
+        in rows]`) binds each name from the boxed element's fields, like
+        a for statement's.
+
+        A tuple target used to be skipped silently: the names kept
+        whatever they held before, so `[n for n, s in rows]` after a
+        `for n, s in rows` loop answered [2, 2] instead of [1, 2]."""
+        b = self.current_builder
+        is_name = (
+            isinstance(target, (list, tuple))
+            and len(target) >= 2
+            and target[0] == "name"
+        )
+        if is_name:
+            shadow = self._typed_shadow(saved, target[1], elem_kind)
+            if shadow is not None:
+                self._bind_typed_comprehension_element(target[1], shadow[1], item)
+                return
+            self._reject_typed_shadow(saved, target[1])
+            self._declare_var(target[1], OBJ)
+            b.store(item, self.variables[target[1]])
+            return
+        if (
+            isinstance(target, (list, tuple))
+            and len(target) >= 2
+            and target[0] == "tuple"
+        ):
+            for t_idx, part in enumerate(target[1]):
+                if (
+                    isinstance(part, (list, tuple))
+                    and len(part) >= 2
+                    and part[0] == "name"
+                ):
+                    idx_obj = b.call(
+                        self.create_int,
+                        [ir.const_(ir.IntType(64), t_idx)],
+                    )
+                    field = b.call(self.pyobj_subscript, [item, idx_obj])
+                    shadow = self._typed_shadow(saved, part[1], OBJ)
+                    if shadow is not None:
+                        self._bind_typed_comprehension_element(
+                            part[1], shadow[1], field
+                        )
+                        continue
+                    self._reject_typed_shadow(saved, part[1])
+                    self._declare_var(part[1], OBJ)
+                    b.store(field, self.variables[part[1]])
+            return
+        raise ValueError("unsupported comprehension target")
 
     def _static_kind_of(self, node: Any) -> str:
         """Best-effort static kind of an expression node (no inference:
@@ -11753,18 +12593,46 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         if not is_range_iter:
             return self._convert_list_for_loop(target_node, iter_node, body_stmts)
 
+        # step is None for the implicit +1: those loops keep their exact
+        # historical instruction sequence. The third argument used to be
+        # dropped silently - range(0, 10, 3) stepped by 1, a negative
+        # step never ran the body - and range() with no arguments
+        # iterated 0..9 out of a magic default.
         args_node = iter_node[2] if len(iter_node) > 2 else []
+        step = None
         if len(args_node) == 1:
             start = ir.const_(ir.IntType(64), 0)
             stop = self._coerce(self._convert_node(args_node[0]), I64)[1]
-        elif len(args_node) >= 2:
+        elif len(args_node) == 2:
             start = self._coerce(self._convert_node(args_node[0]), I64)[1]
             stop = self._coerce(self._convert_node(args_node[1]), I64)[1]
+        elif len(args_node) == 3:
+            start = self._coerce(self._convert_node(args_node[0]), I64)[1]
+            stop = self._coerce(self._convert_node(args_node[1]), I64)[1]
+            step = self._coerce(self._convert_node(args_node[2]), I64)[1]
         else:
-            start = ir.const_(ir.IntType(64), 0)
-            stop = ir.const_(ir.IntType(64), 10)
+            raise NotImplementedError(
+                f"range() takes 1 to 3 arguments, got {len(args_node)}")
+        step_const = _extract_i64_const(step)
+        if step_const == 0:
+            raise ValueError("range() arg 3 must not be zero")
+        if step_const == 1:
+            step = None
 
         i64 = ir.IntType(64)
+        step_ptr = None
+        runtime_step = step is not None and step_const is None
+        if runtime_step:
+            self._panic_if(
+                self.current_builder.icmp_signed(
+                    "==", step, ir.const_(i64, 0)),
+                "ValueError: range() arg 3 must not be zero",
+            )
+            step_ptr = self.current_builder.alloca(i64, None, 'range_step')
+            self.current_builder.store(step, step_ptr)
+        downward = step is not None and (
+            runtime_step or step_const < 0)
+
         loop_init = self.current_function.append_basic_block("loop_init")
         loop_cond = self.current_function.append_basic_block("loop_cond")
         loop_body = self.current_function.append_basic_block("loop_body")
@@ -11780,7 +12648,18 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         self.current_builder.position_at_end(loop_cond)
         counter = self.current_builder.load(counter_ptr)
-        cond = self.current_builder.icmp_signed("<", counter, stop)
+        if not downward:
+            cond = self.current_builder.icmp_signed("<", counter, stop)
+        elif step_const is not None:
+            cond = self.current_builder.icmp_signed(">", counter, stop)
+        else:
+            # sign only known at run time: up while counter < stop,
+            # down while counter > stop
+            up = self.current_builder.icmp_signed(
+                ">", self.current_builder.load(step_ptr), ir.const_(i64, 0))
+            below = self.current_builder.icmp_signed("<", counter, stop)
+            above = self.current_builder.icmp_signed(">", counter, stop)
+            cond = self.current_builder.select(up, below, above)
         self.current_builder.cbranch(cond, loop_body, loop_end)
 
         self.loop_break_blocks.append(loop_end)
@@ -11816,12 +12695,25 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self.loop_continue_blocks.pop()
 
         self.current_builder.position_at_end(incr_block)
-        self.current_builder.store(
-            self.current_builder.add(
-                self.current_builder.load(counter_ptr), ir.const_(i64, 1)
-            ),
-            counter_ptr,
-        )
+        if step is None:
+            # the historical shape: counter += 1
+            self.current_builder.store(
+                self.current_builder.add(
+                    self.current_builder.load(counter_ptr), ir.const_(i64, 1)
+                ),
+                counter_ptr,
+            )
+        else:
+            if step_const is not None:
+                incr = ir.const_(i64, step_const)
+            else:
+                incr = self.current_builder.load(step_ptr)
+            self.current_builder.store(
+                self.current_builder.add(
+                    self.current_builder.load(counter_ptr), incr
+                ),
+                counter_ptr,
+            )
         self.current_builder.branch(loop_cond)
 
         self.current_builder.position_at_end(loop_end)
@@ -11865,11 +12757,17 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         counter_ptr = self.current_builder.alloca(i64, None, 'riter_idx')
         self.current_builder.store(ir.const_(i64, 0), counter_ptr)
-        list_len = self.current_builder.call(self.rawlist_len, [list_ptr])
         self.current_builder.branch(cond_block)
 
+        # An index walk over the LIVE length, like CPython's list
+        # iterator: appends in the body are visited, a pop shortens the
+        # walk. (The length and the items pointer used to be hoisted
+        # once: `for x in xs: xs.append(x)` silently skipped the new
+        # elements, and a growth that moved the items array left the
+        # hoisted pointer dangling.)
         self.current_builder.position_at_end(cond_block)
         index = self.current_builder.load(counter_ptr)
+        list_len = self.current_builder.call(self.rawlist_len, [list_ptr])
         more = self.current_builder.icmp_signed("<", index, list_len)
         self.current_builder.cbranch(more, body_block, end_block)
 
@@ -11883,10 +12781,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             and target_node[0] == "name"
         ):
             var_name = target_node[1]
-            # items/length snapshots are loop-invariant here (body may read
-            # but this fast path assumes no list mutation during iteration,
-            # matching Python's de-facto contract); a hoistable load lets
-            # clang vectorize the surrounding loop
+            # the items pointer is re-read every iteration (growth may
+            # have moved the array); a hoistable pair of loads still
+            # lets clang vectorize a loop whose body stores nothing
             struct_ptr = self.current_builder.bitcast(
                 list_ptr, ir.PointerType(self.raw_list_struct_type)
             )
@@ -11956,14 +12853,34 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
     def _convert_rawstr_for_loop(
-        self, target_node: Any, str_tv: Tuple[str, Any], body_stmts: list
+        self, target_node: Any, str_tv: Tuple[str, Any], body_stmts: list,
+        iter_node: Any,
     ) -> Tuple[str, Any]:
         """for ch in raw_str: ch is a fresh one-code-point rawstr per
         iteration. Iteration walks byte offsets (decode the lead byte,
         advance by the sequence length), so the whole loop is O(bytes)
-        even though each char is code-point semantics."""
+        even though each char is code-point semantics.
+
+        The walk reads the byte length and the data pointer once, which
+        is sound only while nothing can free or grow that buffer. A
+        body that rebinds the iterated name (s = s + x, s += x, a for
+        target...) drops or moves it under those pointers, so such a
+        loop walks a snapshot copy instead - the string as it was at
+        loop entry, exactly what CPython's iterator sees. (It used to
+        read freed memory: `for c in s: ...; s = s + "x"` stopped after
+        the first character.) The copy dies at the loop's exit block,
+        or at a return from inside the loop."""
         i64 = ir.IntType(64)
         str_ptr = str_tv[1]
+        snapshot = (
+            isinstance(iter_node, (list, tuple))
+            and len(iter_node) >= 2
+            and iter_node[0] == "name"
+            and isinstance(iter_node[1], str)
+            and _body_rebinds(body_stmts, iter_node[1])
+        )
+        if snapshot:
+            str_ptr = self.current_builder.call(self.rawstr_copy, [str_ptr])
 
         cond_block = self.current_function.append_basic_block("siter_cond")
         body_block = self.current_function.append_basic_block("siter_body")
@@ -11996,6 +12913,8 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         self.loop_break_blocks.append(end_block)
         self.loop_continue_blocks.append(cond_block)
+        if snapshot:
+            self.loop_str_cleanups.append((self.current_function, str_ptr))
 
         self.current_builder.position_at_end(body_block)
         lead = self.current_builder.load(
@@ -12073,9 +12992,26 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self.current_builder.branch(cond_block)
         self.loop_break_blocks.pop()
         self.loop_continue_blocks.pop()
+        if snapshot:
+            self.loop_str_cleanups.pop()
 
         self.current_builder.position_at_end(end_block)
+        if snapshot:
+            self.current_builder.call(self.rawstr_free, [str_ptr])
         return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
+
+    def _emit_loop_str_cleanups(self) -> None:
+        """Free the snapshot copies of the active str loops, innermost
+        first: a return from inside such a loop never reaches its exit
+        block. Entries owned by another function (a nested def converted
+        inside the loop) are not ours to free."""
+        func = self.current_function
+        i = len(self.loop_str_cleanups)
+        while i > 0:
+            i -= 1
+            owner, value = self.loop_str_cleanups[i]
+            if owner is func:
+                self.current_builder.call(self.rawstr_free, [value])
 
     def _create_char_idxerr_global(self):
         """The panic message global for char-view bounds errors (created
@@ -12281,7 +13217,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self._current_for_iter_name = None
             return result
         if iter_tv[0] == RAWSTR:
-            return self._convert_rawstr_for_loop(target_node, iter_tv, body_stmts)
+            return self._convert_rawstr_for_loop(
+                target_node, iter_tv, body_stmts, iter_node
+            )
         if (
             iter_tv[0] == OBJ
             and isinstance(iter_node, (list, tuple))
@@ -12295,14 +13233,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                 self.pystr_to_rawstr, [iter_tv[1]]
             )
             return self._convert_rawstr_for_loop(
-                target_node, (RAWSTR, raw), body_stmts
+                target_node, (RAWSTR, raw), body_stmts, None
             )
-        list_obj = self._box(iter_tv)
-        if list_obj is None:
+        src_obj = self._box(iter_tv)
+        if src_obj is None:
             return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
         # generic `for x in obj`: lists walk directly, dicts/strings
         # materialize their elements (keys / chars) first
-        list_obj = self.current_builder.call(self.pyobj_iter_keys, [list_obj])
+        list_obj = self.current_builder.call(self.pyobj_iter_keys, [src_obj])
+        dict_shape = self._capture_dict_shape(src_obj)
 
         cond_block = self.current_function.append_basic_block("iter_cond")
         body_block = self.current_function.append_basic_block("iter_body")
@@ -12311,10 +13250,15 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
 
         counter_ptr = self.current_builder.alloca(i64, None, 'iter_idx')
         self.current_builder.store(ir.const_(i64, 0), counter_ptr)
-        list_len = self.current_builder.call(self.list_length, [list_obj])
         self.current_builder.branch(cond_block)
 
+        # the length is read every iteration, like CPython's list
+        # iterator: a list grows into its own loop (pyobj_iter_keys
+        # returns a list unchanged), while a dict's or a str's key list
+        # is a snapshot with a fixed length anyway
         self.current_builder.position_at_end(cond_block)
+        self._watch_dict_shape(src_obj, dict_shape)
+        list_len = self.current_builder.call(self.list_length, [list_obj])
         index = self.current_builder.load(counter_ptr)
         more = self.current_builder.icmp_signed("<", index, list_len)
         self.current_builder.cbranch(more, body_block, end_block)
@@ -12396,6 +13340,36 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             self._declare_var(name, tv[0])
         self.current_builder.store(tv[1], self.variables[name])
 
+    def _capture_dict_shape(self, src_obj: Any) -> Tuple[Any, Any, Any]:
+        """Shape of a dynamic iterable for _watch_dict_shape. The key
+        list pyobj_iter_keys materializes is only a snapshot, so a dict
+        is watched through its own (count, slots in use, entries array);
+        a non-dict reads as (-1, -1, 0) and never changes."""
+        b = self.current_builder
+        return (
+            b.call(self.pyobj_dict_count, [src_obj]),
+            b.call(self.pyobj_dict_used, [src_obj]),
+            b.call(self.pyobj_dict_entries_bits, [src_obj]),
+        )
+
+    def _watch_dict_shape(self, src_obj: Any, shape: Tuple[Any, Any, Any]) -> None:
+        """Panic like CPython when a dict changed under a loop that
+        iterates a snapshot of it. Called at the loop head BEFORE the
+        bound test, so a mutation in the LAST body still raises."""
+        b = self.current_builder
+        watch = b.call(
+            self.pyobj_dict_watch,
+            [src_obj, shape[0], shape[1], shape[2]],
+        )
+        self._panic_if(
+            b.icmp_signed("==", watch, ir.const_(ir.IntType(64), 1)),
+            "RuntimeError: dictionary changed size during iteration",
+        )
+        self._panic_if(
+            b.icmp_signed("==", watch, ir.const_(ir.IntType(64), 2)),
+            "RuntimeError: dictionary modified during iteration",
+        )
+
     def _convert_dict_for_loop(
         self, target_node: Any, recv_node: Any, mode: str, body_stmts: list
     ) -> Tuple[str, Any]:
@@ -12433,64 +13407,97 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self, target_node: Any, recv_tv: Tuple[str, Any], mode: str,
         body_stmts: list,
     ) -> Tuple[str, Any]:
-        """Index walk over a raw dict's slot table: live slots hold
-        entry_index + 1 (0 = empty, -1 = tombstone)."""
+        """Walk the entry array in insertion order (entries are
+        appended; reindex compacts without reordering).
+
+        The shape of the dict (live count, slots in use, keys array) is
+        re-read on every step, so no pointer captured before the loop
+        can outlive a mutation: an insert, delete or reindex in the body
+        - even one that keeps the size - is a loud RuntimeError, and a
+        plain value store never reindexes (rawdict_*_set check the load
+        on the insert path only), which is what keeps the captured
+        entry arrays valid. Values overwritten in the body are seen
+        fresh by later iterations.
+
+        The old slot-table walk hoisted table/keys/vals once, so a
+        store in the body that reindexed the table left it walking
+        freed arrays (values silently skipped, then a segfault)."""
         i64 = ir.IntType(64)
+        zero64 = ir.const_(i64, 0)
         b = self.current_builder
+        func = self.current_function
         kind = recv_tv[0]
+        str_keys = kind in RAWDICT_STR_KINDS
         struct_ptr = b.bitcast(
             recv_tv[1], ir.PointerType(self.raw_dict_struct_type)
         )
-
-        cap = b.add(
-            b.load(_struct_gep(b, struct_ptr, 3)), ir.const_(i64, 1)
-        )  # mask + 1
-        table = b.load(_struct_gep(b, struct_ptr, 4))
-        keys = b.load(_struct_gep(b, struct_ptr, 5))
-        vals = b.load(_struct_gep(b, struct_ptr, 6))
+        count0 = b.load(_struct_gep(b, struct_ptr, 0))
+        filled0 = b.load(_struct_gep(b, struct_ptr, 1))
+        keys0 = b.load(_struct_gep(b, struct_ptr, 5))
+        vals0 = b.load(_struct_gep(b, struct_ptr, 6))
+        # a str entry is nulled when its key copy is freed, an int one
+        # keeps a stale key (0 is a valid key): only the latter asks the
+        # table, and only while the dict holds deleted entries at all
+        probe_needed = (
+            ir.const_(ir.IntType(1), 0)
+            if str_keys
+            else b.icmp_signed("!=", filled0, count0)
+        )
         k_name, v_name = _dict_loop_names(target_node, mode)
 
         cond_block, check_block, body_block, incr_block, end_block = (
             self._dict_loop_blocks()
         )
+        probe_block = None
+        if not str_keys:
+            probe_block = func.append_basic_block("dict_iter_probe")
         idx_ptr = b.alloca(i64, None, 'dict_iter_idx')
-        b.store(ir.const_(i64, 0), idx_ptr)
+        b.store(zero64, idx_ptr)
         b.branch(cond_block)
 
+        # the step check comes first, like CPython's next(): a mutation
+        # in the LAST body still raises. filled and the keys array
+        # identity catch a delete paired with an insert (same size, but
+        # appended to or rebuilt underneath the cursor)
         b.position_at_end(cond_block)
+        self._panic_if(
+            b.icmp_signed("!=", b.load(_struct_gep(b, struct_ptr, 0)), count0),
+            "RuntimeError: dictionary changed size during iteration",
+        )
+        self._panic_if(
+            b.or_(
+                b.icmp_signed("!=", b.load(_struct_gep(b, struct_ptr, 1)), filled0),
+                b.icmp_signed("!=", b.load(_struct_gep(b, struct_ptr, 5)), keys0),
+            ),
+            "RuntimeError: dictionary modified during iteration",
+        )
         index = b.load(idx_ptr)
-        b.cbranch(b.icmp_signed("<", index, cap), check_block, end_block)
+        b.cbranch(b.icmp_signed("<", index, filled0), check_block, end_block)
 
         b.position_at_end(check_block)
-        slot_entry = b.load(b.gep(table, [index]))
-        b.cbranch(
-            b.icmp_signed(">", slot_entry, ir.const_(i64, 0)),
-            body_block,
-            incr_block,
-        )
+        key_bits = b.load(b.gep(keys0, [index]))
+        if str_keys:
+            b.cbranch(b.icmp_signed("!=", key_bits, zero64), body_block, incr_block)
+        else:
+            b.cbranch(probe_needed, probe_block, body_block)
+            b.position_at_end(probe_block)
+            found_at = b.call(self.rawdict_int_entry_of, [recv_tv[1], key_bits])
+            b.cbranch(b.icmp_signed("==", found_at, index), body_block, incr_block)
 
         b.position_at_end(body_block)
-        entry_index = b.sub(slot_entry, ir.const_(i64, 1))
         if k_name is not None:
-            key_bits = b.load(b.gep(keys, [entry_index]))
-            if kind in RAWDICT_STR_KINDS:
-                # stored key is the rawstr pointer itself (i8*); a
-                # RAWSTR value IS that pointer — box a copy so the
-                # loop variable owns no dict storage
-                kptr = b.inttoptr(key_bits, ir.PointerType(ir.IntType(8)))
-                self._bind_loop_var(
-                    k_name, (OBJ, self._box((RAWSTR, kptr)))
+            if str_keys:
+                # stored key is the rawstr pointer itself (i8*)
+                self._bind_strdict_loop_slot(
+                    k_name,
+                    b.inttoptr(key_bits, ir.PointerType(ir.IntType(8))),
+                    "key",
                 )
             else:
                 self._bind_loop_var(k_name, (I64, key_bits))
         if v_name is not None:
-            val_bits = b.load(b.gep(vals, [entry_index]))
-            if RAWDICT_KINDS[kind] == F64:
-                self._bind_loop_var(
-                    v_name, (F64, b.bitcast(val_bits, ir.DoubleType()))
-                )
-            else:
-                self._bind_loop_var(v_name, (I64, val_bits))
+            val_bits = b.load(b.gep(vals0, [index]))
+            self._bind_rawdict_loop_value(v_name, RAWDICT_KINDS[kind], val_bits)
         self._run_dict_loop_body(body_stmts, incr_block, end_block)
 
         b.position_at_end(incr_block)
@@ -12500,12 +13507,62 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         b.position_at_end(end_block)
         return (OBJ, ir.const_(ir.PointerType(self.pyobj.pyobj_type), None))
 
+    def _bind_strdict_loop_slot(self, name: str, raw_ptr: Any, what: str):
+        """Bind a str key or str value of a typed dict into its loop
+        variable. The entry pointer belongs to the dict, so the variable
+        never aliases it: a dynamic slot gets a boxed copy, a str slot a
+        rawstr copy (the list[str] loop discipline).
+
+        The kind is static here, so any other slot is a compile-time
+        type error. This used to go through _coerce's unchecked unbox:
+        after `for k in di` (int keys) a `for k in ds` (str keys) read
+        the string as an integer, without a word."""
+        b = self.current_builder
+        target = self.var_kinds.get(name)
+        if target is None or target == OBJ:
+            self._bind_loop_var(name, (OBJ, self._box((RAWSTR, raw_ptr))))
+            return
+        if target == RAWSTR:
+            copy = b.call(self.rawstr_copy, [raw_ptr])
+            self._declare_var(name, RAWSTR)
+            self._store_rawstr(name, copy)
+            return
+        raise ValueError(
+            f"loop variable '{name}' holds {target}; "
+            f"the {what} of this dict is str"
+        )
+
+    def _bind_rawdict_loop_value(self, name: str, value_kind: str, val_bits: Any):
+        """Bind the value side of a typed dict loop."""
+        b = self.current_builder
+        if value_kind == F64:
+            self._bind_loop_var(name, (F64, b.bitcast(val_bits, ir.DoubleType())))
+        elif value_kind == JSON:
+            self._bind_loop_var(
+                name, (JSON, b.inttoptr(val_bits, LLVM_KIND_TYPES[JSON]))
+            )
+        elif value_kind == RAWSTR:
+            # a str value rides the entry as the DICT'S rawstr pointer
+            self._bind_strdict_loop_slot(
+                name,
+                b.inttoptr(val_bits, ir.PointerType(ir.IntType(8))),
+                "value",
+            )
+        else:
+            self._bind_loop_var(name, (I64, val_bits))
+
     def _convert_boxed_dict_for_loop(
         self, target_node: Any, recv_tv: Tuple[str, Any], mode: str,
         body_stmts: list,
     ) -> Tuple[str, Any]:
-        """Walk a boxed dict's entry array; deleted entries carry a
-        null key and are skipped. Keys and values bind as PyObject."""
+        """Walk a boxed dict's entry array in insertion order; deleted
+        entries carry a null key and are skipped. Keys and values bind
+        as PyObject.
+
+        The entry array and the slot count are re-read on every step
+        (an insert reallocates them), and a structural change in the
+        body is a loud RuntimeError - CPython's own check, extended to
+        size-preserving churn."""
         i64 = ir.IntType(64)
         zero32 = ir.const_(ir.IntType(32), 0)
         one32 = ir.const_(ir.IntType(32), 1)
@@ -12518,10 +13575,11 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         struct_ptr = b.bitcast(
             data, ir.PointerType(self.dict_struct_type)
         )
-        used = b.load(
+        count0 = b.load(b.gep(struct_ptr, [zero32, zero32]))
+        used0 = b.load(
             b.gep(struct_ptr, [zero32, ir.const_(ir.IntType(32), 1)])
         )
-        entries = b.load(
+        entries0 = b.load(
             b.gep(struct_ptr, [zero32, ir.const_(ir.IntType(32), 4)])
         )
         k_name, v_name = _dict_loop_names(target_node, mode)
@@ -12534,10 +13592,32 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         b.branch(cond_block)
 
         b.position_at_end(cond_block)
+        self._panic_if(
+            b.icmp_signed(
+                "!=", b.load(b.gep(struct_ptr, [zero32, zero32])), count0
+            ),
+            "RuntimeError: dictionary changed size during iteration",
+        )
+        self._panic_if(
+            b.or_(
+                b.icmp_signed(
+                    "!=",
+                    b.load(b.gep(struct_ptr, [zero32, ir.const_(ir.IntType(32), 1)])),
+                    used0,
+                ),
+                b.icmp_signed(
+                    "!=",
+                    b.load(b.gep(struct_ptr, [zero32, ir.const_(ir.IntType(32), 4)])),
+                    entries0,
+                ),
+            ),
+            "RuntimeError: dictionary modified during iteration",
+        )
         index = b.load(idx_ptr)
-        b.cbranch(b.icmp_signed("<", index, used), check_block, end_block)
+        b.cbranch(b.icmp_signed("<", index, used0), check_block, end_block)
 
         b.position_at_end(check_block)
+        entries = b.load(b.gep(struct_ptr, [zero32, ir.const_(ir.IntType(32), 4)]))
         entry_ptr = b.gep(entries, [zero32, index])
         key_obj = b.load(b.gep(entry_ptr, [zero32, zero32]))
         b.cbranch(

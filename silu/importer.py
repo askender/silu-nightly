@@ -221,11 +221,40 @@ def _reject_semicolons(source: str) -> None:
         pass  # let ast.parse produce the real diagnostic
 
 
+def _reject_unsupported_subset(tree: ast.AST) -> None:
+    """Constructs CPython's ast accepts that Silu has no semantics for.
+
+    The self-hosted and Rust front ends already reject them at parse
+    time; the Python plane rode ast.parse and then DROPPED them: a
+    default parameter value never reached the IR (def f(a, b=5) called
+    with one argument read b as 0) and a loop's `else` clause vanished
+    (for/while ... else ran as if it were not there). Pinned at the
+    same choke point as the `;` scan, so all three front ends agree.
+    Error path only: no accepted program's IR changes."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.Lambda)):
+            a = node.args
+            if (a.defaults
+                    or [d for d in a.kw_defaults if d is not None]
+                    or a.vararg or a.kwarg or a.kwonlyargs):
+                raise SyntaxError(
+                    "default parameter values are not part of Silu "
+                    "(every parameter is required)"
+                    f" (line {getattr(node, 'lineno', '?')})")
+        elif (isinstance(node, (ast.For, ast.AsyncFor, ast.While))
+              and node.orelse):
+            raise SyntaxError(
+                f"'else' on a {type(node).__name__.lower()} loop is not "
+                f"part of Silu (line {getattr(node, 'lineno', '?')})")
+
+
 def expand_imports_tree(source: str, base_dir: str) -> ast.Module:
     """Expand .si imports in source; returns the merged AST. Line
     numbers keep each file's original positions (no re-parse)."""
     _reject_semicolons(source)
     tree = ast.parse(source)
+    _reject_unsupported_subset(tree)
     aliases: dict = {}
     _expand(tree, os.path.abspath(base_dir), set(), (), aliases)
     if aliases:

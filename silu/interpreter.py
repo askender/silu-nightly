@@ -31,6 +31,42 @@ class ContinueException(Exception):
     pass
 
 
+def _bind_call_arguments(name: str, params: List[str], args: tuple,
+                         kwargs: dict) -> dict:
+    """Bind a call's arguments to parameter names: positionally, then
+    keywords by name, every parameter required. Shared by functions and
+    lambdas, and the same contract the compiled plane implements: a
+    wrong arity used to leave parameters unbound (too few: NameError
+    far from the call) or to be ignored (too many), and a keyword
+    argument was rejected outright."""
+    label = name or "Lambda"
+    if len(args) > len(params):
+        raise TypeError(
+            f"{label}() takes {len(params)} arguments "
+            f"but {len(args)} were given"
+        )
+    bound = {}
+    for param, value in zip(params, args):
+        bound[param] = value
+    for key, val in kwargs.items():
+        if key not in params:
+            raise TypeError(
+                f"{label}() got an unexpected keyword argument '{key}'"
+            )
+        if key in bound:
+            raise TypeError(
+                f"{label}() got multiple values for argument '{key}'"
+            )
+        bound[key] = val
+    missing = [p for p in params if p not in bound]
+    if missing:
+        raise TypeError(
+            f"{label}() missing {len(missing)} required "
+            "argument(s): " + ", ".join(missing)
+        )
+    return bound
+
+
 class LambdaFunction:
     """Represents a lambda function."""
 
@@ -39,16 +75,13 @@ class LambdaFunction:
         self.body_node = body_node
         self.env = env
 
-    def __call__(self, *args):
-        if len(args) != len(self.params):
-            raise TypeError(
-                f"Lambda takes {len(self.params)} arguments but {len(args)} were given"
-            )
+    def __call__(self, *args, **kwargs):
+        bound = _bind_call_arguments("", self.params, args, kwargs)
 
         # Create lambda environment with parameter bindings
         lambda_env = Environment(parent=self.env)
-        for param, value in zip(self.params, args):
-            lambda_env.set(param, value)
+        for param in self.params:
+            lambda_env.set(param, bound[param])
 
         # Evaluate lambda body
         interpreter = SiluInterpreter(env=lambda_env)
@@ -64,12 +97,14 @@ class Function:
         self.args = args
         self.body = body
         self.env = env
+        self.bound_names = _scope_bound_names(body)
 
-    def __call__(self, *args):
+    def __call__(self, *args, **kwargs):
         # Create function environment with argument bindings
-        func_env = Environment(parent=self.env)
-        for arg, value in zip(self.args, args):
-            func_env.set(arg, value)
+        bound = _bind_call_arguments(self.name, self.args, args, kwargs)
+        func_env = Environment(parent=self.env, local_names=self.bound_names)
+        for name in self.args:
+            func_env.set(name, bound[name])
 
         # Execute function body
         interpreter = SiluInterpreter(env=func_env)
@@ -175,12 +210,53 @@ class SiluInstance:
         return f"{self.__silu_class__.name}({fields})"
 
 
+def _scope_bound_names(body) -> frozenset:
+    """Names a function body binds anywhere in its own scope: assignment,
+    aug/ann assignment, for/with targets, del, nested def/class names,
+    imports, except/match captures. Nested scopes (def, lambda, class)
+    and comprehension generators bind their own names and are not
+    entered. This is Python's compile-time local table."""
+    names = set()
+
+    def walk(node):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.Lambda, ast.ClassDef)):
+            if not isinstance(node, ast.Lambda):
+                names.add(node.name)
+            return
+        if isinstance(node, ast.comprehension):
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name:
+                names.add(node.name)
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    for stmt in body:
+        walk(stmt)
+    return frozenset(names)
+
+
 class Environment:
     """Manages variable and function storage with built-in functions."""
 
-    def __init__(self, parent: Optional["Environment"] = None):
+    def __init__(self, parent: Optional["Environment"] = None,
+                 local_names: frozenset = frozenset()):
         self.vars: Dict[str, Any] = {}
         self.parent = parent
+        # names the function owning this environment binds SOMEWHERE in
+        # its body: Python makes them local for the whole function
+        self.local_names = local_names
         if parent is None:  # Global environment gets built-ins
             self._register_builtins()
 
@@ -341,9 +417,19 @@ class Environment:
             return False
 
     def get(self, name: str) -> Any:
-        """Get variable value, checking parent environments."""
+        """Get variable value, checking parent environments.
+
+        A name the function binds later is local from the start: reading
+        it before that is Python's UnboundLocalError, never a fall-through
+        to the enclosing binding (it used to read the module global here,
+        where CPython and both compiled planes refuse)."""
         if name in self.vars:
             return self.vars[name]
+        if name in self.local_names:
+            raise UnboundLocalError(
+                f"cannot access local variable '{name}' where it is not "
+                "associated with a value"
+            )
         if self.parent:
             return self.parent.get(name)
         raise NameError(f"Name '{name}' is not defined")
@@ -451,6 +537,17 @@ class SiluInterpreter(BaseASTProcessor):
     def process_delete_subscript(self, obj: Any, key: Any) -> None:
         """Handle subscript deletion (e.g., del dict[key])."""
         if isinstance(obj, dict):
+            del obj[key]
+        elif isinstance(obj, list):
+            # `del xs[i]`: negative indices count from the end, as in
+            # the store path (the compiled planes gained it in the same
+            # round; the interpreter used to refuse it here)
+            if not isinstance(key, int):
+                raise TypeError("list indices must be integers")
+            if key < 0:
+                key = len(obj) + key
+            if key < 0 or key >= len(obj):
+                raise IndexError("list index out of range")
             del obj[key]
         else:
             raise TypeError(
@@ -889,18 +986,21 @@ class SiluInterpreter(BaseASTProcessor):
     def visit_Call(self, node: ast.Call) -> Any:
         """Handle method calls and regular function calls."""
         if isinstance(node.func, ast.Attribute):
-            # Method call
+            # Method call. Keyword arguments go through to the method:
+            # Python's own builtins reject the ones they do not take
+            # (l.index(1, start=0) used to drop `start` on the floor).
             obj = self.visit(node.func.value)
             method_name = node.func.attr
             args = [self.visit(arg) for arg in node.args]
+            keywords = {kw.arg: self.visit(kw.value) for kw in node.keywords}
 
             if isinstance(obj, SiluInstance):
                 # class method: process_attribute returns a bound method
                 method = self.process_attribute(obj, method_name)
-                return method(*args)
+                return method(*args, **keywords)
 
             method = getattr(obj, method_name)
-            return method(*args)
+            return method(*args, **keywords)
         else:
             # Regular function call
             return super().visit_Call(node)
@@ -1017,6 +1117,18 @@ class SiluInterpreter(BaseASTProcessor):
             f"match pattern {type(pattern).__name__} is not supported"
         )
 
+    def _comprehension_items(self, generators):
+        """Yield once per element a comprehension selects, with the
+        targets bound in a scope of their own: in Python 3 the names a
+        comprehension binds do not leak (they used to overwrite the
+        enclosing bindings here - `x = 5; [x for x in r]` left x at 2)."""
+        outer = self.env
+        self.env = Environment(outer)
+        try:
+            yield from self._iter_comprehension(generators, 0, 0)
+        finally:
+            self.env = outer
+
     def _iter_comprehension(self, generators, index, env_depth):
         """Yield (gens_done) as nested loops over comprehension
         generators, binding targets; conditions filter."""
@@ -1047,18 +1159,18 @@ class SiluInterpreter(BaseASTProcessor):
     def visit_ListComp(self, node: ast.ListComp) -> Any:
         return [
             self.visit(node.elt)
-            for _ in self._iter_comprehension(node.generators, 0, 0)
+            for _ in self._comprehension_items(node.generators)
         ]
 
     def visit_SetComp(self, node: ast.SetComp) -> Any:
         return {
             self.visit(node.elt)
-            for _ in self._iter_comprehension(node.generators, 0, 0)
+            for _ in self._comprehension_items(node.generators)
         }
 
     def visit_DictComp(self, node: ast.DictComp) -> Any:
         result = {}
-        for _ in self._iter_comprehension(node.generators, 0, 0):
+        for _ in self._comprehension_items(node.generators):
             key = self.visit(node.key)
             result[key] = self.visit(node.value)
         return result
@@ -1066,7 +1178,7 @@ class SiluInterpreter(BaseASTProcessor):
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> Any:
         return (
             self.visit(node.elt)
-            for _ in self._iter_comprehension(node.generators, 0, 0)
+            for _ in self._comprehension_items(node.generators)
         )
 
     def visit_JoinedStr(self, node: ast.JoinedStr) -> Any:
