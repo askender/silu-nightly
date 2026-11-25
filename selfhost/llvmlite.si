@@ -325,40 +325,73 @@ def _escape_latin1(data):
 
 def _double_bits(value):
     # IEEE-754 double bits as 16 hex digits, without struct.pack:
-    # decompose sign/exponent/mantissa by scaling (normal range).
+    # decompose sign/exponent/mantissa by scaling.  A non-zero finite
+    # double reaches [1, 2) through exact *2 / /2 steps, so those loops
+    # are bounded - which is exactly why infinity and NaN are classified
+    # FIRST (the halving loop never ends on infinity, and NaN falls out
+    # of both loops looking like 1.0).  Subnormals carry no implicit
+    # leading 1: scale their [1, 2) value back by the power of two the
+    # normalization added.  llvmlite prints the raw bit pattern with the
+    # minimum number of hex digits, right-aligned to 16.
     v = float(value)
     if v == 0.0:
         if str(v)[0] == "-":
-            return " " * 6 + "0x8000000000000000"
+            return "0x8000000000000000"
         return " " * 13 + "0x0"
+    if v != v:
+        # NaN: exponent all ones, the quiet bit set.  Canonicalized to
+        # the positive quiet NaN - that is the only NaN the IR JSON can
+        # carry (its NaN token has no sign or payload), and a NaN's sign
+        # is invisible to comparisons and to str() in Python anyway
+        return "0x7ff8000000000000"
     sign_bit = 0
     if v < 0.0:
         sign_bit = 1
         v = -v
-    e = 0
-    while v >= 2.0:
-        v = v / 2.0
-        e += 1
-    while v < 1.0:
-        v = v * 2.0
-        e -= 1
-    exp = e + 1023
-    mant = v - 1.0
-    mant_bits = 0
-    i = 0
-    while i < 52:
-        mant = mant * 2.0
-        if mant >= 1.0:
-            mant_bits = mant_bits * 2 + 1
-            mant = mant - 1.0
+    if v > 1.7976931348623157e308:
+        # infinity: every finite double is <= DBL_MAX
+        high = sign_bit * 32768 + 2047 * 16
+        low = 0
+    else:
+        e = 0
+        while v >= 2.0:
+            v = v / 2.0
+            e += 1
+        while v < 1.0:
+            v = v * 2.0
+            e -= 1
+        if e + 1023 <= 0:
+            # subnormal: the value is v * 2**e with e < -1022, i.e. an
+            # exact integer multiple of 2**-1074 - double v up to 2**51
+            # times and take the integer; the exponent field stays 0
+            m = v
+            i = 0
+            while i < e + 1074:
+                m = m * 2.0
+                i += 1
+            mant_bits = int(m)
+            high = sign_bit * 32768 + mant_bits // 281474976710656
+            low = mant_bits % 281474976710656
         else:
-            mant_bits = mant_bits * 2
-        i += 1
-    # The sign bit makes the full word exceed signed i64.  Render the
-    # high 16 and low 48 bits separately, then apply llvmlite's minimum
-    # width without ever forming the overflowing product.
-    high = sign_bit * 32768 + exp * 16 + mant_bits // 281474976710656
-    low = mant_bits % 281474976710656
+            exp = e + 1023
+            mant = v - 1.0
+            mant_bits = 0
+            i = 0
+            while i < 52:
+                mant = mant * 2.0
+                if mant >= 1.0:
+                    mant_bits = mant_bits * 2 + 1
+                    mant = mant - 1.0
+                else:
+                    mant_bits = mant_bits * 2
+                i += 1
+            high = (
+                sign_bit * 32768 + exp * 16 + mant_bits // 281474976710656
+            )
+            low = mant_bits % 281474976710656
+    # The sign bit makes the full word exceed signed i64.  high (16
+    # bits) and low (48 bits) are rendered separately - the product that
+    # would overflow is never formed.
     full = ""
     i = 0
     while i < 16:

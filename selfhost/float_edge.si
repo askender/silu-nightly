@@ -1,0 +1,21 @@
+# IEEE-754 boundary values through every plane: the smallest subnormal,
+# a mid subnormal, negative zero and DBL_MAX as literals, plus infinity
+# and NaN produced at run time (non-finite LITERALS are rejected by all
+# three front ends). The text-layer renderer - and the self-hosted
+# compiler built on it - used to spin forever on infinity literals and
+# mis-compile the subnormals and -0.0.
+tiny = 5e-324
+sub = 1e-320
+neg = -1e-320
+nz = -0.0
+big = 1.7976931348623157e308
+inf = 1e308 * 10.0
+ninf = -1e308 * 10.0
+nan = inf - inf
+print(inf, ninf, nan)
+print(inf > big, ninf < -big, -ninf == inf)
+print(tiny > 0.0, tiny == 5e-324, tiny / 2.0 == 0.0)
+print(sub * 2.0 == 2e-320, sub == tiny, 1.0 / inf == 0.0, neg < 0.0)
+print(nan != nan, nan == nan, nan < nan, nan != inf, tiny != sub, sub != sub)
+print(nz == 0.0, nz + 1.0, -nz, tiny == tiny)
+print(big + tiny == big, sub > 0.0, neg < 0.0, nz == 0.0)

@@ -431,7 +431,15 @@ def const_num(tok: Token) -> object:
     if len(t) >= 2 and t[0] == "0" and (t[1] == "x" or t[1] == "X" or t[1] == "b" or t[1] == "B" or t[1] == "o" or t[1] == "O"):
         return ["const", to_int(t)]
     if "." in t or "e" in t or "E" in t:
-        return ["const", to_float(t)]
+        fv: float = to_float(t)
+        # 1e400 overflows to infinity. No plane can carry a non-finite
+        # literal: this front end used to write a bare `inf` into the IR
+        # JSON and the converter's own parser spun on it forever. Same
+        # rejection as the python ast_processor and the Rust front end.
+        if fv > 1.7976931348623157e308 or fv < -1.7976931348623157e308:
+            print("M4 error line", tok.line, ": float literal out of range:", t)
+            raise SystemExit(1)
+        return ["const", fv]
     return ["const", to_int(t)]
 
 

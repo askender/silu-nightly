@@ -6,6 +6,7 @@ extracting shared AST traversal logic while allowing customization of processing
 """
 
 import ast
+import math
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
@@ -260,6 +261,17 @@ class BaseASTProcessor(ast.NodeVisitor, ABC):
 
     def visit_Constant(self, node: ast.Constant) -> Any:
         """Visit a constant node."""
+        # 1e400 overflows to infinity. No plane can carry a non-finite
+        # literal: the self-hosted front end writes a bare `inf` into the
+        # IR JSON and its converters' parsers spin on it, so the shipped
+        # compiler hung forever on `print(1e400)`. One rule at the single
+        # choke point every processor (IR, interpreter, symbolic) shares,
+        # mirrored in silu_fe.si and the Rust front end.
+        if isinstance(node.value, float) and not math.isfinite(node.value):
+            raise ValueError(
+                f"float literal out of range: {node.value!r} is not a "
+                "finite f64 - use float('inf') or arithmetic for infinity"
+            )
         return self.process_constant(node.value)
 
     # ================== Operation Handlers ==================

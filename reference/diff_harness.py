@@ -31,6 +31,7 @@ CORPUS_IR = [
     "selfhost/calc.si",
     "selfhost/strbuf_probe.si",
     "selfhost/utf8_probe.si",
+    "selfhost/float_edge.si",
     "selfhost/ir_interp.si",
     "selfhost/silu_fe.si",
     "selfhost/typed_codegen_flat.si",

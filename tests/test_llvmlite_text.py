@@ -9,6 +9,7 @@ selfhost/llvmlite.si is a locked copy of the shared core.
 
 import glob
 import os
+import random
 import subprocess
 import sys
 
@@ -19,7 +20,62 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROGRAMS = sorted(glob.glob(f"{REPO}/benchmarks/*.si")) + [
     f"{REPO}/selfhost/calc.si",
     f"{REPO}/selfhost/ir_interp.si",
+    f"{REPO}/selfhost/float_edge.si",
 ]
+
+# IEEE-754 boundary doubles: every special class plus seeded random bit
+# patterns (the reference rendering is produced by real llvmlite at test
+# time - never hand-written)
+SPECIAL_DOUBLES = [
+    0.0, -0.0, 1.5, -1.5, 0.1, 1.0, 2.0, 3.0, 0.5, 1e-5, 1e-7, 1e15,
+    1e16, 1e300, -1e300, 1.7976931348623157e308, -1.7976931348623157e308,
+    float("inf"), float("-inf"), float("nan"),
+    5e-324, -5e-324, 4.9e-324, 1e-320, -1e-320, 1e-310,
+    2.2250738585072014e-308, 2.2250738585072011e-308,
+]
+
+
+def _llvmlite_renders_doubles(values):
+    """The exact text real llvmlite prints for each double constant
+    (the rjust(16) field after `store double <sep>`)."""
+    import struct
+
+    real = pytest.importorskip("llvmlite.ir")
+    rng = random.Random(20261125)
+    bits = list(values)
+    for _ in range(300):
+        x = struct.unpack(">d", struct.pack(">Q", rng.getrandbits(64)))[0]
+        if x == x:      # NaN payloads: the layer canonicalizes to +qNaN
+            bits.append(x)
+    for _ in range(200):   # dense in the subnormal range
+        bits.append(struct.unpack(">d", struct.pack(">Q", rng.getrandbits(52)))[0])
+    m = real.Module(name="m")
+    f = real.Function(m, real.FunctionType(real.IntType(64), []), "f")
+    b = real.IRBuilder(f.append_basic_block("entry"))
+    p = b.alloca(real.DoubleType(), None, "p")
+    for x in bits:
+        b.store(real.Constant(real.DoubleType(), x), p)
+    b.ret(real.Constant(real.IntType(64), 0))
+    out = []
+    for line in str(m).split("\n"):
+        if "store double " in line:
+            out.append(line.strip()[len("store double "):].split(",")[0])
+    assert len(out) == len(bits)
+    return bits, out
+
+
+def test_double_bits_matches_llvmlite():
+    """The shared-core bit decomposition (silu/llvmlite_text.py
+    _double_bits, locked into selfhost/llvmlite.si) must render every
+    double exactly as real llvmlite does. Its first form spun forever on
+    infinity, turned NaN into 1.0, mis-encoded subnormals and padded
+    -0.0 with six stray spaces."""
+    sys.path.insert(0, f"{REPO}/silu")
+    from llvmlite_text import _double_bits
+
+    values, expected = _llvmlite_renders_doubles(SPECIAL_DOUBLES)
+    for x, want in zip(values, expected):
+        assert _double_bits(x) == want, (x, _double_bits(x), want)
 
 
 def _gen(ir_path, out_path, text_mode):

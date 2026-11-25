@@ -107,6 +107,12 @@ class JsonR:
             else:
                 break
         s: str = "".join(text)
+        if len(s) == 0:
+            # nothing consumed (inf/nan/malformed lead): returning a
+            # value without advancing pos makes the container reader
+            # re-parse the same token forever. Bail loudly - the same
+            # guard the wasm backend's parser already carries.
+            raise ValueError("bad json number (inf/nan or malformed) at offset " + str(self.pos))
         if "." not in s and "e" not in s and "E" not in s:
             iv = 0
             if neg:

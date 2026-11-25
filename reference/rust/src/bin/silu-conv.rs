@@ -1688,13 +1688,16 @@ fn eval_i1(b: &mut FnB, e: &Val) -> String {
                 "==" => "eq", _ => "ne",
             };
             if matches!(lt, Typed::F64(_)) || matches!(rt, Typed::F64(_)) {
-                // mixed: silent, sitofp, then the fcmp slot (calc)
+                // mixed: silent, sitofp, then the fcmp slot (calc).
+                // `!=` is UNordered (une): CPython's NaN != NaN is True,
+                // and the ordered `one` answers False for any NaN operand
                 let l = to_f64(b, lt);
                 let r = to_f64(b, rt);
                 let ic = b.nx();
                 let fp = match pred { "slt" => "olt", "sle" => "ole",
                                      "sgt" => "ogt", "sge" => "oge",
-                                     "eq" => "oeq", _ => "one" };
+                                     "eq" => "oeq", "ne" => "une",
+                                     _ => bail("float compare op") };
                 b.line(format!(
                     "  %\"{}\" = fcmp {} double {}, {}", ic, fp, l, r));
                 format!("%\"{}\"", ic)

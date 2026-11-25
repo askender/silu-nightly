@@ -455,7 +455,15 @@ fn const_num(tok: &Token) -> Val {
         }
     }
     if t.contains('.') || t.contains('e') || t.contains('E') {
-        return ns2("const", Val::f(to_float(t)));
+        let v = to_float(t);
+        // 1e400 overflows to infinity. No plane can carry a non-finite
+        // literal: the IR JSON token is undefined across front ends and
+        // the converters' own parsers spin on it. Same rejection as
+        // silu_fe.si and the python ast_processor.
+        if !v.is_finite() {
+            fe_error(&format!("float literal out of range: {} is not a finite f64", t), tok);
+        }
+        return ns2("const", Val::f(v));
     }
     ns2("const", Val::i(to_int(t)))
 }
