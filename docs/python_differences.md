@@ -47,9 +47,6 @@
 - **`strip()` / `lstrip()` / `rstrip()` 只剥 ASCII 空白**；编译平面
   还不支持 `strip(chars)` 带参与独立的 `lstrip`/`rstrip`（响亮拒绝；
   解释器全部支持）。
-- **`find` / `rfind` / `index` / `startswith` / `endswith` 的
-  `start`/`end` 参数在编译平面被忽略**（`"abcabc".find("c", 3)` 编译
-  得 2，CPython 得 5）——已知 bug，修复中；解释器行为正确。
 - **`replace("", x)` 编译平面返回空串**（CPython 在每个边界插入）——
   已知 bug，修复中。
 - f-string：基本插值 `f"hi {name} {1 + 2}"` 三平面一致；**格式 spec
@@ -64,6 +61,11 @@
   `removeprefix` `removesuffix` `encode` `rsplit`、`split` 的
   `maxsplit` 参数、`index`/`find` 的 start 参数、`isalnum`
   `isdecimal` `isidentifier` `istitle`。
+- **`find` / `rfind` / `index` / `startswith` / `endswith` 的
+  `start`/`end` 参数（2026-11-28 起四平面实现）**：负数从尾部数、
+  超界钳制、答案为绝对码点下标——与 CPython 一致（此前编译平面
+  静默截断多余参数）。ir2c 的 C 后端仅支持 typed str 接收者（动态
+  接收者响亮拒绝）。
 - 支持的核心面（三平面与 CPython 一致）：`split(sep)`（字面分隔、
   保留空字段）、`split()` 空白合并、`join`、`count`、`replace`（非空
   针）、1 参 `find`/`rfind`/`index`、1 参 `startswith`/`endswith`、

@@ -345,6 +345,23 @@ MATCH_CPYTHON = [
      "      s.find(\"z\"), s.rfind(\"z\"))\n"
      "print(\"abc\".startswith(\"ab\"), \"abc\".endswith(\"bc\"),\n"
      "      \"abc\".startswith(\"\"), \"\".startswith(\"a\"))\n"),
+    # --- start/end arguments (2026-11-28): they used to be silently
+    # truncated by the boxed method map (args_node[:arg_count]); now
+    # implemented on the range runtime with CPython's clamping rules.
+    # Expected values from real CPython.
+    ("str_find_start_end_args",
+     "s = \"abcabc\"\nprint(s.find(\"c\", 3), s.rfind(\"b\", 0, 4),\n"
+     "      s.index(\"b\", 2), s.find(\"b\", -3), s.find(\"c\", 2, 5))\n"
+     "print(\"abc\".startswith(\"b\", 1), \"abc\".endswith(\"b\", 0, 2),\n"
+     "      \"abc\".startswith(\"bc\", 1, 2), \"abc\".endswith(\"a\", 0, 1))\n"),
+    ("str_find_args_multibyte",
+     "s = \"aé中bñc中\"\nprint(s.find(\"中\", 2), s.rfind(\"中\", 0, 6),\n"
+     "      s.index(\"ñ\", 3), s.find(\"中\", 9))\n"
+     "print(s.startswith(\"中\", 2), s.endswith(\"中\", 8),\n"
+     "      \"abc\".startswith(\"bc\", 1, 2), \"abc\".endswith(\"a\", 0, 1))\n"),
+    ("str_find_args_dynamic",
+     "def get() -> object:\n    return \"abcabc\"\nd = get()\n"
+     "print(d.find(\"c\", 3), d.startswith(\"b\", 1), d.rfind(\"b\", 0, 4))\n"),
 ]
 
 # CPython has no implicit record constructor, so these Silu programs are

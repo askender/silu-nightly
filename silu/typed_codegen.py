@@ -3304,6 +3304,7 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         # i1 rawstr_starts_with / rawstr_ends_with(i8* s, i8* p, i64 plen)
         self.rawstr_starts_with = self._emit_affix("rawstr_starts_with", True)
         self.rawstr_ends_with = self._emit_affix("rawstr_ends_with", False)
+        self._emit_str_range_helpers()
         self._create_boxed_affix()
 
         # i1 rawstr_isdigit / rawstr_isalpha / rawstr_isspace(i8* s):
@@ -5983,6 +5984,168 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         b.ret(res)
         return func
 
+    def _emit_str_range_helpers(self):
+        """find/rfind/index/startswith/endswith with CPython's start/end
+        arguments. All byte ranges arrive CLAMPED (the converter applies
+        the negative-index and beyond-length rules against cp_len), so
+        these walk [lo, hi) with no bounds drama: matches start only at
+        code point boundaries ((byte & 0xC0) != 0x80 - a memcmp hit in
+        the middle of a multi-byte char is not a Python match), and the
+        answers are ABSOLUTE code point indexes, the same coordinate
+        system as 1-arg find."""
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+
+        # (rawutf8_cp_count already exists - declared at init with the
+        # same predicate walk; the find/rfind hit blocks reuse it to
+        # answer ABSOLUTE code point indexes)
+
+        # i64 rawstr_find_range(i8* s, i8* nd, i64 nl, i64 lo, i64 hi)
+        # i64 rawstr_rfind_range(...) - the same walk, rightmost match
+        made = {}
+        for name, reverse in (("rawstr_find_range", False),
+                              ("rawstr_rfind_range", True)):
+            fn = ir.func_(
+                self.module,
+                ir.FunctionType(i64, [i8p, i8p, i64, i64, i64], False),
+                name,
+            )
+            made[name] = fn
+            entry = fn.append_basic_block("entry")
+            empty_check = fn.append_basic_block("fr_empty")
+            cond = fn.append_basic_block("fr_cond")
+            body = fn.append_basic_block("fr_body")
+            boundary = fn.append_basic_block("fr_boundary")
+            hit = fn.append_basic_block("fr_hit")
+            advance = fn.append_basic_block("fr_advance")
+            not_found = fn.append_basic_block("fr_not_found")
+            b = ir.builder_(entry)
+            s_arg, nd_arg, nl_arg, lo_arg, hi_arg = fn.args
+            s_struct = b.bitcast(s_arg, ir.PointerType(
+                self.rawstr_struct_type))
+            s_data = _rawstr_load_data(b, s_struct)
+            # the cursor alloca lives in ENTRY: an alloca in the loop
+            # block re-executes every iteration and the re-initialized
+            # store made the walk infinite (the 60s ASan timeout)
+            b_ptr = b.alloca(i64, None, 'fr_b')
+            # an empty needle answers lo (find) / hi (rfind) - CPython:
+            # "abc".find("", 1) == 1, "abc".rfind("", 1) == 3
+            if not reverse:
+                b.store(lo_arg, b_ptr)
+                b.cbranch(b.icmp_signed("==", nl_arg, zero64),
+                          empty_check, cond)
+                b.position_at_end(empty_check)
+                b.ret(lo_arg)
+            else:
+                b.store(b.sub(hi_arg, nl_arg), b_ptr)
+                b.cbranch(b.icmp_signed("==", nl_arg, zero64),
+                          empty_check, cond)
+                b.position_at_end(empty_check)
+                b.ret(hi_arg)
+
+            b.position_at_end(cond)
+            if not reverse:
+                # b in [lo, hi - nl]
+                limit = b.sub(hi_arg, nl_arg)
+                more = b.icmp_signed("<=", b.load(b_ptr), limit)
+                b.cbranch(more, body, not_found)
+            else:
+                # b walks down from hi - nl to lo
+                more = b.icmp_signed(">=", b.load(b_ptr), lo_arg)
+                b.cbranch(more, body, not_found)
+
+            b.position_at_end(body)
+            cur = b.load(b_ptr)
+            is_lead = b.icmp_signed(
+                "!=",
+                b.and_(
+                    b.load(b.gep(s_data, [cur])),
+                    ir.const_(ir.IntType(8), 0xC0),
+                ),
+                ir.const_(ir.IntType(8), 0x80),
+            )
+            b.cbranch(is_lead, boundary, advance)
+
+            b.position_at_end(boundary)
+            cmp_r = b.call(self.memcmp, [
+                b.gep(s_data, [cur]), nd_arg, nl_arg
+            ])
+            is_match = b.icmp_signed("==", cmp_r, ir.const_(i32, 0))
+            b.cbranch(is_match, hit, advance)
+
+            b.position_at_end(hit)
+            b.ret(b.call(self.rawutf8_cp_count, [s_data, cur]))
+
+            b.position_at_end(advance)
+            if not reverse:
+                b.store(b.add(cur, one64), b_ptr)
+            else:
+                # -1 for the miss scan below lo; the loop condition ends
+                b.store(b.sub(cur, one64), b_ptr)
+            b.branch(cond)
+
+            b.position_at_end(not_found)
+            neg1 = ir.const_(i64, -1)
+            b.ret(neg1)
+        self.rawstr_find_range = made["rawstr_find_range"]
+        self.rawstr_rfind_range = made["rawstr_rfind_range"]
+
+        # i1 rawstr_starts_range(i8* s, i8* pd, i64 pl, i64 lo, i64 hi)
+        # i1 rawstr_ends_range(...) - CPython's s[start:end] affix test
+        made2 = {}
+        for name, at_end in (("rawstr_starts_range", False),
+                             ("rawstr_ends_range", True)):
+            fn = ir.func_(
+                self.module,
+                ir.FunctionType(ir.IntType(1), [i8p, i8p, i64, i64, i64],
+                                False),
+                name,
+            )
+            made2[name] = fn
+            entry = fn.append_basic_block("entry")
+            cmp_blk = fn.append_basic_block("sr_cmp")
+            no_blk = fn.append_basic_block("sr_no")
+            b = ir.builder_(entry)
+            s_arg, pd_arg, pl_arg, lo_arg, hi_arg = fn.args
+            s_struct = b.bitcast(s_arg, ir.PointerType(
+                self.rawstr_struct_type))
+            s_data = _rawstr_load_data(b, s_struct)
+            # the compare offset is a pure entry-block value; the branch
+            # terminates entry, so nothing may be emitted after it
+            if not at_end:
+                at_off = lo_arg
+                fits = b.icmp_signed(
+                    "<=", b.add(lo_arg, pl_arg), hi_arg
+                )
+            else:
+                at_off = b.sub(hi_arg, pl_arg)
+                # ... the affix ends exactly at hi, fits inside
+                # [lo, hi), and never reads before the buffer start
+                fits = b.and_(
+                    b.icmp_signed(">=", hi_arg, pl_arg),
+                    b.icmp_signed(">=", b.sub(hi_arg, pl_arg), lo_arg),
+                )
+            b.cbranch(fits, cmp_blk, no_blk)
+
+            b.position_at_end(cmp_blk)
+            cmp_r = b.call(self.memcmp, [
+                b.gep(s_data, [at_off]), pd_arg, pl_arg
+            ])
+            eq = b.icmp_signed("==", cmp_r, ir.const_(i32, 0))
+            b.ret(eq)
+
+            b.position_at_end(no_blk)
+            b.ret(ir.const_(ir.IntType(1), 0))
+        self.rawstr_starts_range = made2["rawstr_starts_range"]
+        self.rawstr_ends_range = made2["rawstr_ends_range"]
 
     def _emit_classify(self, fn_name, pred):
         i64 = ir.IntType(64)
@@ -7531,6 +7694,47 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             if arg_temp is not None:
                 self.current_builder.call(self.rawstr_free, [arg_temp])
             return self._rawstr_finish(temp, (I1, result))
+        if method_name in ("find", "rfind", "index",
+                           "startswith", "endswith") and 2 <= len(args_node) <= 3:
+            # CPython's start/end arguments - s.find(sub, start[, end])
+            # answers the ABSOLUTE code point index (the coordinate
+            # system len(s)/s[i] share), so the byte window is computed
+            # through rawutf8_cp_offset after CPython's clamping rules:
+            # negatives count from the end, then clamp at 0; beyond-
+            # length clamps at cp_len (the walk itself caps at byte_len)
+            data, length, arg_temp = self._rawstr_append_operand(args_node[0])
+            lo_byte, hi_byte, range_temps = self._emit_byte_range(
+                args_node[1:], s_ptr
+            )
+            if method_name == "find":
+                fn = self.rawstr_find_range
+            elif method_name == "rfind":
+                fn = self.rawstr_rfind_range
+            elif method_name == "startswith":
+                fn = self.rawstr_starts_range
+            elif method_name == "endswith":
+                fn = self.rawstr_ends_range
+            else:
+                fn = self.rawstr_find_range
+            result = self.current_builder.call(
+                fn, [s_ptr, data, length, lo_byte, hi_byte]
+            )
+            for rt in range_temps:
+                if rt is not None:
+                    self.current_builder.call(self.rawstr_free, [rt])
+            if arg_temp is not None:
+                self.current_builder.call(self.rawstr_free, [arg_temp])
+            if method_name == "index":
+                # a miss answers -1, which index rejects loudly
+                self._panic_if(
+                    self.current_builder.icmp_signed(
+                        "<", result, ir.const_(ir.IntType(64), 0)
+                    ),
+                    "ValueError: substring not found",
+                )
+            if method_name in ("startswith", "endswith"):
+                return self._rawstr_finish(temp, (I1, result))
+            return self._rawstr_finish(temp, (I64, result))
         if method_name in ("isdigit", "isalpha", "isspace") and not args_node:
             fn = {
                 "isdigit": self.rawstr_isdigit,
@@ -7601,6 +7805,53 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
                     self.current_builder.call(self.rawstr_free, [s_ptr])
                 return self._rawstr_finish(temp, (RAWSTR, joined))
         return self._rawstr_finish(temp, None)
+
+    def _clamp_cp_byte(self, node: Any, s_struct: Any, data: Any,
+                       cplen: Any) -> Any:
+        """One start/end argument -> a byte offset. Negatives count
+        from the end then clamp at 0; beyond-length clamps at cp_len
+        (rawutf8_cp_offset's walk caps at byte_len). A method, not a
+        nested def: the flat twin rejects closure captures."""
+        b = self.current_builder
+        v = self._coerce(self._convert_node(node), I64)[1]
+        neg = b.icmp_signed("<", v, ir.const_(ir.IntType(64), 0))
+        v = b.select(neg, b.add(v, cplen), v)
+        v = b.select(
+            b.icmp_signed("<", v, ir.const_(ir.IntType(64), 0)),
+            ir.const_(ir.IntType(64), 0),
+            v,
+        )
+        # cap at cp_len BEFORE the walk: rawutf8_cp_offset's contract is
+        # "callers clamp cp_index" and a beyond-length start (find with
+        # start=9 on an 8-cp string) walked past the buffer - the ASan
+        # gate caught it on the multibyte pin the day it landed
+        v = b.select(
+            b.icmp_signed(">", v, cplen),
+            cplen,
+            v,
+        )
+        return b.call(self.rawutf8_cp_offset, [data, v])
+
+    def _emit_byte_range(self, args: list, s_ptr: Any):
+        """(lo_byte, hi_byte, temps) for CPython's start/end arguments.
+        With no end argument hi is the string's byte length."""
+        b = self.current_builder
+        s_struct = b.bitcast(s_ptr, ir.PointerType(self.rawstr_struct_type))
+        blen = _rawstr_load_len(b, s_struct)
+        cplen = b.load(
+            b.gep(
+                s_struct,
+                [ir.const_(ir.IntType(32), 0), ir.const_(ir.IntType(32), 3)],
+            )
+        )
+        data = _rawstr_load_data(b, s_struct)
+        lo = self._clamp_cp_byte(args[0], s_struct, data, cplen)
+        hi = (
+            self._clamp_cp_byte(args[1], s_struct, data, cplen)
+            if len(args) > 1
+            else blen
+        )
+        return lo, hi, []
 
     def _rawstr_stack_view(self, data_ptr: Any, byte_len: Any):
         """A stack rawstr struct pointing at borrowed bytes - heap-free

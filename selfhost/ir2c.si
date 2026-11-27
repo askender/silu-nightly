@@ -1295,6 +1295,24 @@ class Gen:
                 fn_s: str = "str_starts_with"
                 if mname == "endswith":
                     fn_s = "str_ends_with"
+                if 2 <= len(args.arr) <= 3:
+                    # CPython's start/end arguments: the clamp helpers
+                    # share the typed planes' rawstr_*_range semantics;
+                    # typed str receivers only (dynamic boxes would
+                    # emit wrong-type C)
+                    if recv2.ty != "str":
+                        raise ValueError("ir2c: multi-arg " + mname
+                                         + " needs a typed str receiver")
+                    a0b: TE = self.expr(elem(args, 0))
+                    s0b: TE = self.expr(elem(args, 1))
+                    lo_b: str = "str_cp_clamp(" + recv2.text + ", " + s0b.text + ")"
+                    if len(args.arr) == 3:
+                        s1b: TE = self.expr(elem(args, 2))
+                        hi_b: str = "str_cp_clamp(" + recv2.text + ", " + s1b.text + ")"
+                    else:
+                        hi_b = recv2.text + "->len"
+                    fn_r: str = "str_starts_range" if mname == "startswith" else "str_ends_range"
+                    return te(fn_r + "(" + recv2.text + ", " + a0b.text + ", " + lo_b + ", " + hi_b + ")", "bool")
                 return te(fn_s + "(" + recv2.text + ", " + arg0.text + ")", "bool")
             if mname == "join":
                 return te("str_join(" + arg0.text + ", " + recv2.text + ")", "str")
@@ -1313,6 +1331,33 @@ class Gen:
             if mname == "index" and len(args.arr) == 1:
                 a0i: TE = self.expr(elem(args, 0))
                 return te("str_index(" + recv2.text + ", " + a0i.text + ")", "int")
+            if ((mname == "find") or (mname == "rfind")
+                    or (mname == "index") or (mname == "startswith")
+                    or (mname == "endswith")) and (
+                    2 <= len(args.arr) <= 3):
+                # CPython's start/end arguments; the C helpers share the
+                # clamp rules with the typed planes' rawstr_*_range.
+                # Raw str receivers only - a dynamic receiver rides a
+                # PObj box here and would emit wrong-type C
+                if recv2.ty != "str":
+                    raise ValueError("ir2c: multi-arg " + mname
+                                     + " needs a typed str receiver")
+                a0r: TE = self.expr(elem(args, 0))
+                s0r: TE = self.expr(elem(args, 1))
+                lo_c: str = "str_cp_clamp(" + recv2.text + ", " + s0r.text + ")"
+                if len(args.arr) == 3:
+                    s1r: TE = self.expr(elem(args, 2))
+                    hi_c: str = "str_cp_clamp(" + recv2.text + ", " + s1r.text + ")"
+                else:
+                    hi_c = recv2.text + "->len"
+                if mname == "find":
+                    return te("str_find_range(" + recv2.text + ", " + a0r.text + ", " + lo_c + ", " + hi_c + ")", "int")
+                if mname == "rfind":
+                    return te("str_rfind_range(" + recv2.text + ", " + a0r.text + ", " + lo_c + ", " + hi_c + ")", "int")
+                if mname == "index":
+                    return te("str_index_range(" + recv2.text + ", " + a0r.text + ", " + lo_c + ", " + hi_c + ")", "int")
+                fn_r: str = "str_starts_range" if mname == "startswith" else "str_ends_range"
+                return te(fn_r + "(" + recv2.text + ", " + a0r.text + ", " + lo_c + ", " + hi_c + ")", "int")
             if mname == "split" and len(args.arr) <= 1:
                 if len(args.arr) == 0:
                     return te("str_split_ws(" + recv2.text + ")", "list:str")
@@ -2542,6 +2587,16 @@ RUNTIME: list[str] = [
     "static int64_t str_cp_count(Str* s, int64_t bytes) { int64_t n = 0; for (int64_t i = 0; i < bytes; i++) if (((unsigned char)s->data[i] & 0xC0) != 0x80) n++; return n; }",
     "static int64_t str_find(Str* s, Str* sub) { for (int64_t i = 0; i + sub->len <= s->len; i++) { int match = 1; for (int64_t j = 0; j < sub->len; j++) if (s->data[i+j] != sub->data[j]) { match = 0; break; } if (match) return str_cp_count(s, i); } return -1; }",
     "static int64_t str_index(Str* s, Str* sub) { int64_t p = str_find(s, sub); if (p < 0) { fprintf(stderr, \"ValueError: substring not found\\n\"); exit(1); } return p; }",
+    # find/rfind/index/startswith/endswith with CPython's start/end:
+    # lo/hi arrive CLAMPED (negatives counted from the end, then 0,
+    # beyond-length capped at cp) and matches start only at code point
+    # boundaries; answers are ABSOLUTE cp indexes
+    "static int64_t str_cp_clamp(Str* s, int64_t idx) { if (idx < 0) idx += s->cp; if (idx < 0) idx = 0; if (idx > s->cp) idx = s->cp; return str_cp_off(s, idx); }",
+    "static int64_t str_find_range(Str* s, Str* sub, int64_t lo, int64_t hi) { for (int64_t i = lo; i + sub->len <= hi; i++) { if ((((unsigned char)s->data[i]) & 0xC0) == 0x80) continue; int match = 1; for (int64_t j = 0; j < sub->len; j++) if (s->data[i+j] != sub->data[j]) { match = 0; break; } if (match) return str_cp_count(s, i); } return -1; }",
+    "static int64_t str_rfind_range(Str* s, Str* sub, int64_t lo, int64_t hi) { for (int64_t i = hi - sub->len; i >= lo; i--) { if ((((unsigned char)s->data[i]) & 0xC0) == 0x80) continue; int match = 1; for (int64_t j = 0; j < sub->len; j++) if (s->data[i+j] != sub->data[j]) { match = 0; break; } if (match) return str_cp_count(s, i); } return -1; }",
+    "static int str_starts_range(Str* s, Str* p, int64_t lo, int64_t hi) { if (lo + p->len > hi) return 0; for (int64_t j = 0; j < p->len; j++) if (s->data[lo+j] != p->data[j]) return 0; return 1; }",
+    "static int str_ends_range(Str* s, Str* p, int64_t lo, int64_t hi) { if (hi < p->len || hi - p->len < lo) return 0; int64_t o = hi - p->len; for (int64_t j = 0; j < p->len; j++) if (s->data[o+j] != p->data[j]) return 0; return 1; }",
+    "static int64_t str_index_range(Str* s, Str* sub, int64_t lo, int64_t hi) { int64_t p = str_find_range(s, sub, lo, hi); if (p < 0) { fprintf(stderr, \"ValueError: substring not found\\n\"); exit(1); } return p; }",
     "static Str* str_upper(Str* s) { Str* r = str_new(s->data, s->len); for (int64_t i = 0; i < r->len; i++) if (r->data[i] >= 'a' && r->data[i] <= 'z') r->data[i] -= 32; return r; }",
     "static List* str_split_ws(Str* s) { List* out = list_new(); int64_t i = 0; while (i < s->len) { while (i < s->len && c_is_ws(s->data[i])) i++; if (i >= s->len) break; int64_t start = i; while (i < s->len && !c_is_ws(s->data[i])) i++; list_push(out, (int64_t)str_new(s->data + start, i - start)); } return out; }",
 

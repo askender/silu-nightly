@@ -34,6 +34,19 @@ dict's entry through the shared pointer, str_add's in-place branch);
 and the wasm backend traps loudly instead of declaring nameless globals
 and evaluating unknown expressions to 0.
 
+`str.find/rfind/index/startswith/endswith` gained CPython's start/end
+arguments on all four planes: the boxed method map used to truncate
+extra arguments silently (`"abcabc".find("c", 3)` answered 2 where
+CPython answers 5, `str.index` with two arguments refused outright).
+New range runtime (`rawstr_find_range`/`rawstr_rfind_range`/
+`rawstr_starts_range`/`rawstr_ends_range`, plus `rawutf8_cp_count`
+reuse): negatives count from the end then clamp at 0, beyond-length
+clamps at the length, matches start only at code point boundaries, and
+the answers stay in the absolute code point coordinate system
+`len(s)`/`s[i]` use. ir2c grows the same helpers in C (typed str
+receivers only; a dynamic receiver refuses loudly rather than emitting
+wrong-type C). Two multibyte and clamping pins in the semantic gate.
+
 ### Unreleased (1.25.0)
 A semantics round: compiled Silu agrees with CPython on a class of
 programs that used to answer wrongly or crash while every byte gate was

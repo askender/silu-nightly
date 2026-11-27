@@ -7180,8 +7180,8 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                 // call on both planes
                 let is_str_family = matches!(mname.as_str(), "strip" | "split"
                     | "replace" | "lower" | "upper" | "find" | "index"
-                    | "startswith" | "endswith" | "isdigit" | "isalpha"
-                    | "isspace");
+                    | "rfind" | "startswith" | "endswith" | "isdigit"
+                    | "isalpha" | "isspace");
                 if is_str_family {
 
                 let sv = eval_expr(b, &base, slot_i, slot_f, fslots);
@@ -7269,6 +7269,153 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
                     // append-operand (data+length); isdigit/isalpha/isspace
                     // raw; find/index in the BOXED domain (str_find/
                     // list_index - the Python twin's dispatch, the find probe)
+                    if (mname == "find" || mname == "rfind"
+                        || mname == "index" || mname == "startswith"
+                        || mname == "endswith")
+                        && args.len() >= 2 && args.len() <= 3
+                    {
+                        // CPython's start/end arguments: negatives count
+                        // from the end then clamp at 0, cp->byte through
+                        // rawutf8_cp_offset, and the range runtime answers
+                        // the ABSOLUTE cp index (the py twin's
+                        // _emit_str_range_helpers)
+                        let (dtext, ltext) = emit_rawstr_append_data(
+                            b, &args[0], slot_i, slot_f, fslots);
+                        let st = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = bitcast i8* {} to {{i64, i64, i8*, i64}}*",
+                            st, s_ptr));
+                        let gd = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 2",
+                            gd, st));
+                        let dat = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i8*, i8** %\"{}\"", dat, gd));
+                        let gc = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 3",
+                            gc, st));
+                        let cpl = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = load i64, i64* %\"{}\"", cpl, gc));
+                        let sv = eval_expr(b, &args[1], slot_i, slot_f, fslots);
+                        let Typed::I64(sraw) = sv else { bail("find start type") };
+                        let neg1 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = icmp slt i64 {}, 0", neg1, sraw));
+                        let adj = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = add i64 {}, %\"{}\"", adj, sraw, cpl));
+                        let s0 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = select i1 %\"{}\", i64 %\"{}\", i64 {}",
+                            s0, neg1, adj, sraw));
+                        let neg2 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = icmp slt i64 %\"{}\", 0", neg2, s0));
+                        let s1 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = select i1 %\"{}\", i64 0, i64 %\"{}\"",
+                            s1, neg2, s0));
+                        // cap at cp_len: rawutf8_cp_offset's walk trusts
+                        // the caller's clamp (the ASan gate caught the
+                        // beyond-length start walking past the buffer)
+                        let scap = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = icmp sgt i64 %\"{}\", %\"{}\"", scap, s1, cpl));
+                        let s2 = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = select i1 %\"{}\", i64 %\"{}\", i64 %\"{}\"",
+                            s2, scap, cpl, s1));
+                        let lo = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call i64 @\"rawutf8_cp_offset\"(i8* %\"{}\", i64 %\"{}\")",
+                            lo, dat, s2));
+                        let hi = if args.len() == 3 {
+                            let ev = eval_expr(b, &args[2], slot_i, slot_f, fslots);
+                            let Typed::I64(eraw) = ev else { bail("find end type") };
+                            let eneg = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = icmp slt i64 {}, 0", eneg, eraw));
+                            let eadj = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = add i64 {}, %\"{}\"", eadj, eraw, cpl));
+                            let e0 = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = select i1 %\"{}\", i64 %\"{}\", i64 {}",
+                                e0, eneg, eadj, eraw));
+                            let eneg2 = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = icmp slt i64 %\"{}\", 0", eneg2, e0));
+                            let e1 = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = select i1 %\"{}\", i64 0, i64 %\"{}\"",
+                                e1, eneg2, e0));
+                            let ecap = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = icmp sgt i64 %\"{}\", %\"{}\"", ecap, e1, cpl));
+                            let e2 = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = select i1 %\"{}\", i64 %\"{}\", i64 %\"{}\"",
+                                e2, ecap, cpl, e1));
+                            let eoff = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = call i64 @\"rawutf8_cp_offset\"(i8* %\"{}\", i64 %\"{}\")",
+                                eoff, dat, e1));
+                            eoff
+                        } else {
+                            let g0 = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = getelementptr {{i64, i64, i8*, i64}}, {{i64, i64, i8*, i64}}* %\"{}\", i32 0, i32 0",
+                                g0, st));
+                            let bl = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = load i64, i64* %\"{}\"", bl, g0));
+                            bl
+                        };
+                        let fr = match mname.as_str() {
+                            "find" => "rawstr_find_range",
+                            "rfind" => "rawstr_rfind_range",
+                            "index" => "rawstr_find_range",
+                            "startswith" => "rawstr_starts_range",
+                            _ => "rawstr_ends_range",
+                        };
+                        let rty = if mname == "startswith" || mname == "endswith" {
+                            "i1"
+                        } else {
+                            "i64"
+                        };
+                        let c = b.nx();
+                        b.line(format!(
+                            "  %\"{}\" = call {} @\"{}\"(i8* {}, i8* {}, i64 {}, i64 %\"{}\", i64 %\"{}\")",
+                            c, rty, fr, s_ptr, dtext, ltext, lo, hi));
+                        if owned {
+                            b.silent();
+                            b.line(format!(
+                                "  call void @\"rawstr_free\"(i8* {})", s_ptr));
+                        }
+                        if mname == "index" {
+                            let neg = b.nx();
+                            b.line(format!(
+                                "  %\"{}\" = icmp slt i64 %\"{}\", 0", neg, c));
+                            let err_lbl = b.uniq_label("panic_bad");
+                            let ok_lbl = b.uniq_label("panic_ok");
+                            b.silent();
+                            b.line(format!(
+                                "  br i1 %\"{}\", label %\"{}\", label %\"{}\"",
+                                neg, err_lbl, ok_lbl));
+                            let eb = b.add_block(&err_lbl);
+                            b.emit_panic_body(eb, "ValueError: substring not found");
+                            let ob = b.add_block(&ok_lbl);
+                            b.pos(ob);
+                            return Typed::I64(format!("%\"{}\"", c));
+                        }
+                        if mname == "startswith" || mname == "endswith" {
+                            return Typed::Bool(format!("%\"{}\"", c));
+                        }
+                        return Typed::I64(format!("%\"{}\"", c));
+                    }
                     if mname == "startswith" || mname == "endswith" {
                         if args.len() != 1 { bail("starts/ends arity"); }
                         let (dtext, ltext) = emit_rawstr_append_data(

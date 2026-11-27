@@ -8491,6 +8491,125 @@ affix_join:
   ret i1 %".18"
 }
 
+define i64 @"rawstr_find_range"(i8* %".1", i8* %".2", i64 %".3", i64 %".4", i64 %".5")
+{
+entry:
+  %".7" = bitcast i8* %".1" to {i64, i64, i8*, i64}*
+  %".8" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".7", i32 0, i32 2
+  %".9" = load i8*, i8** %".8"
+  %"fr_b" = alloca i64
+  store i64 %".4", i64* %"fr_b"
+  %".11" = icmp eq i64 %".3", 0
+  br i1 %".11", label %"fr_empty", label %"fr_cond"
+fr_empty:
+  ret i64 %".4"
+fr_cond:
+  %".14" = sub i64 %".5", %".3"
+  %".15" = load i64, i64* %"fr_b"
+  %".16" = icmp sle i64 %".15", %".14"
+  br i1 %".16", label %"fr_body", label %"fr_not_found"
+fr_body:
+  %".18" = load i64, i64* %"fr_b"
+  %".19" = getelementptr i8, i8* %".9", i64 %".18"
+  %".20" = load i8, i8* %".19"
+  %".21" = and i8 %".20", 192
+  %".22" = icmp ne i8 %".21", 128
+  br i1 %".22", label %"fr_boundary", label %"fr_advance"
+fr_boundary:
+  %".24" = getelementptr i8, i8* %".9", i64 %".18"
+  %".25" = call i32 @"memcmp"(i8* %".24", i8* %".2", i64 %".3")
+  %".26" = icmp eq i32 %".25", 0
+  br i1 %".26", label %"fr_hit", label %"fr_advance"
+fr_hit:
+  %".28" = call i64 @"rawutf8_cp_count"(i8* %".9", i64 %".18")
+  ret i64 %".28"
+fr_advance:
+  %".30" = add i64 %".18", 1
+  store i64 %".30", i64* %"fr_b"
+  br label %"fr_cond"
+fr_not_found:
+  ret i64 -1
+}
+
+define i64 @"rawstr_rfind_range"(i8* %".1", i8* %".2", i64 %".3", i64 %".4", i64 %".5")
+{
+entry:
+  %".7" = bitcast i8* %".1" to {i64, i64, i8*, i64}*
+  %".8" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".7", i32 0, i32 2
+  %".9" = load i8*, i8** %".8"
+  %"fr_b" = alloca i64
+  %".10" = sub i64 %".5", %".3"
+  store i64 %".10", i64* %"fr_b"
+  %".12" = icmp eq i64 %".3", 0
+  br i1 %".12", label %"fr_empty", label %"fr_cond"
+fr_empty:
+  ret i64 %".5"
+fr_cond:
+  %".15" = load i64, i64* %"fr_b"
+  %".16" = icmp sge i64 %".15", %".4"
+  br i1 %".16", label %"fr_body", label %"fr_not_found"
+fr_body:
+  %".18" = load i64, i64* %"fr_b"
+  %".19" = getelementptr i8, i8* %".9", i64 %".18"
+  %".20" = load i8, i8* %".19"
+  %".21" = and i8 %".20", 192
+  %".22" = icmp ne i8 %".21", 128
+  br i1 %".22", label %"fr_boundary", label %"fr_advance"
+fr_boundary:
+  %".24" = getelementptr i8, i8* %".9", i64 %".18"
+  %".25" = call i32 @"memcmp"(i8* %".24", i8* %".2", i64 %".3")
+  %".26" = icmp eq i32 %".25", 0
+  br i1 %".26", label %"fr_hit", label %"fr_advance"
+fr_hit:
+  %".28" = call i64 @"rawutf8_cp_count"(i8* %".9", i64 %".18")
+  ret i64 %".28"
+fr_advance:
+  %".30" = sub i64 %".18", 1
+  store i64 %".30", i64* %"fr_b"
+  br label %"fr_cond"
+fr_not_found:
+  ret i64 -1
+}
+
+define i1 @"rawstr_starts_range"(i8* %".1", i8* %".2", i64 %".3", i64 %".4", i64 %".5")
+{
+entry:
+  %".7" = bitcast i8* %".1" to {i64, i64, i8*, i64}*
+  %".8" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".7", i32 0, i32 2
+  %".9" = load i8*, i8** %".8"
+  %".10" = add i64 %".4", %".3"
+  %".11" = icmp sle i64 %".10", %".5"
+  br i1 %".11", label %"sr_cmp", label %"sr_no"
+sr_cmp:
+  %".13" = getelementptr i8, i8* %".9", i64 %".4"
+  %".14" = call i32 @"memcmp"(i8* %".13", i8* %".2", i64 %".3")
+  %".15" = icmp eq i32 %".14", 0
+  ret i1 %".15"
+sr_no:
+  ret i1 0
+}
+
+define i1 @"rawstr_ends_range"(i8* %".1", i8* %".2", i64 %".3", i64 %".4", i64 %".5")
+{
+entry:
+  %".7" = bitcast i8* %".1" to {i64, i64, i8*, i64}*
+  %".8" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".7", i32 0, i32 2
+  %".9" = load i8*, i8** %".8"
+  %".10" = sub i64 %".5", %".3"
+  %".11" = icmp sge i64 %".5", %".3"
+  %".12" = sub i64 %".5", %".3"
+  %".13" = icmp sge i64 %".12", %".4"
+  %".14" = and i1 %".11", %".13"
+  br i1 %".14", label %"sr_cmp", label %"sr_no"
+sr_cmp:
+  %".16" = getelementptr i8, i8* %".9", i64 %".10"
+  %".17" = call i32 @"memcmp"(i8* %".16", i8* %".2", i64 %".3")
+  %".18" = icmp eq i32 %".17", 0
+  ret i1 %".18"
+sr_no:
+  ret i1 0
+}
+
 define i1 @"str_starts_with"({i32, i8*}* %".1", {i32, i8*}* %".2")
 {
 entry:

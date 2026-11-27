@@ -33,7 +33,7 @@
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
 2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
-**silu 1.25.1（tuple 独立 tag-9：repr 打 (...)、跨类型相等对齐 CPython、isinstance(t, tuple) 真 semantics；1.25.0=语义轮重钉：容器边迭代边改、推导式作用域、dss 借用语义 + ll 门禁 verifier；同版追加内存安全轮——码点偏移越界读、`s = s + s` 用后释放、`str.find` 字节偏移、自举转换器对 i64 槽实例属性赋值必崩、真 ASan 门禁；1.24.0=oracle 形状补齐/dss 2 参族，1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
+**silu 1.25.1（tuple 独立 tag-9：repr 打 (...)、跨类型相等对齐 CPython、isinstance(t, tuple) 真 semantics；find/rfind/index/startswith/endswith 的 start/end 参数四平面实现（含负索引钳制与码点坐标系）；1.25.0=语义轮重钉：容器边迭代边改、推导式作用域、dss 借用语义 + ll 门禁 verifier；同版追加内存安全轮——码点偏移越界读、`s = s + s` 用后释放、`str.find` 字节偏移、自举转换器对 i64 槽实例属性赋值必崩、真 ASan 门禁；1.24.0=oracle 形状补齐/dss 2 参族，1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 

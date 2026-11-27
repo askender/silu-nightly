@@ -1666,8 +1666,10 @@ ll 32/32 ×2 全绿。
   interp=MATCH 实证），旧 TODO 条目已修；✅ir2c 两处 str store 别名
   （f4e463b，m3 钉板 8）。
   ✅④⑤tuple repr/eq/isinstance（1.25.1 重钉，见 §3.38 续二）。
-  待修：②`find/rfind/index/startswith/endswith` 的 start/end 参数编译
-  平面被静默忽略；③`replace("", x)` 编译得空串；⑤b`repr(x)` 作为
+  ✅②find/rfind/index/startswith/endswith 的 start/end 参数（四平面
+  range 运行时，负索引钳制 + 码点坐标系，钉板 2 枚多字节/钳制用例；
+  ir2c 仅 typed str 接收者，动态响亮拒绝）。
+  待修：③`replace("", x)` 编译得空串；⑤b`repr(x)` 作为
   值（返回带引号字符串）未实现（f-string `{x!r}` 已响亮拒绝）。
   新形状分歧：**同名二次 ann_assign**（同函数两处 `st: T = ...`）
   py 平面另开槽 st.1、rs 复用一槽——触发条件与块嵌套相关（最小复现

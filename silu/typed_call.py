@@ -427,6 +427,22 @@ class TypedCallMixin:
             if method_name in _STR_REJECTED_METHODS:
                 raise NotImplementedError(
                     f"method '{method_name}' is not supported on str")
+        if (
+            raw_kind == OBJ
+            and method_name in (
+                "find", "rfind", "index", "startswith", "endswith"
+            )
+            and 2 <= len(args_node) <= 3
+        ):
+            # CPython's start/end arguments on a dynamic receiver: the
+            # boxed map truncates extra arguments silently
+            # (args_node[:arg_count]) - route through the rawstr arms,
+            # whose pystr coercion temp dies with the call
+            handled = self._rawstr_method_call(
+                raw_obj_tv, method_name, args_node
+            )
+            if handled is not None:
+                return handled
         obj = self._box(raw_obj_tv)
         # built once, then cached: this 28-entry dict was rebuilt on
         # EVERY method call - one fresh pyobj dict (with its rehash
