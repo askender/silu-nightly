@@ -1669,8 +1669,11 @@ ll 32/32 ×2 全绿。
   ✅②find/rfind/index/startswith/endswith 的 start/end 参数（四平面
   range 运行时，负索引钳制 + 码点坐标系，钉板 2 枚多字节/钳制用例；
   ir2c 仅 typed str 接收者，动态响亮拒绝）。
-  待修：③`replace("", x)` 编译得空串；⑤b`repr(x)` 作为
-  值（返回带引号字符串）未实现（f-string `{x!r}` 已响亮拒绝）。
+  ✅③`replace("", x)` 空针交错（rawstr_replace 的 rp_empty 从"返回
+  接收者"（接收者被语句释放 → 悬空 len 0）改为真正的每码点边界交错
+  构建；ir2c C str_replace 同步，cnt==0 的 return s 同型悬空一并修）。
+  待修：⑤b`repr(x)` 作为值（返回带引号字符串）未实现（f-string
+  `{x!r}` 已响亮拒绝）。
   新形状分歧：**同名二次 ann_assign**（同函数两处 `st: T = ...`）
   py 平面另开槽 st.1、rs 复用一槽——触发条件与块嵌套相关（最小复现
   复现不出，silu_fe.si 曾踩中，已用改名绕开）——待深究定语义。

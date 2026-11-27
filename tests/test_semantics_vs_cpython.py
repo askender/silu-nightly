@@ -362,6 +362,15 @@ MATCH_CPYTHON = [
     ("str_find_args_dynamic",
      "def get() -> object:\n    return \"abcabc\"\nd = get()\n"
      "print(d.find(\"c\", 3), d.startswith(\"b\", 1), d.rfind(\"b\", 0, 4))\n"),
+    # --- replace with an empty pattern interleave.new at every code
+    # point boundary: the runtime used to return the receiver, which
+    # the caller then freed (len 0); ir2c returned s the same way.
+    # Expected values from real CPython.
+    ("str_replace_empty_needle",
+     "print(\"abc\".replace(\"\", \"-\"), \"\".replace(\"\", \"-\"),\n"
+     "      \"abc\".replace(\"\", \"\"))\n"
+     "print(\"a\u00e9\u4e2d\".replace(\"\", \"+\"), \"abc\".replace(\"b\", \"\"))\n"
+     "x = \"abc\".replace(\"\", \"-\")\nprint(x, len(x))\n"),
 ]
 
 # CPython has no implicit record constructor, so these Silu programs are

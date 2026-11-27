@@ -46,6 +46,10 @@ the answers stay in the absolute code point coordinate system
 `len(s)`/`s[i]` use. ir2c grows the same helpers in C (typed str
 receivers only; a dynamic receiver refuses loudly rather than emitting
 wrong-type C). Two multibyte and clamping pins in the semantic gate.
+`str.replace` with an empty pattern now interleave.new at every code
+point boundary - the runtime returned the receiver, which the caller
+frees after the call, so the answer dangled (len 0); ir2c's C version
+returned s the same way, and its no-match path too.
 
 ### Unreleased (1.25.0)
 A semantics round: compiled Silu agrees with CPython on a class of

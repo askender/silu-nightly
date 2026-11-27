@@ -8935,11 +8935,18 @@ entry:
   %".12" = icmp eq i64 %".3", 0
   br i1 %".12", label %"rp_empty", label %"rp_init"
 rp_empty:
-  ret i8* %".1"
+  %".14" = call i8* @"rawstr_new_copy"(i8* %".4", i64 %".5")
+  %"rp_eacc" = alloca i8*
+  store i8* %".14", i8** %"rp_eacc"
+  %"rp_ei" = alloca i64
+  %"rp_eseg" = alloca i64
+  store i64 0, i64* %"rp_ei"
+  store i64 0, i64* %"rp_eseg"
+  br label %"rp_lcond"
 rp_init:
-  %".15" = call i8* @"rawstr_new_copy"(i8* %".9", i64 0)
+  %".54" = call i8* @"rawstr_new_copy"(i8* %".9", i64 0)
   %"rp_acc" = alloca i8*
-  store i8* %".15", i8** %"rp_acc"
+  store i8* %".54", i8** %"rp_acc"
   %"rp_i" = alloca i64
   %"rp_start" = alloca i64
   %"rp_j" = alloca i64
@@ -8947,64 +8954,106 @@ rp_init:
   store i64 0, i64* %"rp_start"
   br label %"rp_cond"
 rp_cond:
-  %".20" = load i64, i64* %"rp_i"
-  %".21" = add i64 %".20", %".3"
-  %".22" = icmp sle i64 %".21", %".11"
-  br i1 %".22", label %"rp_mcond", label %"rp_tail"
+  %".59" = load i64, i64* %"rp_i"
+  %".60" = add i64 %".59", %".3"
+  %".61" = icmp sle i64 %".60", %".11"
+  br i1 %".61", label %"rp_mcond", label %"rp_tail"
 rp_mcond:
   store i64 0, i64* %"rp_j"
   br label %"rp_mbody"
 rp_mbody:
-  %".26" = load i64, i64* %"rp_j"
-  %".27" = icmp slt i64 %".26", %".3"
-  br i1 %".27", label %"rp_mcmp", label %"rp_match"
+  %".65" = load i64, i64* %"rp_j"
+  %".66" = icmp slt i64 %".65", %".3"
+  br i1 %".66", label %"rp_mcmp", label %"rp_match"
 rp_mcmp:
-  %".29" = load i64, i64* %"rp_i"
-  %".30" = add i64 %".29", %".26"
-  %".31" = getelementptr i8, i8* %".9", i64 %".30"
-  %".32" = load i8, i8* %".31"
-  %".33" = getelementptr i8, i8* %".2", i64 %".26"
-  %".34" = load i8, i8* %".33"
-  %".35" = icmp eq i8 %".32", %".34"
-  br i1 %".35", label %"rp_mnext", label %"rp_adv"
+  %".68" = load i64, i64* %"rp_i"
+  %".69" = add i64 %".68", %".65"
+  %".70" = getelementptr i8, i8* %".9", i64 %".69"
+  %".71" = load i8, i8* %".70"
+  %".72" = getelementptr i8, i8* %".2", i64 %".65"
+  %".73" = load i8, i8* %".72"
+  %".74" = icmp eq i8 %".71", %".73"
+  br i1 %".74", label %"rp_mnext", label %"rp_adv"
 rp_mnext:
-  %".37" = add i64 %".26", 1
-  store i64 %".37", i64* %"rp_j"
+  %".76" = add i64 %".65", 1
+  store i64 %".76", i64* %"rp_j"
   br label %"rp_mbody"
 rp_match:
-  %".40" = load i64, i64* %"rp_i"
-  %".41" = load i64, i64* %"rp_start"
-  %".42" = load i8*, i8** %"rp_acc"
-  %".43" = getelementptr i8, i8* %".9", i64 %".41"
-  %".44" = sub i64 %".40", %".41"
-  %".45" = call i8* @"rawstr_new_copy"(i8* %".43", i64 %".44")
-  %".46" = call i8* @"rawstr_concat"(i8* %".42", i8* %".45")
-  call void @"rawstr_free"(i8* %".45")
-  call void @"rawstr_free"(i8* %".42")
-  %".49" = call i8* @"rawstr_new_copy"(i8* %".4", i64 %".5")
-  %".50" = call i8* @"rawstr_concat"(i8* %".46", i8* %".49")
-  call void @"rawstr_free"(i8* %".49")
-  call void @"rawstr_free"(i8* %".46")
-  store i8* %".50", i8** %"rp_acc"
-  %".54" = add i64 %".40", %".3"
-  store i64 %".54", i64* %"rp_i"
-  store i64 %".54", i64* %"rp_start"
+  %".79" = load i64, i64* %"rp_i"
+  %".80" = load i64, i64* %"rp_start"
+  %".81" = load i8*, i8** %"rp_acc"
+  %".82" = getelementptr i8, i8* %".9", i64 %".80"
+  %".83" = sub i64 %".79", %".80"
+  %".84" = call i8* @"rawstr_new_copy"(i8* %".82", i64 %".83")
+  %".85" = call i8* @"rawstr_concat"(i8* %".81", i8* %".84")
+  call void @"rawstr_free"(i8* %".84")
+  call void @"rawstr_free"(i8* %".81")
+  %".88" = call i8* @"rawstr_new_copy"(i8* %".4", i64 %".5")
+  %".89" = call i8* @"rawstr_concat"(i8* %".85", i8* %".88")
+  call void @"rawstr_free"(i8* %".88")
+  call void @"rawstr_free"(i8* %".85")
+  store i8* %".89", i8** %"rp_acc"
+  %".93" = add i64 %".79", %".3"
+  store i64 %".93", i64* %"rp_i"
+  store i64 %".93", i64* %"rp_start"
   br label %"rp_cond"
 rp_adv:
-  %".58" = load i64, i64* %"rp_i"
-  %".59" = add i64 %".58", 1
-  store i64 %".59", i64* %"rp_i"
+  %".97" = load i64, i64* %"rp_i"
+  %".98" = add i64 %".97", 1
+  store i64 %".98", i64* %"rp_i"
   br label %"rp_cond"
 rp_tail:
-  %".62" = load i64, i64* %"rp_start"
-  %".63" = load i8*, i8** %"rp_acc"
-  %".64" = getelementptr i8, i8* %".9", i64 %".62"
-  %".65" = sub i64 %".11", %".62"
-  %".66" = call i8* @"rawstr_new_copy"(i8* %".64", i64 %".65")
-  %".67" = call i8* @"rawstr_concat"(i8* %".63", i8* %".66")
-  call void @"rawstr_free"(i8* %".66")
-  call void @"rawstr_free"(i8* %".63")
-  ret i8* %".67"
+  %".101" = load i64, i64* %"rp_start"
+  %".102" = load i8*, i8** %"rp_acc"
+  %".103" = getelementptr i8, i8* %".9", i64 %".101"
+  %".104" = sub i64 %".11", %".101"
+  %".105" = call i8* @"rawstr_new_copy"(i8* %".103", i64 %".104")
+  %".106" = call i8* @"rawstr_concat"(i8* %".102", i8* %".105")
+  call void @"rawstr_free"(i8* %".105")
+  call void @"rawstr_free"(i8* %".102")
+  ret i8* %".106"
+rp_lcond:
+  %".19" = load i64, i64* %"rp_ei"
+  %".20" = icmp slt i64 %".19", %".11"
+  br i1 %".20", label %"rp_lbody", label %"rp_ltail"
+rp_lbody:
+  %".22" = load i64, i64* %"rp_ei"
+  %".23" = getelementptr i8, i8* %".9", i64 %".22"
+  %".24" = load i8, i8* %".23"
+  %".25" = and i8 %".24", 192
+  %".26" = icmp ne i8 %".25", 128
+  %".27" = icmp eq i64 %".22", 0
+  %".28" = xor i1 %".27", -1
+  %".29" = and i1 %".26", %".28"
+  br i1 %".29", label %"rp_lsep", label %"rp_ladv"
+rp_lsep:
+  %".31" = load i8*, i8** %"rp_eacc"
+  %".32" = load i64, i64* %"rp_eseg"
+  %".33" = getelementptr i8, i8* %".9", i64 %".32"
+  %".34" = sub i64 %".22", %".32"
+  call void @"rawstr_append"(i8* %".31", i8* %".33", i64 %".34")
+  call void @"rawstr_append"(i8* %".31", i8* %".4", i64 %".5")
+  store i64 %".22", i64* %"rp_eseg"
+  br label %"rp_ladv"
+rp_ladv:
+  %".39" = load i64, i64* %"rp_ei"
+  %".40" = add i64 %".39", 1
+  store i64 %".40", i64* %"rp_ei"
+  br label %"rp_lcond"
+rp_ltail:
+  %".43" = icmp eq i64 %".11", 0
+  br i1 %".43", label %"rp_lfin", label %"rp_lapp"
+rp_lapp:
+  %".45" = load i8*, i8** %"rp_eacc"
+  %".46" = load i64, i64* %"rp_eseg"
+  %".47" = getelementptr i8, i8* %".9", i64 %".46"
+  %".48" = sub i64 %".11", %".46"
+  call void @"rawstr_append"(i8* %".45", i8* %".47", i64 %".48")
+  call void @"rawstr_append"(i8* %".45", i8* %".4", i64 %".5")
+  ret i8* %".45"
+rp_lfin:
+  %".52" = load i8*, i8** %"rp_eacc"
+  ret i8* %".52"
 }
 
 define i64 @"rawstr_count"(i8* %".1", i8* %".2", i64 %".3")

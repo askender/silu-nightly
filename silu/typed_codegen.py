@@ -3548,7 +3548,83 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         )
 
         builder.position_at_end(rp_empty)
-        builder.ret(s_arg)
+        # an EMPTY pattern interleaves new at EVERY code point boundary,
+        # both ends included: "abc".replace("", "-") is "-a-b-c-",
+        # "".replace("", "-") is "-", replace("", "") is a fresh copy.
+        # Returning the receiver here was doubly wrong: the caller frees
+        # the receiver temp after the call, so the answer dangled (len 0)
+        acc0 = builder.call(self.rawstr_new_copy, [new_data, new_len])
+        rp_acc = builder.alloca(i8p, None, 'rp_eacc')
+        builder.store(acc0, rp_acc)
+        rp_i = builder.alloca(i64, None, 'rp_ei')
+        rp_seg = builder.alloca(i64, None, 'rp_eseg')
+        builder.store(zero64, rp_i)
+        builder.store(zero64, rp_seg)
+        rp_lcond = f.append_basic_block("rp_lcond")
+        rp_lbody = f.append_basic_block("rp_lbody")
+        rp_lsep = f.append_basic_block("rp_lsep")
+        rp_ladv = f.append_basic_block("rp_ladv")
+        rp_ltail = f.append_basic_block("rp_ltail")
+        rp_lapp = f.append_basic_block("rp_lapp")
+        rp_lfin = f.append_basic_block("rp_lfin")
+        builder.branch(rp_lcond)
+
+        builder.position_at_end(rp_lcond)
+        i_now = builder.load(rp_i)
+        builder.cbranch(
+            builder.icmp_signed("<", i_now, s_len), rp_lbody, rp_ltail
+        )
+
+        builder.position_at_end(rp_lbody)
+        i_b = builder.load(rp_i)
+        byte_v = builder.load(builder.gep(s_data, [i_b]))
+        is_lead = builder.icmp_signed(
+            "!=",
+            builder.and_(byte_v, ir.const_(ir.IntType(8), 0xC0)),
+            ir.const_(ir.IntType(8), 0x80),
+        )
+        # i == 0 is the first boundary (handled by the initial separator)
+        is_first = builder.icmp_signed("==", i_b, zero64)
+        bnd = builder.and_(is_lead, builder.not_(is_first))
+        builder.cbranch(bnd, rp_lsep, rp_ladv)
+
+        builder.position_at_end(rp_lsep)
+        a_now = builder.load(rp_acc)
+        seg_now = builder.load(rp_seg)
+        # rawstr_append mutates the accumulator in place (void return)
+        builder.call(self.rawstr_append, [
+            a_now,
+            builder.gep(s_data, [seg_now]),
+            builder.sub(i_b, seg_now),
+        ])
+        builder.call(self.rawstr_append, [a_now, new_data, new_len])
+        builder.store(i_b, rp_seg)
+        builder.branch(rp_ladv)
+
+        builder.position_at_end(rp_ladv)
+        builder.store(builder.add(builder.load(rp_i), one64), rp_i)
+        builder.branch(rp_lcond)
+
+        builder.position_at_end(rp_ltail)
+        # an empty receiver has ONE boundary: the initial separator is
+        # the whole answer ("".replace("", "-") is "-", not "--")
+        builder.cbranch(
+            builder.icmp_signed("==", s_len, zero64), rp_lfin, rp_lapp
+        )
+
+        builder.position_at_end(rp_lapp)
+        a_tail = builder.load(rp_acc)
+        seg_tail = builder.load(rp_seg)
+        builder.call(self.rawstr_append, [
+            a_tail,
+            builder.gep(s_data, [seg_tail]),
+            builder.sub(s_len, seg_tail),
+        ])
+        builder.call(self.rawstr_append, [a_tail, new_data, new_len])
+        builder.ret(a_tail)
+
+        builder.position_at_end(rp_lfin)
+        builder.ret(builder.load(rp_acc))
 
         builder.position_at_end(rp_init)
         acc = builder.call(self.rawstr_new_copy, [s_data, zero64])
