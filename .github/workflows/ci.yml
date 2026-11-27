@@ -121,9 +121,9 @@ jobs:
         run: node wasm/test_run.mjs
       - name: Backend gate (L2 vs CPython)
         run: node wasm/test_backend.mjs
-      - name: Corpus gate (15/15 byte-identical)
+      - name: Corpus gate (byte-identical vs CPython)
         run: node wasm/test_corpus.mjs
-      - name: wat2wasm gate (33/33 byte-identical vs wabt)
+      - name: wat2wasm gate (byte-identical vs wabt)
         run: node wasm/test_wat2wasm.mjs
       - name: Compile gate (wasm siluc1 vs native siluc1)
         run: node wasm/test_compile.mjs

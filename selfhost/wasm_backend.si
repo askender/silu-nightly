@@ -589,7 +589,13 @@ def collect_locals(stmts: JValue, names: list[str], types: list[str]) -> int:
         if t == "assign" or t == "ann_assign":
             # target is the bare name string; aug wraps it as a name node.
             # no recursion into the value expr - expr nodes are not stmt
-            # lists and tag() would subscript None on bare names
+            # lists and tag() would subscript None on bare names.
+            # A non-name target (attribute store) declares nothing here:
+            # elem_str gives "" and a nameless `(local $ i64)` is invalid
+            # WAT (wabt rejects it)
+            if t == "assign" and elem(s, 1).kind != JKind.STR:
+                i += 1
+                continue
             nm: str = elem_str(s, 1)
             if nm not in names:
                 names.append(nm)
@@ -1258,7 +1264,16 @@ def emit_expr(g: Gen, node: JValue) -> str:
         if expr_type(g, elem(node, 1)) == "f" or expr_type(g, elem(node, 2)) == "f":
             return "(i64.extend_i32_u (f64.ne " + to_f(g, elem(node, 1)) + " " + to_f(g, elem(node, 2)) + "))"
         return "(i64.extend_i32_u (i64.ne " + emit_expr(g, elem(node, 1)) + " " + emit_expr(g, elem(node, 2)) + "))"
-    return "(i64.const 0)"
+    if t == "attribute":
+        # a field read outside match narrowing is unsupported in this
+        # backend: loud trap, never a value. (The old silent fallthrough
+        # made print(c.x) at module level print 0 - wrong bytes.)
+        return "(unreachable)"
+    # no silent 0: any shape that reaches here is unsupported and must
+    # trap loudly when it runs. The old `(i64.const 0)` fallthrough
+    # violated the loudness contract - unknown shapes produced wrong
+    # answers instead of refusing.
+    return "(unreachable)"
 
 
 def emit_floordiv(g: Gen, a: JValue, b: JValue) -> str:
@@ -1553,6 +1568,14 @@ def emit_stmt(g: Gen, stmt: JValue) -> int:
             g.emit("(call $li_set " + d + " " + k + " " + emit_expr(g, elem(stmt, 3)) + ")")
         return 0
     if t == "assign" or t == "ann_assign":
+        # a non-name target (p.x = v; the FE emits it as a list node) is
+        # unsupported in this backend: loud trap. It must NOT fall
+        # through to the name path - elem_str of a non-name target is ""
+        # and that once emitted a nameless `(global $ ...)`, invalid WAT
+        # that wabt rejects
+        if t == "assign" and elem(stmt, 1).kind != JKind.STR:
+            g.emit("(unreachable)")
+            return 0
         nm: str = "$" + elem_str(stmt, 1)
         if nm not in g.names and nm not in g.pars and elem_str(stmt, 1) in GNAMES:
             # module-level variable: mutate the wasm global
@@ -2950,13 +2973,19 @@ def main() -> int:
         s = elem(stmts, i)
         t0: str = tag(s)
         if t0 == "ann_assign" or t0 == "assign":
-            vname: str = elem_str(s, 1)
-            if vname not in GNAMES:
-                GNAMES.append(vname)
-                if t0 == "ann_assign":
-                    GTYPES.append(ann_type(elem(s, 3)))
-                else:
-                    GTYPES.append(top_type(elem(s, 2)))
+            # only a PLAIN NAME target declares a global (the FE emits it
+            # as a bare string). An attribute store (c.x = 5) must not
+            # register anything: elem_str of a non-name target is "", and
+            # a nameless `(global $ ...)` is invalid WAT - wabt rejects
+            # it and the wat2wasm gate went red on record_global.si
+            if elem(s, 1).kind == JKind.STR:
+                vname: str = elem_str(s, 1)
+                if vname not in GNAMES:
+                    GNAMES.append(vname)
+                    if t0 == "ann_assign":
+                        GTYPES.append(ann_type(elem(s, 3)))
+                    else:
+                        GTYPES.append(top_type(elem(s, 2)))
         i += 1
     # pass 1b: which functions (transitively) narrow-window-extend a
     # str param - only their callers need the $s_copy arg protection;
