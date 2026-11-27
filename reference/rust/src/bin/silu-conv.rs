@@ -6308,8 +6308,12 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
             if e.head() == "list" && raw_str_list_expr(e) {
                 return Typed::Inst(emit_raw_str_list_via_pylist(b, e));
             }
+            // tuples are their own tag-9 box (list struct, tuple
+            // semantics): the runtime reads the tag for print/repr/==,
+            // so create_tuple is what keeps print((1, 2)) as (1, 2)
+            let ctor = if e.head() == "tuple" { "create_tuple" } else { "create_list" };
             let c = b.nx();
-            b.line(format!("  %\"{}\" = call {{i32, i8*}}* @\"create_list\"()", c));
+            b.line(format!("  %\"{}\" = call {{i32, i8*}}* @\"{}\"()", c, ctor));
             for el in e.get(1).items() {
                 let ev = eval_expr(b, &el, slot_i, slot_f, fslots);
                 let ev = to_pyobj_expr(b, &el, ev);
@@ -8445,7 +8449,7 @@ fn eval_isinstance(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
     for n in names {
         let ts: &[i32] = match n.as_str() {
             "int" => &[0, 3], "float" => &[1], "str" | "bytes" | "bytearray" => &[2],
-            "bool" => &[3], "list" | "tuple" => &[4], "dict" => &[5],
+            "bool" => &[3], "list" => &[4], "tuple" => &[9], "dict" => &[5],
             "set" => &[8], _ => &[],
         };
         for t in ts { tags.insert(*t); }

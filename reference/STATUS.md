@@ -1599,8 +1599,35 @@ typed str 的拒绝消息误称 "dynamic values"；编译平面缺 `lstrip/
 rstrip/insert(typed)/popitem/min/max/abs/bool/sorted/zip/enumerate/
 map/reversed/divmod/round`（响亮；`sum` 编译平面**有**）。
 
-**§3.38 续（深夜）：pow 优先级 + f-string 响亮化已落地；
-tuple-tag 轮侦查中止（WIP 完整存档 /tmp/silu_night/tuple_wip/）**
+**§3.38 续二（凌晨）：tuple-tag 轮全案告破——根因是 `_ISINSTANCE_TAGS["tuple"]` 没随 tuple 臂改 9**
+
+上一节的"语句丢弃 free 被交互性破坏 / 疑似非确定性"**全部推翻**：
+真相是 tuple 臂改为 create_tuple（tag-9 盒）后，孪生自己的内部二元组
+`(RAWSTR, call)` 也是 IR tuple 字面量、也由同一编译器编译成 tag-9 盒，
+而 `_ISINSTANCE_TAGS["tuple"]` 仍写 4 → 孪生里每处
+`isinstance(result, tuple)` 恒假 → `_convert_statement_scoped` 的
+rawstr 丢弃 free 永不触发 → ll 门禁以 conv-vs-pyll 分歧的形式红在
+pop_clear/dict_str。**此前所有 17/18 测量差异 = 构建孪生二进制的
+编译器版本不同（HEAD py 平面 vs WIP py 平面），flat 内容无关**——
+"同一二进制两次结果不同"的读数是我在两次重建之间误判了二进制身份，
+运行时本身完全确定（15 连测同值）。补上 `"tuple": (9,)` 后 18 个
+free 回归、五平面探针全对。**教训**：给"编译器自举自身"的语言改
+表示层常量时，必须全库 grep 该常量的**全部消费者**（isinstance 表、
+match 降 switch 的 tag、boxing 路径）——self-host 的消费者藏在
+"编译器编译自己"的回路里。另外 `silu build` 的产物**逐字节不可复现**
+（5 次构建 5 个 md5，行为一致）——不能用 md5 判"同一二进制"。
+
+**tuple-tag 轮最终落地（1.25.1 重钉）**：tag-9 盒（list struct）×
+全运行时门（iter/len/truthiness/contains/deep_eq/list_cmp/concat/
+repeat/slice 保 tag/subscript/pop 分派 tag-5 显式 panic）× py+flat+rs
+三处 isinstance 表（py `_ISINSTANCE_TAGS`、rs eval_isinstance）×
+`create_tuple`（py/flat/rs）。语义收获：`print((1,2))`=(1, 2)、
+`(1,2)==[1,2]`=False、跨类型比较 TypeError、`(1,)` 尾逗号、
+isinstance 真 semantics（tuple≠list！）。钉板 4 枚入语义门禁
+（期望值真 CPython 现场生成）；前缀 430,589B；门禁 ir 33/33 ×2、
+ll 32/32 ×2 全绿。
+
+**§3.38 续一（深夜）：pow 优先级 + f-string 响亮化已落地**
 
 - **pow 优先级已修**（6444a95）：silu_fe.si 的 parse_mul → parse_unary
   → parse_pow（postfix ["**" unary]）——`-2 ** 2` 三平面一致 -4。**但
@@ -1617,19 +1644,11 @@ tuple-tag 轮侦查中止（WIP 完整存档 /tmp/silu_night/tuple_wip/）**
   修复：扫描循环改名 `scan_tok`（语义等价，两个变量本就互不重叠）。
   **同名二次 ann_assign 的槽语义是未定论的真实形状分歧**（最小复现
   复现不出，触发条件与块嵌套相关）——入 §四 待深究。
-- **tuple-tag 轮（WIP 存档，未提交）**：给 tuple 独立 tag-9 的方案
-  已实现到运行时（create_tuple/print case 9/eq 等标签门/or 族 13 处/
-  切片拼接重复保 tag/rs create_tuple/前缀 430,589B），探针验证
-  `print((1,'a',2.5))`、`(1,2)==[1,2]`=False（CPython 一致）、嵌套
-  容器内 tuple repr 全部正确——**但 siluc1 的"语句级丢弃 free"在
-  bare `words.pop()` 上消失**（HEAD 孪生有 free=18，当前=17，pyll=18；
-  flat diff 只有 tuple 相关 136 行；HEAD-flat 构建的 silu_conv=18、
-  current-flat 构建=17——差异确实在 flat 内容里，但逐 hunk 审查未
-  见语句逻辑被动过）。侦查证据链全部存档 tuple_wip/（三个 .ll 对照、
-  flat diff、WIP 源码）。**待办**：二分 flat diff 的 136 行定位交互
-  点；怀疑方向：pyobj_print 新增 tuple_block 后运行时发射序变化影响
-  孪生的 alloca/槽编号 → 语句 free 判定所依赖的 SSA 名字键集合
-  （`_owned_str_fresh` 按 name 字符串键控）跨函数漂移。
+- **tuple-tag 轮（此节为侦查期的错误结论，保留供追溯；真相见续二）**：
+  当时的"语句丢弃 free 消失/疑似非确定性"实为 `_ISINSTANCE_TAGS` 未
+  随 tuple 臂更新（续二）。侦查期间的教训仍有效：陈旧二进制陷阱
+  （silu_conv 不随 flat 重建、flat 多版本并存）让测量互相矛盾；
+  `silu build` 产物逐字节不可复现，判定"同一二进制"不能靠 md5。
 - **教训（本轮新增）**：①`silu_conv` 二进制不随 flat 重建而重建的
   陈旧窗口曾让我拿 HEAD 时代的插桩二进制当现行（一律 `rm -f silu_conv
   siluc1` 后 ensure）；②对 .py 的改动会经 `silu build` 影响 siluc1
@@ -1646,13 +1665,15 @@ tuple-tag 轮侦查中止（WIP 完整存档 /tmp/silu_night/tuple_wip/）**
   "被忽略"论断是错的**（解释器的 sorted 就是 Python sorted，电池
   interp=MATCH 实证），旧 TODO 条目已修；✅ir2c 两处 str store 别名
   （f4e463b，m3 钉板 8）。
+  ✅④⑤tuple repr/eq/isinstance（1.25.1 重钉，见 §3.38 续二）。
   待修：②`find/rfind/index/startswith/endswith` 的 start/end 参数编译
-  平面被静默忽略；③`replace("", x)` 编译得空串；④⑤tuple repr 打
-  `[...]` + `repr("a")` 不加引号——**tuple-tag 方案 WIP 存档
-  /tmp/silu_night/tuple_wip/（运行时全部就位、探针全对，唯 siluc1 的
-  语句丢弃 free 被交互性破坏，二分 flat diff 136 行定位——见 §3.38
-  续）**。证据与明细见 §3.38 与 /tmp/silu_night/battery.py（现含
-  pybuild 第五平面 + 回归探针四枚）。
+  平面被静默忽略；③`replace("", x)` 编译得空串；⑤b`repr(x)` 作为
+  值（返回带引号字符串）未实现（f-string `{x!r}` 已响亮拒绝）。
+  新形状分歧：**同名二次 ann_assign**（同函数两处 `st: T = ...`）
+  py 平面另开槽 st.1、rs 复用一槽——触发条件与块嵌套相关（最小复现
+  复现不出，silu_fe.si 曾踩中，已用改名绕开）——待深究定语义。
+  证据与明细见 §3.38 与 /tmp/silu_night/battery.py（五平面 +
+  回归探针）。
 
 - [ ] **`upper()` / `lower()` 的 Unicode 边界——用户裁决：暂缓**
   （2026-11-27）：维持文档化边界（只映射 ASCII 字母，非 ASCII 原样；

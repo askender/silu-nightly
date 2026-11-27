@@ -304,14 +304,29 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         entry = fn.append_basic_block("entry")
         list_blk = fn.append_basic_block("list_case")
         dict_blk = fn.append_basic_block("dict_case")
+        dict_chk = fn.append_basic_block("dict_check")
+        bad_blk = fn.append_basic_block("bad_receiver")
         b = ir.builder_(entry)
         obj_arg, key_arg, def_arg = fn.args
         zero32 = ir.const_(i32, 0)
         null_obj = ir.const_(pyobj_ptr, None)
         tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        # tag 4 pops lists; only tag 5 reaches the dict path - a tuple
+        # (tag 9) or any other receiver used to walk the DICT path on a
+        # list struct (garbage pointers); now it panics like CPython's
+        # AttributeError
         b.cbranch(
-            b.icmp_signed("==", tag, ir.const_(i32, 4)), list_blk, dict_blk
+            b.icmp_signed("==", tag, ir.const_(i32, 4)), list_blk, dict_chk
         )
+        b.position_at_end(dict_chk)
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 5)), dict_blk, bad_blk
+        )
+        b.position_at_end(bad_blk)
+        bad_msg = self._create_global_string_with_builder(
+            "AttributeError: pop is not supported on this value", b
+        )
+        self._emit_panic(b, bad_msg)
 
         b.position_at_end(dict_blk)
         b.ret(b.call(self.dict_pop, [obj_arg, key_arg, def_arg]))
@@ -417,14 +432,29 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         entry = fn.append_basic_block("entry")
         list_blk = fn.append_basic_block("list_case")
         dict_blk = fn.append_basic_block("dict_case")
+        dict_chk = fn.append_basic_block("dict_check")
+        bad_blk = fn.append_basic_block("bad_receiver")
         b = ir.builder_(entry)
         obj_arg, key_arg, def_arg = fn.args
         zero32 = ir.const_(i32, 0)
         null_obj = ir.const_(pyobj_ptr, None)
         tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        # tag 4 pops lists; only tag 5 reaches the dict path - a tuple
+        # (tag 9) or any other receiver used to walk the DICT path on a
+        # list struct (garbage pointers); now it panics like CPython's
+        # AttributeError
         b.cbranch(
-            b.icmp_signed("==", tag, ir.const_(i32, 4)), list_blk, dict_blk
+            b.icmp_signed("==", tag, ir.const_(i32, 4)), list_blk, dict_chk
         )
+        b.position_at_end(dict_chk)
+        b.cbranch(
+            b.icmp_signed("==", tag, ir.const_(i32, 5)), dict_blk, bad_blk
+        )
+        b.position_at_end(bad_blk)
+        bad_msg = self._create_global_string_with_builder(
+            "AttributeError: pop is not supported on this value", b
+        )
+        self._emit_panic(b, bad_msg)
 
         b.position_at_end(dict_blk)
         b.ret(b.call(self.dict_pop_def, [obj_arg, key_arg, def_arg]))
@@ -6935,14 +6965,20 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         return ir.const_(ir.IntType(1), 0)
 
     # pyobj type tags: 0=int 1=float 2=str 3=bool 4=list 5=dict;
-    # bool is an int subclass, and Silu tuples ARE lists
+    # bool is an int subclass. Tuples carry their OWN tag 9: they used
+    # to ride tag 4 (Silu tuples ARE lists), and the self-hosted twin's
+    # own internal pairs are tuple literals compiled by THIS converter -
+    # when the tuple arm moved to tag 9 while this table still said 4,
+    # every isinstance(result, tuple) inside the twin went false and the
+    # statement-level rawstr free silently stopped firing (the ll gate
+    # caught it as conv-vs-pyll diffs on pop_clear/dict_str).
     _ISINSTANCE_TAGS = {
         "int": (0, 3),
         "float": (1,),
         "str": (2,),
         "bool": (3,),
         "list": (4,),
-        "tuple": (4,),
+        "tuple": (9,),
         "dict": (5,),
         # sets ride their own tag-8 box
         "set": (8,),
@@ -10861,8 +10897,10 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
             return (OBJ, dict_obj)
 
         if op == "tuple":
-            # same runtime representation as the dynamic backend
-            tuple_obj = self.current_builder.call(self.create_list, [])
+            # tag-9 box (list struct, tuple semantics): the tag is what
+            # print/repr/== read at runtime - print((1, 2)) must be
+            # (1, 2), not [1, 2]
+            tuple_obj = self.current_builder.call(self.create_tuple, [])
             for elem_node in node[1] if len(node) > 1 else []:
                 elem = self._convert_node(elem_node)
                 self.current_builder.call(

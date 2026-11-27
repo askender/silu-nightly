@@ -335,11 +335,16 @@ class PyobjRuntimeMixin:
         list_check_block = self.pyobj_add.append_basic_block("list_check")
         builder.cbranch(both_str_cond, str_concat_block, list_check_block)
 
-        # List check: both operands lists -> concatenation
+        # List check: both operands the same list-family tag (4 list,
+        # 9 tuple) -> concatenation. (1, 2) + (3,) works like CPython;
+        # a list + tuple raises, also like CPython.
         builder.position_at_end(list_check_block)
         both_list_cond = builder.and_(
-            builder.icmp_signed("==", left_tag, ir.const_(ir.IntType(32), 4)),
-            builder.icmp_signed("==", right_tag, ir.const_(ir.IntType(32), 4)),
+            builder.icmp_signed("==", left_tag, right_tag),
+            builder.or_(
+                builder.icmp_signed("==", left_tag, ir.const_(ir.IntType(32), 4)),
+                builder.icmp_signed("==", left_tag, ir.const_(ir.IntType(32), 9)),
+            ),
         )
         list_concat_block = self.pyobj_add.append_basic_block("list_concat")
         builder.cbranch(both_list_cond, list_concat_block, error_block)
@@ -409,6 +414,18 @@ class PyobjRuntimeMixin:
                 concat_buf, ir.PointerType(ir.PointerType(self.pyobj.pyobj_type))
             ),
             builder.gep(new_struct_l, [zero32l, two32l]),
+        )
+        # the concatenation inherits the family tag: (1,) + (2,) stays a
+        # tuple (the concat gate required EQUAL tags, so left_tag is it)
+        builder.store(
+            builder.select(
+                builder.icmp_signed(
+                    "==", left_tag, ir.const_(ir.IntType(32), 9)
+                ),
+                ir.const_(ir.IntType(32), 9),
+                ir.const_(ir.IntType(32), 4),
+            ),
+            builder.gep(new_list_l, [zero32l, zero32l]),
         )
         builder.ret(new_list_l)
 
@@ -1091,10 +1108,15 @@ class PyobjRuntimeMixin:
         b = ir.builder_(entry)
         (obj_arg,) = fn.args
         tag = b.load(b.gep(obj_arg, [zero32, zero32]))
+        # tag 9 (tuple) joins 4/8: same list struct, iteration reads it
+        # identically (for x in (1, 2) used to walk the DICT path)
         b.cbranch(
             b.or_(
-                b.icmp_signed("==", tag, ir.const_(i32, 4)),
-                b.icmp_signed("==", tag, ir.const_(i32, 8)),
+                b.or_(
+                    b.icmp_signed("==", tag, ir.const_(i32, 4)),
+                    b.icmp_signed("==", tag, ir.const_(i32, 8)),
+                ),
+                b.icmp_signed("==", tag, ir.const_(i32, 9)),
             ),
             list_blk,
             dict_blk,
@@ -1400,6 +1422,7 @@ class PyobjRuntimeMixin:
         tag = builder.load(tag_ptr)
 
         # Switch on type tag
+        tuple_block = self.pyobj_print.append_basic_block("print_tuple")
         switch = builder.switch(tag, default_block)
         switch.add_case(ir.const_(ir.IntType(32), 0), int_block)  # int
         switch.add_case(ir.const_(ir.IntType(32), 1), float_block)  # float
@@ -1408,6 +1431,7 @@ class PyobjRuntimeMixin:
         switch.add_case(ir.const_(ir.IntType(32), 4), list_block)  # list
         switch.add_case(ir.const_(ir.IntType(32), 8), list_block)  # set
         switch.add_case(ir.const_(ir.IntType(32), 5), dict_block)  # dict
+        switch.add_case(ir.const_(ir.IntType(32), 9), tuple_block)  # tuple
 
         # Print list as [a, b, c] with recursive element printing
         builder.position_at_end(list_block)
@@ -1456,6 +1480,62 @@ class PyobjRuntimeMixin:
         builder.position_at_end(list_done)
         close_bracket = self._create_global_string_with_builder("]", builder)
         builder.call(self.printf, [close_bracket])
+        builder.ret_void()
+
+        # Print tuple as (a, b) with repr-style elements: the tag-9 box
+        # carries the same list struct, elements print via repr (quoted
+        # strings), and a one-element tuple keeps Python's trailing
+        # comma - (1,) not (1). Tuples used to share the list tag and
+        # printed as [1, 2].
+        builder.position_at_end(tuple_block)
+        t_i32 = ir.IntType(32)
+        t_struct = self._load_list_struct(builder, obj)
+        t_len = builder.load(builder.gep(t_struct, [zero32, zero32]))
+        t_items = builder.load(
+            builder.gep(t_struct, [zero32, ir.const_(t_i32, 2)])
+        )
+        t_open = self._create_global_string_with_builder("(", builder)
+        builder.call(self.printf, [t_open])
+        t_check = self.pyobj_print.append_basic_block("tuple_loop_check")
+        t_body = self.pyobj_print.append_basic_block("tuple_loop_body")
+        t_incr = self.pyobj_print.append_basic_block("tuple_loop_incr")
+        t_done = self.pyobj_print.append_basic_block("tuple_done")
+        t_idx = builder.alloca(i64, None, 'tuple_print_idx')
+        builder.store(ir.const_(i64, 0), t_idx)
+        builder.branch(t_check)
+
+        builder.position_at_end(t_check)
+        t_counter = builder.load(t_idx)
+        t_more = builder.icmp_signed("<", t_counter, t_len)
+        builder.cbranch(t_more, t_body, t_done)
+
+        builder.position_at_end(t_body)
+        t_not_first = builder.icmp_signed(">", t_counter, ir.const_(i64, 0))
+        t_sep = self.pyobj_print.append_basic_block("tuple_sep")
+        t_elem = self.pyobj_print.append_basic_block("tuple_elem")
+        builder.cbranch(t_not_first, t_sep, t_elem)
+
+        builder.position_at_end(t_sep)
+        t_comma = self._create_global_string_with_builder(", ", builder)
+        builder.call(self.printf, [t_comma])
+        builder.branch(t_elem)
+
+        builder.position_at_end(t_elem)
+        t_item = builder.load(builder.gep(t_items, [t_counter]))
+        builder.call(self.pyobj_repr_print, [t_item])
+        builder.branch(t_incr)
+
+        builder.position_at_end(t_incr)
+        builder.store(builder.add(t_counter, ir.const_(i64, 1)), t_idx)
+        builder.branch(t_check)
+
+        builder.position_at_end(t_done)
+        # one element -> the trailing comma CPython prints
+        t_one = builder.icmp_signed("==", t_len, ir.const_(i64, 1))
+        t_comma_str = self._create_global_string_with_builder(",)", builder)
+        t_plain_str = self._create_global_string_with_builder(")", builder)
+        t_close = builder.select(t_one, t_comma_str, t_plain_str)
+        builder.call(self.printf, [t_close])
         builder.ret_void()
 
         # Print dict as {'k': v, ...} with repr-style keys and values
@@ -1870,10 +1950,14 @@ class PyobjRuntimeMixin:
         builder = ir.builder_(entry)
         obj_arg = self.pyobj_len.args[0]
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
-        # tag 8 (set) shares the list struct: len/set ops read it alike
+        # tag 8 (set) and 9 (tuple) share the list struct: len reads
+        # it alike
         is_list = builder.or_(
-            builder.icmp_signed("==", tag, ir.const_(i32, 4)),
-            builder.icmp_signed("==", tag, ir.const_(i32, 8)),
+            builder.or_(
+                builder.icmp_signed("==", tag, ir.const_(i32, 4)),
+                builder.icmp_signed("==", tag, ir.const_(i32, 8)),
+            ),
+            builder.icmp_signed("==", tag, ir.const_(i32, 9)),
         )
         builder.cbranch(is_list, list_block, str_check_block)
 
@@ -2139,8 +2223,11 @@ class PyobjRuntimeMixin:
         obj_arg = self.pyobj_len_raw.args[0]
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
         is_list = builder.or_(
-            builder.icmp_signed("==", tag, ir.const_(i32, 4)),
-            builder.icmp_signed("==", tag, ir.const_(i32, 8)),
+            builder.or_(
+                builder.icmp_signed("==", tag, ir.const_(i32, 4)),
+                builder.icmp_signed("==", tag, ir.const_(i32, 8)),
+            ),
+            builder.icmp_signed("==", tag, ir.const_(i32, 9)),
         )
         builder.cbranch(is_list, list_block, str_check)
         builder.position_at_end(list_block)
@@ -2220,6 +2307,7 @@ class PyobjRuntimeMixin:
         switch.add_case(ir.const_(i32, 3), int_case)
         switch.add_case(ir.const_(i32, 4), list_case)
         switch.add_case(ir.const_(i32, 8), list_case)
+        switch.add_case(ir.const_(i32, 9), list_case)
         switch.add_case(ir.const_(i32, 5), dict_case)
 
         builder.position_at_end(int_case)
@@ -2318,7 +2406,10 @@ class PyobjRuntimeMixin:
         builder.position_at_end(dispatch_block)
         is_num_tag = _is_numeric_tag(builder, tag_a)
         is_str_tag = builder.icmp_signed("==", tag_a, ir.const_(i32, 2))
-        is_list_tag = builder.icmp_signed("==", tag_a, ir.const_(i32, 4))
+        is_list_tag = builder.or_(
+            builder.icmp_signed("==", tag_a, ir.const_(i32, 4)),
+            builder.icmp_signed("==", tag_a, ir.const_(i32, 9)),
+        )
         builder.cbranch(is_num_tag, num_check_block, str_check_block)
 
         builder.position_at_end(num_check_block)
@@ -2486,8 +2577,11 @@ class PyobjRuntimeMixin:
         lc_ta = b.load(b.gep(lc_ea, [zero32, zero32]))
         lc_tb = b.load(b.gep(lc_eb, [zero32, zero32]))
         lc_both_list = b.and_(
-            b.icmp_signed("==", lc_ta, ir.const_(i32, 4)),
-            b.icmp_signed("==", lc_tb, ir.const_(i32, 4)),
+            b.icmp_signed("==", lc_ta, lc_tb),
+            b.or_(
+                b.icmp_signed("==", lc_ta, ir.const_(i32, 4)),
+                b.icmp_signed("==", lc_ta, ir.const_(i32, 9)),
+            ),
         )
         lc_both_num = b.and_(
             _is_numeric_tag(b, lc_ta), _is_numeric_tag(b, lc_tb)
@@ -3524,8 +3618,11 @@ class PyobjRuntimeMixin:
 
         builder.position_at_end(list_check_block)
         is_list = builder.or_(
-            builder.icmp_signed("==", container_tag, ir.const_(i32, 4)),
-            builder.icmp_signed("==", container_tag, ir.const_(i32, 8)),
+            builder.or_(
+                builder.icmp_signed("==", container_tag, ir.const_(i32, 4)),
+                builder.icmp_signed("==", container_tag, ir.const_(i32, 8)),
+            ),
+            builder.icmp_signed("==", container_tag, ir.const_(i32, 9)),
         )
         builder.cbranch(is_list, list_case, type_error)
 
@@ -3604,6 +3701,36 @@ class PyobjRuntimeMixin:
         )
         cs_b.store(cs_st_raw, cs_b.gep(cs_box, [zero32, one32]))
         cs_b.ret(cs_box)
+
+        # PObj* create_tuple() - a tag-9 box wrapping the SAME {len, cap,
+        # items} struct as a list. Tuples used to be tag-4 boxes, and the
+        # tag was the only place "this is a tuple" survived to runtime:
+        # print((1, 2)) came out as [1, 2] and print([1, (2, 3)]) lost
+        # the inner parens. Every list-struct consumer (iter/len/in/slice/
+        # free) accepts 4/8/9 alike; ==/</<=... require EQUAL tags, so
+        # (1, 2) == [1, 2] is False exactly as in CPython.
+        self.create_tuple = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [], False), 'create_tuple'
+        )
+        ct_b = ir.builder_(self.create_tuple.append_basic_block("entry"))
+        ct_box_raw = ct_b.call(self.malloc, [ir.const_(i64, 16)])
+        ct_box = ct_b.bitcast(ct_box_raw, pyobj_ptr)
+        ct_b.store(ir.const_(i32, 9), ct_b.gep(ct_box, [zero32, zero32]))
+        ct_st_raw = ct_b.call(self.malloc, [ir.const_(i64, 24)])
+        ct_st = ct_b.bitcast(
+            ct_st_raw, ir.PointerType(self.list_struct_type)
+        )
+        ct_b.store(ir.const_(i64, 0), ct_b.gep(ct_st, [zero32, zero32]))
+        ct_b.store(ir.const_(i64, 0), ct_b.gep(ct_st, [zero32, one32]))
+        ct_b.store(
+            ir.const_(
+                ir.PointerType(ir.PointerType(self.pyobj.pyobj_type)), None
+            ),
+            ct_b.gep(ct_st, [zero32, ir.const_(i32, 2)]),
+        )
+        ct_b.store(ct_st_raw, ct_b.gep(ct_box, [zero32, one32]))
+        ct_b.ret(ct_box)
 
         # PObj* pyobj_set_discard(PObj* set, PObj* item) - remove by
         # value if present, no error when absent (Python set.discard).
@@ -4107,7 +4234,10 @@ class PyobjRuntimeMixin:
         builder = ir.builder_(entry)
         dst_arg, src_arg = self.dict_update.args
         src_tag = builder.load(builder.gep(src_arg, [zero32, zero32]))
-        is_list_src = builder.icmp_signed("==", src_tag, ir.const_(i32, 4))
+        is_list_src = builder.or_(
+            builder.icmp_signed("==", src_tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", src_tag, ir.const_(i32, 9)),
+        )
         builder.cbranch(is_list_src, src_is_list, src_tag_check)
 
         # list source: each item is a [key, value] pair
@@ -4443,7 +4573,10 @@ class PyobjRuntimeMixin:
             self.pyobj_list_slice.args
         )
         lst_tag = builder.load(builder.gep(lst_arg, [zero32, zero32]))
-        not_list = builder.icmp_signed("!=", lst_tag, ir.const_(i32, 4))
+        not_list = builder.and_(
+            builder.icmp_signed("!=", lst_tag, ir.const_(i32, 4)),
+            builder.icmp_signed("!=", lst_tag, ir.const_(i32, 9)),
+        )
         tag_error = self.pyobj_list_slice.append_basic_block("ls_tag_error")
         builder.cbranch(not_list, tag_error, lst_case)
 
@@ -4548,12 +4681,28 @@ class PyobjRuntimeMixin:
             builder.call(self.pyobj_str_slice, slice_args)
         )
         builder.position_at_end(lst_chk_blk)
-        is_list = builder.icmp_signed("==", obj_tag, ir.const_(i32, 4))
+        is_list = builder.or_(
+            builder.icmp_signed("==", obj_tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", obj_tag, ir.const_(i32, 9)),
+        )
         builder.cbranch(is_list, do_list_blk, sa_error)
         builder.position_at_end(do_list_blk)
-        builder.ret(
-            builder.call(self.pyobj_list_slice, slice_args)
+        sliced = builder.call(self.pyobj_list_slice, slice_args)
+        # a tuple slice stays a tuple (CPython t[0:2] is a tuple): the
+        # slice runtime always builds a tag-4 list, so retag the box
+        # when the source was the tag-9 tuple
+        tag_slot = builder.gep(
+            sliced, [zero32, ir.const_(ir.IntType(32), 0)]
         )
+        builder.store(
+            builder.select(
+                builder.icmp_signed("==", obj_tag, ir.const_(i32, 9)),
+                ir.const_(i32, 9),
+                ir.const_(i32, 4),
+            ),
+            tag_slot,
+        )
+        builder.ret(sliced)
         builder.position_at_end(sa_error)
         err_msg = self._create_global_string_with_builder(
             "TypeError: object is not sliceable", builder
@@ -4577,7 +4726,10 @@ class PyobjRuntimeMixin:
         builder = ir.builder_(entry)
         obj_arg, key_arg = self.pyobj_subscript.args
         tag = builder.load(builder.gep(obj_arg, [zero32, zero32]))
-        is_list = builder.icmp_signed("==", tag, ir.const_(i32, 4))
+        is_list = builder.or_(
+            builder.icmp_signed("==", tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", tag, ir.const_(i32, 9)),
+        )
         builder.cbranch(is_list, list_block, str_check)
 
         builder.position_at_end(str_check)
@@ -4809,7 +4961,15 @@ class PyobjRuntimeMixin:
         b.position_at_end(rdone)
         box_raw = b.call(self.malloc, [ir.const_(i64, 16)])
         box = b.bitcast(box_raw, ir.PointerType(self.pyobj.pyobj_type))
-        b.store(ir.const_(ir.IntType(32), 4), b.gep(box, [zero32, zero32]))
+        # the repetition inherits the source tag: (1,) * 2 stays a
+        # tuple, [1] * 2 stays a list - the source box carries it
+        src_tag = b.load(b.gep(l_arg, [zero32, zero32]))
+        result_tag = b.select(
+            b.icmp_signed("==", src_tag, ir.const_(i32, 9)),
+            ir.const_(i32, 9),
+            ir.const_(i32, 4),
+        )
+        b.store(result_tag, b.gep(box, [zero32, zero32]))
         st_raw = b.call(self.malloc, [ir.const_(i64, 24)])
         st = b.bitcast(st_raw, ir.PointerType(self.list_struct_type))
         b.store(total, b.gep(st, [zero32, zero32]))
@@ -4989,21 +5149,39 @@ class PyobjRuntimeMixin:
                 # list*int / int*list repetition, same shape as the
                 # str gate
                 list_mix = builder.or_(
-                    builder.and_(
-                        builder.icmp_signed("==", left_tag, ir.const_(ir.IntType(32), 4)),
-                        self._tag_is_intish(builder, right_tag),
+                    builder.or_(
+                        builder.and_(
+                            builder.icmp_signed("==", left_tag, ir.const_(ir.IntType(32), 4)),
+                            self._tag_is_intish(builder, right_tag),
+                        ),
+                        builder.and_(
+                            builder.icmp_signed("==", right_tag, ir.const_(ir.IntType(32), 4)),
+                            self._tag_is_intish(builder, left_tag),
+                        ),
                     ),
-                    builder.and_(
-                        builder.icmp_signed("==", right_tag, ir.const_(ir.IntType(32), 4)),
-                        self._tag_is_intish(builder, left_tag),
+                    builder.or_(
+                        builder.and_(
+                            builder.icmp_signed("==", left_tag, ir.const_(ir.IntType(32), 9)),
+                            self._tag_is_intish(builder, right_tag),
+                        ),
+                        builder.and_(
+                            builder.icmp_signed("==", right_tag, ir.const_(ir.IntType(32), 9)),
+                            self._tag_is_intish(builder, left_tag),
+                        ),
                     ),
                 )
                 list_op_block = func.append_basic_block("list_op")
                 after_list_block = func.append_basic_block("list_gate")
                 builder.cbranch(list_mix, list_op_block, after_list_block)
                 builder.position_at_end(list_op_block)
-                left_is_list = builder.icmp_signed(
-                    "==", left_tag, ir.const_(ir.IntType(32), 4)
+                # either list-family side repeats; the struct is the same
+                left_is_list = builder.or_(
+                    builder.icmp_signed(
+                        "==", left_tag, ir.const_(ir.IntType(32), 4)
+                    ),
+                    builder.icmp_signed(
+                        "==", left_tag, ir.const_(ir.IntType(32), 9)
+                    ),
                 )
                 list_obj = builder.select(left_is_list, left, right)
                 int_obj = builder.select(left_is_list, right, left)
@@ -5225,9 +5403,16 @@ class PyobjRuntimeMixin:
         builder.cbranch(both_str, str_op_block, list_gate_block)
 
         builder.position_at_end(list_gate_block)
+        # tag 9 (tuple) joins the list family with EQUAL tags required:
+        # 4x4 and 9x9 order and compare structurally, while a mixed
+        # 4/9 pair answers False/True for ==/!= exactly like CPython's
+        # (1, 2) == [1, 2] and raises TypeError on ordering.
         both_list = builder.and_(
-            builder.icmp_signed("==", left_tag, ir.const_(i32, 4)),
-            builder.icmp_signed("==", right_tag, ir.const_(i32, 4)),
+            builder.icmp_signed("==", left_tag, right_tag),
+            builder.or_(
+                builder.icmp_signed("==", left_tag, ir.const_(i32, 4)),
+                builder.icmp_signed("==", left_tag, ir.const_(i32, 9)),
+            ),
         )
         # sets are their own tag: 8x8 pairs take set semantics
         both_set = builder.and_(
@@ -5239,7 +5424,33 @@ class PyobjRuntimeMixin:
         after_seq_block = func.append_basic_block("seq_gate")
         dict_gate_block = func.append_basic_block("dict_gate")
         dict_op_block = func.append_basic_block("dict_op")
-        builder.cbranch(both_list, list_op_block, after_seq_block)
+        mixed_lt_block = func.append_basic_block("mixed_list_tuple")
+        mixed_eq_block = func.append_basic_block("mixed_lt_answer")
+        builder.cbranch(both_list, list_op_block, mixed_lt_block)
+
+        builder.position_at_end(mixed_lt_block)
+        lt4 = builder.icmp_signed("==", left_tag, ir.const_(i32, 4))
+        lt9 = builder.icmp_signed("==", left_tag, ir.const_(i32, 9))
+        rt4 = builder.icmp_signed("==", right_tag, ir.const_(i32, 4))
+        rt9 = builder.icmp_signed("==", right_tag, ir.const_(i32, 9))
+        left_lt = builder.or_(lt4, lt9)
+        right_lt = builder.or_(rt4, rt9)
+        builder.cbranch(
+            builder.and_(left_lt, right_lt), mixed_eq_block, after_seq_block
+        )
+
+        builder.position_at_end(mixed_eq_block)
+        if pred == "==":
+            builder.ret(builder.call(self.create_bool, [
+                ir.const_(ir.IntType(1), 0)
+            ]))
+        elif pred == "!=":
+            builder.ret(builder.call(self.create_bool, [
+                ir.const_(ir.IntType(1), 1)
+            ]))
+        else:
+            # ordering a tuple against a list: CPython TypeError
+            builder.branch(error_block)
 
         builder.position_at_end(list_op_block)
         if pred in ("==", "!="):

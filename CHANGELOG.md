@@ -4,6 +4,36 @@ All notable changes, organized by version tag.
 
 ## v1.x — Self-Hosting Campaign (2026-10-16 → present)
 
+### Unreleased (1.25.1)
+Tuples became their own runtime type. They used to ride the tag-4 list
+box, so the tag was the only place "this is a tuple" survived to
+runtime and it did not: `print((1, 2))` came out as `[1, 2]`, nested
+tuples inside lists and dicts lost their parens, `(1, 2) == [1, 2]`
+answered True, and `isinstance(t, tuple)` could not mean anything.
+A tag-9 box (same list struct) fixes all four - repr prints `(1, 2)`
+with the one-element trailing comma `(1,)`, cross-type equality answers
+False for == and raises on ordering like CPython, slices/concat/repeat
+keep the tuple identity, and `isinstance` reads the real tag
+(`_ISINSTANCE_TAGS["tuple"]` moved with the arm; the self-hosted twin's
+own internal pairs are tuple literals compiled by this converter, so a
+stale table there silently disabled the twin's statement-level rawstr
+free - the ll gate caught it as conv-vs-pyll diffs on pop_clear and
+dict_str). Pinned by four new semantic-gate cases (expected values from
+real CPython).
+
+Also in this round, from the four-plane differential battery
+(CPython / interpret / siluc / pybuild / siluc1->clang, 130+ probes):
+the self-hosted FE now parses Python's pow precedence (`-2 ** 2` is -4)
+and loudly refuses f-string format specs/conversions and the debug form
+(the reference FE already did); the interpreter refuses `global`,
+`nonlocal` and the walrus operator at the shared parse gate instead of
+silently dropping them (its `sorted` is Python's sorted - the old
+"silently ignored" claim was wrong); the C backend copies str values on
+dict and list element stores (`d[k] = s; s += "!"` once corrupted the
+dict's entry through the shared pointer, str_add's in-place branch);
+and the wasm backend traps loudly instead of declaring nameless globals
+and evaluating unknown expressions to 0.
+
 ### Unreleased (1.25.0)
 A semantics round: compiled Silu agrees with CPython on a class of
 programs that used to answer wrongly or crash while every byte gate was

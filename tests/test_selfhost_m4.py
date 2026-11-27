@@ -213,7 +213,10 @@ FEATURE_PROGRAMS = [
         "    print(isinstance(b, bool), isinstance(b, int))\n"
         "    print(isinstance(3, int), isinstance(3.5, float), isinstance(\"s\", str))\n"
         "    return 0\n",
-        "True False\nTrue False\nTrue True\nTrue True\nTrue True True\n",
+        # expected values from real CPython (2026-11-28): tuples carry
+        # their own tag since 1.25.1, so isinstance([1], tuple) is
+        # False - the old "True True" here baked the tag-4 quirk in
+        "True False\nTrue False\nTrue False\nTrue True\nTrue True True\n",
     ),
     # enumerate over lists and strings
     (

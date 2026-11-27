@@ -17,7 +17,7 @@ language's behavior. It exists to answer three questions with data:
 
 ## Contract
 
-- **Pinned version**: silu 1.25.0 (the semantics round: containers that
+- **Pinned version**: silu 1.25.1 (tuple tag split: repr prints (...), cross-type == aligned with CPython, real isinstance semantics) (the semantics round: containers that
   change under their own loop, comprehension scope, the borrowed entries
   of a str-valued dict; plus the memory-safety round of the same day -
   code point offsets read one byte past the buffer, `s = s + s` read

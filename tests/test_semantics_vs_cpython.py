@@ -318,6 +318,33 @@ MATCH_CPYTHON = [
      'd = {"a": 1}\nr = d.clear()\nprint(r, d)\n'
      'print(d.update({"b": 2}), d)\n'
      'print(d.setdefault("c", 3), d)\nprint(d.pop("b"), d)\n'),
+    # --- tuples carry their own tag 9: they used to ride tag 4, so the
+    # runtime printed [1, 2] for print((1, 2)), nested tuples inside
+    # lists/dicts lost their parens, and (1, 2) == [1, 2] answered True.
+    # Expected values produced by real CPython (2026-11-28).
+    ("tuple_repr_and_construction",
+     "t = (1, \"a\", [2])\nprint(t, t[0], t[2][0], len(t))\n"
+     "print((1,), (), (1,) + (2,), (1,) * 2)\n"
+     "print([1, (2, 3)], {\"k\": (1, 2)})\n"),
+    ("tuple_isinstance_and_eq",
+     "print((1, 2) == (1, 2), (1, 2) == [1, 2], [1, 2] == (1, 2))\n"
+     "t = (1, 2)\nprint(isinstance(t, tuple), isinstance(t, list),\n"
+     "      isinstance([1], tuple), isinstance((1,), tuple))\n"),
+    ("tuple_slice_iter_in_order",
+     "t = (10, 20, 30)\nfor x in t:\n    print(x)\n"
+     "print(t[1], t[0:2], 1 in t, 5 not in t)\n"
+     "print((1, 2) < (1, 3), (2,) > (1, 9), (1, 2) != (1, 2))\n"),
+    # --- pow precedence: -2 ** 2 is -(2 ** 2); the self-hosted FE's
+    # chain fed parse_unary into the pow base and answered 4
+    ("pow_unary_precedence",
+     "print(-2 ** 2, (-2) ** 2, 2 ** 3 ** 2, -(2 ** 3), -2 ** -0)\n"),
+    # --- find/startswith still pin the 1-arg forms after the start/end
+    # gap was identified (multi-arg forms are a known gap, STATUS 4)
+    ("str_find_single_arg_forms",
+     "s = \"abcabc\"\nprint(s.find(\"c\"), s.rfind(\"c\"), s.index(\"b\"),\n"
+     "      s.find(\"z\"), s.rfind(\"z\"))\n"
+     "print(\"abc\".startswith(\"ab\"), \"abc\".endswith(\"bc\"),\n"
+     "      \"abc\".startswith(\"\"), \"\".startswith(\"a\"))\n"),
 ]
 
 # CPython has no implicit record constructor, so these Silu programs are

@@ -33,7 +33,7 @@
 
 **是什么**：`reference/rust/` 下的独立 Rust 实现（前端 `src/main.rs`
 2,509 行 + 转换器 `src/bin/silu-conv.rs` ~7,950 行），钉住
-**silu 1.25.0（语义轮重钉：容器边迭代边改、推导式作用域、dss 借用语义 + ll 门禁 verifier；同版追加内存安全轮——码点偏移越界读、`s = s + s` 用后释放、`str.find` 字节偏移、自举转换器对 i64 槽实例属性赋值必崩、真 ASan 门禁；1.24.0=oracle 形状补齐/dss 2 参族，1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
+**silu 1.25.1（tuple 独立 tag-9：repr 打 (...)、跨类型相等对齐 CPython、isinstance(t, tuple) 真 semantics；1.25.0=语义轮重钉：容器边迭代边改、推导式作用域、dss 借用语义 + ll 门禁 verifier；同版追加内存安全轮——码点偏移越界读、`s = s + s` 用后释放、`str.find` 字节偏移、自举转换器对 i64 槽实例属性赋值必崩、真 ASan 门禁；1.24.0=oracle 形状补齐/dss 2 参族，1.23.0=str 方法族，1.22.0=g-清单闭合，1.21.0=P9 concat 所有权，1.18.1=cp-offset 缓存，1.18.0=strbuf，1.17.0=P6/P2/P5，原神谕 1.16.2）** 的行为。用途：
 差分 Oracle、表达力校准、隐式规约提取。**不是产品编译器，不进自举链，
 不做同步镜像**。
 
@@ -89,11 +89,15 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   `wat2wasm` 空标识符回归（wasm_backend.si 声明扫描对属性 store 目标
   elem_str 得 "" → 无名全局；`emit_expr` 兜底静默求 0 → 全部改响亮
   unreachable，七 wasm 门禁绿）。**四平面探针电池**
-  （/tmp/silu_night/battery.py，120+ 探针）扫出编译平面静默错误字节
-  一批（`-2**2` 优先级、find/startswith start 参数忽略、replace 空针、
-  tuple repr 打 `[...]`、repr 不加引号、f-string spec 忽略）与解释器
-  响亮一致性欠账（global/nonlocal/sorted key 静默忽略、walrus 误解析）
-  ——修复中，见 STATUS §四 首条。**新文档 docs/python_differences.md**
+  （/tmp/silu_night/battery.py，130+ 探针 × 5 平面，含 pybuild）扫出
+  编译平面静默错误字节一批——已修：`-2**2` 优先级、f-string spec
+  响亮化、tuple 独立 tag-9（repr/eq/isinstance 对齐 CPython，**1.25.1
+  重钉**）、解释器 global/nonlocal/walrus 响亮拒绝、ir2c 两处 str
+  store 别名。**根因教训**：tuple 臂改 tag 后 `_ISINSTANCE_TAGS`
+  没跟上——孪生自己的内部二元组也是 tuple 字面量，isinstance 恒假
+  令自举编译器的语句丢弃 free 静默失效；改表示层常量必须全库 grep
+  全部消费者。未修：find/startswith 的 start 参数、replace 空针、
+  repr 值形式——见 STATUS §四 首条。**新文档 docs/python_differences.md**
   （全部已知差异 + 支持矩阵，每条探针背书）；semantics.md §3 的
   "先删后插 CPython 继续迭代"旧断言已修正（CPython 3.12 实测同样
   raise，Silu 行为一致仅消息不同，设计保留）。**教训**：node 层 wasm
