@@ -244,6 +244,7 @@ ir_generator_for_c.py    # C → Silu IR (pycparser-based)
 - [CLI Usage Guide](docs/cli_usage.md) — complete command-line reference
 - [Language Features](docs/language_features.md) — syntax and examples
 - [Semantics Contract](docs/semantics.md) — where Silu matches Python and where it deliberately differs (i64, ownership, checks)
+- [Python Differences](docs/python_differences.md) — every known divergence from CPython, with probe evidence and the interpreter-vs-compiler support matrix
 - [IR Design](docs/simple_ir_design.md) — intermediate representation format
 - [Symbolic Execution](docs/symbolic_execution.md) — program analysis capabilities
 - [LLVM IR Generation](docs/llvm_ir_generation.md) — native compilation via LLVM

@@ -72,9 +72,12 @@
   循环头 panic `RuntimeError: dictionary changed size during iteration`
   （先检查后判界，所以最后一次迭代里的改动照样报错，与 CPython
   相同）。`break` 之后的改动不算。只改值（`d[k] = v * 10`）永远合法，
-  后续迭代读到新值。**比 CPython 严格的一点**：先删后插使大小不变
-  时，CPython 继续迭代，Silu 同样 panic（`dictionary modified during
-  iteration`）——CPython 文档本就允许这种程序"漏迭代"。
+  后续迭代读到新值。**先删后插、大小不变也 panic**（设计决定
+  2026-11-27 用户确认保留）：CPython 3.12 实测对这一形状同样 raise
+  （`RuntimeError: dictionary keys changed during iteration`，四平面
+  电池实证）——行为一致，仅 panic 消息不同（Silu 为
+  `dictionary modified during iteration`）。全部差异另见
+  `docs/python_differences.md`。
 - **list 循环按活动长度走**（CPython 的 list 迭代器语义）：循环体里
   `append` 的元素会被访问到（工作表惯用法 `for x in xs:
   xs.append(...)`），`pop` 会缩短循环；typed 与动态 list 一致。

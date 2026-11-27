@@ -82,8 +82,24 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
 ——门禁不会再跑在陈旧二进制上。**lint 属于门禁**：`tests/test_lint.py`
 跑的就是 CI 的那条 ruff 命令，pytest 全绿即蕴含 ruff 干净。
 
-## 当前状态锚点（2026-11-26）
+## 当前状态锚点（2026-11-27）
 
+- **打磨轮（2026-11-27，STATUS §3.38，进行中）**：v1.25.0 已打 tag
+  发布（release + CI gates 作业 success）；tag 的 wasm 作业暴露
+  `wat2wasm` 空标识符回归（wasm_backend.si 声明扫描对属性 store 目标
+  elem_str 得 "" → 无名全局；`emit_expr` 兜底静默求 0 → 全部改响亮
+  unreachable，七 wasm 门禁绿）。**四平面探针电池**
+  （/tmp/silu_night/battery.py，120+ 探针）扫出编译平面静默错误字节
+  一批（`-2**2` 优先级、find/startswith start 参数忽略、replace 空针、
+  tuple repr 打 `[...]`、repr 不加引号、f-string spec 忽略）与解释器
+  响亮一致性欠账（global/nonlocal/sorted key 静默忽略、walrus 误解析）
+  ——修复中，见 STATUS §四 首条。**新文档 docs/python_differences.md**
+  （全部已知差异 + 支持矩阵，每条探针背书）；semantics.md §3 的
+  "先删后插 CPython 继续迭代"旧断言已修正（CPython 3.12 实测同样
+  raise，Silu 行为一致仅消息不同，设计保留）。**教训**：node 层 wasm
+  门禁不在本地 gates.sh，本地全绿 + CI wasm 红的组合已出现两次；
+  IR 里 assign 纯名字目标是字符串、属性目标是列表节点，对字符串
+  JValue 调 tag() 段错误——判形状用 `.kind == JKind.STR`。
 - **内存安全轮（2026-11-26 续，STATUS §3.37）**：追查
   `gates-last-failure.log` 里一条被我当成"门禁竞态"的瞬态失败，
   发现 macOS 崩溃报告目录里有 **5 份 `siluc1` 段错误**。真 ASan

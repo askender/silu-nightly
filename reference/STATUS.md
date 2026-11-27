@@ -1538,14 +1538,85 @@ docs/semantics.md §2，Unicode 大小写表需裁决）；`print(a, b)` 逐个
 "dynamic values"；typed dict 的 `update`、动态 list 的
 `extend/insert/remove/reverse/sort` 不支持（响亮）。
 
+## 三点三十八、打磨轮：四平面探针电池 + 差异文档 + wasm 响亮化（2026-11-27）
+
+用户指令：按优先级依次修 bug（从根源规避）、写真实 Python 程序对拍
+发现新 bug/差异、upper()/lower() 暂缓入 TODO、循环先删后插 panic
+设计保留但需单独文档、不引入新特性、通宵运行（定时器驱动）。
+
+**v1.25.0 已打 tag 发布**（release workflow success；dispatch 的
+gates 作业在 CI 上 **success**——编译器 ASan 门禁首次在 GitHub 上跑
+通）。tag 的 wasm 作业红：`wat2wasm` 对 `benchmarks/record_global.si`
+报"empty identifier"——该语料 11-25 才进 benchmarks/，node 层 wasm
+门禁自 11-22 后没跑过，回归带着发布溜出去。三个根因全在
+selfhost/wasm_backend.si：①模块级全局/局部声明扫描对 assign 目标
+一律 elem_str——属性 store 的目标是列表节点，得 ""，声明出无名
+`(global $ ...)`（非法 WAT，wabt 拒绝）；②assign 发射器同样落进
+名字路径；③`emit_expr` 兜底 `return "(i64.const 0)"`——任何未识别
+表达式静默求 0（模块级 `print(c.x)` 打 0 = 错误字节）。修法：声明
+扫描只认字符串名目标；属性 store 发射 `(unreachable)`；
+`emit_expr` 加显式 attribute 响亮臂 + 兜底改 `(unreachable)`。
+**教训：①IR 里 assign 的纯名字目标是字符串、属性目标是列表节点，
+对字符串 JValue 调 tag() = 段错误（arr[0] 下标 None）——判目标形状
+用 `.kind == JKind.STR`；②node 层 wasm 门禁（shim/run/backend/
+corpus/wat2wasm/compile）不在本地 gates.sh 里，只有 CI 的 wasm 作业
+跑——本地全绿 + CI wasm 红的组合已出现两次，值得把 node 门禁纳入
+本地收口清单；③wasm/artifacts 的 siluc1.wasm 是 11-17 旧物
+（内嵌内存安全轮之前的运行时前缀），test_compile 0/30 假红——重建
+后 30/30。** 七门禁绿：wat2wasm 43/43、backend 18/18、run 4+14
+loud、corpus 16/16、compile 30/30、shim 252、pytest 不涉。
+
+**四平面探针电池**（/tmp/silu_night/battery.py，120+ 探针 × 4 平面：
+CPython / interpret / siluc / siluc1→clang）。收获：
+- **解释器接受面 ≫ 编译平面**：try/except、lambda、import、yield、
+  闭包、with、% 格式化、assert、文档字符串解释器全支持（参考语义）；
+  编译平面响亮拒绝。`raise` 编译平面是**响亮 panic**（支持，无捕获）。
+- **真 bug（编译平面静默错误字节，按优先级修复中）**：
+  ①`-2 ** 2` 编译得 4（CPython -4）——一元负号与 `**` 的优先级，
+  解释器对、两个 typed FE 错；②`find/rfind/index/startswith/
+  endswith` 的 start/end 参数被静默忽略（`"abcabc".find("c", 3)`
+  编译得 2）；③`replace("", x)` 编译得空串；④**tuple repr 打
+  `[...]`**（`print((1, 2))` 得 `[1, 2]`，含嵌套容器内）；⑤
+  `repr("a")` 不加引号；⑥f-string 的 `{x:.2f}`/`{x=}`/`{x!r}` 编译
+  平面静默忽略 spec（解释器响亮拒绝）。
+- **响亮一致性欠账（解释器静默错，编译平面响亮）**：`global`/
+  `nonlocal` 被解释器接受但忽略、`sorted(key=, reverse=)` 被解释器
+  静默忽略、walrus `:=` 解释器误解析成 None 再报运行时错——全部待
+  改语法期响亮拒绝。
+- **文档修正**：docs/semantics.md §3 旧断言"先删后插大小不变时
+  CPython 继续迭代"**是错的**——CPython 3.12 实测同样 raise
+  （`dictionary keys changed during iteration`，电池实证）；Silu 的
+  panic 行为与之一致，仅消息不同。设计按用户裁决保留。
+- 新文档 **docs/python_differences.md**：全部已知差异一页清单
+  （数值/字符串/容器/类/函数/语句/输出时机 + 内建与方法支持矩阵），
+  每条带探针背书。
+
+**既知残差（入 §四）**：ir2c `d[k] = v` 存储别名（P0）；rs 字母表
+缺口（typed dict 参数/循环、模块级 str `+=`、整只 dss print、函数内
+实例属性赋值、`rfind`、`print(s[i])` 字节分歧）；`strip(chars)` 对
+typed str 的拒绝消息误称 "dynamic values"；编译平面缺 `lstrip/
+rstrip/insert(typed)/popitem/sum/min/max/abs/bool/sorted/zip/
+enumerate/map/reversed/divmod/round`（响亮，属能力边界非 bug）。
+
 ## 四、其余 TODO（优先级序）
 
-- [ ] **`upper()` / `lower()` 的 Unicode 边界需裁决**（§3.37）：现在只
-  映射 ASCII 字母，非 ASCII 字母原样保留（`"é".upper()` 仍是 `"é"`；
-  已记入 docs/semantics.md §2）。三条路：维持文档化边界；引入
-  Unicode 简单大小小写映射表（约 1,400 对，运行时体积 + 每 str
-  方法族四平面/rs 前缀重钉）；或在遇到有大小写映射的非 ASCII 码点
-  时响亮 panic。`"ß".upper()` 的多字符展开 CPython 也与简单映射不同。
+- [ ] **电池轮 P1 静默错误字节清单（2026-11-27，修复中，按优先级）**：
+  ①`-2 ** 2` 编译得 4（一元负号 vs `**` 优先级，两个 typed FE）；
+  ②`find/rfind/index/startswith/endswith` 的 start/end 参数编译平面
+  被静默忽略；③`replace("", x)` 编译得空串；④tuple repr 打 `[...]`
+  而非 `(...)`（含嵌套容器内）；⑤`repr("a")` 不加引号；⑥f-string
+  `{x:.2f}`/`{x=}`/`{x!r}` 编译静默忽略 spec（响亮化）。**响亮一致性
+  （解释器侧）**：`global`/`nonlocal`/`sorted(key=,reverse=)` 静默
+  忽略、walrus 误解析——改语法期响亮拒绝。证据与明细见 §3.38 与
+  /tmp/silu_night/battery.py（电池脚本，results.json 同目录）。
+
+- [ ] **`upper()` / `lower()` 的 Unicode 边界——用户裁决：暂缓**
+  （2026-11-27）：维持文档化边界（只映射 ASCII 字母，非 ASCII 原样；
+  已记入 docs/semantics.md §2 与 docs/python_differences.md §2）。
+  后续三条路备选：维持现状；引入 Unicode 简单大小小写映射表（约
+  1,400 对，运行时体积 + 每 str 方法族四平面/rs 前缀重钉）；或在
+  遇到有大小写映射的非 ASCII 码点时响亮 panic。`"ß".upper()` 的
+  多字符展开 CPython 也与简单映射不同。
 - [ ] **rs 神谕字母表**（§3.36/§3.37 残差）：typed dict 作函数参数
   （`param type in f` bail）、typed dict 循环（按 entry 走 + 监视）、
   typed 槽的推导式遮蔽、模块级 str `+=`、整只 dss dict 的 print；
