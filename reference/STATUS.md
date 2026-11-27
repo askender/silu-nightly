@@ -1593,22 +1593,61 @@ CPython / interpret / siluc / siluc1→clang）。收获：
 
 **既知残差（入 §四）**：ir2c `d[k] = v` 存储别名（P0）；rs 字母表
 缺口（typed dict 参数/循环、模块级 str `+=`、整只 dss print、函数内
-实例属性赋值、`rfind`、`print(s[i])` 字节分歧）；`strip(chars)` 对
+实例属性赋值、`rfind`、`print(s[i])` 字节分歧、**tuple 的切片/下标
+（槽族不分派 → 响亮 bail，运行时本可支持）**）；`strip(chars)` 对
 typed str 的拒绝消息误称 "dynamic values"；编译平面缺 `lstrip/
-rstrip/insert(typed)/popitem/sum/min/max/abs/bool/sorted/zip/
-enumerate/map/reversed/divmod/round`（响亮，属能力边界非 bug）。
+rstrip/insert(typed)/popitem/min/max/abs/bool/sorted/zip/enumerate/
+map/reversed/divmod/round`（响亮；`sum` 编译平面**有**）。
+
+**§3.38 续（深夜）：pow 优先级 + f-string 响亮化已落地；
+tuple-tag 轮侦查中止（WIP 完整存档 /tmp/silu_night/tuple_wip/）**
+
+- **pow 优先级已修**（6444a95）：silu_fe.si 的 parse_mul → parse_unary
+  → parse_pow（postfix ["**" unary]）——`-2 ** 2` 三平面一致 -4。**但
+  6444a95 提交时只跑了 pow-only 的平面门禁**；f-string 同 commit 的
+  新代码引入的形状直到今晚跑 ll 门禁才暴露（教训：**平面门禁必须在
+  每次 commit 前全跑，不能只跑受影响子集**）。
+- **f-string spec 响亮化已修**（6444a95）：parse_fstring 对重词法后
+  的 token 流扫 depth-0 `:`/`!` 与残留 token（{x=} 调试形），与
+  ir_generator.visit_JoinedStr 同措辞响亮拒绝。
+- **silu_fe.si 语料在 ll 门禁红（st.1 alloca）**：parse_fstring 里
+  tokenizer 循环的 `st: Token` 与我扫描循环的 `st: Token` 构成**同
+  函数两个同名 ann_assign**——Python 平面转换器给第二个绑定另开槽
+  `st.1`（llvmlite 名字去重），Rust 转换器复用一个槽 → 字节分歧。
+  修复：扫描循环改名 `scan_tok`（语义等价，两个变量本就互不重叠）。
+  **同名二次 ann_assign 的槽语义是未定论的真实形状分歧**（最小复现
+  复现不出，触发条件与块嵌套相关）——入 §四 待深究。
+- **tuple-tag 轮（WIP 存档，未提交）**：给 tuple 独立 tag-9 的方案
+  已实现到运行时（create_tuple/print case 9/eq 等标签门/or 族 13 处/
+  切片拼接重复保 tag/rs create_tuple/前缀 430,589B），探针验证
+  `print((1,'a',2.5))`、`(1,2)==[1,2]`=False（CPython 一致）、嵌套
+  容器内 tuple repr 全部正确——**但 siluc1 的"语句级丢弃 free"在
+  bare `words.pop()` 上消失**（HEAD 孪生有 free=18，当前=17，pyll=18；
+  flat diff 只有 tuple 相关 136 行；HEAD-flat 构建的 silu_conv=18、
+  current-flat 构建=17——差异确实在 flat 内容里，但逐 hunk 审查未
+  见语句逻辑被动过）。侦查证据链全部存档 tuple_wip/（三个 .ll 对照、
+  flat diff、WIP 源码）。**待办**：二分 flat diff 的 136 行定位交互
+  点；怀疑方向：pyobj_print 新增 tuple_block 后运行时发射序变化影响
+  孪生的 alloca/槽编号 → 语句 free 判定所依赖的 SSA 名字键集合
+  （`_owned_str_fresh` 按 name 字符串键控）跨函数漂移。
+- **教训（本轮新增）**：①`silu_conv` 二进制不随 flat 重建而重建的
+  陈旧窗口曾让我拿 HEAD 时代的插桩二进制当现行（一律 `rm -f silu_conv
+  siluc1` 后 ensure）；②对 .py 的改动会经 `silu build` 影响 siluc1
+  自身——"只改了运行时"不等于"编译器无关"；③WIP 不留树上：run
+  gates 的树必须是干净 HEAD 或完整修复，调试插桩必须随手摘。
 
 ## 四、其余 TODO（优先级序）
 
-- [ ] **电池轮 P1 静默错误字节清单（2026-11-27，修复中，按优先级）**：
-  ①`-2 ** 2` 编译得 4（一元负号 vs `**` 优先级，两个 typed FE）；
-  ②`find/rfind/index/startswith/endswith` 的 start/end 参数编译平面
-  被静默忽略；③`replace("", x)` 编译得空串；④tuple repr 打 `[...]`
-  而非 `(...)`（含嵌套容器内）；⑤`repr("a")` 不加引号；⑥f-string
-  `{x:.2f}`/`{x=}`/`{x!r}` 编译静默忽略 spec（响亮化）。**响亮一致性
-  （解释器侧）**：`global`/`nonlocal`/`sorted(key=,reverse=)` 静默
-  忽略、walrus 误解析——改语法期响亮拒绝。证据与明细见 §3.38 与
-  /tmp/silu_night/battery.py（电池脚本，results.json 同目录）。
+- [ ] **电池轮 P1 静默错误字节清单（2026-11-27 夜，按优先级）**：
+  ✅①`-2 ** 2` 优先级（6444a95）；✅⑥f-string spec 响亮化（6444a95）。
+  待修：②`find/rfind/index/startswith/endswith` 的 start/end 参数编译
+  平面被静默忽略；③`replace("", x)` 编译得空串；④⑤tuple repr 打
+  `[...]` + `repr("a")` 不加引号——**tuple-tag 方案 WIP 存档
+  /tmp/silu_night/tuple_wip/（运行时全部就位、探针全对，唯 siluc1 的
+  语句丢弃 free 被交互性破坏，二分 flat diff 136 行定位——见 §3.38
+  续）**。**响亮一致性（解释器侧）**：`global`/`nonlocal`/
+  `sorted(key=,reverse=)` 静默忽略、walrus 误解析——改语法期响亮拒绝。
+  证据与明细见 §3.38 与 /tmp/silu_night/battery.py。
 
 - [ ] **`upper()` / `lower()` 的 Unicode 边界——用户裁决：暂缓**
   （2026-11-27）：维持文档化边界（只映射 ASCII 字母，非 ASCII 原样；

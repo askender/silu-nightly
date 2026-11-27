@@ -928,14 +928,20 @@ class Parser:
                 depth: int = 0
                 ti: int = 0
                 while ti < len(sub_toks):
-                    st: Token = sub_toks[ti]
-                    if st.kind == TokKind.OP:
-                        if st.text == "(" or st.text == "[" or st.text == "{":
+                    # scan_tok, NOT st: the tokenizer loop above already
+                    # declared `st: Token` in this scope, and two
+                    # same-name ann_assigns in one function make the
+                    # Python-plane converter mint a second slot (st.1)
+                    # where the Rust converter reuses one - the ll gate
+                    # went red on this very file until the rename
+                    scan_tok: Token = sub_toks[ti]
+                    if scan_tok.kind == TokKind.OP:
+                        if scan_tok.text == "(" or scan_tok.text == "[" or scan_tok.text == "{":
                             depth += 1
-                        elif st.text == ")" or st.text == "]" or st.text == "}":
+                        elif scan_tok.text == ")" or scan_tok.text == "]" or scan_tok.text == "}":
                             depth -= 1
                         elif depth == 0 and (
-                            st.text == ":" or st.text == "!"
+                            scan_tok.text == ":" or scan_tok.text == "!"
                         ):
                             self.error(
                                 "f-string format specs/conversions are not supported",
