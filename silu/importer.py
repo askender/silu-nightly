@@ -247,6 +247,22 @@ def _reject_unsupported_subset(tree: ast.AST) -> None:
             raise SyntaxError(
                 f"'else' on a {type(node).__name__.lower()} loop is not "
                 f"part of Silu (line {getattr(node, 'lineno', '?')})")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            # the interpreter used to ACCEPT these and silently drop
+            # them: `global x; x = 2` left the module global untouched
+            # (the battery answers 1 where CPython answers 2), and the
+            # self-hosted/Rust front ends reject the statement outright.
+            # Same choke point, all three front ends agree.
+            raise SyntaxError(
+                f"'{type(node).__name__.lower()}' statements are not "
+                f"part of Silu (line {getattr(node, 'lineno', '?')})")
+        elif isinstance(node, ast.NamedExpr):
+            # the walrus operator parsed to a None-valued expression in
+            # the interpreter (if (n := 10) > 5 compared None > 5) and
+            # never reached the IR
+            raise SyntaxError(
+                "the walrus operator ':=' is not part of Silu "
+                f"(line {getattr(node, 'lineno', '?')})")
 
 
 def expand_imports_tree(source: str, base_dir: str) -> ast.Module:

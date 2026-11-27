@@ -1638,16 +1638,21 @@ tuple-tag 轮侦查中止（WIP 完整存档 /tmp/silu_night/tuple_wip/）**
 
 ## 四、其余 TODO（优先级序）
 
-- [ ] **电池轮 P1 静默错误字节清单（2026-11-27 夜，按优先级）**：
-  ✅①`-2 ** 2` 优先级（6444a95）；✅⑥f-string spec 响亮化（6444a95）。
+- [ ] **电池轮 P1 静默错误字节清单（2026-11-28 凌晨，按优先级）**：
+  ✅①`-2 ** 2` 优先级（6444a95）；✅⑥f-string spec 响亮化（6444a95）；
+  ✅✅解释器响亮一致性：`global`/`nonlocal`/walrus 三者在共享解析关卡
+  （importer._reject_unsupported_subset，与 `;`/default-args 同点）
+  语法期响亮拒绝，三平面措辞一致——**`sorted(key=,reverse=)` 的旧
+  "被忽略"论断是错的**（解释器的 sorted 就是 Python sorted，电池
+  interp=MATCH 实证），旧 TODO 条目已修；✅ir2c 两处 str store 别名
+  （f4e463b，m3 钉板 8）。
   待修：②`find/rfind/index/startswith/endswith` 的 start/end 参数编译
   平面被静默忽略；③`replace("", x)` 编译得空串；④⑤tuple repr 打
   `[...]` + `repr("a")` 不加引号——**tuple-tag 方案 WIP 存档
   /tmp/silu_night/tuple_wip/（运行时全部就位、探针全对，唯 siluc1 的
   语句丢弃 free 被交互性破坏，二分 flat diff 136 行定位——见 §3.38
-  续）**。**响亮一致性（解释器侧）**：`global`/`nonlocal`/
-  `sorted(key=,reverse=)` 静默忽略、walrus 误解析——改语法期响亮拒绝。
-  证据与明细见 §3.38 与 /tmp/silu_night/battery.py。
+  续）**。证据与明细见 §3.38 与 /tmp/silu_night/battery.py（现含
+  pybuild 第五平面 + 回归探针四枚）。
 
 - [ ] **`upper()` / `lower()` 的 Unicode 边界——用户裁决：暂缓**
   （2026-11-27）：维持文档化边界（只映射 ASCII 字母，非 ASCII 原样；
