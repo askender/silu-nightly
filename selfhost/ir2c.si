@@ -1510,8 +1510,12 @@ class Gen:
                 else:
                     self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(" + self.box_te(val_sa) + "));")
             elif base_sa.ty == "dict:S:str":
-                # str values ride raw in the int64 slot (rs rawdict twin)
-                self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(intptr_t)" + val_sa.text + ");")
+                # str values ride raw in the int64 slot (rs rawdict twin) -
+                # a COPY: the slot keeps owning its buffer, and a stored
+                # pointer that aliases the source slot lets str_add's
+                # in-place branch corrupt the dict's entry
+                # (d[k] = s; s += "!" once answered the mutated text)
+                self.emit("dict_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(intptr_t)str_copy(" + val_sa.text + "));")
             elif base_sa.ty.startswith("dict:I"):
                 self.emit("dicti_set(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
             elif base_sa.ty == "dict" or base_sa.ty.startswith("dict:"):
@@ -1519,8 +1523,15 @@ class Gen:
             elif base_sa.ty == "list:float":
                 self.emit("list_set_f(" + base_sa.text + ", " + key_sa.text + ", " + val_sa.text + ");")
             else:
-                # 8-byte slots: str/instance values ride as pointers
-                self.emit("list_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(" + val_sa.text + "));")
+                # 8-byte slots: str/instance values ride as pointers.
+                # str elements are COPIES (the list owns them, reads hand
+                # out copies, and a stored pointer aliasing the source
+                # slot corrupts the element through str_add's in-place
+                # branch); instances stay shared (reference semantics)
+                if val_sa.ty == "str":
+                    self.emit("list_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(intptr_t)str_copy(" + val_sa.text + "));")
+                else:
+                    self.emit("list_set(" + base_sa.text + ", " + key_sa.text + ", (int64_t)(" + val_sa.text + "));")
             return 0
         if t == "aug_assign":
             tgt: JValue = stmt.arr[1]

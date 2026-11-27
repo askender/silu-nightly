@@ -34,6 +34,23 @@ PROGRAMS = [
      "3\n1\n1\n"),
     ("if 3 > 2:\n    print(1)\nelse:\n    print(2)\nif 1 > 2:\n    print(3)\nelse:\n    print(4)\n",
      "1\n4\n"),
+    # d[k] = s used to store s's POINTER: str_add's in-place branch (the
+    # value came from a concat, so the buffer had spare capacity) then
+    # mutated the dict's entry through the shared pointer - both planes
+    # answered "abcx!" where CPython keeps the dict entry at "abcx"
+    ("d: dict[str, str] = {}\n"
+     "s: str = \"abc\" + \"x\"\n"
+     "d[\"k\"] = s\n"
+     "s += \"!\"\n"
+     "print(d[\"k\"], s)\n",
+     "abcx abcx!\n"),
+    # same hole on list[str] element stores
+    ("ls: list[str] = [\"a\", \"b\"]\n"
+     "s: str = \"abc\" + \"x\"\n"
+     "ls[0] = s\n"
+     "s += \"!\"\n"
+     "print(ls[0], s)\n",
+     "abcx abcx!\n"),
 ]
 
 
