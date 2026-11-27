@@ -877,7 +877,7 @@ class Parser:
             cases.append(["match_case", pattern, guard, body])
         return ["match", subject, cases]
 
-    def parse_fstring(self, raw: str) -> object:
+    def parse_fstring(self, raw: str, tok: Token) -> object:
         # desugar f".." exactly like the reference front end: one
         # fmt(...) call - literal parts ({{ }} unescaped) as const
         # strings, {expr} parts re-lexed and parsed as expressions.
@@ -919,7 +919,36 @@ class Parser:
                     if st.kind == TokKind.END:
                         break
                 sub_parser: Parser = Parser(sub_toks, 0)
+                # mirror ir_generator.visit_JoinedStr: format specs and
+                # conversions are unsupported - LOUD, never silently
+                # dropped (print(f"{x:.2f}") once printed the full value
+                # and f"{x!r}" lost its quotes). A depth-0 ":" is a spec,
+                # a depth-0 "!" a conversion; ":" inside [] () {} is a
+                # slice/call/lambda and stays legal.
+                depth: int = 0
+                ti: int = 0
+                while ti < len(sub_toks):
+                    st: Token = sub_toks[ti]
+                    if st.kind == TokKind.OP:
+                        if st.text == "(" or st.text == "[" or st.text == "{":
+                            depth += 1
+                        elif st.text == ")" or st.text == "]" or st.text == "}":
+                            depth -= 1
+                        elif depth == 0 and (
+                            st.text == ":" or st.text == "!"
+                        ):
+                            self.error(
+                                "f-string format specs/conversions are not supported",
+                                tok,
+                            )
+                    ti += 1
                 parts.append(sub_parser.parse_expr())
+                if sub_parser.cur().kind != TokKind.END:
+                    # f"{x=}" lexes as NAME '=' - silently dropped once
+                    self.error(
+                        "f-string expression has trailing tokens (the {x=} debug form is not supported)",
+                        tok,
+                    )
                 i = j + 1
             else:
                 lit.append(ch)
@@ -1217,18 +1246,24 @@ class Parser:
         return left
 
     def parse_mul(self) -> object:
-        left = self.parse_pow()
+        left = self.parse_unary()
         while self.cur().kind == TokKind.OP and self.cur().text in (
             "*", "/", "//", "%"
         ):
             op = self.nxt().text
-            left = [op, left, self.parse_pow()]
+            left = [op, left, self.parse_unary()]
         return left
 
     def parse_pow(self) -> object:
-        base = self.parse_unary()
+        # Python grammar: power ::= postfix ["**" unary] and
+        # u_expr ::= power | "-" u_expr. Unary binds LOOSER than ** on
+        # the left (-2 ** 2 is -(2 ** 2) = -4, CPython agrees) and the
+        # ** right operand goes through unary (2 ** -2 reaches the pow
+        # with a ["-", 2] exponent). The old chain fed parse_unary into
+        # the pow BASE, which parsed -2 ** 2 as (-2) ** 2 = 4.
+        base = self.parse_postfix()
         if self.accept("**"):
-            return ["**", base, self.parse_pow()]
+            return ["**", base, self.parse_unary()]
         return base
 
     def parse_unary(self) -> object:
@@ -1253,7 +1288,7 @@ class Parser:
         if t.kind == TokKind.OP and t.text == "~":
             self.nxt()
             return ["~", self.parse_unary()]
-        return self.parse_postfix()
+        return self.parse_pow()
 
     def parse_postfix(self) -> object:
         node = self.parse_atom()
@@ -1328,7 +1363,7 @@ class Parser:
             return const_bytes(t)
         if t.kind == TokKind.FSTR:
             self.nxt()
-            return self.parse_fstring(t.text)
+            return self.parse_fstring(t.text, t)
         if t.kind == TokKind.NAME:
             self.nxt()
             return ["name", t.text]
