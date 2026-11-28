@@ -689,6 +689,9 @@ class TypedCodegen(SiluToLLVMConverter, TypedExprMixin, TypedMatchMixin, TypedCa
         self._emit_rawlist_str_core()
         self._emit_rawstr_text()
         self._emit_rawstr_replace()
+        # repr(x) as a value: needs the rawstr family above (append/
+        # new_copy) and pyobj_str_conv from the pyobj runtime init
+        self._create_pyobj_repr_value()
         self._emit_rawstr_count()
         self._emit_rawlist_str_access()
         self._emit_rawstr_convert()

@@ -1672,8 +1672,16 @@ ll 32/32 ×2 全绿。
   ✅③`replace("", x)` 空针交错（rawstr_replace 的 rp_empty 从"返回
   接收者"（接收者被语句释放 → 悬空 len 0）改为真正的每码点边界交错
   构建；ir2c C str_replace 同步，cnt==0 的 return s 同型悬空一并修）。
-  待修：⑤b`repr(x)` 作为值（返回带引号字符串）未实现（f-string
-  `{x!r}` 已响亮拒绝）。
+  ◐⑤b`repr(x)` 值形式**本 commit 落盘时的状态**：pybuild + siluc1 +
+  rs 三平面完成（pyobj_repr_value 运行时族：dquote 选择/escape/递归
+  append；str 单引号与 "a'b"→双引号、\n\r\t\\、C0/DEL \xXX、容器
+  递归、tuple 尾逗号在括号内；rs 双分派臂调用同一前缀运行时，探针
+  全对 CPython）。**余项**：①ir2c 的 repr 目前生成坏 C（clang 拒绝
+  = 响亮合规）——按 typed str 接收者实现或显式 ValueError；②
+  `len(repr(x))` 组合 rs 响亮 bail（len 只按静态形状分派，字母表缺口
+  非 bug）；③repr 探针钉进语义门禁；④全量 pytest 后补提交。
+  **打磨循环操作手册：reference/POLISH_LOOP.md**（唤醒判定树/轮次
+  结构/提交纪律/已验证的坑/本轮续点——compact 或换客户端后按它续跑）。
   新形状分歧：**同名二次 ann_assign**（同函数两处 `st: T = ...`）
   py 平面另开槽 st.1、rs 复用一槽——触发条件与块嵌套相关（最小复现
   复现不出，silu_fe.si 曾踩中，已用改名绕开）——待深究定语义。

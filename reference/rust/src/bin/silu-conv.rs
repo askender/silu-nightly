@@ -6109,6 +6109,20 @@ fn eval_expr(b: &mut FnB, e: &Val, slot_i: &dyn Fn(&str) -> String,
         return Typed::F64(format!("%\"{}\"", sd));
     }
     if e.head() == "call" && e.get(1).head() == "name"
+        && e.get(1).get(1).str_of() == "repr" {
+        // repr(x) in expression position: pyobj_repr_value (the
+        // quoted string), same runtime as the typed planes
+        let ra = e.get(2).items();
+        if ra.len() != 1 { bail("repr arity"); }
+        let v = eval_expr(b, &ra[0], slot_i, slot_f, fslots);
+        let obj = to_pyobj(b, v);
+        let rv = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_repr_value\"({{i32, i8*}}* {})",
+            rv, obj));
+        return Typed::PStr(format!("%\"{}\"", rv));
+    }
+    if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() == "str" {
         // str(int) in expression position: create_int + conv
         let ia = e.get(2).items();
@@ -10221,6 +10235,25 @@ fn eval_mod(b: &mut FnB, e: &Val, fslots: &[String]) -> Typed {
             "  %\"{}\" = call {{i32, i8*}}* @\"create_str\"(i8* %\"{}\", i32 {})",
             c, g, blen));
         return Typed::PStr(format!("%\"{}\"", c));
+    }
+    if e.head() == "call" && e.get(1).head() == "name"
+        && e.get(1).get(1).str_of() == "repr" {
+        // repr(x) as a VALUE: pyobj_repr_value (the quoted string),
+        // the same runtime the typed planes call - the old "ucall
+        // fail f=repr" bail kept the alphabet gap loud; now the
+        // builtin exists on all planes
+        let ra = e.get(2).items();
+        if ra.len() != 1 { bail("repr arity"); }
+        let fs = F_SLOTS.with(|f| f.borrow().clone());
+        let v = eval_expr(b, &ra[0],
+            &|n: &str| format!("@\"{}\"", n),
+            &|n: &str| format!("@\"{}\"", n), &fs);
+        let obj = to_pyobj(b, v);
+        let rv = b.nx();
+        b.line(format!(
+            "  %\"{}\" = call {{i32, i8*}}* @\"pyobj_repr_value\"({{i32, i8*}}* {})",
+            rv, obj));
+        return Typed::PStr(format!("%\"{}\"", rv));
     }
     if e.head() == "call" && e.get(1).head() == "name"
         && e.get(1).get(1).str_of() == "str" {

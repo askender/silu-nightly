@@ -9056,6 +9056,371 @@ rp_lfin:
   ret i8* %".52"
 }
 
+define i1 @"pyobj_repr_dquote"(i8* %".1", i64 %".2")
+{
+dq_entry:
+  %"dq_i" = alloca i64
+  %"dq_has_s" = alloca i1
+  %"dq_has_d" = alloca i1
+  store i64 0, i64* %"dq_i"
+  store i1 0, i1* %"dq_has_s"
+  store i1 0, i1* %"dq_has_d"
+  br label %"dq_cond"
+dq_cond:
+  %".8" = load i64, i64* %"dq_i"
+  %".9" = icmp slt i64 %".8", %".2"
+  br i1 %".9", label %"dq_body", label %"dq_done"
+dq_body:
+  %".11" = getelementptr i8, i8* %".1", i64 %".8"
+  %".12" = load i8, i8* %".11"
+  %".13" = icmp eq i8 %".12", 39
+  %".14" = icmp eq i8 %".12", 34
+  %".15" = load i1, i1* %"dq_has_s"
+  %".16" = or i1 %".15", %".13"
+  store i1 %".16", i1* %"dq_has_s"
+  %".18" = load i1, i1* %"dq_has_d"
+  %".19" = or i1 %".18", %".14"
+  store i1 %".19", i1* %"dq_has_d"
+  br label %"dq_step"
+dq_step:
+  %".22" = load i64, i64* %"dq_i"
+  %".23" = add i64 %".22", 1
+  store i64 %".23", i64* %"dq_i"
+  br label %"dq_cond"
+dq_done:
+  %".26" = load i1, i1* %"dq_has_s"
+  %".27" = load i1, i1* %"dq_has_d"
+  %".28" = xor i1 %".27", -1
+  %".29" = and i1 %".26", %".28"
+  ret i1 %".29"
+}
+
+define void @"rawstr_repr_escape"(i8* %".1", i8* %".2", i64 %".3", i1 %".4")
+{
+esc_entry:
+  %".6" = getelementptr [17 x i8], [17 x i8]* @"str.0123456789abcdef", i32 0, i32 0
+  %"esc_i" = alloca i64
+  %"esc_buf" = alloca [4 x i8]
+  %".7" = bitcast [4 x i8]* %"esc_buf" to i8*
+  store i64 0, i64* %"esc_i"
+  br label %"esc_cond"
+esc_cond:
+  %".10" = load i64, i64* %"esc_i"
+  %".11" = icmp slt i64 %".10", %".3"
+  br i1 %".11", label %"esc_body", label %"esc_done"
+esc_body:
+  %".13" = getelementptr i8, i8* %".2", i64 %".10"
+  %".14" = load i8, i8* %".13"
+  %".15" = icmp eq i8 %".14", 92
+  %".16" = icmp eq i8 %".14", 10
+  %".17" = icmp eq i8 %".14", 13
+  %".18" = icmp eq i8 %".14", 9
+  %".19" = icmp eq i8 %".14", 39
+  %".20" = and i1 %".19", %".4"
+  %".21" = or i1 %".17", %".18"
+  %".22" = or i1 %".16", %".21"
+  %".23" = or i1 %".15", %".22"
+  %".24" = or i1 %".23", %".20"
+  %".25" = icmp slt i8 %".14", 32
+  %".26" = icmp eq i8 %".14", 127
+  %".27" = or i1 %".25", %".26"
+  %".28" = or i1 %".24", %".27"
+  br i1 %".28", label %"esc_named", label %"esc_plain"
+esc_named:
+  %".30" = select  i1 %".18", i8 116, i8 39
+  %".31" = select  i1 %".17", i8 114, i8 %".30"
+  %".32" = select  i1 %".16", i8 110, i8 %".31"
+  %".33" = select  i1 %".15", i8 92, i8 %".32"
+  %".34" = getelementptr i8, i8* %".7", i32 0
+  store i8 92, i8* %".34"
+  %".36" = getelementptr i8, i8* %".7", i32 1
+  store i8 %".33", i8* %".36"
+  call void @"rawstr_append"(i8* %".1", i8* %".7", i64 2)
+  br label %"esc_adv"
+esc_hex:
+  %".40" = lshr i8 %".14", 4
+  %".41" = and i8 %".14", 15
+  %".42" = getelementptr i8, i8* %".7", i32 0
+  store i8 92, i8* %".42"
+  %".44" = getelementptr i8, i8* %".7", i32 1
+  store i8 120, i8* %".44"
+  %".46" = zext i8 %".40" to i32
+  %".47" = getelementptr i8, i8* %".6", i32 %".46"
+  %".48" = load i8, i8* %".47"
+  %".49" = getelementptr i8, i8* %".7", i32 2
+  store i8 %".48", i8* %".49"
+  %".51" = zext i8 %".41" to i32
+  %".52" = getelementptr i8, i8* %".6", i32 %".51"
+  %".53" = load i8, i8* %".52"
+  %".54" = getelementptr i8, i8* %".7", i32 3
+  store i8 %".53", i8* %".54"
+  call void @"rawstr_append"(i8* %".1", i8* %".7", i64 4)
+  br label %"esc_adv"
+esc_plain:
+  %".58" = getelementptr i8, i8* %".2", i64 %".10"
+  call void @"rawstr_append"(i8* %".1", i8* %".58", i64 1)
+  br label %"esc_adv"
+esc_adv:
+  %".61" = load i64, i64* %"esc_i"
+  %".62" = add i64 %".61", 1
+  store i64 %".62", i64* %"esc_i"
+  br label %"esc_cond"
+esc_done:
+  ret void
+}
+
+@"str.0123456789abcdef" = constant [17 x i8] c"0123456789abcdef\00"
+define void @"pyobj_repr_append"(i8* %".1", {i32, i8*}* %".2")
+{
+ra_entry:
+  %".4" = icmp eq {i32, i8*}* %".2", null
+  br i1 %".4", label %"ra_null", label %"ra_dispatch"
+ra_null:
+  %".6" = getelementptr [5 x i8], [5 x i8]* @"str.None", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".6", i64 4)
+  ret void
+ra_dispatch:
+  %".9" = getelementptr {i32, i8*}, {i32, i8*}* %".2", i32 0, i32 0
+  %".10" = load i32, i32* %".9"
+  switch i32 %".10", label %"ra_fall" [i32 0, label %"ra_scalar" i32 1, label %"ra_scalar" i32 3, label %"ra_scalar" i32 2, label %"ra_str" i32 4, label %"ra_list" i32 9, label %"ra_tuple" i32 5, label %"ra_dict" i32 8, label %"ra_set"]
+ra_scalar:
+  %".12" = call {i32, i8*}* @"pyobj_str_conv"({i32, i8*}* %".2")
+  %".13" = getelementptr {i32, i8*}, {i32, i8*}* %".12", i32 0, i32 1
+  %".14" = load i8*, i8** %".13"
+  %".15" = bitcast i8* %".14" to {i32, i8*}*
+  %".16" = getelementptr {i32, i8*}, {i32, i8*}* %".15", i32 0, i32 0
+  %".17" = load i32, i32* %".16"
+  %".18" = getelementptr {i32, i8*}, {i32, i8*}* %".15", i32 0, i32 1
+  %".19" = load i8*, i8** %".18"
+  %".20" = zext i32 %".17" to i64
+  call void @"rawstr_append"(i8* %".1", i8* %".19", i64 %".20")
+  ret void
+ra_str:
+  %".23" = getelementptr {i32, i8*}, {i32, i8*}* %".2", i32 0, i32 1
+  %".24" = load i8*, i8** %".23"
+  %".25" = bitcast i8* %".24" to {i32, i8*}*
+  %".26" = getelementptr {i32, i8*}, {i32, i8*}* %".25", i32 0, i32 0
+  %".27" = load i32, i32* %".26"
+  %".28" = zext i32 %".27" to i64
+  %".29" = getelementptr {i32, i8*}, {i32, i8*}* %".25", i32 0, i32 1
+  %".30" = load i8*, i8** %".29"
+  %".31" = call i1 @"pyobj_repr_dquote"(i8* %".30", i64 %".28")
+  %".32" = select  i1 %".31", i8 34, i8 39
+  %"ra_open" = alloca i8
+  store i8 %".32", i8* %"ra_open"
+  call void @"rawstr_append"(i8* %".1", i8* %"ra_open", i64 1)
+  call void @"rawstr_repr_escape"(i8* %".1", i8* %".30", i64 %".28", i1 %".31")
+  store i8 %".32", i8* %"ra_open"
+  call void @"rawstr_append"(i8* %".1", i8* %"ra_open", i64 1)
+  ret void
+ra_list:
+  %".39" = getelementptr {i32, i8*}, {i32, i8*}* %".2", i32 0, i32 1
+  %".40" = load i8*, i8** %".39"
+  %".41" = bitcast i8* %".40" to {i64, i64, {i32, i8*}**}*
+  %".42" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".41", i32 0, i32 0
+  %".43" = load i64, i64* %".42"
+  %".44" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".41", i32 0, i32 2
+  %".45" = load {i32, i8*}**, {i32, i8*}*** %".44"
+  %".46" = getelementptr [2 x i8], [2 x i8]* @"str._5b", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".46", i64 1)
+  %"ra_li" = alloca i64
+  store i64 0, i64* %"ra_li"
+  br label %"ra_lcond"
+ra_tuple:
+  %".67" = getelementptr {i32, i8*}, {i32, i8*}* %".2", i32 0, i32 1
+  %".68" = load i8*, i8** %".67"
+  %".69" = bitcast i8* %".68" to {i64, i64, {i32, i8*}**}*
+  %".70" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".69", i32 0, i32 0
+  %".71" = load i64, i64* %".70"
+  %".72" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".69", i32 0, i32 2
+  %".73" = load {i32, i8*}**, {i32, i8*}*** %".72"
+  %".74" = getelementptr [2 x i8], [2 x i8]* @"str._28", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".74", i64 1)
+  %"ra_ti" = alloca i64
+  store i64 0, i64* %"ra_ti"
+  br label %"ra_tcond"
+ra_dict:
+  %".102" = getelementptr {i32, i8*}, {i32, i8*}* %".2", i32 0, i32 1
+  %".103" = load i8*, i8** %".102"
+  %".104" = bitcast i8* %".103" to {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}*
+  %".105" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".104", i32 0, i32 0
+  %".106" = load i64, i64* %".105"
+  %".107" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".104", i32 0, i32 1
+  %".108" = load i64, i64* %".107"
+  %".109" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".104", i32 0, i32 2
+  %".110" = load i64, i64* %".109"
+  %".111" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".104", i32 0, i32 3
+  %".112" = load i64*, i64** %".111"
+  %".113" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".104", i32 0, i32 4
+  %".114" = load [0 x {{i32, i8*}*, {i32, i8*}*}]*, [0 x {{i32, i8*}*, {i32, i8*}*}]** %".113"
+  %".115" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".104", i32 0, i32 1
+  %".116" = load i64, i64* %".115"
+  %".117" = getelementptr {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}, {i64, i64, i64, i64*, [0 x {{i32, i8*}*, {i32, i8*}*}]*}* %".104", i32 0, i32 4
+  %".118" = load [0 x {{i32, i8*}*, {i32, i8*}*}]*, [0 x {{i32, i8*}*, {i32, i8*}*}]** %".117"
+  %".119" = getelementptr [2 x i8], [2 x i8]* @"str._7b", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".119", i64 1)
+  %"ra_di" = alloca i64
+  %"ra_dn" = alloca i64
+  store i64 0, i64* %"ra_di"
+  store i64 0, i64* %"ra_dn"
+  br label %"ra_dcond"
+ra_set:
+  %".154" = getelementptr {i32, i8*}, {i32, i8*}* %".2", i32 0, i32 1
+  %".155" = load i8*, i8** %".154"
+  %".156" = bitcast i8* %".155" to {i64, i64, {i32, i8*}**}*
+  %".157" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".156", i32 0, i32 0
+  %".158" = load i64, i64* %".157"
+  %".159" = getelementptr {i64, i64, {i32, i8*}**}, {i64, i64, {i32, i8*}**}* %".156", i32 0, i32 2
+  %".160" = load {i32, i8*}**, {i32, i8*}*** %".159"
+  %".161" = getelementptr [2 x i8], [2 x i8]* @"str._5b", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".161", i64 1)
+  %"ra_si" = alloca i64
+  store i64 0, i64* %"ra_si"
+  br label %"ra_scond"
+ra_fall:
+  %".182" = call {i32, i8*}* @"pyobj_str_conv"({i32, i8*}* %".2")
+  %".183" = getelementptr {i32, i8*}, {i32, i8*}* %".182", i32 0, i32 1
+  %".184" = load i8*, i8** %".183"
+  %".185" = bitcast i8* %".184" to {i32, i8*}*
+  %".186" = getelementptr {i32, i8*}, {i32, i8*}* %".185", i32 0, i32 0
+  %".187" = load i32, i32* %".186"
+  %".188" = getelementptr {i32, i8*}, {i32, i8*}* %".185", i32 0, i32 1
+  %".189" = load i8*, i8** %".188"
+  %".190" = zext i32 %".187" to i64
+  call void @"rawstr_append"(i8* %".1", i8* %".189", i64 %".190")
+  ret void
+ra_lcond:
+  %".50" = load i64, i64* %"ra_li"
+  %".51" = icmp slt i64 %".50", %".43"
+  br i1 %".51", label %"ra_lbody", label %"ra_ldone"
+ra_lbody:
+  %".53" = icmp eq i64 %".50", 0
+  br i1 %".53", label %"ra_lelem", label %"ra_lsep"
+ra_lsep:
+  %".55" = getelementptr [3 x i8], [3 x i8]* @"str._2c_20", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".55", i64 2)
+  br label %"ra_lelem"
+ra_lelem:
+  %".58" = getelementptr {i32, i8*}*, {i32, i8*}** %".45", i64 %".50"
+  %".59" = load {i32, i8*}*, {i32, i8*}** %".58"
+  call void @"pyobj_repr_append"(i8* %".1", {i32, i8*}* %".59")
+  %".61" = add i64 %".50", 1
+  store i64 %".61", i64* %"ra_li"
+  br label %"ra_lcond"
+ra_ldone:
+  %".64" = getelementptr [2 x i8], [2 x i8]* @"str._5d", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".64", i64 1)
+  ret void
+ra_tcond:
+  %".78" = load i64, i64* %"ra_ti"
+  %".79" = icmp slt i64 %".78", %".71"
+  br i1 %".79", label %"ra_tbody", label %"ra_tdone"
+ra_tbody:
+  %".81" = icmp eq i64 %".78", 0
+  br i1 %".81", label %"ra_telem", label %"ra_tsep"
+ra_tsep:
+  %".83" = getelementptr [3 x i8], [3 x i8]* @"str._2c_20", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".83", i64 2)
+  br label %"ra_telem"
+ra_telem:
+  %".86" = getelementptr {i32, i8*}*, {i32, i8*}** %".73", i64 %".78"
+  %".87" = load {i32, i8*}*, {i32, i8*}** %".86"
+  call void @"pyobj_repr_append"(i8* %".1", {i32, i8*}* %".87")
+  %".89" = add i64 %".78", 1
+  store i64 %".89", i64* %"ra_ti"
+  br label %"ra_tcond"
+ra_tdone:
+  %".92" = icmp eq i64 %".71", 1
+  br i1 %".92", label %"ra_tone", label %"ra_tout"
+ra_tone:
+  %".94" = getelementptr [2 x i8], [2 x i8]* @"str._2c", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".94", i64 1)
+  %".96" = getelementptr [2 x i8], [2 x i8]* @"str._29", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".96", i64 1)
+  ret void
+ra_tout:
+  %".99" = getelementptr [2 x i8], [2 x i8]* @"str._29", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".99", i64 1)
+  ret void
+ra_dcond:
+  %".124" = load i64, i64* %"ra_di"
+  %".125" = icmp slt i64 %".124", %".116"
+  br i1 %".125", label %"ra_dbody", label %"ra_ddone"
+ra_dbody:
+  %".127" = getelementptr [0 x {{i32, i8*}*, {i32, i8*}*}], [0 x {{i32, i8*}*, {i32, i8*}*}]* %".118", i32 0, i64 %".124"
+  %".128" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".127", i32 0, i32 0
+  %".129" = load {i32, i8*}*, {i32, i8*}** %".128"
+  %".130" = icmp ne {i32, i8*}* %".129", null
+  br i1 %".130", label %"ra_dlive", label %"ra_dskip"
+ra_dlive:
+  %".132" = load i64, i64* %"ra_dn"
+  %".133" = icmp eq i64 %".132", 0
+  br i1 %".133", label %"ra_dkv", label %"ra_dsep"
+ra_dskip:
+  %".147" = load i64, i64* %"ra_di"
+  %".148" = add i64 %".147", 1
+  store i64 %".148", i64* %"ra_di"
+  br label %"ra_dcond"
+ra_dsep:
+  %".135" = getelementptr [3 x i8], [3 x i8]* @"str._2c_20", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".135", i64 2)
+  br label %"ra_dkv"
+ra_dkv:
+  call void @"pyobj_repr_append"(i8* %".1", {i32, i8*}* %".129")
+  %".139" = getelementptr [3 x i8], [3 x i8]* @"str._3a_20", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".139", i64 2)
+  %".141" = getelementptr {{i32, i8*}*, {i32, i8*}*}, {{i32, i8*}*, {i32, i8*}*}* %".127", i32 0, i32 1
+  %".142" = load {i32, i8*}*, {i32, i8*}** %".141"
+  call void @"pyobj_repr_append"(i8* %".1", {i32, i8*}* %".142")
+  %".144" = add i64 %".132", 1
+  store i64 %".144", i64* %"ra_dn"
+  br label %"ra_dskip"
+ra_ddone:
+  %".151" = getelementptr [2 x i8], [2 x i8]* @"str._7d", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".151", i64 1)
+  ret void
+ra_scond:
+  %".165" = load i64, i64* %"ra_si"
+  %".166" = icmp slt i64 %".165", %".158"
+  br i1 %".166", label %"ra_sbody", label %"ra_sdone"
+ra_sbody:
+  %".168" = icmp eq i64 %".165", 0
+  br i1 %".168", label %"ra_selem", label %"ra_ssep"
+ra_ssep:
+  %".170" = getelementptr [3 x i8], [3 x i8]* @"str._2c_20", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".170", i64 2)
+  br label %"ra_selem"
+ra_selem:
+  %".173" = getelementptr {i32, i8*}*, {i32, i8*}** %".160", i64 %".165"
+  %".174" = load {i32, i8*}*, {i32, i8*}** %".173"
+  call void @"pyobj_repr_append"(i8* %".1", {i32, i8*}* %".174")
+  %".176" = add i64 %".165", 1
+  store i64 %".176", i64* %"ra_si"
+  br label %"ra_scond"
+ra_sdone:
+  %".179" = getelementptr [2 x i8], [2 x i8]* @"str._5d", i32 0, i32 0
+  call void @"rawstr_append"(i8* %".1", i8* %".179", i64 1)
+  ret void
+}
+
+@"str._2c" = constant [2 x i8] c",\00"
+define {i32, i8*}* @"pyobj_repr_value"({i32, i8*}* %".1")
+{
+rv_entry:
+  %".3" = getelementptr [1 x i8], [1 x i8]* @"str.", i32 0, i32 0
+  %".4" = call i8* @"rawstr_new_copy"(i8* %".3", i64 0)
+  call void @"pyobj_repr_append"(i8* %".4", {i32, i8*}* %".1")
+  %".6" = bitcast i8* %".4" to {i64, i64, i8*, i64}*
+  %".7" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".6", i32 0, i32 0
+  %".8" = load i64, i64* %".7"
+  %".9" = getelementptr {i64, i64, i8*, i64}, {i64, i64, i8*, i64}* %".6", i32 0, i32 2
+  %".10" = load i8*, i8** %".9"
+  %".11" = trunc i64 %".8" to i32
+  %".12" = call {i32, i8*}* @"create_str"(i8* %".10", i32 %".11")
+  ret {i32, i8*}* %".12"
+}
+
+@"str." = constant [1 x i8] c"\00"
 define i64 @"rawstr_count"(i8* %".1", i8* %".2", i64 %".3")
 {
 entry:
@@ -9588,7 +9953,6 @@ str_ok:
   ret i8* %".33"
 }
 
-@"str." = constant [1 x i8] c"\00"
 define i8* @"rawstr_to_cstr"(i8* %".1")
 {
 entry:

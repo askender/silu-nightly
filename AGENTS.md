@@ -399,7 +399,7 @@ homebrew python3 无 llvmlite，CLI 会静默隐藏 build/llvm/verify 子命令�
   ②/tmp 下的 native 二进制（ir_interp_native 等）是 existsSync 缓存，
   改 selfhost 源后必须删除强制重建（教训②的第三种形态）；③代理审查
   报告的"语言级 bug"必须四平面探针复核后才动手——本次为误报。
-- 其余 TODO 见 **`reference/STATUS.md`——换客户端后的第一站**。
+- 其余 TODO 见 **`reference/STATUS.md`——换客户端后的第一站**。**打磨循环（定时唤醒修 bug）的操作手册：`reference/POLISH_LOOP.md`——唤醒判定树/轮次结构/提交纪律/已验证的坑，循环续跑按它执行。**
 
 ## 环境关键（换客户端/新会话必读，2026-11-09 实证）
 

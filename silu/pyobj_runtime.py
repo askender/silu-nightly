@@ -1708,6 +1708,465 @@ class PyobjRuntimeMixin:
         builder.ret_void()
 
 
+
+    def _create_pyobj_repr_value(self):
+        r"""PyObject* pyobj_repr_value(PyObject* obj) - repr(x) as a
+        VALUE (the quoted string CPython hands back) for the repr()
+        builtin and the f-string !r conversion. pyobj_repr_print writes
+        to stdout; this walks the same tag tree but appends into a
+        rawstr accumulator. Strings get CPython's repr quoting: single
+        quotes, or double quotes when the body carries ' and no ", with
+        backslash, \n, \r, \t, the wrap quote, other C0/DEL as \xXX.
+        Scalar tags delegate to pyobj_str_conv (repr(int/float/bool) is
+        str(int/float/bool) in py3); containers build their bracket text
+        recursively; set repr keeps the documented element-order
+        boundary; instances fall through to str_conv like print does."""
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        i8p = ir.PointerType(ir.IntType(8))
+        i8 = ir.IntType(8)
+        zero32 = ir.const_(i32, 0)
+        one32 = ir.const_(i32, 1)
+        zero64 = ir.const_(i64, 0)
+        one64 = ir.const_(i64, 1)
+        pyobj_ptr = ir.PointerType(self.pyobj.pyobj_type)
+        null_obj = ir.const_(pyobj_ptr, None)
+
+        # a method, not a nested def: the flat twin rejects closure
+        # captures (append_lit would close over i64)
+        def _append_lit(b, acc, text):
+            self._repr_append_lit(b, acc, text)
+
+        # i1 pyobj_repr_dquote(i8* data, i64 len) - wrap the body in
+        # double quotes only when it carries ' and no "
+        self.pyobj_repr_dquote = ir.func_(
+            self.module,
+            ir.FunctionType(ir.IntType(1), [i8p, i64], False),
+            'pyobj_repr_dquote',
+        )
+        dq = self.pyobj_repr_dquote
+        dq_entry = dq.append_basic_block("dq_entry")
+        dq_cond = dq.append_basic_block("dq_cond")
+        dq_body = dq.append_basic_block("dq_body")
+        dq_step = dq.append_basic_block("dq_step")
+        dq_done = dq.append_basic_block("dq_done")
+        db = ir.builder_(dq_entry)
+        dq_data, dq_len = dq.args
+        dq_i = db.alloca(i64, None, 'dq_i')
+        dq_s = db.alloca(ir.IntType(1), None, 'dq_has_s')
+        dq_d = db.alloca(ir.IntType(1), None, 'dq_has_d')
+        db.store(zero64, dq_i)
+        db.store(ir.const_(ir.IntType(1), 0), dq_s)
+        db.store(ir.const_(ir.IntType(1), 0), dq_d)
+        db.branch(dq_cond)
+
+        db.position_at_end(dq_cond)
+        dq_i_v = db.load(dq_i)
+        dq_more = db.icmp_signed("<", dq_i_v, dq_len)
+        db.cbranch(dq_more, dq_body, dq_done)
+
+        db.position_at_end(dq_body)
+        dq_b = db.load(db.gep(dq_data, [dq_i_v]))
+        dq_is_s = db.icmp_signed("==", dq_b, ir.const_(i8, 0x27))
+        dq_is_d = db.icmp_signed("==", dq_b, ir.const_(i8, 0x22))
+        dq_has_s = db.load(dq_s)
+        db.store(db.or_(dq_has_s, dq_is_s), dq_s)
+        dq_has_d = db.load(dq_d)
+        db.store(db.or_(dq_has_d, dq_is_d), dq_d)
+        db.branch(dq_step)
+
+        db.position_at_end(dq_step)
+        db.store(db.add(db.load(dq_i), one64), dq_i)
+        db.branch(dq_cond)
+
+        db.position_at_end(dq_done)
+        has_s = db.load(dq_s)
+        has_d = db.load(dq_d)
+        db.ret(db.and_(has_s, db.not_(has_d)))
+
+        # void pyobj_repr_escape(i8* acc, i8* data, i64 len, i1 dbl) -
+        # the quoted-body walk: named escapes for the specials, \xXX
+        # for other C0/DEL, the wrap quote escaped when it is '
+        self.rawstr_repr_escape = ir.func_(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, i8p, i64, ir.IntType(1)],
+                            False),
+            'rawstr_repr_escape',
+        )
+        esc = self.rawstr_repr_escape
+        esc_entry = esc.append_basic_block("esc_entry")
+        esc_cond = esc.append_basic_block("esc_cond")
+        esc_body = esc.append_basic_block("esc_body")
+        esc_named = esc.append_basic_block("esc_named")
+        esc_hex = esc.append_basic_block("esc_hex")
+        esc_plain = esc.append_basic_block("esc_plain")
+        esc_adv = esc.append_basic_block("esc_adv")
+        esc_done = esc.append_basic_block("esc_done")
+        eb = ir.builder_(esc_entry)
+        esc_acc, esc_data, esc_len, esc_dbl = esc.args
+        hexes = self._create_global_string_with_builder("0123456789abcdef",
+                                                        eb)
+        esc_i = eb.alloca(i64, None, 'esc_i')
+        esc_buf = eb.bitcast(
+            eb.alloca(ir.ArrayType(i8, 4), None, 'esc_buf'), i8p
+        )
+        eb.store(zero64, esc_i)
+        eb.branch(esc_cond)
+
+        eb.position_at_end(esc_cond)
+        esc_i_v = eb.load(esc_i)
+        esc_more = eb.icmp_signed("<", esc_i_v, esc_len)
+        eb.cbranch(esc_more, esc_body, esc_done)
+
+        eb.position_at_end(esc_body)
+        byte_v = eb.load(eb.gep(esc_data, [esc_i_v]))
+        b0x5c = eb.icmp_signed("==", byte_v, ir.const_(i8, 0x5C))
+        b0x0a = eb.icmp_signed("==", byte_v, ir.const_(i8, 0x0A))
+        b0x0d = eb.icmp_signed("==", byte_v, ir.const_(i8, 0x0D))
+        b0x09 = eb.icmp_signed("==", byte_v, ir.const_(i8, 0x09))
+        b_quote = eb.and_(eb.icmp_signed("==", byte_v, ir.const_(i8, 0x27)),
+                          esc_dbl)
+        is_named = eb.or_(
+            eb.or_(b0x5c, eb.or_(b0x0a, eb.or_(b0x0d, b0x09))),
+            b_quote,
+        )
+        is_cntrl = eb.icmp_signed(
+            "<", byte_v, ir.const_(i8, 0x20)
+        )
+        is_del = eb.icmp_signed("==", byte_v, ir.const_(i8, 0x7F))
+        is_special = eb.or_(
+            is_named, eb.or_(is_cntrl, is_del)
+        )
+        eb.cbranch(is_special, esc_named, esc_plain)
+
+        eb.position_at_end(esc_named)
+        c2 = eb.select(b0x5c, ir.const_(i8, 0x5C),
+                       eb.select(b0x0a, ir.const_(i8, 0x6E),
+                                 eb.select(b0x0d, ir.const_(i8, 0x72),
+                                           eb.select(b0x09, ir.const_(i8, 0x74),
+                                                     ir.const_(i8, 0x27)))))
+        eb.store(ir.const_(i8, 0x5C),
+                 eb.gep(esc_buf, [zero32]))
+        eb.store(c2, eb.gep(esc_buf, [one32]))
+        eb.call(self.rawstr_append, [esc_acc, esc_buf, ir.const_(i64, 2)])
+        eb.branch(esc_adv)
+
+        eb.position_at_end(esc_hex)
+        hi_n = eb.lshr(byte_v, ir.const_(i8, 4))
+        lo_n = eb.and_(byte_v, ir.const_(i8, 0x0F))
+        eb.store(ir.const_(i8, 0x5C),
+                 eb.gep(esc_buf, [zero32]))
+        eb.store(ir.const_(i8, 0x78),
+                 eb.gep(esc_buf, [one32]))
+        eb.store(eb.load(eb.gep(hexes, [eb.zext(hi_n, i32)])),
+                 eb.gep(esc_buf, [ir.const_(i32, 2)]))
+        eb.store(eb.load(eb.gep(hexes, [eb.zext(lo_n, i32)])),
+                 eb.gep(esc_buf, [ir.const_(i32, 3)]))
+        eb.call(self.rawstr_append, [esc_acc, esc_buf, ir.const_(i64, 4)])
+        eb.branch(esc_adv)
+
+        eb.position_at_end(esc_plain)
+        eb.call(self.rawstr_append, [esc_acc,
+               eb.gep(esc_data, [esc_i_v]), one64])
+        eb.branch(esc_adv)
+
+        eb.position_at_end(esc_adv)
+        eb.store(eb.add(eb.load(esc_i), one64), esc_i)
+        eb.branch(esc_cond)
+
+        eb.position_at_end(esc_done)
+        eb.ret_void()
+
+        # void pyobj_repr_append(i8* acc, PyObject* obj) - the recursive
+        # repr writer over every box tag
+        self.pyobj_repr_append = ir.func_(
+            self.module,
+            ir.FunctionType(ir.VoidType(), [i8p, pyobj_ptr], False),
+            'pyobj_repr_append',
+        )
+        ra = self.pyobj_repr_append
+        ra_entry = ra.append_basic_block("ra_entry")
+        ra_null = ra.append_basic_block("ra_null")
+        ra_dispatch = ra.append_basic_block("ra_dispatch")
+        ra_scalar = ra.append_basic_block("ra_scalar")
+        ra_str = ra.append_basic_block("ra_str")
+        ra_list = ra.append_basic_block("ra_list")
+        ra_tuple = ra.append_basic_block("ra_tuple")
+        ra_dict = ra.append_basic_block("ra_dict")
+        ra_set = ra.append_basic_block("ra_set")
+        ra_fall = ra.append_basic_block("ra_fall")
+        rb = ir.builder_(ra_entry)
+        ra_acc, ra_obj = ra.args
+        ra_is_null = rb.icmp_signed("==", ra_obj, null_obj)
+        rb.cbranch(ra_is_null, ra_null, ra_dispatch)
+
+        rb.position_at_end(ra_null)
+        _append_lit(rb, ra_acc, "None")
+        rb.ret_void()
+
+        rb.position_at_end(ra_dispatch)
+        ra_tag = rb.load(rb.gep(ra_obj, [zero32, zero32]))
+        ra_sw = rb.switch(ra_tag, ra_fall)
+        ra_sw.add_case(ir.const_(i32, 0), ra_scalar)
+        ra_sw.add_case(ir.const_(i32, 1), ra_scalar)
+        ra_sw.add_case(ir.const_(i32, 3), ra_scalar)
+        ra_sw.add_case(ir.const_(i32, 2), ra_str)
+        ra_sw.add_case(ir.const_(i32, 4), ra_list)
+        ra_sw.add_case(ir.const_(i32, 9), ra_tuple)
+        ra_sw.add_case(ir.const_(i32, 5), ra_dict)
+        ra_sw.add_case(ir.const_(i32, 8), ra_set)
+
+        # scalars: str(x) text (repr == str for int/float/bool in py3)
+        rb.position_at_end(ra_scalar)
+        s_box = rb.call(self.pyobj_str_conv, [ra_obj])
+        s_data = rb.load(rb.gep(s_box, [zero32, one32]))
+        s_struct = rb.bitcast(s_data, ir.PointerType(self.pyobj.string_type))
+        s_len = rb.load(rb.gep(s_struct, [zero32, zero32]))
+        s_chars = rb.load(rb.gep(s_struct, [zero32, one32]))
+        rb.call(self.rawstr_append, [
+            ra_acc, s_chars, rb.zext(s_len, i64)
+        ])
+        rb.ret_void()
+
+        # str: quote selection + the escaped body
+        rb.position_at_end(ra_str)
+        w_data = rb.load(rb.gep(ra_obj, [zero32, one32]))
+        w_struct = rb.bitcast(w_data, ir.PointerType(self.pyobj.string_type))
+        w_len32 = rb.load(rb.gep(w_struct, [zero32, zero32]))
+        w_len = rb.zext(w_len32, i64)
+        w_chars = rb.load(rb.gep(w_struct, [zero32, one32]))
+        dbl = rb.call(self.pyobj_repr_dquote, [w_chars, w_len])
+        open_c = rb.select(dbl, ir.const_(i8, 0x22), ir.const_(i8, 0x27))
+        open_buf = rb.alloca(i8, None, 'ra_open')
+        rb.store(open_c, open_buf)
+        rb.call(self.rawstr_append, [ra_acc, open_buf, one64])
+        rb.call(self.rawstr_repr_escape, [ra_acc, w_chars, w_len, dbl])
+        rb.store(open_c, open_buf)
+        rb.call(self.rawstr_append, [ra_acc, open_buf, one64])
+        rb.ret_void()
+
+        # list: [elem, ...] with recursive elements
+        rb.position_at_end(ra_list)
+        l_struct = self._load_list_struct(rb, ra_obj)
+        l_len = rb.load(rb.gep(l_struct, [zero32, zero32]))
+        l_items = rb.load(rb.gep(l_struct, [zero32, ir.const_(i32, 2)]))
+        _append_lit(rb, ra_acc, "[")
+        l_i = rb.alloca(i64, None, 'ra_li')
+        rb.store(zero64, l_i)
+        l_cond = ra.append_basic_block("ra_lcond")
+        l_body = ra.append_basic_block("ra_lbody")
+        l_sep = ra.append_basic_block("ra_lsep")
+        l_elem = ra.append_basic_block("ra_lelem")
+        l_done = ra.append_basic_block("ra_ldone")
+        rb.branch(l_cond)
+
+        rb.position_at_end(l_cond)
+        l_i_v = rb.load(l_i)
+        rb.cbranch(rb.icmp_signed("<", l_i_v, l_len), l_body, l_done)
+
+        rb.position_at_end(l_body)
+        l_first = rb.icmp_signed("==", l_i_v, zero64)
+        rb.cbranch(l_first, l_elem, l_sep)
+
+        rb.position_at_end(l_sep)
+        _append_lit(rb, ra_acc, ", ")
+        rb.branch(l_elem)
+
+        rb.position_at_end(l_elem)
+        rb.call(self.pyobj_repr_append, [
+            ra_acc, rb.load(rb.gep(l_items, [l_i_v]))
+        ])
+        rb.store(rb.add(l_i_v, one64), l_i)
+        rb.branch(l_cond)
+
+        rb.position_at_end(l_done)
+        _append_lit(rb, ra_acc, "]")
+        rb.ret_void()
+
+        # tuple: (elems,) with the one-element trailing comma
+        rb.position_at_end(ra_tuple)
+        t_struct = self._load_list_struct(rb, ra_obj)
+        t_len = rb.load(rb.gep(t_struct, [zero32, zero32]))
+        t_items = rb.load(rb.gep(t_struct, [zero32, ir.const_(i32, 2)]))
+        _append_lit(rb, ra_acc, "(")
+        t_i = rb.alloca(i64, None, 'ra_ti')
+        rb.store(zero64, t_i)
+        t_cond = ra.append_basic_block("ra_tcond")
+        t_body = ra.append_basic_block("ra_tbody")
+        t_sep = ra.append_basic_block("ra_tsep")
+        t_elem = ra.append_basic_block("ra_telem")
+        t_done = ra.append_basic_block("ra_tdone")
+        rb.branch(t_cond)
+
+        rb.position_at_end(t_cond)
+        t_i_v = rb.load(t_i)
+        rb.cbranch(rb.icmp_signed("<", t_i_v, t_len), t_body, t_done)
+
+        rb.position_at_end(t_body)
+        t_first = rb.icmp_signed("==", t_i_v, zero64)
+        rb.cbranch(t_first, t_elem, t_sep)
+
+        rb.position_at_end(t_sep)
+        _append_lit(rb, ra_acc, ", ")
+        rb.branch(t_elem)
+
+        rb.position_at_end(t_elem)
+        rb.call(self.pyobj_repr_append, [
+            ra_acc, rb.load(rb.gep(t_items, [t_i_v]))
+        ])
+        rb.store(rb.add(t_i_v, one64), t_i)
+        rb.branch(t_cond)
+
+        rb.position_at_end(t_done)
+        # the trailing comma for one-element tuples lands INSIDE the
+        # parens: (1,) not (1,)
+        t_one = rb.icmp_signed("==", t_len, one64)
+        ra_tuple_one = ra.append_basic_block("ra_tone")
+        ra_tuple_out = ra.append_basic_block("ra_tout")
+        rb.cbranch(t_one, ra_tuple_one, ra_tuple_out)
+        rb.position_at_end(ra_tuple_one)
+        _append_lit(rb, ra_acc, ",")
+        _append_lit(rb, ra_acc, ")")
+        rb.ret_void()
+        rb.position_at_end(ra_tuple_out)
+        _append_lit(rb, ra_acc, ")")
+        rb.ret_void()
+
+        # dict: {'k': v, ...} in entry order
+        rb.position_at_end(ra_dict)
+        d_struct = self._load_dict_parts(rb, ra_obj, zero32,
+                                         ir.const_(i32, 1))[0]
+        d_used = rb.load(rb.gep(d_struct, [zero32, ir.const_(i32, 1)]))
+        d_entries = rb.load(rb.gep(d_struct, [zero32, ir.const_(i32, 4)]))
+        _append_lit(rb, ra_acc, "{")
+        d_i = rb.alloca(i64, None, 'ra_di')
+        d_n = rb.alloca(i64, None, 'ra_dn')
+        rb.store(zero64, d_i)
+        rb.store(zero64, d_n)
+        d_cond = ra.append_basic_block("ra_dcond")
+        d_body = ra.append_basic_block("ra_dbody")
+        d_live = ra.append_basic_block("ra_dlive")
+        d_skip = ra.append_basic_block("ra_dskip")
+        d_sep = ra.append_basic_block("ra_dsep")
+        d_kv = ra.append_basic_block("ra_dkv")
+        d_done = ra.append_basic_block("ra_ddone")
+        rb.branch(d_cond)
+
+        rb.position_at_end(d_cond)
+        d_i_v = rb.load(d_i)
+        rb.cbranch(rb.icmp_signed("<", d_i_v, d_used), d_body, d_done)
+
+        rb.position_at_end(d_body)
+        d_entry = rb.gep(d_entries, [zero32, d_i_v])
+        d_key = rb.load(rb.gep(d_entry, [zero32, zero32]))
+        d_is_live = rb.icmp_signed("!=", d_key, null_obj)
+        rb.cbranch(d_is_live, d_live, d_skip)
+
+        rb.position_at_end(d_live)
+        d_n_v = rb.load(d_n)
+        d_first = rb.icmp_signed("==", d_n_v, zero64)
+        rb.cbranch(d_first, d_kv, d_sep)
+
+        rb.position_at_end(d_sep)
+        _append_lit(rb, ra_acc, ", ")
+        rb.branch(d_kv)
+
+        rb.position_at_end(d_kv)
+        rb.call(self.pyobj_repr_append, [ra_acc, d_key])
+        _append_lit(rb, ra_acc, ": ")
+        d_val = rb.load(rb.gep(d_entry, [zero32, one32]))
+        rb.call(self.pyobj_repr_append, [ra_acc, d_val])
+        rb.store(rb.add(d_n_v, one64), d_n)
+        rb.branch(d_skip)
+
+        rb.position_at_end(d_skip)
+        rb.store(rb.add(rb.load(d_i), one64), d_i)
+        rb.branch(d_cond)
+
+        rb.position_at_end(d_done)
+        _append_lit(rb, ra_acc, "}")
+        rb.ret_void()
+
+        # set: [..] in the set's own walk order - the documented
+        # element-order boundary (CPython's hash-table order cannot be
+        # reproduced); the brackets match the print side
+        rb.position_at_end(ra_set)
+        se_struct = self._load_list_struct(rb, ra_obj)
+        se_len = rb.load(rb.gep(se_struct, [zero32, zero32]))
+        se_items = rb.load(rb.gep(se_struct, [zero32, ir.const_(i32, 2)]))
+        _append_lit(rb, ra_acc, "[")
+        se_i = rb.alloca(i64, None, 'ra_si')
+        rb.store(zero64, se_i)
+        se_cond = ra.append_basic_block("ra_scond")
+        se_body = ra.append_basic_block("ra_sbody")
+        se_sep = ra.append_basic_block("ra_ssep")
+        se_elem = ra.append_basic_block("ra_selem")
+        se_done = ra.append_basic_block("ra_sdone")
+        rb.branch(se_cond)
+
+        rb.position_at_end(se_cond)
+        se_i_v = rb.load(se_i)
+        rb.cbranch(rb.icmp_signed("<", se_i_v, se_len), se_body, se_done)
+
+        rb.position_at_end(se_body)
+        se_first = rb.icmp_signed("==", se_i_v, zero64)
+        rb.cbranch(se_first, se_elem, se_sep)
+
+        rb.position_at_end(se_sep)
+        _append_lit(rb, ra_acc, ", ")
+        rb.branch(se_elem)
+
+        rb.position_at_end(se_elem)
+        rb.call(self.pyobj_repr_append, [
+            ra_acc, rb.load(rb.gep(se_items, [se_i_v]))
+        ])
+        rb.store(rb.add(se_i_v, one64), se_i)
+        rb.branch(se_cond)
+
+        rb.position_at_end(se_done)
+        _append_lit(rb, ra_acc, "]")
+        rb.ret_void()
+
+        # instances and anything else: str(x) text (the documented
+        # boundary - str(record) reads "None" through the empty box)
+        rb.position_at_end(ra_fall)
+        f_box = rb.call(self.pyobj_str_conv, [ra_obj])
+        f_data = rb.load(rb.gep(f_box, [zero32, one32]))
+        f_struct = rb.bitcast(f_data, ir.PointerType(self.pyobj.string_type))
+        f_len = rb.load(rb.gep(f_struct, [zero32, zero32]))
+        f_chars = rb.load(rb.gep(f_struct, [zero32, one32]))
+        rb.call(self.rawstr_append, [
+            ra_acc, f_chars, rb.zext(f_len, i64)
+        ])
+        rb.ret_void()
+
+        # PyObject* pyobj_repr_value(PyObject* obj) - the builtin entry
+        self.pyobj_repr_value = ir.func_(
+            self.module,
+            ir.FunctionType(pyobj_ptr, [pyobj_ptr], False),
+            'pyobj_repr_value',
+        )
+        rv = self.pyobj_repr_value
+        rv_entry = rv.append_basic_block("rv_entry")
+        rvb = ir.builder_(rv_entry)
+        (rv_obj,) = rv.args
+        rv_acc = rvb.call(self.rawstr_new_copy, [
+            self._create_global_string_with_builder("", rvb), zero64
+        ])
+        rvb.call(self.pyobj_repr_append, [rv_acc, rv_obj])
+        rv_struct = rvb.bitcast(rv_acc, ir.PointerType(
+            self.rawstr_struct_type))
+        rv_len = rvb.load(rvb.gep(rv_struct, [zero32, zero32]))
+        rv_data = rvb.load(rvb.gep(rv_struct, [zero32, ir.const_(i32, 2)]))
+        rvb.ret(rvb.call(self.create_str, [rv_data,
+               rvb.trunc(rv_len, i32)]))
+    def _repr_append_lit(self, b, acc, text):
+        """Append a constant string to the repr accumulator."""
+        b.call(self.rawstr_append, [
+            acc, self._create_global_string_with_builder(text, b),
+            ir.const_(ir.IntType(64), len(text)),
+        ])
+
     def _seq_len_inline(self, b, byte_value):
         """UTF-8 sequence length from a lead byte (invalid -> 1).
         Self-contained twin of the typed layer's _emit_seq_len: this

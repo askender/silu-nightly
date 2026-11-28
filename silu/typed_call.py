@@ -1158,7 +1158,13 @@ class TypedCallMixin:
                 ["call", ["name", "_builtin_bool"], [args_node[0]], []]
             )
         if func_name == "repr" and len(args_node) == 1:
-            return self._convert_node(args_node[0])
+            # repr(x) as a VALUE: the quoted string CPython hands back
+            # (repr("a") was an identity pass-through, so the quotes
+            # never materialized)
+            boxed = self._box(self._convert_node(args_node[0]))
+            return (OBJ, self.current_builder.call(
+                self.pyobj_repr_value, [boxed]
+            ))
         # set(...) falls through to the general constructor branch
         # (tag-8 box, construction dedup, real copy)
         if func_name == "all" and len(args_node) == 1:
